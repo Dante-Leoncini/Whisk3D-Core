@@ -15,7 +15,7 @@ Buffers de vértices e índices.
 Estados básicos de renderizado.
 Utilidades matemáticas (vectores, matrices y cuaterniones).
 
-El proyecto está diseñado para facilitar la implementación de nuevos backends gráficos (como OpenGL, OpenGL ES, Vulkan, Direct3D, Metal o renderizadores por software) sin necesidad de modificar el código de alto nivel del motor.
+El proyecto está diseñado para facilitar la implementación de nuevos backends gráficos (como OpenGL, OpenGL ES, WebGl, Vulkan, Direct3D, Metal o renderizadores por software) sin necesidad de modificar el código de alto nivel del motor.
 
 Sus principales objetivos son:
 
