@@ -1,4 +1,4 @@
-# Whisk3Dcore
+# Whisk3D Core
 Whisk3D Core es la capa de abstracción gráfica multiplataforma que impulsa todo el ecosistema de Whisk3D.
 
 Escrito en C++, proporciona una API unificada que permite ejecutar la misma base de código sobre diferentes APIs gráficas y sistemas operativos. Su objetivo es ofrecer una arquitectura ligera, portable y modular, inspirada en la filosofía de RenderWare, separando el motor de la API gráfica subyacente.
