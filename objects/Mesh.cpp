@@ -132,99 +132,6 @@ void Mesh::AplicarCapasAlRender() {
 }
 
 // duplican la capa ACTIVA y dejan la copia como activa (boton "+" de la pestaña Vertices).
-void Mesh::DuplicarUVMapActivo() {
-    PoblarCapas();
-    if (uvMapActivo < 0 || uvMapActivo >= (int)uvMaps.size()) return;
-    UVMap* src = uvMaps[uvMapActivo];
-    UVMap* nw = new UVMap(src->nombre + ".001");
-    nw->uv = src->uv;
-    uvMaps.push_back(nw); uvMapActivo = (int)uvMaps.size() - 1;
-}
-
-void Mesh::DuplicarColorLayerActivo() {
-    PoblarCapas();
-    if (colorActivo < 0 || colorActivo >= (int)colorLayers.size()) return;
-    ColorLayer* src = colorLayers[colorActivo];
-    ColorLayer* nw = new ColorLayer(src->nombre + ".001");
-    nw->color = src->color; nw->porVertice = src->porVertice;
-    colorLayers.push_back(nw); colorActivo = (int)colorLayers.size() - 1;
-}
-
-// reversa los datos de TODAS las capas (uv maps + color layers por-corner) de los corners
-// [L .. L+count). Lo usa el flip de winding (recalc orientacion) para que cada corner siga
-// llevando el dato del vert al que ahora apunta (sino la textura/color se espejarian).
-void Mesh::ReverseCapasDeCorner(int L, int count) {
-    for (size_t k=0;k<uvMaps.size();k++){ std::vector<GLfloat>& u=uvMaps[k]->uv;
-        for (int a=0,b=count-1;a<b;a++,b--){ int ia=(L+a)*2, ib=(L+b)*2; if (ib+1>=(int)u.size()) break;
-            std::swap(u[ia],u[ib]); std::swap(u[ia+1],u[ib+1]); } }
-    for (size_t k=0;k<colorLayers.size();k++){ if (colorLayers[k]->porVertice) continue;
-        std::vector<GLubyte>& c=colorLayers[k]->color;
-        for (int a=0,b=count-1;a<b;a++,b--){ int ia=(L+a)*4, ib=(L+b)*4; if (ib+3>=(int)c.size()) break;
-            for(int q=0;q<4;q++) std::swap(c[ia+q],c[ib+q]); } }
-    if (!cornerNormal.empty())
-        for (int a=0,b=count-1;a<b;a++,b--){ int ia=(L+a)*3, ib=(L+b)*3; if (ib+2>=(int)cornerNormal.size()) break;
-            for(int q=0;q<3;q++) std::swap(cornerNormal[ia+q],cornerNormal[ib+q]); }
-}
-
-// agrega UN corner al FINAL de todas las capas por-corner, copiando del corner srcL (o
-// default uv=0 / color blanco si srcL<0). Lo usan las ops que AGREGAN caras al final de
-// faces3d (crear cara, duplicar, extrude): cada corner nuevo hereda el dato de un corner
-// existente del mismo vert, asi TODAS las capas crecen parejo (no solo la activa).
-void Mesh::AgregarCornerCapas(int srcL) {
-    for (size_t k=0;k<uvMaps.size();k++){ std::vector<GLfloat>& u=uvMaps[k]->uv;
-        GLfloat a=0,b=0; if (srcL>=0 && srcL*2+1<(int)u.size()){ a=u[srcL*2]; b=u[srcL*2+1]; }
-        u.push_back(a); u.push_back(b); }
-    for (size_t k=0;k<colorLayers.size();k++){ if (colorLayers[k]->porVertice) continue;
-        std::vector<GLubyte>& c=colorLayers[k]->color;
-        GLubyte q[4]={255,255,255,255}; if (srcL>=0 && srcL*4+3<(int)c.size()){ for(int i=0;i<4;i++) q[i]=c[srcL*4+i]; }
-        for(int i=0;i<4;i++) c.push_back(q[i]); }
-    if (!cornerNormal.empty()){ // normal autoritativa: el corner nuevo hereda la de srcL
-        GLbyte n[3]={0,127,0}; if (srcL>=0 && srcL*3+2<(int)cornerNormal.size()){ for(int i=0;i<3;i++) n[i]=cornerNormal[srcL*3+i]; }
-        for(int i=0;i<3;i++) cornerNormal.push_back(n[i]); }
-}
-
-// reconstruye TODAS las capas por-corner quedandose SOLO con los corners de survCorner (en
-// ese orden). Para las ops que BORRAN corners (delete): lee las capas viejas -> arma nuevas
-// -> swap (AgregarCornerCapas, que appendea, no sirve cuando hay que DESCARTAR corners).
-void Mesh::CompactarCapas(const std::vector<int>& survCorner) {
-    for (size_t k=0;k<uvMaps.size();k++){ std::vector<GLfloat>& u=uvMaps[k]->uv; std::vector<GLfloat> nu; nu.reserve(survCorner.size()*2);
-        for (size_t i=0;i<survCorner.size();i++){ int L=survCorner[i];
-            if (L>=0 && L*2+1<(int)u.size()){ nu.push_back(u[L*2]); nu.push_back(u[L*2+1]); } else { nu.push_back(0); nu.push_back(0); } }
-        u.swap(nu); }
-    for (size_t k=0;k<colorLayers.size();k++){ if (colorLayers[k]->porVertice) continue; std::vector<GLubyte>& c=colorLayers[k]->color; std::vector<GLubyte> nc; nc.reserve(survCorner.size()*4);
-        for (size_t i=0;i<survCorner.size();i++){ int L=survCorner[i];
-            if (L>=0 && L*4+3<(int)c.size()){ for(int q=0;q<4;q++) nc.push_back(c[L*4+q]); } else { for(int q=0;q<4;q++) nc.push_back(255); } }
-        c.swap(nc); }
-    if (!cornerNormal.empty()){ std::vector<GLbyte> nn; nn.reserve(survCorner.size()*3);
-        for (size_t i=0;i<survCorner.size();i++){ int L=survCorner[i];
-            if (L>=0 && L*3+2<(int)cornerNormal.size()){ for(int q=0;q<3;q++) nn.push_back(cornerNormal[L*3+q]); } else { nn.push_back(0); nn.push_back(127); nn.push_back(0); } }
-        cornerNormal.swap(nn); }
-}
-
-// rehace TODAS las capas por-corner desde una lista de fuentes (una por corner nuevo, en
-// orden de faces3d): copiar del corner viejo a (b<0) o lerp entre a y b en s. Para ops que
-// RESTRUCTURAN con verts interpolados (loop cut). Lee viejas -> arma nuevas -> swap.
-void Mesh::ReconstruirCapasDesde(const std::vector<CornerSrc>& src) {
-    for (size_t k=0;k<uvMaps.size();k++){ const std::vector<GLfloat>& u=uvMaps[k]->uv; std::vector<GLfloat> nu; nu.reserve(src.size()*2);
-        for (size_t i=0;i<src.size();i++){ int a=src[i].a, b=src[i].b; float u0=0,v0=0;
-            if (a>=0 && a*2+1<(int)u.size()){ u0=u[a*2]; v0=u[a*2+1]; }
-            if (b>=0 && b*2+1<(int)u.size()){ float s=src[i].s; u0=u0*(1-s)+u[b*2]*s; v0=v0*(1-s)+u[b*2+1]*s; }
-            nu.push_back(u0); nu.push_back(v0); }
-        uvMaps[k]->uv.swap(nu); }
-    for (size_t k=0;k<colorLayers.size();k++){ if (colorLayers[k]->porVertice) continue; const std::vector<GLubyte>& c=colorLayers[k]->color; std::vector<GLubyte> nc; nc.reserve(src.size()*4);
-        for (size_t i=0;i<src.size();i++){ int a=src[i].a, b=src[i].b; float cc[4]={255,255,255,255};
-            if (a>=0 && a*4+3<(int)c.size()){ for(int q=0;q<4;q++) cc[q]=c[a*4+q]; }
-            if (b>=0 && b*4+3<(int)c.size()){ float s=src[i].s; for(int q=0;q<4;q++) cc[q]=cc[q]*(1-s)+c[b*4+q]*s; }
-            for(int q=0;q<4;q++) nc.push_back((GLubyte)cc[q]); }
-        colorLayers[k]->color.swap(nc); }
-    if (!cornerNormal.empty()){ const std::vector<GLbyte>& cn=cornerNormal; std::vector<GLbyte> nn; nn.reserve(src.size()*3);
-        for (size_t i=0;i<src.size();i++){ int a=src[i].a, b=src[i].b; float n[3]={0,127,0};
-            if (a>=0 && a*3+2<(int)cn.size()){ for(int q=0;q<3;q++) n[q]=cn[a*3+q]; }
-            if (b>=0 && b*3+2<(int)cn.size()){ float s=src[i].s; for(int q=0;q<3;q++) n[q]=n[q]*(1-s)+cn[b*3+q]*s; }
-            for(int q=0;q<3;q++) nn.push_back((GLbyte)n[q]); }
-        cornerNormal.swap(nn); }
-}
-
 // ===== Las DOS unicas puertas al render (abstraccion: las ops NO tocan vertex[]/faces3d a
 //       mano -> integridad). RefrescarRender = edicion IN-PLACE rapida (no cambia topologia);
 //       GenerarRender = REBUILD completo (cambio de topologia). =====
@@ -444,45 +351,6 @@ void Mesh::OptimizarCacheRender() {
 }
 
 // Mesh part NUEVO vacio (sin caras). Devuelve su indice. El render lo deja con count 0.
-int Mesh::NuevoMeshPart() {
-    MaterialGroup g; // name "Mesh", material NULL = usa el material por defecto
-    materialsGroup.push_back(g);
-    ReagruparMeshParts();
-    return (int)materialsGroup.size() - 1;
-}
-
-// Borra el mesh part 'idx'. Las caras huerfanas pasan al ANTERIOR (idx-1, o al que quede en 0 si era
-// el primero). SIEMPRE queda >=1 mesh part (no borra el ultimo). Remapea los indices de arriba.
-void Mesh::BorrarMeshPart(int idx) {
-    int n = (int)materialsGroup.size();
-    if (n <= 1) return;                 // siempre tiene que haber al menos 1
-    if (idx < 0 || idx >= n) return;
-    int destino = (idx > 0) ? idx - 1 : 0; // huerfanas -> anterior (o el nuevo 0)
-    for (size_t f=0; f<faces3d.size(); f++) {
-        int m = faces3d[f].mat;
-        if (m == idx) m = destino;      // huerfana -> anterior
-        if (m > idx)  m -= 1;           // los de arriba bajan 1 (se removio idx)
-        faces3d[f].mat = m;
-    }
-    materialsGroup.erase(materialsGroup.begin() + idx);
-    ReagruparMeshParts();
-}
-
-// mueve el mesh part 'idx' una posicion (dir: -1 sube / +1 baja) intercambiandolo con el vecino. Cambia el ORDEN
-// del materialsGroup = ORDEN DE DIBUJADO (ReagruparMeshParts agrupa los triangulos en ese orden). Util para
-// dibujar los mesh parts SOLIDOS primero y los TRANSPARENTES al final. Remapea faces3d.mat de los 2 intercambiados.
-void Mesh::MoverMeshPart(int idx, int dir) {
-    int n = (int)materialsGroup.size();
-    int j = idx + dir;
-    if (idx < 0 || idx >= n || j < 0 || j >= n) return;
-    MaterialGroup tmp = materialsGroup[idx]; materialsGroup[idx] = materialsGroup[j]; materialsGroup[j] = tmp;
-    for (size_t f=0; f<faces3d.size(); f++) {
-        if      (faces3d[f].mat == idx) faces3d[f].mat = j;
-        else if (faces3d[f].mat == j)   faces3d[f].mat = idx;
-    }
-    ReagruparMeshParts(); // rehace el index buffer en el nuevo orden -> nuevo orden de dibujado
-}
-
 // ===================================================
 // Destructor
 // ===================================================
@@ -740,6 +608,9 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido) {
     else                    gfx::Disable(gfx::Blend);
 }
 
+// hook de overlays del editor (lo registra el editor al arrancar; NULL en una app sin editor)
+void (*g_meshOverlayHook)(Mesh*) = NULL;
+
 void Mesh::RenderObject() {
     const bool editActiva = ((Object*)this == g_editMesh); // esta malla en Edit Mode
     // sin vertices no hay nada. Sin CARAS (todas borradas en Edit) igual hay que
@@ -886,157 +757,18 @@ void Mesh::RenderObject() {
         gfx::TexEnvReplace(false); // vuelve a GL_MODULATE: sino la UI/fuente quedan sin tinte de color
         gfx::DepthFunc(gfx::DepthLess);
 
-        // Sin overlays (limpieza de pantalla): NI el overlay de edit (verts/bordes/caras), NI el
-        // contorno de seleccion, NI las normales. Solo la malla. Es "quitar el overlay de verdad".
-        if (g_mostrarOverlays) {
-        if (editActiva) {
-            // EDIT MODE: lineas (vertex color) encima + vertices como puntos (en
-            // vez del contorno de objeto). El overlay de normales no va aca.
-            RenderEditOverlay();
-        } else if (select) {
-            // borde de 3px a profundidad NORMAL: los rellenos (muy adelantados)
-            // tapan las lineas internas. Verde si es el ACTIVO, verde-rojizo si no.
-            int cid = ((Object*)this == ObjActivo) ? RC_selActive : RC_selInactive;
-            const float* col = gRenderColors[cid];
-            RenderBordes(col, 3.0f, false);
-            RenderNormales(); // overlay de normales (solo object mode + seleccionada)
-        }
-        }
+        // overlays (contorno de seleccion / normales / overlay de edit): los dibuja el EDITOR
+        // via hook, JUSTO tras el relleno (mismo timing que antes). NULL en una app sin editor.
+        if (g_meshOverlayHook) g_meshOverlayHook(this);
     }
 }
 
 // angulo (rad) en el vertice p del triangulo p-q-r. Pondera la normal de cara
 // en el vertex-normal: asi un quad (2 triangulos) cuenta como UNA cara y el
 // promedio da 45 grados en las esquinas del cubo (no sesgado por la diagonal).
-static float AnguloEnVertice(const float* p, const float* q, const float* r) {
-    float e1x=q[0]-p[0], e1y=q[1]-p[1], e1z=q[2]-p[2];
-    float e2x=r[0]-p[0], e2y=r[1]-p[1], e2z=r[2]-p[2];
-    float l1=sqrtf(e1x*e1x+e1y*e1y+e1z*e1z), l2=sqrtf(e2x*e2x+e2y*e2y+e2z*e2z);
-    if (l1<1e-6f || l2<1e-6f) return 0.0f;
-    float d=(e1x*e2x+e1y*e2y+e1z*e2z)/(l1*l2);
-    if (d>1.0f) d=1.0f; if (d<-1.0f) d=-1.0f;
-    return acosf(d);
-}
 
-// dibuja los pares de puntos de 'buf' como GL_LINES con el color de la paleta
-static void DibujarLineasNormales(std::vector<GLfloat>& buf, int colorId) {
-    if (buf.empty()) return;
-    namespace gfx = w3dEngine;
-    const float* c = gRenderColors[colorId];
-    gfx::Color4f(c[0], c[1], c[2], 1.0f);
-    gfx::VertexPointer3f(0, &buf[0]);
-    gfx::DrawLines((int)(buf.size() / 3));
-}
 
-// overlay de normales (vertex=amarillo / custom=magenta / face=cian). NO calcula
-// nada por frame: dibuja los buffers PRECALCULADOS. Solo se recalculan si cambio
-// el largo L (slider) o la geometria (CalcularBordes pone overlayLcache=-1).
-void Mesh::RenderNormales() {
-    if (!OverlayVertexNormal && !OverlayCustomNormal && !OverlayFaceNormal) return;
-    if (!vertex || !faces) return;
-    namespace gfx = w3dEngine;
-    if (overlayLcache != OverlayNormalSize) CalcularOverlayNormales();
 
-    gfx::Disable(gfx::Lighting);
-    gfx::Disable(gfx::Texture2D);
-    gfx::DisableArray(gfx::NormalArray);
-    gfx::DisableArray(gfx::ColorArray);
-    gfx::DisableArray(gfx::TexCoordArray);
-
-    if (OverlayFaceNormal)   DibujarLineasNormales(normFaceBuf,   RC_normalFace);
-    if (OverlayCustomNormal) DibujarLineasNormales(normCustomBuf, RC_normalCustom);
-    if (OverlayVertexNormal) DibujarLineasNormales(normVertBuf,   RC_normalVert);
-
-    gfx::VertexPointer3f(0, vertex); // no dejar el puntero en un buffer temporal
-    gfx::Invalidate();
-}
-
-// PRECALCULA las lineas de los 3 overlays de normales en sus buffers. NO toca GL:
-// es puro computo, cacheado. Se rehace solo cuando cambia la geometria o el largo
-// L del slider (lo barato del overlay queda en RenderNormales: color + DrawLines).
-void Mesh::CalcularOverlayNormales() {
-    overlayLcache = OverlayNormalSize;
-    const float L = OverlayNormalSize;
-    const int nTri = facesSize / 3;
-    const int nV = vertexSize;
-    normFaceBuf.clear(); normCustomBuf.clear(); normVertBuf.clear();
-    if (!vertex || !faces) return;
-
-    // FACE (cian): UNA normal por CARA. Si hay caras logicas (faces3d) se usa una
-    // por ngon/quad/tri (ej: la tapa del cono = 1 sola linea); si no, por triangulo.
-    if (!faces3d.empty()) {
-        for (size_t fi = 0; fi < faces3d.size(); fi++) {
-            const std::vector<int>& ring = faces3d[fi].idx;
-            int m = (int)ring.size(); if (m < 3) continue;
-            float cx=0,cy=0,cz=0, nx=0,ny=0,nz=0;
-            for (int k=0;k<m;k++){ GLfloat* p=&vertex[ring[k]*3]; cx+=p[0]; cy+=p[1]; cz+=p[2]; }
-            cx/=(float)m; cy/=(float)m; cz/=(float)m;
-            for (int k=0;k<m;k++){ // normal Newell del poligono
-                GLfloat* a=&vertex[ring[k]*3]; GLfloat* b=&vertex[ring[(k+1)%m]*3];
-                nx+=(a[1]-b[1])*(a[2]+b[2]); ny+=(a[2]-b[2])*(a[0]+b[0]); nz+=(a[0]-b[0])*(a[1]+b[1]);
-            }
-            float ln=sqrtf(nx*nx+ny*ny+nz*nz); if (ln<1e-6f) continue; nx/=ln; ny/=ln; nz/=ln;
-            normFaceBuf.push_back(cx); normFaceBuf.push_back(cy); normFaceBuf.push_back(cz);
-            normFaceBuf.push_back(cx+nx*L); normFaceBuf.push_back(cy+ny*L); normFaceBuf.push_back(cz+nz*L);
-        }
-    } else {
-        for (int t = 0; t < nTri; t++) {
-            int i0=faces[t*3], i1=faces[t*3+1], i2=faces[t*3+2];
-            GLfloat* p0=&vertex[i0*3]; GLfloat* p1=&vertex[i1*3]; GLfloat* p2=&vertex[i2*3];
-            float ax=p1[0]-p0[0], ay=p1[1]-p0[1], az=p1[2]-p0[2];
-            float bx=p2[0]-p0[0], by=p2[1]-p0[1], bz=p2[2]-p0[2];
-            float nx=ay*bz-az*by, ny=az*bx-ax*bz, nz=ax*by-ay*bx;
-            float ln=sqrtf(nx*nx+ny*ny+nz*nz); if (ln<1e-6f) continue; nx/=ln; ny/=ln; nz/=ln;
-            float cx=(p0[0]+p1[0]+p2[0])/3.0f, cy=(p0[1]+p1[1]+p2[1])/3.0f, cz=(p0[2]+p1[2]+p2[2])/3.0f;
-            normFaceBuf.push_back(cx); normFaceBuf.push_back(cy); normFaceBuf.push_back(cz);
-            normFaceBuf.push_back(cx+nx*L); normFaceBuf.push_back(cy+ny*L); normFaceBuf.push_back(cz+nz*L);
-        }
-    }
-
-    // CUSTOM (magenta): la normal guardada en cada vertice (normals[])
-    if (normals) {
-        for (int i = 0; i < nV; i++) {
-            GLfloat* p=&vertex[i*3];
-            float nx=normals[i*3]/127.0f, ny=normals[i*3+1]/127.0f, nz=normals[i*3+2]/127.0f;
-            float ln=sqrtf(nx*nx+ny*ny+nz*nz); if (ln<1e-6f) continue; nx/=ln; ny/=ln; nz/=ln;
-            normCustomBuf.push_back(p[0]); normCustomBuf.push_back(p[1]); normCustomBuf.push_back(p[2]);
-            normCustomBuf.push_back(p[0]+nx*L); normCustomBuf.push_back(p[1]+ny*L); normCustomBuf.push_back(p[2]+nz*L);
-        }
-    }
-
-    // VERTEX (amarillo): promedio (ponderado por angulo) de las normales de cara,
-    // agrupando por POSICION (en un cubo las 3 caras del rincon dan la diagonal)
-    {
-        std::vector<float> acc(nV*3, 0.0f);
-        for (int t = 0; t < nTri; t++) {
-            int i0=faces[t*3], i1=faces[t*3+1], i2=faces[t*3+2];
-            GLfloat* p0=&vertex[i0*3]; GLfloat* p1=&vertex[i1*3]; GLfloat* p2=&vertex[i2*3];
-            float ax=p1[0]-p0[0], ay=p1[1]-p0[1], az=p1[2]-p0[2];
-            float bx=p2[0]-p0[0], by=p2[1]-p0[1], bz=p2[2]-p0[2];
-            float nx=ay*bz-az*by, ny=az*bx-ax*bz, nz=ax*by-ay*bx;
-            float ln=sqrtf(nx*nx+ny*ny+nz*nz); if (ln<1e-6f) continue; nx/=ln; ny/=ln; nz/=ln;
-            float w0=AnguloEnVertice(p0,p1,p2), w1=AnguloEnVertice(p1,p0,p2), w2=AnguloEnVertice(p2,p0,p1);
-            acc[i0*3]+=nx*w0; acc[i0*3+1]+=ny*w0; acc[i0*3+2]+=nz*w0;
-            acc[i1*3]+=nx*w1; acc[i1*3+1]+=ny*w1; acc[i1*3+2]+=nz*w1;
-            acc[i2*3]+=nx*w2; acc[i2*3+1]+=ny*w2; acc[i2*3+2]+=nz*w2;
-        }
-        const bool usarRep = ((int)posRep.size() == nV);
-        std::vector<float> sum(nV*3, 0.0f);
-        for (int i = 0; i < nV; i++) {
-            int r = usarRep ? posRep[i] : i;
-            sum[r*3]+=acc[i*3]; sum[r*3+1]+=acc[i*3+1]; sum[r*3+2]+=acc[i*3+2];
-        }
-        for (int i = 0; i < nV; i++) {
-            int r = usarRep ? posRep[i] : i;
-            if (r != i) continue; // una sola linea por representante de posicion
-            float sx=sum[i*3], sy=sum[i*3+1], sz=sum[i*3+2];
-            float ln=sqrtf(sx*sx+sy*sy+sz*sz); if (ln<1e-6f) continue; sx/=ln; sy/=ln; sz/=ln;
-            GLfloat* pi=&vertex[i*3];
-            normVertBuf.push_back(pi[0]); normVertBuf.push_back(pi[1]); normVertBuf.push_back(pi[2]);
-            normVertBuf.push_back(pi[0]+sx*L); normVertBuf.push_back(pi[1]+sy*L); normVertBuf.push_back(pi[2]+sz*L);
-        }
-    }
-}
 
 // recalcula los BORDES unicos desde faces3d, dedup por POSICION (no por indice:
 // asi un borde compartido por 2 caras con vertices distintos -mismo lugar- no se
