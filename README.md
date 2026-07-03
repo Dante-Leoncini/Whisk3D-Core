@@ -26,3 +26,5 @@ El proyecto está diseñado para facilitar la implementación de nuevos backends
 * Compatible con computadoras de escritorio, dispositivos móviles, sistemas embebidos y plataformas retro.
 
 Whisk3D Core constituye la base del motor y del editor Whisk3D, pero también puede utilizarse como un framework de renderizado independiente para otros proyectos.
+
+El código esta bajo licencia MIT. asi que podes usuarlo en tus propios proyectos ya sean libres o comerciales. podes hacer un fork. modificarlo etc.
