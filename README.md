@@ -14,6 +14,10 @@ Su diseño prioriza la simplicidad, el rendimiento y la portabilidad, inspiránd
 Actualmente sigo limpiando el Core para:
 * Simplificar el codigo... tiene mucha logica aun del Whisk3D Editor (modo edicion, modo objeto, modes de render, Mesh Editor, Modificadores. todo eso NO va en el Core)
 * Comprobar que funciona bien con otras apis graficas como Vulkan, WebGl, DirectX
+* Pulir las nimaciones
+* Agregar un sistema de esqueletos
+* Agregar algun sistema estilo BSP para mapas u otro sistema para mundos abiertos
+* Algun sistema de fisicas... aunque eso capaz podria ser algo opcional al igual que los bsp
 * Soportar otros sistemas y backend graficos retros.
 * Agregar ejemplos y documentacion
 
