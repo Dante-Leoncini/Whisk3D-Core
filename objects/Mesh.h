@@ -185,18 +185,10 @@ class Mesh : public Object {
         void PoblarCapas();
         void LiberarCapas(); // borra y libera todas las capas (destructor / Regenerar)
         int  ContarCorners() const; // cantidad de esquinas de cara (indice de las capas por-corner)
-        void ReverseCapasDeCorner(int L, int count); // reversa las capas de una cara (flip winding)
-        void AgregarCornerCapas(int srcL);           // agrega 1 corner a las capas (copia de srcL/-1=default)
-        void CompactarCapas(const std::vector<int>& survCorner); // rehace las capas con solo los corners dados (delete)
-        void ReconstruirCapasDesde(const std::vector<CornerSrc>& src); // rehace las capas copiando/interpolando (loop cut)
 
         // el render uv[]/vertexColor[] se DERIVA de la capa ACTIVA (la llama el editor al
         // cambiar de capa activa o editar una capa)
         void AplicarCapasAlRender();
-
-        // duplican la capa ACTIVA (UV map / color) y dejan la copia como activa (pestaña Vertices "+")
-        void DuplicarUVMapActivo();
-        void DuplicarColorLayerActivo();
 
         // === Las DOS unicas puertas al render (las ops NO tocan vertex[]/faces3d a mano) ===
         // IN-PLACE rapido (mover verts / pintar): empuja posiciones del edit + capa activa,
@@ -220,9 +212,6 @@ class Mesh : public Object {
         // tocan SOLO faces3d.mat + materialsGroup + el index buffer (no la geometria ni el edit mesh).
         void ReagruparMeshParts(); // rearma faces[] + rangos por mesh part desde faces3d.mat
         void OptimizarCacheRender(); // reordena los triangulos de faces[] para el cache de vertices del GPU (Forsyth, MIT)
-        int  NuevoMeshPart();      // agrega un mesh part vacio; devuelve su indice
-        void BorrarMeshPart(int idx); // borra; huerfanas -> anterior; siempre queda >=1
-        void MoverMeshPart(int idx, int dir); // reordena (dir -1 sube/+1 baja) = cambia el ORDEN DE DIBUJADO
         // (def en main/edit/MeshEdit.cpp: usan el EditMesh + la seleccion de caras)
         void AsignarFacesAMeshPart(int idx);    // caras SELECCIONADAS (edit) -> mesh part idx
         void SeleccionarMeshPart(int idx, bool sel); // (de)selecciona en edit las caras del mesh part idx
@@ -353,7 +342,6 @@ class Mesh : public Object {
         // CalcularOverlayNormales SOLO cuando cambia la geometria o el largo L.
         std::vector<GLfloat> normFaceBuf, normCustomBuf, normVertBuf;
         float overlayLcache; // largo (OverlayNormalSize) con el que se armaron; -1 = rehacer
-        void CalcularOverlayNormales(); // rellena los 3 buffers de normales
 
         // ===== EDIT MODE (en una clase APARTE: EditMesh) =====
         // La malla de render de Whisk3DCore (esto) NO carga datos de edicion. La
@@ -459,10 +447,6 @@ class Mesh : public Object {
 
         void LiberarMemoria();
         void RenderObject() override;
-        // overlay: dibuja las normales (vertex=amarillo/custom=magenta/face=cian)
-        // segun los flags Overlay*Normal; solo se llama en meshes seleccionadas.
-        // esto NO DEBERIA existir en el CORE. es algo del Editor de Whisk3D y se va a quitar de aca en el futuro...
-        void RenderNormales();
         // dibuja los bordes (edges) como GL_LINES. pushBack empuja el zbuffer
         // atras (para el contorno verde: tapa las lineas internas, deja el borde).
         void RenderBordes(const float* color, float width, bool pushBack);
@@ -477,6 +461,11 @@ class Mesh : public Object {
 // ===================================================
 Object* NewMesh(MeshType type = MeshType::cube, Object* parent = NULL, bool query = false);
 int DuplicateMesh(int meshIndex);
+
+// HOOK del EDITOR: RenderObject lo llama tras dibujar la malla para pintar los overlays
+// (contorno de seleccion, normales, edit mode). NULL por defecto -> una app/juego sin
+// editor no dibuja overlays (el Core no conoce esa logica).
+extern void (*g_meshOverlayHook)(Mesh*);
 
 #include "animation/VertexAnimation.h"
 
