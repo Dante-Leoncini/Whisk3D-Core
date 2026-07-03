@@ -52,7 +52,7 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
     
     rot = qY * qX * qZ; // Aplicación: (Z) * (X) * (Y)
 
-    rotMode = RotEulerXYZ;       // default: XYZ Euler (como Blender)
+    rotMode = RotEulerXYZ;       // default: XYZ Euler
     rotAngle = 0.0f;
     rotAxis = Vector3(0, 0, 1);
     ActualizarDisplayRot();

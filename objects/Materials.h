@@ -58,7 +58,7 @@ class Material {
                           // 2 = Equirectangular 360 (SOFTWARE, calidad). (VGP exacto por HW = futuro, falta API de IMG)
         bool normalMap;   // NORMAL MAPPING (DOT3): la textura 'normalTexture' perturba la normal por pixel.
                           // Multi-pass: base * (N.L). Excluyente con chrome (mismo combiner). Portable PC+N95.
-        Texture* normalTexture; // el normal map (RGB = normal en tangent-space; los "azules" de Blender)
+        Texture* normalTexture; // el normal map (RGB = normal en tangent-space)
         int interpolacion;
         Texture* texture;
         std::vector<TexLayer> capas; // capas de textura EXTRA encima de 'texture' (multi-pass)

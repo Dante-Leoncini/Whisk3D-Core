@@ -73,7 +73,7 @@ extern int EditSelectMode; // default SelVertex
 
 void DeseleccionarTodo(bool IncluirColecciones = false);
 
-// modos de rotacion del editor (estilo Blender). Por ahora 3 (los otros 5
+// modos de rotacion del editor. Por ahora 3 (los otros 5
 // ordenes de Euler vienen despues). El default es XYZ Euler.
 enum RotMode { RotEulerXYZ = 0, RotQuaternion = 1, RotAxisAngle = 2 };
 

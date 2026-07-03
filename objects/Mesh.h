@@ -420,7 +420,7 @@ class Mesh : public Object {
         bool TriangularSeleccionEdit();
 
         // CLIPPING del modificador Mirror (edit-time): impide que los verts CRUCEN el plano del mirror al moverlos
-        // (half-space, estilo Blender). editKs = verts que se mueven (indices en edit->pos); startLocal = su pos LOCAL
+        // (half-space). editKs = verts que se mueven (indices en edit->pos); startLocal = su pos LOCAL
         // al empezar el transform (define de que lado estan). Los que arrancan a <mergeDist quedan pegados al plano.        
         void ClipMirrorVerts(const std::vector<int>& editKs, const std::vector<Vector3>& startLocal);
 
