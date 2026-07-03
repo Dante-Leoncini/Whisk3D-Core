@@ -3,11 +3,12 @@ Whisk3D Core es la capa de abstracción gráfica multiplataforma que impulsa tod
 
 Escrito en C++, proporciona una API unificada que permite ejecutar la misma base de código sobre diferentes APIs gráficas y sistemas operativos. Su objetivo es ofrecer una arquitectura ligera, portable y modular, inspirada en la filosofía de RenderWare, separando el motor de la API gráfica subyacente.
 
-NOTA: El proyecto aun no esta listo para usar en produccion. se siguen haciendo cambios y reescrituras!. cualquier duda, pueden consultar en el grupo de [Telegram](https://t.me/Whisk3D)
+**NOTA:** El proyecto aun no esta listo para usar en produccion. se siguen haciendo cambios y reescrituras!. cualquier duda, pueden consultar en el grupo de [Telegram](https://t.me/Whisk3D)
 Actualmente sigo limpiando el Core para:
 * Simplificar el codigo... tiene mucha logica aun del Whisk3D Editor (modo edicion, modo objeto, modes de render, Mesh Editor, Modificadores. todo eso NO va en el Core)
 * Comprobar que funciona bien con otras apis graficas como Vulkan, WebGl, DirectX
 * Soportar otros sistemas y backend graficos retros.
+* Agregar ejemplos y documentacion
 
 Whisk3D Core incluye los componentes fundamentales de un motor 3D, entre ellos:
 
