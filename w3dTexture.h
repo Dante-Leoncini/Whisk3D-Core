@@ -41,4 +41,14 @@ namespace w3dEngine {
 
     // Libera un buffer devuelto por DecodeImage.
     void FreeImage(unsigned char* rgba);
+
+    // Codifica pixeles RGBA 8888 a un buffer PNG en el heap (new[]; liberar con delete[] o FreeImage).
+    // 'outLen' recibe el tamano en bytes. 'flipY' invierte verticalmente (glReadPixels es bottom-left,
+    // el PNG top-left). Portable (deflate stored, sin comprimir): lo usan SavePNG (PC/Web con stdio) y
+    // el sink de Symbian (RFile). Devuelve 0 si falla.
+    unsigned char* EncodePNG(const unsigned char* rgba, int w, int h, bool flipY, int* outLen);
+
+    // Guarda pixeles RGBA 8888 como PNG en 'path' (= EncodePNG + escribir a disco). Devuelve true si
+    // escribio. En PC/Web usa stdio; en Symbian usa RFile (platform/symbian/w3dtexload.cpp).
+    bool SavePNG(const char* path, const unsigned char* rgba, int w, int h, bool flipY = true);
 }

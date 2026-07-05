@@ -337,6 +337,7 @@ void TexFilter(bool linear){ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER
 void TexWrap(bool repeat){ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,repeat?GL_REPEAT:GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,repeat?GL_REPEAT:GL_CLAMP_TO_EDGE); }
 void TexEnvDot3(bool on){ dot3On=on; }
 void TexEnvReplace(bool on){ replaceOn=on; }
+void TexEnvAlphaOnly(bool){}   // TODO ES2: modo alpha-only en el uber-shader (pase alpha en WebGL)
 void TexGenSphere(bool){}      // TODO: matcap por shader (UV = reflejo del normal en eye-space)
 void TexMatrixMatcap(bool){}   // TODO: idem, via matriz de textura -> UV del normal
 bool TieneTexGen(){ return false; } // ES2 no tiene glTexGen fijo -> el matcap va por shader

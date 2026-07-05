@@ -12,7 +12,11 @@
 // reloj de milisegundos de la plataforma (lo provee el EDITOR; el core no
 // depende de ninguna libreria de ventana). Ver w3dGetTicks en main.cpp.
 unsigned int w3dGetTicks();
-#include <GL/gl.h>
+#ifdef W3D_SYMBIAN
+    #include <GLES/gl.h>   // N95: OpenGL ES 1.1 (GLshort/GLbyte/GLfloat)
+#else
+    #include <GL/gl.h>     // PC: OpenGL de escritorio
+#endif
 #include <iostream>
 
 #include <iostream>
