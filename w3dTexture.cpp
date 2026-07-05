@@ -201,15 +201,24 @@ unsigned char* EncodePNG(const unsigned char* rgba, int w, int h, bool flipY, in
     if (outLen) *outLen = 0;
     if (!rgba || w <= 0 || h <= 0) return 0;
 
-    // scanlines crudas: cada fila = 1 byte de filtro (0 = None) + RGBA de la fila
-    const int rowbytes = w * 4;
+    // El render se exporta como RGB (sin alpha): un material con alpha (pelo, hojas) ya queda
+    // compuesto sobre el fondo en el COLOR; guardar el alpha del framebuffer hace "huecos" en el
+    // visor donde deberia ser solido. Entrada = RGBA (glReadPixels), salida = RGB (se descarta
+    // el 4to byte de cada pixel). scanlines: 1 byte de filtro (0 = None) + RGB de la fila.
+    const int srcRow   = w * 4; // fila de la entrada (RGBA)
+    const int rowbytes = w * 3; // fila del PNG (RGB)
     const int rawlen = h * (1 + rowbytes);
     unsigned char* raw = new unsigned char[rawlen];
     for (int y = 0; y < h; y++){
         int src = flipY ? (h - 1 - y) : y;
+        const unsigned char* s = rgba + (size_t)src * srcRow;
         unsigned char* dst = raw + y * (1 + rowbytes);
-        dst[0] = 0;
-        memcpy(dst + 1, rgba + (size_t)src * rowbytes, rowbytes);
+        dst[0] = 0; // filtro None
+        unsigned char* d = dst + 1;
+        for (int x = 0; x < w; x++){
+            d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; // RGB (se saltea s[3] = alpha)
+            d += 3; s += 4;
+        }
     }
 
     // IDAT = zlib con bloques "stored" (BTYPE=00): header 0x78 0x01 + bloques + adler32
@@ -236,7 +245,7 @@ unsigned char* EncodePNG(const unsigned char* rgba, int w, int h, bool flipY, in
     unsigned char ihdr[13];
     ihdr[0]=(w>>24)&255; ihdr[1]=(w>>16)&255; ihdr[2]=(w>>8)&255; ihdr[3]=w&255;
     ihdr[4]=(h>>24)&255; ihdr[5]=(h>>16)&255; ihdr[6]=(h>>8)&255; ihdr[7]=h&255;
-    ihdr[8]=8; ihdr[9]=6; ihdr[10]=0; ihdr[11]=0; ihdr[12]=0; // 8bit, RGBA, sin interlace
+    ihdr[8]=8; ihdr[9]=2; ihdr[10]=0; ihdr[11]=0; ihdr[12]=0; // 8bit, RGB, sin interlace
     int total = 8 + (12 + 13) + (12 + idatlen) + 12;
     unsigned char* png = new unsigned char[total];
     int p = 0;
