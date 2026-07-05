@@ -273,6 +273,34 @@ void TexEnvDot3(bool on) {
     }
 }
 
+// enums de la parte ALPHA del combiner (los RGB ya estan arriba). GL 1.3/GLES1; en Windows GL 1.1 faltan.
+#ifndef GL_COMBINE_ALPHA
+#define GL_COMBINE_ALPHA  0x8572
+#endif
+#ifndef GL_SRC0_ALPHA
+#define GL_SRC0_ALPHA     0x8588
+#endif
+#ifndef GL_OPERAND0_ALPHA
+#define GL_OPERAND0_ALPHA 0x8598
+#endif
+// ALPHA-ONLY: color del fragmento = PRIMARY (color de vertice/uniforme), pero el ALPHA = alpha de la
+// TEXTURA. Para los PASES PLANOS (zbuffer/alpha/normal): la forma del objeto transparente sale SOLO del
+// alpha de su textura, con el color plano (blanco o normal), sin mostrar el color de la textura.
+// false = GL_MODULATE normal. Solo glTexEnvi (GL 1.1) -> portable PC + N95.
+void TexEnvAlphaOnly(bool on) {
+    if (on) {
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+        glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB,    GL_REPLACE);
+        glTexEnvi(GL_TEXTURE_ENV, GL_SRC0_RGB,       GL_PRIMARY_COLOR); // RGB = color plano
+        glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB,   GL_SRC_COLOR);
+        glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA,  GL_REPLACE);
+        glTexEnvi(GL_TEXTURE_ENV, GL_SRC0_ALPHA,     GL_TEXTURE);       // ALPHA = alpha de la textura
+        glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_ALPHA, GL_SRC_ALPHA);
+    } else {
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    }
+}
+
 // ---- color uniforme ----
 void FrontFace(bool ccw) { glFrontFace(ccw ? GL_CCW : GL_CW); }
 void ColorMask(bool r, bool g, bool b, bool a) { glColorMask(r, g, b, a); }
@@ -468,4 +496,5 @@ bool w3dRenderSinLuz    = false;
 bool w3dRenderLuces     = false;
 
 bool w3dRenderNormalColor = false;
+bool w3dRenderAlpha       = false; // pase ALPHA (matte): blanco unlit + solo el alpha de la textura
 bool w3dRenderOverlays    = true;

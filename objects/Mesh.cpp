@@ -324,36 +324,84 @@ void Mesh::RenderObject() {
     if (vertexColor) gfx::ColorPointer4ub(vertexColor);
     if (uv) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer2f(0, uv); }
 
-    // NORMAL VIEW: dibuja la malla UNLIT con color = normal mapeada a RGB (debug de normales; lo pide
-    // el editor con w3dRenderNormalColor, se calcula por frame -> mas pesado). El Core solo sabe
-    // "dibujar las normales como color"; el MODO (Normal View) lo elige el editor.
-    if (w3dRenderNormalColor && normals && faces && facesSize >= 3) {
-        gfx::Disable(gfx::Lighting); gfx::Disable(gfx::Texture2D); gfx::Disable(gfx::Blend);
-        gfx::DisableArray(gfx::TexCoordArray); gfx::DisableArray(gfx::NormalArray);
-        static std::vector<unsigned char> nvcol; // reusado entre frames (sin alloc)
-        nvcol.resize((size_t)vertexSize * 4);
-        // normal a espacio de OJO (view-space), como un pase de NORMAL MAP para composicion: la normal
-        // se lleva a MUNDO (matriz del objeto, solo rotacion) y se proyecta en la base de la CAMARA
-        // (right=+X, up=+Y, -forward=+Z hacia la camara). Al ORBITAR cambia la base -> el color se
-        // recalcula por frame y "gira" con la vista (antes era object-space y no respondia a la camara).
-        Matrix4 W; GetWorldMatrix(W);
-        Vector3 cr = g_renderCamRight, cu = g_renderCamUp, cf = g_renderCamForward;
-        for (int i = 0; i < vertexSize; i++) {
-            float lx = normals[i*3+0]/127.0f, ly = normals[i*3+1]/127.0f, lz = normals[i*3+2]/127.0f;
-            Vector3 wn(W.m[0]*lx + W.m[4]*ly + W.m[8]*lz,   // object-space -> mundo (sin traslacion)
-                       W.m[1]*lx + W.m[5]*ly + W.m[9]*lz,
-                       W.m[2]*lx + W.m[6]*ly + W.m[10]*lz);
-            wn = wn.Normalized();
-            float ex = wn.Dot(cr), ey = wn.Dot(cu), ez = -wn.Dot(cf); // eye-space (-forward = +Z)
-            nvcol[i*4+0] = (unsigned char)((ex*0.5f + 0.5f) * 255.0f); // -1..1 -> 0..255
-            nvcol[i*4+1] = (unsigned char)((ey*0.5f + 0.5f) * 255.0f);
-            nvcol[i*4+2] = (unsigned char)((ez*0.5f + 0.5f) * 255.0f);
-            nvcol[i*4+3] = 255;
+    // PASES PLANOS (Normal View / ZBuffer / Alpha): la malla se dibuja UNLIT con un COLOR PLANO y, para
+    // los materiales TRANSPARENTES, se usa SOLO el alpha de su textura (el COLOR de la textura NO se
+    // muestra) via TexEnvAlphaOnly. El editor elige el modo con estos flags; el Core solo sabe "dibujar
+    // plano con alpha-only". NO aplica luz, color de textura, chrome, normal map ni capas -> liviano (N95).
+    //   - Normal View (w3dRenderNormalColor): color = normal en VIEW-SPACE por vertice (se recalcula por
+    //     frame -> "gira" con la camara, util para composicion). Malla BASE.
+    //   - ZBuffer / Alpha (w3dRenderSinLuz / w3dRenderAlpha): color = BLANCO. El editor le pone fog al
+    //     ZBuffer (degrade de profundidad); el Alpha va SIN fog = matte de cobertura. Soporta malla generada.
+    {
+    const bool paseNormal = w3dRenderNormalColor;
+    const bool paseBlanco = w3dRenderSinLuz || w3dRenderAlpha;
+    if ((paseNormal || paseBlanco) && faces && facesSize >= 3) {
+        gfx::Disable(gfx::Lighting);
+        gfx::DisableArray(gfx::NormalArray);
+        gfx::Enable(gfx::DepthTest);
+
+        // normal usa la malla BASE (color por vertice tiene que matchear la geometria); el blanco puede
+        // usar la malla GENERADA por modificadores (color uniforme -> sin problema de indices).
+        const bool useGen = paseBlanco && (genValido && genVertex && genFaces);
+        gfx::VertexPointer3f(0, useGen ? genVertex : vertex);
+
+        if (paseNormal && normals) {
+            static std::vector<unsigned char> nvcol; // reusado entre frames (sin alloc)
+            nvcol.resize((size_t)vertexSize * 4);
+            Matrix4 W; GetWorldMatrix(W);
+            Vector3 cr = g_renderCamRight, cu = g_renderCamUp, cf = g_renderCamForward;
+            for (int i = 0; i < vertexSize; i++) {
+                float lx = normals[i*3+0]/127.0f, ly = normals[i*3+1]/127.0f, lz = normals[i*3+2]/127.0f;
+                Vector3 wn(W.m[0]*lx + W.m[4]*ly + W.m[8]*lz,   // object-space -> mundo (sin traslacion)
+                           W.m[1]*lx + W.m[5]*ly + W.m[9]*lz,
+                           W.m[2]*lx + W.m[6]*ly + W.m[10]*lz);
+                wn = wn.Normalized();
+                float ex = wn.Dot(cr), ey = wn.Dot(cu), ez = -wn.Dot(cf); // eye-space (-forward = +Z)
+                nvcol[i*4+0] = (unsigned char)((ex*0.5f + 0.5f) * 255.0f); // -1..1 -> 0..255
+                nvcol[i*4+1] = (unsigned char)((ey*0.5f + 0.5f) * 255.0f);
+                nvcol[i*4+2] = (unsigned char)((ez*0.5f + 0.5f) * 255.0f);
+                nvcol[i*4+3] = 255;
+            }
+            gfx::EnableArray(gfx::ColorArray); gfx::ColorPointer4ub(&nvcol[0]);
+        } else {
+            gfx::DisableArray(gfx::ColorArray);
+            gfx::Color4f(1.0f, 1.0f, 1.0f, 1.0f); // ZBuffer / Alpha = BLANCO
         }
-        gfx::EnableArray(gfx::ColorArray); gfx::ColorPointer4ub(&nvcol[0]);
-        gfx::DrawTriangles(facesSize, faces);
+
+        // POR GRUPO de material: transparente -> textura con SOLO alpha (blend); opaco -> color plano solido
+        size_t ng = useGen ? genMaterialsGroup.size() : materialsGroup.size();
+        for (size_t g = 0; g < ng; g++) {
+            const MaterialGroup& grp = useGen ? genMaterialsGroup[g] : materialsGroup[g];
+            Material* mat = grp.material ? grp.material : MaterialDefecto;
+            bool trans = mat->transparent && mat->texture && mat->textureOn && (useGen ? (genUV != 0) : (uv != 0));
+            if (trans) {
+                gfx::Enable(gfx::Texture2D);
+                gfx::BindTexture(mat->texture->iID);
+                gfx::TexFilter(mat->filtrado); gfx::TexWrap(mat->repeat);
+                gfx::EnableArray(gfx::TexCoordArray);
+                gfx::TexCoordPointer2f(0, useGen ? genUV : uv);
+                gfx::TexEnvAlphaOnly(true);          // RGB = color plano, ALPHA = alpha de la textura
+                gfx::Enable(gfx::Blend); gfx::BlendAlpha();
+            } else {
+                gfx::Disable(gfx::Texture2D);
+                gfx::TexEnvAlphaOnly(false);
+                gfx::DisableArray(gfx::TexCoordArray);
+                gfx::Disable(gfx::Blend);            // opaco: color plano solido (rapido)
+            }
+            if (mat->culling) gfx::Enable(gfx::CullFace); else gfx::Disable(gfx::CullFace);
+            if (useGen) gfx::DrawTriangles(grp.indicesDrawnCount, &genFaces[grp.startDrawn]);
+            else        gfx::DrawTriangles(grp.indicesDrawnCount, &faces[grp.startDrawn]);
+        }
+
+        // limpieza: que el estado del pase plano no leakee al proximo objeto / overlay
+        gfx::TexEnvAlphaOnly(false);
+        gfx::Disable(gfx::Texture2D);
+        gfx::Disable(gfx::Blend);
         gfx::DisableArray(gfx::ColorArray);
+        gfx::DisableArray(gfx::TexCoordArray);
+        if (useGen) gfx::VertexPointer3f(0, vertex); // restaura las posiciones base
         return;
+    }
     }
 
     // WIREFRAME: usa los BORDES precalculados (mas barato que el wireframe de

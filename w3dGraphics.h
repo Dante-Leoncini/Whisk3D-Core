@@ -108,6 +108,7 @@ namespace w3dEngine {
     // Lo usan los dos modos de chrome (matcap y equirect). Anda en PC y GLES1 (glTexEnvi existe en ambos).
     void TexEnvReplace(bool on);
     void TexEnvDot3(bool on); // DOT3 normal mapping: combiner N.L (textura=N, color=L). Reset=MODULATE
+    void TexEnvAlphaOnly(bool on); // pases planos: RGB=color de vertice, ALPHA=alpha de la textura. Reset=MODULATE
 
     // --- color uniforme del pipeline fijo (cuando NO hay array de color) ---
     void Color4f(float r, float g, float b, float a);
@@ -198,4 +199,5 @@ extern bool w3dRenderSolido;    // material por defecto sin texturas (modo Solid
 extern bool w3dRenderSinLuz;    // sin iluminacion, solo profundidad (modo ZBuffer)
 extern bool w3dRenderLuces;     // aplicar las luces de escena (modo Rendered)
 extern bool w3dRenderNormalColor; // dibuja la malla unlit con color = normal (debug de normales; modo Normal View)
+extern bool w3dRenderAlpha;       // pase ALPHA (matte): blanco unlit + solo el alpha de la textura (sin fog)
 extern bool w3dRenderOverlays;    // el editor quiere overlays (contorno de seleccion / overlay de edit); el Core lo LEE
