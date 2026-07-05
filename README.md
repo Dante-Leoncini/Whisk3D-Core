@@ -13,13 +13,12 @@ Su diseño prioriza la simplicidad, el rendimiento y la portabilidad, inspiránd
 **NOTA:** El proyecto aun no esta listo para usar en produccion. se siguen haciendo cambios y reescrituras!. cualquier duda, pueden consultar en el grupo de [Telegram](https://t.me/Whisk3D)
 Actualmente sigo limpiando el Core para:
 * Simplificar el codigo... tiene mucha logica aun del Whisk3D Editor (modo edicion, modo objeto, modes de render, Mesh Editor, Modificadores. todo eso NO va en el Core)
-* Comprobar que funciona bien con otras apis graficas como Vulkan, WebGl, DirectX
-* Pulir las nimaciones
+* Pulir las animaciones
 * Agregar un sistema de esqueletos
 * Agregar algun sistema estilo BSP para mapas u otro sistema para mundos abiertos
 * Algun sistema de fisicas... aunque eso capaz podria ser algo opcional al igual que los bsp
 * Soportar otros sistemas y backend graficos retros.
-* Agregar ejemplos y documentacion
+* Agregar ejemplos y documentacion (los ejemplos se iran subiendo al repositorio [Whisk3D-Examples](https://github.com/Dante-Leoncini/Whisk3D-Examples))
 
 Whisk3D Core incluye los componentes fundamentales de un motor 3D, entre ellos:
 

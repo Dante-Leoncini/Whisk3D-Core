@@ -460,3 +460,11 @@ void Invalidate() {
 void w3dSetColor(const ColorType c[4]) {
     w3dEngine::Color4f(c[0], c[1], c[2], c[3]);
 }
+
+// estado de render (lo setea el editor desde su RenderType/view antes de dibujar la escena)
+bool w3dRenderWireframe = false;
+bool w3dRenderSolido    = false;
+bool w3dRenderSinLuz    = false;
+bool w3dRenderLuces     = false;
+
+bool w3dRenderNormalColor = false;

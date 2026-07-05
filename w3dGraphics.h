@@ -184,4 +184,17 @@ namespace w3dEngine {
     // hay que llamar Invalidate() al volver al motor para
     // resincronizar el cache con el estado real de GL.
     void Invalidate();
+
+    // Backend ES2/WebGL: la app lo llama UNA vez tras crear el contexto GL para cargar las
+    // funciones GL2.0 (getProc = SDL_GL_GetProcAddress) y compilar el shader. Solo lo define
+    // el backend gles2 (w3dGraphicsGLES2.cpp); el backend de pipeline fijo no lo usa.
+    void GLES2Init(void* (*getProc)(const char*));
 }
+
+// Estado de render (lo setea la app/editor antes de dibujar la escena; el Core lo LEE para
+// dibujar segun el modo). El editor lo deriva de su RenderType/view: el Core NO conoce esos modos.
+extern bool w3dRenderWireframe; // dibuja wireframe en vez del relleno
+extern bool w3dRenderSolido;    // material por defecto sin texturas (modo Solid)
+extern bool w3dRenderSinLuz;    // sin iluminacion, solo profundidad (modo ZBuffer)
+extern bool w3dRenderLuces;     // aplicar las luces de escena (modo Rendered)
+extern bool w3dRenderNormalColor; // dibuja la malla unlit con color = normal (debug de normales; modo Normal View)

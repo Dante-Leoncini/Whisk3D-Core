@@ -1,11 +1,12 @@
 #include "Light.h"
-#include "math/Matrix4.h" // GetWorldMatrix (direccion de la luz direccional)
-#include "RenderColors.h" // paleta de render del CORE (sin UI)
-#include "render/OpcionesRender.h"
+#include "w3dGraphics.h" // flags de estado de render (w3dRenderLuces)
 #include <cstdio>
 
 // Inicialización de variables estáticas
 std::vector<Light*> Lights;
+
+// hook del editor para el GIZMO de la luz (ver Light.h). NULL = sin editor -> no se dibuja.
+void (*g_lightOverlayHook)(Light*) = NULL;
 
 // Constructor privado
 Light::Light(Object* parent, GLfloat x, GLfloat y, GLfloat z)
@@ -85,7 +86,7 @@ void Light::SetLightID(GLenum ID) {
 // RenderObject
 void Light::RenderObject() {
     // Las luces de la ESCENA se aplican SOLO en RENDER preview (esto es algo mas del editor 3d puede quitarse en el futuro)
-    bool aplicar = (view == RenderType::Rendered);
+    bool aplicar = w3dRenderLuces;
 #ifdef W3D_SYMBIAN
     // misma logica de luz que PC: la luz de ESCENA se enciende aca (bajo la matriz del objeto: position local =
     // origen del objeto). El icono lo dibuja render.cpp (RenderIcons3D).
@@ -133,42 +134,8 @@ void Light::RenderObject() {
         glLightfv(LightID, GL_SPOT_DIRECTION, sdir);
     }
 
-    if (!showOverlayGlobal) return;
-
-    // Color según selección. esto es del editor y no tendria que estar aca... se va a quitar mas adelante
-    if (ObjActivo == this && select) {
-        glColor4f(gRenderColors[RC_selActive][0],
-                  gRenderColors[RC_selActive][1],
-                  gRenderColors[RC_selActive][2],
-                  gRenderColors[RC_selActive][3]);
-    } else if (select) {
-        glColor4f(gRenderColors[RC_gizmoDark][0],
-                  gRenderColors[RC_gizmoDark][1],
-                  gRenderColors[RC_gizmoDark][2],
-                  gRenderColors[RC_gizmoDark][3]);
-    } else {
-        glColor4f(gRenderColors[RC_wireframe][0],
-                  gRenderColors[RC_wireframe][1],
-                  gRenderColors[RC_wireframe][2],
-                  gRenderColors[RC_wireframe][3]);
-    }
-
-    glDisable(GL_LIGHTING);
-    glDisable(GL_TEXTURE_2D); 
-    glDisable(GL_BLEND);
-    glLineWidth(1);
-
-    // 1. Matriz global del objeto
-    GetMatrix(M);
-
-    // 2. Posición global de la lámpara
-    Vector3 worldPos = M * Vector3(0, 0, 0);
-
-    // 3. Guardarlo como vértice 1 de la línea
-    LineaLightVertex[6] = -worldPos.z;
-
-    glVertexPointer(3, GL_FLOAT, 0, LineaLightVertex);
-    glDrawElements(GL_LINES, LineaEdgeSize, GL_UNSIGNED_SHORT, LineaEdge);
-    //glPopMatrix();
+    // GIZMO de la luz (linea + color de seleccion): overlay del EDITOR, lo dibuja el hook (render.cpp),
+    // NO el Core. En Symbian el path de arriba retorna sin llamarlo (el icono lo hace RenderIcons3D).
+    if (g_lightOverlayHook) g_lightOverlayHook(this);
 #endif // !W3D_SYMBIAN
 }

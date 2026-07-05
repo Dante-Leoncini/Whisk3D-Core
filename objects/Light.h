@@ -14,8 +14,6 @@
     #include <GLES/gl.h>
 #else
     #include <GL/gl.h>
-    #include "GeometriaUI/GeometriaUI.h"
-    #include "render/OpcionesRender.h"
 #endif
 
 class Light : public Object {
@@ -47,6 +45,10 @@ class Light : public Object {
     private:
         Light(Object* parent, GLfloat x, GLfloat y, GLfloat z);
 };
+
+// HOOK del EDITOR: Light::RenderObject lo llama (en PC) tras montar la luz para dibujar su GIZMO
+// (linea + color de seleccion). NULL por defecto -> una app/juego sin editor no dibuja gizmos.
+extern void (*g_lightOverlayHook)(Light*);
 
 // Contenedor global de luces
 extern std::vector<Light*> Lights;

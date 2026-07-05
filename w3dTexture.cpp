@@ -9,6 +9,12 @@
 // --- header de gráficos del backend ---
 #ifdef W3D_SYMBIAN
     #include <GLES/gl.h>            // N95: OpenGL ES 1.1
+#elif defined(__EMSCRIPTEN__)
+    #include <GLES2/gl2.h>          // WebGL / OpenGL ES 2.0 (sin GLU)
+    #ifdef W3D_STB_IMPL
+        #define STB_IMAGE_IMPLEMENTATION
+    #endif
+    #include "stb/stb_image.h"
 #else
     #ifdef _WIN32
         #define WIN32_LEAN_AND_MEAN
@@ -18,8 +24,11 @@
     #ifndef __ANDROID__
         #include <GL/glu.h>         // gluBuild2DMipmaps (mipmaps en escritorio)
     #endif
-    // stb_image: solo las DECLARACIONES (la implementacion se compila una vez
-    // en main.cpp / constructor.cpp con STB_IMAGE_IMPLEMENTATION)
+    // stb_image: DECLARACIONES; la IMPLEMENTACION la compila el consumidor con
+    // STB_IMAGE_IMPLEMENTATION (el editor en main.cpp; los ejemplos con -DW3D_STB_IMPL).
+    #ifdef W3D_STB_IMPL
+        #define STB_IMAGE_IMPLEMENTATION
+    #endif
     #include "stb/stb_image.h"
 #endif
 
@@ -121,6 +130,15 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
                  formato, GL_UNSIGNED_BYTE, data);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+#elif defined(__EMSCRIPTEN__)
+    // WebGL: sin GLU. Sin mipmaps + CLAMP -> anda con cualquier tamano (WebGL1 pide
+    // POT para mipmaps/REPEAT; asi evitamos esa restriccion).
+    glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0,
+                 formato, GL_UNSIGNED_BYTE, data);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 #else
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);

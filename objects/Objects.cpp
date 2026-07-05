@@ -1,4 +1,5 @@
 #include "Objects.h"
+#include "w3dGraphics.h" // flags de estado de render (w3dRenderLuces) — PC y Symbian
 
 #ifdef W3D_SYMBIAN
 // En Symbian el modelo compartido compila sin variables.h (que arrastra SDL).
@@ -10,7 +11,6 @@
 #include <iomanip>
 #include <stdlib.h>   // atoi
 #include <ctype.h>    // isdigit
-#include "render/OpcionesRender.h" // view/RenderType reales
 // (el shim de estado murio: variables.h/.cpp reales compilan en Symbian)
 #endif
 
@@ -670,7 +670,7 @@ void ChangeVisibilityObj(){
     if (InteractionMode == ObjectMode && estado == editNavegacion && SceneCollection && ObjActivo){
         ObjActivo->visible = !ObjActivo->visible;
         //apagar luces en caso de que era una luz o sus hijas eran luces
-        if (!ObjActivo->visible && view == RenderType::Rendered) ApagarLucesHijas(ObjActivo);
+        if (!ObjActivo->visible && w3dRenderLuces) ApagarLucesHijas(ObjActivo);
     }
 }
 

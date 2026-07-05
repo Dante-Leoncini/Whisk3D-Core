@@ -2,7 +2,7 @@
 #include "w3dGraphics.h"    // abstraccion de graficos del engine (sin GL)
 #include "CameraBase.h"     // g_renderCamPos (camara del render, para el chrome equirect)
 #include "RenderColors.h"   // paleta de render del CORE (sin depender de la UI)
-#include "render/OpcionesRender.h" // RenderType (view) + MaterialPreviewAmbient
+#include "render/OpcionesRender.h" // g_mostrarOverlays (overlay del wireframe-edit)
 #include <iostream>
 #include <math.h> // C puro: compila en RVCT y PC por igual
 #include <set>
@@ -44,120 +44,6 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     genVertexSize = 0; genFacesSize = 0; genValido = false; // sin malla generada hasta que haya modificadores
     chromeExpPos = NULL; chromeExpUV = NULL; chromeExpCount = 0; chromeUVValid = false; chromeCacheEq = true; // reflejo (lazy)
     tangents = NULL; nmColors = NULL; tangentsValid = false; // normal mapping (lazy)
-}
-
-// libera las capas persistentes (uv/color/groups). Lo llaman el destructor y Regenerar.
-void Mesh::LiberarCapas() {
-    for (size_t i=0;i<uvMaps.size();i++)       delete uvMaps[i];
-    for (size_t i=0;i<colorLayers.size();i++)  delete colorLayers[i];
-    for (size_t i=0;i<vertexGroups.size();i++) delete vertexGroups[i];
-    uvMaps.clear(); colorLayers.clear(); vertexGroups.clear();
-    uvMapActivo = -1; colorActivo = -1; grupoActivo = -1;
-    cornerNormal.clear(); // se rehace en PoblarCapas desde normals[]
-}
-
-// cantidad de CORNERS (esquinas de cara): a esto se indexan las capas por-corner.
-int Mesh::ContarCorners() const {
-    int n=0; for (size_t f=0;f<faces3d.size();f++) n += (int)faces3d[f].idx.size(); return n;
-}
-
-// crea las capas iniciales desde los arrays de render (uv[]/vertexColor[]) si no hay
-// ninguna. Por CORNER (orden de faces3d): corner L=(cara f, esquina c) -> vert GPU
-// faces3d[f].idx[c]. AUTO-HEAL: si la capa activa quedo de otro tamano (la geometria
-// cambio en una edit-op), rehace las capas desde el render (la capa activa = lo que las
-// ops preservaron en uv[]/vertexColor[], asi sus datos sobreviven). Idempotente si no.
-void Mesh::PoblarCapas() {
-    int nC = ContarCorners();
-    if (nC <= 0) return;
-    bool stale =
-        (!uvMaps.empty() && uvMapActivo>=0 && uvMapActivo<(int)uvMaps.size() &&
-         (int)uvMaps[uvMapActivo]->uv.size() != nC*2) ||
-        (!colorLayers.empty() && colorActivo>=0 && colorActivo<(int)colorLayers.size() &&
-         !colorLayers[colorActivo]->porVertice && (int)colorLayers[colorActivo]->color.size() != nC*4);
-    if (stale) LiberarCapas(); // la geometria cambio -> rehacer (FASE 2b: remapear las NO-activas)
-    if (uvMaps.empty() && uv) {
-        UVMap* mp = new UVMap("UVMap"); mp->uv.resize((size_t)nC*2);
-        int L=0; for (size_t f=0;f<faces3d.size();f++) for (size_t c=0;c<faces3d[f].idx.size();c++){
-            int gv=faces3d[f].idx[c]; mp->uv[L*2]=uv[gv*2]; mp->uv[L*2+1]=uv[gv*2+1]; L++; }
-        uvMaps.push_back(mp); uvMapActivo = 0;
-    }
-    if (colorLayers.empty() && vertexColor) {
-        ColorLayer* cl = new ColorLayer("Col"); cl->color.resize((size_t)nC*4);
-        int L=0; for (size_t f=0;f<faces3d.size();f++) for (size_t c=0;c<faces3d[f].idx.size();c++){
-            int gv=faces3d[f].idx[c]; for(int q=0;q<4;q++) cl->color[L*4+q]=vertexColor[gv*4+q]; L++; }
-        colorLayers.push_back(cl); colorActivo = 0;
-    }
-    // NORMAL autoritativa por corner: si no esta o quedo de otro tamaño (op que no la
-    // acarreo) la rehago desde normals[]. Las ops que SI la acarrean dejan el size OK.
-    if ((int)cornerNormal.size() != nC*3 && normals) {
-        cornerNormal.resize((size_t)nC*3);
-        int L=0; for (size_t f=0;f<faces3d.size();f++) for (size_t c=0;c<faces3d[f].idx.size();c++){
-            int gv=faces3d[f].idx[c]; cornerNormal[L*3]=normals[gv*3]; cornerNormal[L*3+1]=normals[gv*3+1]; cornerNormal[L*3+2]=normals[gv*3+2]; L++; }
-    }
-}
-
-// EL RENDER SE DERIVA DE LA CAPA ACTIVA: copia la UVMap activa + la ColorLayer activa
-// (por corner) a uv[]/vertexColor[] (por GPU vert). Lo llama el editor al cambiar de capa
-// activa o al editar una capa. (Sin re-split de verts: las capas de PoblarCapas/duplicadas
-// comparten el seam del render; cambiar seams es FASE 4 con GenerarRender.)
-void Mesh::AplicarCapasAlRender() {
-    int nC = ContarCorners();
-    if (nC <= 0) return;
-    UVMap* um = (uvMapActivo>=0 && uvMapActivo<(int)uvMaps.size()) ? uvMaps[uvMapActivo] : NULL;
-    ColorLayer* cl = (colorActivo>=0 && colorActivo<(int)colorLayers.size()) ? colorLayers[colorActivo] : NULL;
-    if (um && (int)um->uv.size() != nC*2) um = NULL;       // guard de tamano
-    if (cl && (int)cl->color.size() != nC*4) cl = NULL;    // la capa SIEMPRE guarda por-corner (nC*4)
-    bool tCN = (normals && (int)cornerNormal.size() == nC*3); // normal autoritativa -> render
-    if (!um && !cl && !tCN) return;
-    int L = 0;
-    for (size_t f=0;f<faces3d.size();f++) for (size_t c=0;c<faces3d[f].idx.size();c++) {
-        int gv = faces3d[f].idx[c];
-        if (um && uv)          { uv[gv*2]=um->uv[L*2]; uv[gv*2+1]=um->uv[L*2+1]; }
-        if (cl && vertexColor) { for (int q=0;q<4;q++) vertexColor[gv*4+q]=cl->color[L*4+q]; }
-        if (tCN)               { normals[gv*3]=cornerNormal[L*3]; normals[gv*3+1]=cornerNormal[L*3+1]; normals[gv*3+2]=cornerNormal[L*3+2]; }
-        L++;
-    }
-    // capa por-VERTICE: el color se COLAPSA por grupo de posicion (todos los verts coincidentes
-    // toman el color del primero) -> 1 color por vertice. (La capa sigue guardando por-corner: el
-    // toggle es no-destructivo, volver a por-corner re-bakea.) El export auto-detecta per-vertice.
-    if (cl && cl->porVertice && vertexColor) {
-        std::map<std::string,int> rep;
-        for (int i = 0; i < vertexSize; i++) {
-            std::string k((const char*)&vertex[i*3], 12);
-            std::map<std::string,int>::iterator it = rep.find(k);
-            if (it == rep.end()) rep[k] = i;
-            else { int r = it->second; for (int q = 0; q < 4; q++) vertexColor[i*4+q] = vertexColor[r*4+q]; }
-        }
-    }
-}
-
-// duplican la capa ACTIVA y dejan la copia como activa (boton "+" de la pestaña Vertices).
-// ===== Las DOS unicas puertas al render (abstraccion: las ops NO tocan vertex[]/faces3d a
-//       mano -> integridad). RefrescarRender = edicion IN-PLACE rapida (no cambia topologia);
-//       GenerarRender = REBUILD completo (cambio de topologia). =====
-
-
-// los rangos de cada mesh part (materialsGroup[g].startDrawn/indicesDrawnCount). Antes GenerarRender
-// colapsaba TODO a un grupo (perdia los mesh parts al editar). NO toca vertices/uv/normales/color ni
-// el edit mesh: por eso Assign/Delete pueden usarla SIN un GenerarRender completo (la edicion sigue
-// viva). Se preservan las entradas de materialsGroup (nombre+material); las vacias quedan con count 0.
-void Mesh::ReagruparMeshParts() {
-    int nGrupos = (int)materialsGroup.size();
-    { int mx = 0; for (size_t f=0;f<faces3d.size();f++){ int m=faces3d[f].mat; if (m<0){ faces3d[f].mat=0; m=0; } if (m>mx) mx=m; }
-      if (mx+1 > nGrupos) nGrupos = mx+1; }
-    if (nGrupos < 1) nGrupos = 1;
-    while ((int)materialsGroup.size() < nGrupos){ MaterialGroup g; materialsGroup.push_back(g); } // pad (nombre default)
-    std::vector<MeshIndex> tris; // MeshIndex: en PC los indices pueden pasar 65535 (no truncar a 16 bits)
-    for (int gi=0; gi<(int)materialsGroup.size(); gi++){
-        materialsGroup[gi].startDrawn = (int)tris.size();
-        for (size_t f=0;f<faces3d.size();f++){ if (faces3d[f].mat != gi) continue;
-            const std::vector<int>& idx=faces3d[f].idx;
-            for (size_t k=1;k+1<idx.size();k++){ tris.push_back((MeshIndex)idx[0]);tris.push_back((MeshIndex)idx[k]);tris.push_back((MeshIndex)idx[k+1]); } }
-        materialsGroup[gi].indicesDrawnCount = (int)tris.size() - materialsGroup[gi].startDrawn;
-    }
-    facesSize=(int)tris.size(); delete[] faces; faces=new MeshIndex[facesSize>0?facesSize:1];
-    for (int i=0;i<facesSize;i++) faces[i]=tris[i];
-    OptimizarCacheRender(); // reordena los triangulos de cada mesh part para el cache de vertices (no cambia la geometria)
 }
 
 // ===================================================
@@ -439,9 +325,29 @@ void Mesh::RenderObject() {
     if (vertexColor) gfx::ColorPointer4ub(vertexColor);
     if (uv) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer2f(0, uv); }
 
+    // NORMAL VIEW: dibuja la malla UNLIT con color = normal mapeada a RGB (debug de normales; lo pide
+    // el editor con w3dRenderNormalColor, se calcula por frame -> mas pesado). El Core solo sabe
+    // "dibujar las normales como color"; el MODO (Normal View) lo elige el editor.
+    if (w3dRenderNormalColor && normals && faces && facesSize >= 3) {
+        gfx::Disable(gfx::Lighting); gfx::Disable(gfx::Texture2D); gfx::Disable(gfx::Blend);
+        gfx::DisableArray(gfx::TexCoordArray); gfx::DisableArray(gfx::NormalArray);
+        static std::vector<unsigned char> nvcol; // reusado entre frames (sin alloc)
+        nvcol.resize((size_t)vertexSize * 4);
+        for (int i = 0; i < vertexSize; i++) {
+            nvcol[i*4+0] = (unsigned char)(normals[i*3+0] + 128); // GLbyte -128..127 -> 0..255
+            nvcol[i*4+1] = (unsigned char)(normals[i*3+1] + 128);
+            nvcol[i*4+2] = (unsigned char)(normals[i*3+2] + 128);
+            nvcol[i*4+3] = 255;
+        }
+        gfx::EnableArray(gfx::ColorArray); gfx::ColorPointer4ub(&nvcol[0]);
+        gfx::DrawTriangles(facesSize, faces);
+        gfx::DisableArray(gfx::ColorArray);
+        return;
+    }
+
     // WIREFRAME: usa los BORDES precalculados (mas barato que el wireframe de
     // triangulos). Verde si esta seleccionada, gris si no. Sin bordes -> fallback.
-    if (view == RenderType::Wireframe) {
+    if (w3dRenderWireframe) {
         if (editActiva && g_mostrarOverlays) {
             // en wireframe NO hay relleno que tape el fondo: el overlay de edicion
             // (lineas con vertex color + vertices) se ve entero (todos los puntos).
@@ -467,8 +373,8 @@ void Mesh::RenderObject() {
         // un dibujo por grupo. El material se aplica SOLO cuando CAMBIA (en Solid
         // es siempre el mismo -> una vez). Solid = material por defecto sin
         // texturas; ZBuffer = sin luz (solo profundidad).
-        const bool solido = (view == RenderType::Solid);
-        const bool conLuz = (view != RenderType::ZBuffer);
+        const bool solido = w3dRenderSolido;
+        const bool conLuz = !w3dRenderSinLuz;
         Material* ultimo = NULL;
         bool nmListo = false; // los nmColors (L en tangent-space) se calculan UNA vez por frame
 
