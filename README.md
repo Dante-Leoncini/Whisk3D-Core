@@ -20,6 +20,20 @@ Actualmente sigo limpiando el Core para:
 * Soportar otros sistemas y backend graficos retros.
 * Agregar ejemplos y documentacion (los ejemplos se iran subiendo al repositorio [Whisk3D-Examples](https://github.com/Dante-Leoncini/Whisk3D-Examples))
 
+## Capacidades actuales
+
+Lo que el Core ya hace hoy:
+
+* **Sistemas soportados:** Windows, Linux, Android, Symbian y navegadores web (WebGL). El mismo codigo base corre en todos; cada plataforma solo aporta su arranque de ventana/contexto.
+* **Backends graficos:** un backend de *pipeline fijo* (OpenGL de escritorio y OpenGL ES 1.1 para Android/Symbian) y un backend de *shaders* (OpenGL ES 2.0 / WebGL). Se elige en tiempo de compilacion y ambos implementan la misma API de estado, asi que el codigo de alto nivel no cambia. (Vulkan y DirectX quedan para mas adelante.)
+* **API grafica unificada (sin OpenGL a la vista):** toda la app dibuja a traves de `w3dEngine` (estados de render, matrices, arrays de vertices, materiales, niebla, blending, scissor, lineas y puntos...) sin llamar nunca a OpenGL directo ni depender de sus headers.
+* **Carga de texturas:** `w3dEngine::LoadTexture(path, ...)` abre una imagen del disco y la sube como textura (decodifica con stb en PC/Android e ICL en Symbian; el upload es comun). Tambien `DecodeImage` para obtener los pixeles RGBA crudos (sprites, etc.), con filtrado lineal o nearest.
+* **Sistema de luces:** clase `Light` con luces direccional, puntual y spot (cono), atenuacion configurable y componentes ambient/diffuse/specular. Hasta 8 luces por escena.
+* **Camara:** clase `CameraBase` reutilizable (posicion, orientacion por cuaternion, FOV, planos near/far) que entrega su matriz de vista y de proyeccion perspectiva al render.
+* **Sistema de log:** log de diagnostico comun a las plataformas, con tres niveles (info / warning / error). En escritorio y Symbian escribe a un archivo con su etiqueta; en WebGL cada nivel va a `console.log` / `console.warn` / `console.error`. Estilo printf y se puede apagar por completo en builds de release.
+* **Matematica:** vectores, matrices 4x4 y cuaterniones propios (C puro, compilan igual en PC y en sistemas retro).
+* **Escena y geometria:** mallas con vertices/normales/UV/color por vertice, materiales, grafo de objetos con transformaciones y jerarquia (padre/hijo), y animaciones.
+
 Whisk3D Core incluye los componentes fundamentales de un motor 3D, entre ellos:
 
 * Abstracción del pipeline de renderizado.

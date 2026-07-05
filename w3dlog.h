@@ -16,11 +16,21 @@
 #define W3D_DEV_LOG 1
 
 #if W3D_DEV_LOG
-void w3dLogReset();                  // trunca el log (al iniciar la app)
-void w3dLog(const char* aMsg);       // una linea (timestamp + texto)
-void w3dLogf(const char* aFmt, ...); // idem, printf-style
+void w3dLogReset();                   // trunca/abre el log (al iniciar la app)
+// Tres NIVELES. En desktop/Symbian van todas al archivo con su tag ([INFO]/[WARN]/[ERROR]);
+// en WebGL cada una llama a la funcion del browser: console.log / console.warn / console.error.
+void w3dLog(const char* aMsg);        // INFO
+void w3dLogW(const char* aMsg);       // WARNING
+void w3dLogE(const char* aMsg);       // ERROR
+void w3dLogf(const char* aFmt, ...);  // INFO, printf-style
+void w3dLogfW(const char* aFmt, ...); // WARNING
+void w3dLogfE(const char* aFmt, ...); // ERROR
 #else
 inline void w3dLogReset() {}
 inline void w3dLog(const char*) {}
+inline void w3dLogW(const char*) {}
+inline void w3dLogE(const char*) {}
 inline void w3dLogf(const char*, ...) {}
+inline void w3dLogfW(const char*, ...) {}
+inline void w3dLogfE(const char*, ...) {}
 #endif

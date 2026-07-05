@@ -19,31 +19,31 @@
 class Light : public Object {
     public:
         GLenum LightID;
-        GLfloat position[4];
-        GLfloat ambient[4];
-        GLfloat diffuse[4];
-        GLfloat specular[4];
+        float position[4];
+        float ambient[4];
+        float diffuse[4];
+        float specular[4];
         // OpenGL fixed-function = UN tipo de luz, configurable: DIRECCIONAL (w=0, como el sol, sin posicion ni
         // atenuacion), PUNTUAL (w=1 + atenuacion) o SPOT (puntual + cono). Editables desde el panel de la luz.
         bool   direccional;     // true: w=0 (direccional); false: w=1 (puntual/spot, con atenuacion)
-        GLfloat attConstant;    // atenuacion: 1/(C + L*d + Q*d^2). Solo luz puntual/spot.
-        GLfloat attLinear;
-        GLfloat attQuadratic;
-        GLfloat spotCutoff;     // angulo del cono en grados: 180 = sin cono (punto); 1..90 = spotlight
-        GLfloat spotExponent;   // concentracion del haz del spot (0 = parejo .. 128 = muy focalizado)
+        float attConstant;    // atenuacion: 1/(C + L*d + Q*d^2). Solo luz puntual/spot.
+        float attLinear;
+        float attQuadratic;
+        float spotCutoff;     // angulo del cono en grados: 180 = sin cono (punto); 1..90 = spotlight
+        float spotExponent;   // concentracion del haz del spot (0 = parejo .. 128 = muy focalizado)
 
-        static Light* Create(Object* parent = NULL, GLfloat x = 0, GLfloat y = 0, GLfloat z = 0);
+        static Light* Create(Object* parent = NULL, float x = 0, float y = 0, float z = 0);
 
         ObjectType getType() override;
 
-        void SetDiffuse(GLfloat r = 1.0f, GLfloat g = 1.0f, GLfloat b = 1.0f);
+        void SetDiffuse(float r = 1.0f, float g = 1.0f, float b = 1.0f);
         void SetLightID(GLenum ID);
         void RenderObject() override;
 
         ~Light();
 
     private:
-        Light(Object* parent, GLfloat x, GLfloat y, GLfloat z);
+        Light(Object* parent, float x, float y, float z);
 };
 
 // HOOK del EDITOR: Light::RenderObject lo llama (en PC) tras montar la luz para dibujar su GIZMO

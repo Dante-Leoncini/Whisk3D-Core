@@ -51,7 +51,6 @@ class Material {
         bool uv8bit;
         bool culling;
         bool depth_test;
-        bool smooth;      // sombreado suave (GL_SMOOTH) vs plano (GL_FLAT)
         bool chrome;      // "Reflection": reflejo de entorno (env-map). On/off; el MODO lo elige reflectMode.
         int  reflectMode; // 0 = Matcap (normal-del-ojo, matriz de textura, HARDWARE en PC y N95; rapido)
                           // 1 = Sphere Map exacto (GL_SPHERE_MAP: HARDWARE en PC via texgen, SOFTWARE en N95)
@@ -62,11 +61,11 @@ class Material {
         int interpolacion;
         Texture* texture;
         std::vector<TexLayer> capas; // capas de textura EXTRA encima de 'texture' (multi-pass)
-        GLfloat diffuse[4];
-        GLfloat specular[4];
-        GLfloat emission[4];
-        GLfloat ambient[4]; // reflectancia de la luz ambiente del material
-        GLfloat shininess;  // brillo especular (exponente)
+        float diffuse[4];
+        float specular[4];
+        float emission[4];
+        float ambient[4]; // reflectancia de la luz ambiente del material
+        float shininess;  // brillo especular (exponente)
         std::string name;
 
         Material(const std::string& nombre, bool MaterialDefecto = false, bool TieneVertexColor = false);
@@ -77,7 +76,6 @@ class Material {
 // Funciones auxiliares
 // ===================================================
 Material* BuscarMaterialPorNombre(const std::string& name);
-int DuplicateMaterial(int srcId);
 
 class AnimatedMaterial {
     public:

@@ -2,7 +2,6 @@
 #include "w3dGraphics.h"    // abstraccion de graficos del engine (sin GL)
 #include "CameraBase.h"     // g_renderCamPos (camara del render, para el chrome equirect)
 #include "RenderColors.h"   // paleta de render del CORE (sin depender de la UI)
-#include "render/OpcionesRender.h" // g_mostrarOverlays (overlay del wireframe-edit)
 #include <iostream>
 #include <math.h> // C puro: compila en RVCT y PC por igual
 #include <set>
@@ -232,7 +231,7 @@ void Mesh::ActualizarChromeUV(bool equirect) {
 // hardcodeado). RenderObject la llama solo cuando el material cambia.
 void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido) {
     namespace gfx = w3dEngine;
-    gfx::SmoothShading(mat->smooth);
+    gfx::SmoothShading(true); // el look suave/plano lo dan las NORMALES de la malla, no el material
     gfx::Material(gfx::MatAmbient,  mat->ambient);
     gfx::Material(gfx::MatDiffuse,  mat->diffuse);
     gfx::Material(gfx::MatSpecular, mat->specular);
@@ -333,10 +332,22 @@ void Mesh::RenderObject() {
         gfx::DisableArray(gfx::TexCoordArray); gfx::DisableArray(gfx::NormalArray);
         static std::vector<unsigned char> nvcol; // reusado entre frames (sin alloc)
         nvcol.resize((size_t)vertexSize * 4);
+        // normal a espacio de OJO (view-space), como un pase de NORMAL MAP para composicion: la normal
+        // se lleva a MUNDO (matriz del objeto, solo rotacion) y se proyecta en la base de la CAMARA
+        // (right=+X, up=+Y, -forward=+Z hacia la camara). Al ORBITAR cambia la base -> el color se
+        // recalcula por frame y "gira" con la vista (antes era object-space y no respondia a la camara).
+        Matrix4 W; GetWorldMatrix(W);
+        Vector3 cr = g_renderCamRight, cu = g_renderCamUp, cf = g_renderCamForward;
         for (int i = 0; i < vertexSize; i++) {
-            nvcol[i*4+0] = (unsigned char)(normals[i*3+0] + 128); // GLbyte -128..127 -> 0..255
-            nvcol[i*4+1] = (unsigned char)(normals[i*3+1] + 128);
-            nvcol[i*4+2] = (unsigned char)(normals[i*3+2] + 128);
+            float lx = normals[i*3+0]/127.0f, ly = normals[i*3+1]/127.0f, lz = normals[i*3+2]/127.0f;
+            Vector3 wn(W.m[0]*lx + W.m[4]*ly + W.m[8]*lz,   // object-space -> mundo (sin traslacion)
+                       W.m[1]*lx + W.m[5]*ly + W.m[9]*lz,
+                       W.m[2]*lx + W.m[6]*ly + W.m[10]*lz);
+            wn = wn.Normalized();
+            float ex = wn.Dot(cr), ey = wn.Dot(cu), ez = -wn.Dot(cf); // eye-space (-forward = +Z)
+            nvcol[i*4+0] = (unsigned char)((ex*0.5f + 0.5f) * 255.0f); // -1..1 -> 0..255
+            nvcol[i*4+1] = (unsigned char)((ey*0.5f + 0.5f) * 255.0f);
+            nvcol[i*4+2] = (unsigned char)((ez*0.5f + 0.5f) * 255.0f);
             nvcol[i*4+3] = 255;
         }
         gfx::EnableArray(gfx::ColorArray); gfx::ColorPointer4ub(&nvcol[0]);
@@ -348,7 +359,7 @@ void Mesh::RenderObject() {
     // WIREFRAME: usa los BORDES precalculados (mas barato que el wireframe de
     // triangulos). Verde si esta seleccionada, gris si no. Sin bordes -> fallback.
     if (w3dRenderWireframe) {
-        if (editActiva && g_mostrarOverlays) {
+        if (editActiva && w3dRenderOverlays) {
             // en wireframe NO hay relleno que tape el fondo: el overlay de edicion
             // (lineas con vertex color + vertices) se ve entero (todos los puntos).
             // sin overlays (limpieza de pantalla) cae al wireframe plano de abajo.

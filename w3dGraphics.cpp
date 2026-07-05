@@ -468,3 +468,4 @@ bool w3dRenderSinLuz    = false;
 bool w3dRenderLuces     = false;
 
 bool w3dRenderNormalColor = false;
+bool w3dRenderOverlays    = true;

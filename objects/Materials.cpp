@@ -10,9 +10,9 @@ Material* MaterialDefecto = NULL;
 // ===================================================
 Material::Material(const std::string& nombre, bool MaterialDefectoFlag, bool TieneVertexColor)
     : textureOn(true), filtrado(true), transparent(false), vertexColor(false), lighting(true), repeat(true),
-      uv8bit(false), culling(true), depth_test(true), smooth(true), chrome(false), reflectMode(0),
+      uv8bit(false), culling(true), depth_test(true), chrome(false), reflectMode(0),
       normalMap(false), normalTexture(NULL),
-      interpolacion(0), texture(NULL), shininess(12.0f) {
+      interpolacion(0), texture(NULL), shininess(12.0f) { // interpolacion 0 = lineal (suave), 1 = closest (pixel); igual en TODOS los sistemas
     // defaults que eran inicializadores de clase (C++11)
     diffuse[0] = diffuse[1] = diffuse[2] = diffuse[3] = 1.0f;
     specular[0] = specular[1] = specular[2] = 0.3f; specular[3] = 1.0f;
@@ -23,11 +23,8 @@ Material::Material(const std::string& nombre, bool MaterialDefectoFlag, bool Tie
         Materials.push_back(this);
     }
     vertexColor = TieneVertexColor;
-#ifdef W3D_SYMBIAN
-    interpolacion = 1; // = lineal (enum de variables.h, todavia PC-only)
-#else
-    interpolacion = lineal;
-#endif
+    // interpolacion ya quedo en 'lineal' (0) por la lista de inicializacion, igual en todos los
+    // sistemas. (Antes Symbian la ponia en 1 = closest y PC en 0 = lineal: quedaban distintas.)
 }
 
 Material::~Material() {}
@@ -40,18 +37,6 @@ Material* BuscarMaterialPorNombre(const std::string& name) {
         if (Materials[i]->name == name) return Materials[i];
     }
     return NULL;
-}
-
-int DuplicateMaterial(int srcId) {
-    return -1;
-    /*
-    if (srcId < 0 || srcId >= (int)Materials.size()) return -1;
-
-    Material copy = Materials[srcId]; // copia completa
-    Materials.push_back(copy);
-
-    return (int)Materials.size() - 1; // devuelve el índice del duplicado
-    */
 }
 
 // ===================================================

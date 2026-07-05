@@ -9,7 +9,7 @@ std::vector<Light*> Lights;
 void (*g_lightOverlayHook)(Light*) = NULL;
 
 // Constructor privado
-Light::Light(Object* parent, GLfloat x, GLfloat y, GLfloat z)
+Light::Light(Object* parent, float x, float y, float z)
 : Object(parent, "Light", Vector3(x, y, z)), LightID(GL_LIGHT0) {
 
     position[0] = 0;
@@ -27,7 +27,7 @@ Light::Light(Object* parent, GLfloat x, GLfloat y, GLfloat z)
 }
 
 // Método Create
-Light* Light::Create(Object* parent, GLfloat x, GLfloat y, GLfloat z) {
+Light* Light::Create(Object* parent, float x, float y, float z) {
     if (Lights.size() >= MAX_LIGHTS) {
         printf("WARNING: Máximo de luces alcanzado.\n");
         return NULL;
@@ -72,7 +72,7 @@ ObjectType Light::getType() {
 }
 
 // SetDiffuse
-void Light::SetDiffuse(GLfloat r, GLfloat g, GLfloat b) {
+void Light::SetDiffuse(float r, float g, float b) {
     diffuse[0] = r;
     diffuse[1] = g;
     diffuse[2] = b;
@@ -92,7 +92,7 @@ void Light::RenderObject() {
     // origen del objeto). El icono lo dibuja render.cpp (RenderIcons3D).
     if (aplicar) {
         glEnable(LightID);
-        GLfloat pos[4];
+        float pos[4];
         if (direccional) {                                  // DIRECCIONAL: la direccion la da la ROTACION de la
             // lampara (no su posicion). Local (0,1,0)="arriba" -> la matriz del objeto (su rotacion) lo orienta:
             // a 0° la luz viene de ARRIBA = la lampara apunta ABAJO; al rotarla, la luz rota con ella.
@@ -112,7 +112,7 @@ void Light::RenderObject() {
 
     if (aplicar){
         glEnable(LightID);
-        GLfloat pos[4];
+        float pos[4];
         if (direccional) {                                  
             // DIRECCIONAL (sol): la direccion la da la ROTACION de la
             // lampara. Local (0,1,0)="arriba" -> la matriz del objeto (su rotacion) lo orienta: a 0° la luz viene
@@ -130,7 +130,7 @@ void Light::RenderObject() {
         // SPOT: cono + concentracion + direccion = el "forward" local del objeto (0,0,-1 bajo su matriz)
         glLightf(LightID, GL_SPOT_CUTOFF,   direccional ? 180.0f : spotCutoff); // 180 = sin cono (punto)
         glLightf(LightID, GL_SPOT_EXPONENT, spotExponent);
-        GLfloat sdir[3] = {0.0f, 0.0f, -1.0f};
+        float sdir[3] = {0.0f, 0.0f, -1.0f};
         glLightfv(LightID, GL_SPOT_DIRECTION, sdir);
     }
 
