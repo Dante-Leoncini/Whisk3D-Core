@@ -275,6 +275,10 @@ class Mesh : public Object {
         // los bordes sin sus caras). Se MERGEAN en 'edges' (CalcularBordes) para
         // que el wireframe / contorno / edit los dibujen igual.
         std::vector<int> looseEdges;
+        // VERTICES SUELTOS (no pertenecen a ninguna cara NI arista): indices de vertice. Un "Add > Vertex" o lo
+        // que queda al borrar toda la geometria alrededor de un vert. GenerarRender los preserva (sino se perderian
+        // por no estar en ninguna cara/arista). Analogo a looseEdges.
+        std::vector<int> looseVerts;
 
         // representante de cada vertice por POSICION (cacheado por CalcularBordes):
         // posRep[i] = indice del primer vertice en el mismo lugar. Evita el O(nV^2)
@@ -360,7 +364,9 @@ class Mesh : public Object {
         // BORRA la seleccion de Edit Mode segun el modo (SelVertex/SelEdge/SelFace):
         //  - SelFace:   borra las caras seleccionadas; mantiene sus bordes+vertices
         //  - SelEdge:   borra las aristas sel + las caras que las usan; mantiene vertices
-        //  - SelVertex: borra los vertices sel + TODA arista/cara que los use
+        //  - SelVertex: borra los verts sel + toda arista/cara que los USE; las DEMAS aristas de esas caras
+        //               quedan como lineas sueltas y los verts que quedan aislados como puntos sueltos (queda
+        //               el wireframe, no se pierde el resto de la malla)
         // Reconstruye la malla de render (preserva UV/normales) e invalida el edit.
         void BorrarSeleccionEdit(int mode);
 
