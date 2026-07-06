@@ -102,6 +102,17 @@
     static PFactiveTexture       glActiveTexture;
 #endif
 
+// estado de render compartido (lo setea el editor antes de dibujar la escena; el Core lo LEE).
+// Son los MISMOS globales que define el backend de escritorio (w3dGraphics.cpp): al usar el
+// backend ES2 en su lugar hay que definirlos aca o quedan sin resolver al linkear.
+bool w3dRenderWireframe = false;
+bool w3dRenderSolido    = false;
+bool w3dRenderSinLuz    = false;
+bool w3dRenderLuces     = false;
+bool w3dRenderNormalColor = false;
+bool w3dRenderAlpha       = false; // pase ALPHA (matte): blanco unlit + solo el alpha de la textura
+bool w3dRenderOverlays    = true;
+
 namespace w3dEngine {
 
 // ============================================================================

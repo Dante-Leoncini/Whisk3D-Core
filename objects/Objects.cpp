@@ -352,12 +352,12 @@ void Object::RenderObject(){}
 
 // Funcion recursiva para renderizar un objeto y sus hijos
 void Object::Render(){   
-    if (!visible) return; 
-    // Guardar la matriz actual
-    glPushMatrix();     
+    if (!visible) return;
+    // Guardar la matriz actual (por la abstraccion: glPushMatrix en desktop, stack propio en ES2/WebGL)
+    w3dEngine::PushMatrix();
 
     GetMatrix(M);
-    glMultMatrixf(M.m);   // aplica T * R * S -> incluye traslación
+    w3dEngine::MultMatrix(M.m);   // aplica T * R * S -> incluye traslación
 
     // Si es visible y no es un mesh, lo dibuja
     RenderObject();
@@ -368,7 +368,7 @@ void Object::Render(){
     }
 
     // Restaurar la matriz previa
-    glPopMatrix();
+    w3dEngine::PopMatrix();
 }
 
 Object* FindObjectByName(Object* node, const std::string& name){
@@ -650,7 +650,7 @@ void ApagarLucesHijas(Object* obj){
     if (obj->getType() == ObjectType::light) {
         Light* luz = dynamic_cast<Light*>(obj);
         if (luz) {
-            glDisable(luz->LightID);
+            w3dEngine::SetLightEnabled(luz->LightID, false);
         }
     }
 #endif

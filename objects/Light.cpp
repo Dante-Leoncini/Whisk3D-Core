@@ -63,7 +63,7 @@ Light::~Light() {
     bool compartido = false;
     for (size_t i = 0; i < Lights.size(); i++)
         if (Lights[i]->LightID == id) { compartido = true; break; }
-    if (!compartido) glDisable(id);
+    if (!compartido) w3dEngine::SetLightEnabled(id, false);
 }
 
 // getType
@@ -107,6 +107,27 @@ void Light::RenderObject() {
         // QUADRATIC + SPOT: SOLO en PC. El GLES1 del N95 nunca los ejecuto (el bloque viejo no los tenia) y
         // parecen colgar el driver -> los dejamos afuera de Symbian (la luz queda puntual/direccional, sin cono).
     }
+    return;
+#elif defined(W3D_WEBGL)
+    // WebGL/ES2: el backend hace la iluminacion en un shader con UNA luz (Light0). Encendemos esta luz por
+    // su id y le pasamos posicion/color/atenuacion por la abstraccion. La posicion se transforma con la
+    // matriz actual (igual que glLightfv). Multi-luz real = solo desktop (pipeline fijo).
+    if (aplicar) {
+        w3dEngine::SetLightEnabled(LightID, true);
+        float pos[4];
+        if (direccional) {                                  // DIRECCIONAL (sol): direccion = rotacion de la lampara
+            pos[0] = 0.0f; pos[1] = 1.0f; pos[2] = 0.0f; pos[3] = 0.0f;
+        } else { pos[0] = position[0]; pos[1] = position[1]; pos[2] = position[2]; pos[3] = 1.0f; }
+        w3dEngine::Light0fv(w3dEngine::LightPosition, pos);
+        w3dEngine::Light0fv(w3dEngine::LightDiffuse,  diffuse);
+        w3dEngine::Light0fv(w3dEngine::LightAmbient,  ambient);
+        w3dEngine::Light0fv(w3dEngine::LightSpecular, specular);
+        w3dEngine::Light0f(w3dEngine::LightConstantAtt,  attConstant);
+        w3dEngine::Light0f(w3dEngine::LightLinearAtt,    attLinear);
+        w3dEngine::Light0f(w3dEngine::LightQuadraticAtt, attQuadratic);
+    }
+    // GIZMO de la luz (overlay del editor): igual que en desktop
+    if (g_lightOverlayHook) g_lightOverlayHook(this);
     return;
 #else
 
