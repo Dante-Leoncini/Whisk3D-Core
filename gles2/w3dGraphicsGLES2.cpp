@@ -131,6 +131,7 @@ static float curColor[4]  = {1,1,1,1};   // color uniforme (Color4*) cuando NO h
 static float fogColor[4]  = {0,0,0,1};
 static float fogStart=0, fogEnd=1;
 static bool  dot3On=false, replaceOn=false;
+static bool  pointSprite=false; // point sprite: samplear la textura con gl_PointCoord (iconos: cursor/origen/luz)
 static float pointSize=1.0f;
 static unsigned boundTex=0;
 struct Arr { bool on; int size; unsigned type; int stride; const void* ptr; };
@@ -138,7 +139,7 @@ static Arr aPos={false,3,0,0,0}, aNrm={false,3,0,0,0}, aUV={false,2,0,0,0}, aCol
 
 // ---- objetos GL + locations ----
 static GLuint prog=0, vboP=0, vboN=0, vboT=0, vboC=0, ibo=0;
-static GLint uMVP,uMV,uNMat,uUseTex,uTex,uLightOn,uDot3On,uReplaceOn,uFogOn,uPointSize;
+static GLint uMVP,uMV,uNMat,uUseTex,uTex,uLightOn,uDot3On,uReplaceOn,uFogOn,uPointSize,uPointSprite;
 static GLint uLPos,uLDiff,uLAmb,uMDiff,uMAmb,uFogColor,uFogStart,uFogEnd;
 static GLint aLpos,aLnrm,aLuv,aLcol;
 static bool ready=false;
@@ -156,12 +157,14 @@ static const char* FS =
 "precision mediump float;\n"
 "precision mediump int;\n"
 "uniform int uUseTex; uniform int uLightOn; uniform int uDot3On; uniform int uReplaceOn; uniform int uFogOn;\n"
+"uniform int uPointSprite;\n"
 "uniform sampler2D uTex;\n"
 "uniform vec4 uLPos; uniform vec4 uLDiff; uniform vec4 uLAmb; uniform vec4 uMDiff; uniform vec4 uMAmb;\n"
 "uniform vec4 uFogColor; uniform float uFogStart; uniform float uFogEnd;\n"
 "varying vec3 vN; varying vec3 vP; varying vec2 vT; varying vec4 vC; varying float vFogZ;\n"
 "void main(){\n"
-"  vec4 tex = (uUseTex==1) ? texture2D(uTex,vT) : vec4(1.0);\n"
+"  vec2 uv = (uPointSprite==1) ? gl_PointCoord : vT;\n" // point sprite: coord por-fragmento (iconos)
+"  vec4 tex = (uUseTex==1) ? texture2D(uTex,uv) : vec4(1.0);\n"
 "  vec4 col;\n"
 "  if(uDot3On==1){ vec3 N=normalize(tex.rgb*2.0-1.0); vec3 L=normalize(vC.rgb*2.0-1.0); col=vec4(vec3(max(dot(N,L),0.0)),1.0); }\n"
 "  else if(uReplaceOn==1){ col=tex; }\n"
@@ -225,6 +228,7 @@ static void buildProgram(){
     uUseTex=glGetUniformLocation(prog,"uUseTex"); uTex=glGetUniformLocation(prog,"uTex");
     uLightOn=glGetUniformLocation(prog,"uLightOn"); uDot3On=glGetUniformLocation(prog,"uDot3On"); uReplaceOn=glGetUniformLocation(prog,"uReplaceOn");
     uFogOn=glGetUniformLocation(prog,"uFogOn"); uPointSize=glGetUniformLocation(prog,"uPointSize");
+    uPointSprite=glGetUniformLocation(prog,"uPointSprite");
     uLPos=glGetUniformLocation(prog,"uLPos"); uLDiff=glGetUniformLocation(prog,"uLDiff"); uLAmb=glGetUniformLocation(prog,"uLAmb");
     uMDiff=glGetUniformLocation(prog,"uMDiff"); uMAmb=glGetUniformLocation(prog,"uMAmb");
     uFogColor=glGetUniformLocation(prog,"uFogColor"); uFogStart=glGetUniformLocation(prog,"uFogStart"); uFogEnd=glGetUniformLocation(prog,"uFogEnd");
@@ -292,8 +296,10 @@ void Perspective(float fovy,float aspect,float n,float f){ cur() = cur() * mPers
 // ============================================================================
 void ClearColor(float r,float g,float b,float a){ glClearColor(r,g,b,a); }
 void Clear(int bits){ GLbitfield m=0; if(bits&ColorBuffer) m|=GL_COLOR_BUFFER_BIT; if(bits&DepthBuffer) m|=GL_DEPTH_BUFFER_BIT; glClear(m); }
-void Viewport(int x,int y,int w,int h){ glViewport(x,y,w,h); }
-void Scissor(int x,int y,int w,int h){ glScissor(x,y,w,h); }
+void Viewport(int x,int y,int w,int h){ if(w<0)w=0; if(h<0)h=0; glViewport(x,y,w,h); }
+// clamp de w/h a >=0: un ancho/alto negativo (viewport muy angosto - iconos/margenes en el outliner)
+// es GL_INVALID_VALUE en WebGL y deja el scissor en mal estado. Clampeando no rompe el clipping.
+void Scissor(int x,int y,int w,int h){ if(w<0)w=0; if(h<0)h=0; glScissor(x,y,w,h); }
 void DepthFunc(DepthCmp c){ glDepthFunc(c==DepthLEqual?GL_LEQUAL:(c==DepthEqual?GL_EQUAL:GL_LESS)); }
 void DepthMask(bool w){ glDepthMask(w?GL_TRUE:GL_FALSE); }
 void ColorMask(bool r,bool g,bool b,bool a){ glColorMask(r,g,b,a); }
@@ -387,14 +393,17 @@ void TexCoordPointer3b(const signed char* p){ aUV.size=3; aUV.type=GL_BYTE; aUV.
 //  Draw: setup compartido de uniforms + atributos, y las variantes
 // ============================================================================
 static int bytesOf(unsigned type){ return (type==GL_FLOAT)?4:((type==GL_SHORT)?2:1); }
-static void bindAttr(GLint loc,const Arr& ar,GLuint vbo,int nVerts,const float* def){
+static void bindAttr(GLint loc,const Arr& ar,GLuint vbo,int nVerts,const float* def,bool allowNorm){
     if(loc<0) return;
     if(ar.on && ar.ptr && nVerts>0){
         int elem = ar.size * bytesOf(ar.type);
         int bytes = (ar.stride?ar.stride:elem) * nVerts;
         glBindBuffer(GL_ARRAY_BUFFER,vbo);
         glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)bytes,ar.ptr,GL_DYNAMIC_DRAW);
-        GLboolean norm = (ar.type==GL_FLOAT)?GL_FALSE:GL_TRUE; // bytes/shorts normalizados
+        // normal (byte -127..127 -> -1..1) y color (ubyte 0..255 -> 0..1) SI se normalizan.
+        // la POSICION NO: un short es una coord ENTERA de pantalla/mundo (ej. 0..800), NO un [-1,1]
+        // -> normalizarla la mandaba a ~0 (el borde del viewport / sprites 2D quedaban invisibles).
+        GLboolean norm = (allowNorm && ar.type!=GL_FLOAT)?GL_TRUE:GL_FALSE;
         glEnableVertexAttribArray(loc);
         glVertexAttribPointer(loc,ar.size,ar.type,norm,ar.stride,(const void*)0);
     } else {
@@ -416,15 +425,16 @@ static void setupState(int nV){
     glUniform1i(uFogOn,cap_fog?1:0);
     glUniform1i(uTex,0);
     glUniform1f(uPointSize,pointSize);
+    glUniform1i(uPointSprite,pointSprite?1:0);
     glUniform4fv(uLPos,1,lightPos); glUniform4fv(uLDiff,1,lightDiff); glUniform4fv(uLAmb,1,lightAmb);
     glUniform4fv(uMDiff,1,matDiff); glUniform4fv(uMAmb,1,matAmb);
     glUniform4fv(uFogColor,1,fogColor); glUniform1f(uFogStart,fogStart); glUniform1f(uFogEnd,fogEnd);
     if(cap_tex){ glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,boundTex); }
     static const float defNrm[4]={0,0,1,0};
-    bindAttr(aLpos,aPos,vboP,nV, defNrm);
-    bindAttr(aLnrm,aNrm,vboN,nV, defNrm);
-    bindAttr(aLuv, aUV, vboT,nV, defNrm);
-    bindAttr(aLcol,aCol,vboC,nV, curColor); // sin array -> color uniforme (Color4*)
+    bindAttr(aLpos,aPos,vboP,nV, defNrm,  false); // POSICION: NUNCA normalizar (short = coords enteras de pantalla/mundo)
+    bindAttr(aLnrm,aNrm,vboN,nV, defNrm,  true);  // normal: byte -> [-1,1]
+    bindAttr(aLuv, aUV, vboT,nV, defNrm,  true);  // uv: float (no toca); byte matcap seria TODO
+    bindAttr(aLcol,aCol,vboC,nV, curColor,true);  // color: ubyte -> [0,1]. sin array -> color uniforme (Color4*)
 }
 // dibujo INDEXADO (indices ushort; convierte desde MeshIndex/ubyte)
 static void drawIndexed(GLenum mode,int count,const unsigned short* idx16){
@@ -466,7 +476,7 @@ void DrawLineStrip(int vertexCount){ if(!ready||vertexCount<=0) return; setupSta
 void DrawPoints(int vertexCount){ if(!ready||vertexCount<=0) return; setupState(vertexCount); glDrawArrays(GL_POINTS,0,vertexCount); }
 
 void Wireframe(bool){}              // ES2 no tiene glPolygonMode: se dibuja relleno (como GLES1). Wireframe real = draw de aristas.
-void PointSpriteCoordReplace(bool){} // gl_PointCoord esta siempre disponible en el FS -> TODO cuando haya point sprites
+void PointSpriteCoordReplace(bool on){ pointSprite=on; } // samplear la textura con gl_PointCoord (point sprites)
 
 // ============================================================================
 //  Init: carga las funciones GL2.0 (desktop) y compila el shader
