@@ -466,6 +466,9 @@ void Mesh::RenderObject() {
             if (solido || !mat) mat = MaterialDefecto;
             if (mat != ultimo) { AplicarMaterial(mat, conLuz, solido); ultimo = mat; }
             if (useGen) { // malla generada: draw indexado simple (v1 sin chrome/normalmap/capas extra)
+                // AplicarMaterial re-bindea el TexCoordPointer al uv BASE -> hay que volver a genUV (sino la
+                // textura del Screw/Subdiv sale con las UV del perfil, mal indexadas = no se ve).
+                if (genUV) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer2f(0, genUV); }
                 gfx::DrawTriangles(grp.indicesDrawnCount, &genFaces[grp.startDrawn]);
                 continue;
             }
