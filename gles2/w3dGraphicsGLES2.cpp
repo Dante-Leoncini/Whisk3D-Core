@@ -250,7 +250,9 @@ void Enable(Cap c){
         case Texture2D: cap_tex=true;   break; // el shader decide (uUseTex)
         case Lighting:  cap_light=true; break;
         case Fog:       cap_fog=true;   break;
-        case Light0: case Normalize: case ColorMaterial: case PolygonOffsetFill:
+        case PolygonOffsetFill: glEnable(GL_POLYGON_OFFSET_FILL); break; // pick de CARAS: empuja la malla de
+                       // oclusion atras para que los triangulos-ID pasen el depth test (sino no se seleccionan)
+        case Light0: case Normalize: case ColorMaterial:
         case PointSprite: case Dither: case Multisample: break; // no aplican / el shader ya normaliza
     }
 }
@@ -263,6 +265,7 @@ void Disable(Cap c){
         case Texture2D: cap_tex=false;   break;
         case Lighting:  cap_light=false; break;
         case Fog:       cap_fog=false;   break;
+        case PolygonOffsetFill: glDisable(GL_POLYGON_OFFSET_FILL); break;
         default: break;
     }
 }
