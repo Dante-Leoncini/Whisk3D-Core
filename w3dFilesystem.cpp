@@ -30,6 +30,10 @@
 #include <cstdlib>      // getenv
 #include <cstdio>       // fopen (RutaExiste de archivos en Symbian)
 
+#ifdef __ANDROID__
+    #include <android/asset_manager.h> // leer recursos del APK (NO SDL)
+#endif
+
 #if defined(_WIN32)
     #define NOMINMAX
     #include <windows.h>
@@ -204,6 +208,67 @@ namespace w3dFileSystem {
     const std::string& GetResDir() { return gResDir; }
 
     // ========================================================
+    //  Lectura / escritura UNIFICADA de archivos + AAssetManager (Android)
+    // ========================================================
+    #ifdef __ANDROID__
+    static AAssetManager* gAssetMgr = 0;
+    #endif
+    void SetAssetManager(void* am) {
+    #ifdef __ANDROID__
+        gAssetMgr = (AAssetManager*)am;
+    #else
+        (void)am;
+    #endif
+    }
+
+    static std::string gUserDataDir; // ruta escribible (config/bookmarks). La setea la plataforma.
+    void SetUserDataDir(const std::string& dir) { gUserDataDir = dir; }
+    const std::string& GetUserDataDir() { return gUserDataDir.empty() ? GetResDir() : gUserDataDir; }
+
+    bool ReadFileBytes(const std::string& path, std::vector<unsigned char>& out) {
+        out.clear();
+    #ifdef __ANDROID__
+        // ruta RELATIVA (ej. "res/..") = asset del APK; ABSOLUTA ("/storage/..") = archivo real
+        if (!path.empty() && path[0] != '/' && gAssetMgr) {
+            AAsset* a = AAssetManager_open(gAssetMgr, path.c_str(), AASSET_MODE_BUFFER);
+            if (!a) return false;
+            off_t len = AAsset_getLength(a);
+            const void* buf = AAsset_getBuffer(a);
+            if (buf && len > 0) out.assign((const unsigned char*)buf, (const unsigned char*)buf + len);
+            AAsset_close(a);
+            return buf != 0;
+        }
+    #endif
+        FILE* f = fopen(path.c_str(), "rb");
+        if (!f) return false;
+        fseek(f, 0, SEEK_END);
+        long len = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (len > 0) {
+            out.resize((size_t)len);
+            size_t rd = fread(&out[0], 1, (size_t)len, f);
+            out.resize(rd);
+        }
+        fclose(f);
+        return true;
+    }
+
+    std::string ReadTextFile(const std::string& path, bool* ok) {
+        std::vector<unsigned char> b;
+        bool r = ReadFileBytes(path, b);
+        if (ok) *ok = r;
+        return r ? std::string(b.begin(), b.end()) : std::string();
+    }
+
+    bool WriteTextFile(const std::string& path, const std::string& data) {
+        FILE* f = fopen(path.c_str(), "wb");
+        if (!f) return false;
+        if (!data.empty()) fwrite(data.data(), 1, data.size(), f);
+        fclose(f);
+        return true;
+    }
+
+    // ========================================================
     //  orden: carpetas primero, alfabetico case-insensitive
     // ========================================================
     static bool Menor(const DirEntry& a, const DirEntry& b) {
@@ -293,10 +358,38 @@ namespace w3dFileSystem {
     #elif defined(W3D_SYMBIAN)
         if (EsCarpeta("E:/")) return "E:/"; // tarjeta de memoria del N95
         return "C:/";
+    #elif defined(__ANDROID__)
+        // almacenamiento COMPARTIDO del usuario (Descargas, DCIM, etc.), NO el
+        // sandbox de la app. El permiso de lectura lo pide la app; sin permiso
+        // el listado sale vacio.
+        if (EsCarpeta("/storage/emulated/0")) return "/storage/emulated/0";
+        if (EsCarpeta("/sdcard")) return "/sdcard";
+        return "/";
     #else
         const char* h = std::getenv("HOME");
         return (h && *h) ? Normaliza(h) : std::string("/");
     #endif
+    }
+
+    // carpeta de salida por defecto: en Android, Descargas (compartida, visible por USB);
+    // en el resto, la carpeta del usuario. Symbian usa sus rutas fijas E:/whisk3d/* en el editor.
+    std::string GetDefaultOutputDir() {
+    #if defined(__ANDROID__)
+        if (EsCarpeta("/storage/emulated/0/Download")) return "/storage/emulated/0/Download";
+        if (EsCarpeta("/sdcard/Download")) return "/sdcard/Download";
+        return GetHomeDir();
+    #else
+        return GetHomeDir();
+    #endif
+    }
+
+    // existe un ARCHIVO en 'path'? (fopen: file-specific, no matchea carpetas). Se usa para
+    // preguntar antes de sobrescribir (render/export).
+    bool FileExists(const std::string& path) {
+        if (path.empty()) return false;
+        FILE* f = fopen(path.c_str(), "rb");
+        if (f) { fclose(f); return true; }
+        return false;
     }
 
     // ========================================================
@@ -343,7 +436,7 @@ namespace w3dFileSystem {
 
         // === bookmarks del USUARIO (los del "+"), persistidos en GetResDir()/bookmarks.txt === (esto se va a quitar)
         {
-            std::string bmFile = GetResDir() + "/bookmarks.txt";
+            std::string bmFile = GetUserDataDir() + "/bookmarks.txt";
             FILE* f = fopen(bmFile.c_str(), "r");
             if (f) {
                 char line[1024];
@@ -362,7 +455,7 @@ namespace w3dFileSystem {
 
     // guarda en disco SOLO los bookmarks con user==true (Home/drives/carpetas se regeneran). (esto se va a quitar)
     void SaveUserBookmarks(const std::vector<Bookmark>& all) {
-        std::string bmFile = GetResDir() + "/bookmarks.txt";
+        std::string bmFile = GetUserDataDir() + "/bookmarks.txt";
         FILE* f = fopen(bmFile.c_str(), "w");
         if (!f) return;
         for (size_t i = 0; i < all.size(); i++) {

@@ -58,6 +58,23 @@ void w3dLog(const char* aMsg)  { EscribirSymbian(0, aMsg, false); }
 void w3dLogW(const char* aMsg) { EscribirSymbian(1, aMsg, false); }
 void w3dLogE(const char* aMsg) { EscribirSymbian(2, aMsg, false); }
 
+#elif defined(__ANDROID__)
+// ---------------------------------------------------------------------------
+//  Backend Android: a logcat (via __android_log_print). En Android no hay un
+//  cwd escribible garantizado (fopen("whisk3d.log") suele fallar); logcat es
+//  el canal natural. Se ve con: adb logcat -s Whisk3D
+// ---------------------------------------------------------------------------
+#include <android/log.h>
+
+static void EscribirAndroid(int nivel, const char* aMsg) {
+    int pri = (nivel == 2) ? ANDROID_LOG_ERROR : (nivel == 1 ? ANDROID_LOG_WARN : ANDROID_LOG_INFO);
+    __android_log_write(pri, "Whisk3D", aMsg ? aMsg : "");
+}
+void w3dLogReset() { EscribirAndroid(0, "=== Whisk3D DEV LOG ==="); }
+void w3dLog(const char* aMsg)  { EscribirAndroid(0, aMsg); }
+void w3dLogW(const char* aMsg) { EscribirAndroid(1, aMsg); }
+void w3dLogE(const char* aMsg) { EscribirAndroid(2, aMsg); }
+
 #elif defined(__EMSCRIPTEN__)
 // ---------------------------------------------------------------------------
 //  Backend WebGL / Emscripten: a la CONSOLA del browser, RESPETANDO el nivel:

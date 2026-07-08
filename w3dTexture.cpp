@@ -4,9 +4,11 @@
 // ============================================================================
 
 #include "w3dTexture.h"
+#include "w3dlog.h"
 #include <map> // id de textura -> (w,h) para el aspect ratio en el UV editor
 #include <stdio.h>  // fopen/fwrite: escritura del PNG (PC/Web; Symbian = TODO via RFile)
 #include <string.h> // memcpy en el encoder PNG
+#include <errno.h>
 
 // --- header de gráficos del backend ---
 #ifdef W3D_SYMBIAN
@@ -33,6 +35,9 @@
     #endif
     #include "stb/stb_image.h"
 #endif
+
+#include "w3dFilesystem.h" // lectura de archivos UNIFICADA del Core (asset del APK o archivo real)
+#include <vector>
 
 namespace w3dEngine {
 
@@ -79,9 +84,18 @@ void FreeImage(unsigned char* rgba) {
     delete[] rgba;
 }
 
+// Decodifica una imagen a pixeles con stb. La LECTURA la hace la abstraccion del
+// Core (w3dFileSystem::ReadFileBytes): un SOLO camino para todas las plataformas
+// (en Android resuelve solo si es asset del APK o archivo real del /storage). SIN SDL.
+static stbi_uc* CargarPixeles(const char* path, int* w, int* h, int* canales, int reqComp) {
+    std::vector<unsigned char> bytes;
+    if (!w3dFileSystem::ReadFileBytes(path ? path : "", bytes) || bytes.empty()) return nullptr;
+    return stbi_load_from_memory(bytes.data(), (int)bytes.size(), w, h, canales, reqComp);
+}
+
 // ----------------------------------------------------------------------------
 // DECODE: imagen de disco -> pixeles RGBA en el heap (sin subir a GL).
-//   - PC / Android: stb_image (aca mismo, forzando RGBA).
+//   - PC / Android / Web: stb_image (aca mismo, forzando RGBA).
 //   - Symbian: lo implementa platform/symbian/src/w3dtexload.cpp con ICL.
 // ----------------------------------------------------------------------------
 #ifndef W3D_SYMBIAN
@@ -90,7 +104,7 @@ bool DecodeImage(const char* path, unsigned char** outRGBA, int* outW, int* outH
         return false;
     }
     int w = 0, h = 0, canales = 0;
-    stbi_uc* data = stbi_load(path, &w, &h, &canales, STBI_rgb_alpha);
+    stbi_uc* data = CargarPixeles(path, &w, &h, &canales, STBI_rgb_alpha);
     if (!data) {
         return false;
     }
@@ -110,48 +124,15 @@ bool DecodeImage(const char* path, unsigned char** outRGBA, int* outW, int* outH
 // ----------------------------------------------------------------------------
 // LOAD: decode + upload de una imagen de disco (texturas de material).
 //   - Escritorio (PC): stb + gluBuild2DMipmaps (con mipmaps, como siempre).
-//   - Android: stb + glTexImage2D (GLES1, sin glu).
+//   - Android: stb (assets del APK via AAssetManager) + glTexImage2D (GLES2, sin glu).
+//   - Web: stb + glTexImage2D (GLES2/WebGL, sin glu).
 //   - Symbian: NO se compila aca; lo implementa platform/symbian/w3dtexload.cpp
 //     con ICL (CImageDecoder) y termina llamando a UploadRGBA.
 // ----------------------------------------------------------------------------
-
-#ifdef __ANDROID__
-	#include <SDL2/SDL.h>
-	#include <vector>
-#endif
-
 #ifndef W3D_SYMBIAN
 bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
     int w = 0, h = 0, canales = 0;
-    stbi_uc* data = nullptr;
-
-#ifdef __ANDROID__
-    SDL_RWops* rw = SDL_RWFromFile(path, "rb");
-    if (!rw) {
-        printf("ERROR: No se pudo abrir el archivo en la ruta: %s\n", path);
-        return false;
-    }
-
-    Sint64 size = SDL_RWsize(rw);
-    if (size <= 0) {
-        SDL_RWclose(rw);
-        return false;
-    }
-    std::vector<unsigned char> buffer(size);
-    if (SDL_RWread(rw, buffer.data(), 1, size) != (size_t)size) {
-        SDL_RWclose(rw);
-        return false;
-    }
-    SDL_RWclose(rw);
-    data = stbi_load_from_memory(buffer.data(), (int)buffer.size(), &w, &h, &canales, 0);
-    if (!data) {
-        printf("ERROR: stbi_image no pudo decodificar el archivo en memoria.\n");
-        return false;
-    }
-#else
-    data = stbi_load(path, &w, &h, &canales, 0);
-#endif
-
+    stbi_uc* data = CargarPixeles(path, &w, &h, &canales, 0);
     if (!data) {
         return false;
     }
@@ -303,7 +284,7 @@ bool SavePNG(const char* path, const unsigned char* rgba, int w, int h, bool fli
     unsigned char* png = EncodePNG(rgba, w, h, flipY, &len);
     if (!png) return false;
     FILE* f = fopen(path, "wb");
-    if (!f) { delete[] png; return false; }
+    if (!f) { w3dLogfE("SavePNG: fopen FALLO path='%s' errno=%d (%s)", path, errno, strerror(errno)); delete[] png; return false; }
     fwrite(png, 1, len, f);
     fclose(f);
     delete[] png;
