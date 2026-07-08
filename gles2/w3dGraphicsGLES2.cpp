@@ -121,6 +121,7 @@ namespace w3dEngine {
 //  Estado emulado del pipeline fijo
 // ============================================================================
 static bool cap_depth=false, cap_cull=false, cap_tex=false, cap_light=false, cap_blend=false, cap_fog=false, cap_scissor=false;
+static bool cap_colormat=false; // GL_COLOR_MATERIAL: el color del VERTICE reemplaza el diffuse/ambient del material
 static int  matMode = 1; // 0=Projection, 1=ModelView
 static Matrix4 curProj, curMV;
 static std::vector<Matrix4> stkProj, stkMV;
@@ -145,7 +146,7 @@ static Arr aPos={false,3,0,0,0}, aNrm={false,3,0,0,0}, aUV={false,2,0,0,0}, aCol
 
 // ---- objetos GL + locations ----
 static GLuint prog=0, vboP=0, vboN=0, vboT=0, vboC=0, ibo=0;
-static GLint uMVP,uMV,uNMat,uUseTex,uTex,uLightOn,uDot3On,uReplaceOn,uFogOn,uPointSize,uPointSprite;
+static GLint uMVP,uMV,uNMat,uUseTex,uTex,uLightOn,uDot3On,uReplaceOn,uFogOn,uPointSize,uPointSprite,uColorMat;
 static GLint uLPos,uLDiff,uLAmb,uMDiff,uMAmb,uFogColor,uFogStart,uFogEnd;
 static GLint uMSpec,uMEmis,uShine,uLSpec; // specular + emissive del material/luz
 static GLint aLpos,aLnrm,aLuv,aLcol;
@@ -164,6 +165,7 @@ static const char* FS =
 "precision mediump float;\n"
 "precision mediump int;\n"
 "uniform int uUseTex; uniform int uLightOn; uniform int uDot3On; uniform int uReplaceOn; uniform int uFogOn;\n"
+"uniform int uColorMat;\n" // COLOR_MATERIAL: usar el color del vertice (vC) como diffuse/ambient del material
 "uniform int uPointSprite;\n"
 "uniform sampler2D uTex;\n"
 "uniform vec4 uLPos; uniform vec4 uLDiff; uniform vec4 uLAmb; uniform vec4 uMDiff; uniform vec4 uMAmb;\n"
@@ -177,7 +179,8 @@ static const char* FS =
 "  if(uDot3On==1){ vec3 N=normalize(tex.rgb*2.0-1.0); vec3 L=normalize(vC.rgb*2.0-1.0); col=vec4(vec3(max(dot(N,L),0.0)),1.0); }\n"
 "  else if(uReplaceOn==1){ col=tex; }\n"
 "  else if(uLightOn==1){ vec3 N=normalize(vN); vec3 L=normalize(uLPos.xyz-vP); float ndl=max(dot(N,L),0.0);\n"
-"    col=uMAmb*uLAmb + uMDiff*uLDiff*ndl; col*=tex; col.a=uMDiff.a*tex.a;\n"
+"    vec4 md=(uColorMat==1)?vC:uMDiff; vec4 ma=(uColorMat==1)?vC:uMAmb;\n" // COLOR_MATERIAL: el vertex color reemplaza diffuse+ambient
+"    col=ma*uLAmb + md*uLDiff*ndl; col*=tex; col.a=md.a*tex.a;\n"
 "    if(uShine>0.0 && ndl>0.0){ vec3 V=normalize(-vP); vec3 H=normalize(L+V);\n" // specular Blinn-Phong (solo si hay brillo)
 "      col.rgb += uMSpec.rgb*uLSpec.rgb*pow(max(dot(N,H),0.0),uShine); }\n"
 "    col.rgb += uMEmis.rgb; }\n"                                                  // emissive (negro = no suma nada)
@@ -238,6 +241,7 @@ static void buildProgram(){
     uMVP=glGetUniformLocation(prog,"uMVP"); uMV=glGetUniformLocation(prog,"uMV"); uNMat=glGetUniformLocation(prog,"uNMat");
     uUseTex=glGetUniformLocation(prog,"uUseTex"); uTex=glGetUniformLocation(prog,"uTex");
     uLightOn=glGetUniformLocation(prog,"uLightOn"); uDot3On=glGetUniformLocation(prog,"uDot3On"); uReplaceOn=glGetUniformLocation(prog,"uReplaceOn");
+    uColorMat=glGetUniformLocation(prog,"uColorMat");
     uFogOn=glGetUniformLocation(prog,"uFogOn"); uPointSize=glGetUniformLocation(prog,"uPointSize");
     uPointSprite=glGetUniformLocation(prog,"uPointSprite");
     uLPos=glGetUniformLocation(prog,"uLPos"); uLDiff=glGetUniformLocation(prog,"uLDiff"); uLAmb=glGetUniformLocation(prog,"uLAmb");
@@ -265,7 +269,8 @@ void Enable(Cap c){
         case Fog:       cap_fog=true;   break;
         case PolygonOffsetFill: glEnable(GL_POLYGON_OFFSET_FILL); break; // pick de CARAS: empuja la malla de
                        // oclusion atras para que los triangulos-ID pasen el depth test (sino no se seleccionan)
-        case Light0: case Normalize: case ColorMaterial:
+        case ColorMaterial: cap_colormat=true; break; // el shader usa el vertex color como diffuse/ambient
+        case Light0: case Normalize:
         case PointSprite: case Dither: case Multisample: break; // no aplican / el shader ya normaliza
     }
 }
@@ -278,6 +283,7 @@ void Disable(Cap c){
         case Texture2D: cap_tex=false;   break;
         case Lighting:  cap_light=false; break;
         case Fog:       cap_fog=false;   break;
+        case ColorMaterial: cap_colormat=false; break;
         case PolygonOffsetFill: glDisable(GL_POLYGON_OFFSET_FILL); break;
         default: break;
     }
@@ -441,6 +447,7 @@ static void setupState(int nV){
     glUniformMatrix3fv(uNMat,1,GL_FALSE,nmat);
     glUniform1i(uUseTex,cap_tex?1:0);
     glUniform1i(uLightOn,(cap_light && !dot3On && !replaceOn)?1:0);
+    glUniform1i(uColorMat,cap_colormat?1:0); // vertex color como material (COLOR_MATERIAL) con luz activa
     glUniform1i(uDot3On,dot3On?1:0);
     glUniform1i(uReplaceOn,replaceOn?1:0);
     glUniform1i(uFogOn,cap_fog?1:0);

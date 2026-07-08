@@ -462,7 +462,11 @@ void Mesh::RenderObject() {
         size_t ng = useGen ? genMaterialsGroup.size() : materialsGroup.size();
         for (size_t g = 0; g < ng; g++) {
             const MaterialGroup& grp = useGen ? genMaterialsGroup[g] : materialsGroup[g];
-            Material* mat = grp.material;
+            // El material es un PUNTERO. genMaterialsGroup es un SNAPSHOT (copia) tomado al GENERAR la malla: si
+            // despues se reasigna el material del mesh part, ese snapshot apunta al material VIEJO y el cambio no se
+            // ve hasta regenerar (entrar a Edit Mode, mover un vert...). Para que sea responsive, el material se toma
+            // LIVE de materialsGroup[g] (mismo indice de grupo; gen copia el orden). Solo cambia el material, no la geo.
+            Material* mat = (useGen && g < materialsGroup.size()) ? materialsGroup[g].material : grp.material;
             if (solido || !mat) mat = MaterialDefecto;
             if (mat != ultimo) { AplicarMaterial(mat, conLuz, solido); ultimo = mat; }
             if (useGen) { // malla generada: draw indexado simple (v1 sin chrome/normalmap/capas extra)
