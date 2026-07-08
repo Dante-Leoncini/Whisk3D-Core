@@ -23,6 +23,8 @@
 
 #ifdef __EMSCRIPTEN__
     #include <GLES2/gl2.h>
+#elif defined(__ANDROID__)
+    #include <GLES2/gl2.h>
 #else
     #ifdef _WIN32
         #define NOMINMAX
@@ -321,7 +323,7 @@ void LineWidth(float px){ glLineWidth(px); }
 void FrontFace(bool ccw){ glFrontFace(ccw?GL_CCW:GL_CW); }
 void PolygonOffset(float factor,float units){ glPolygonOffset(factor,units); }
 void DepthRange(float n,float f){
-#ifdef __EMSCRIPTEN__
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__)
     glDepthRangef(n,f);
 #else
     glDepthRange(n,f);
@@ -502,7 +504,7 @@ void PointSpriteCoordReplace(bool on){ pointSprite=on; } // samplear la textura 
 //  Init: carga las funciones GL2.0 (desktop) y compila el shader
 // ============================================================================
 void GLES2Init(void* (*getProc)(const char*)){
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
     glCreateShader=(PFcreateShader)getProc("glCreateShader");
     glShaderSource=(PFshaderSource)getProc("glShaderSource");
     glCompileShader=(PFcompileShader)getProc("glCompileShader");
@@ -537,3 +539,10 @@ void GLES2Init(void* (*getProc)(const char*)){
 }
 
 } // namespace w3dEngine
+
+#ifdef __ANDROID__
+#include "w3dBase.h"
+    void w3dSetColor(const ColorType c[4]) {
+        w3dEngine::Color4f(c[0], c[1], c[2], c[3]);
+    }
+#endif

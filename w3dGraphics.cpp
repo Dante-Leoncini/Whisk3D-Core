@@ -128,7 +128,7 @@ void Scalef(float x, float y, float z)           { glScalef(x, y, z); }
 void MultMatrix(const float* m)                  { glMultMatrixf(m); }
 void LoadMatrix(const float* m)                  { glLoadMatrixf(m); }
 void Ortho(float l, float r, float b, float t, float n, float f) {
-    #ifdef W3D_SYMBIAN
+    #if defined(W3D_SYMBIAN) || defined(__ANDROID__)
         glOrthof(l, r, b, t, n, f);
     #else
         glOrtho(l, r, b, t, n, f);
@@ -136,7 +136,7 @@ void Ortho(float l, float r, float b, float t, float n, float f) {
 }
 
 void Frustum(float l, float r, float b, float t, float n, float f) {
-    #ifdef W3D_SYMBIAN
+    #if defined(W3D_SYMBIAN) || defined(__ANDROID__)
         glFrustumf(l, r, b, t, n, f);
     #else
         glFrustum(l, r, b, t, n, f);
@@ -168,7 +168,7 @@ unsigned int BoundTexture() { return gTexBound; }
 // CHROME: genera las UV con sphere-map del pipeline fijo (PC). En GLES1 (Symbian) no hay glTexGen ->
 // stub (calcular las UV del chrome por software a partir del normal y la camara).
 void TexGenSphere(bool on) {
-#ifdef W3D_SYMBIAN
+#if defined(W3D_SYMBIAN) || defined(__ANDROID__)
     (void)on;
 #else
     if (on) {
@@ -358,7 +358,7 @@ static GLenum MatParamGL(MatParam p) {
     return GL_DIFFUSE;
 }
 void Material(MatParam p, const float* rgba) {
-#ifdef ANDROID
+#ifdef __ANDROID__
     GLfixed x[4]; // 16.16: float * 65536
     for (int i = 0; i < 4; i++) x[i] = (GLfixed)(rgba[i] * 65536.0f);
     glMaterialxv(GL_FRONT_AND_BACK, MatParamGL(p), x);
@@ -367,7 +367,7 @@ void Material(MatParam p, const float* rgba) {
 #endif
 }
 void MaterialShininess(float s) {
-#ifdef ANDROID
+#ifdef __ANDROID__
     glMaterialx(GL_FRONT_AND_BACK, GL_SHININESS, (GLfixed)(s * 65536.0f));
 #else
     glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, s);
@@ -405,10 +405,10 @@ void TexCoordPointer3b(const signed char* p)            { glTexCoordPointer(3, G
 
 // ---- dibujo de triangulos indexados ----
 void DrawTriangles(int count, const MeshIndex* indices) {
-#ifdef W3D_SYMBIAN
+#if defined(W3D_SYMBIAN) || defined(__ANDROID__)
     glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_SHORT, indices); // GLES1.1: solo 16 bits
 #else
-    glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_INT, indices);   // PC/Android/WebGL/N8: 32 bits
+    glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_INT, indices);   // PC/WebGL/N8: 32 bits
 #endif
 }
 // triangulos NO indexados (glDrawArrays): la UI 2D arma sus verts en orden
@@ -453,7 +453,7 @@ void PolygonOffset(float factor, float units) { glPolygonOffset(factor, units); 
 // empuja el rango de profundidad (contorno: las lineas internas quedan tapadas
 // por la malla y solo se ve el borde/silueta)
 void DepthRange(float n, float f) {
-#ifdef W3D_SYMBIAN
+#if defined(W3D_SYMBIAN) || defined(__ANDROID__)
     glDepthRangef(n, f);
 #else
     glDepthRange(n, f);
@@ -462,7 +462,7 @@ void DepthRange(float n, float f) {
 
 // ---- wireframe (solo GL de escritorio tiene glPolygonMode) ----
 void Wireframe(bool on) {
-#if !defined(W3D_SYMBIAN) && !defined(ANDROID)
+#if !defined(W3D_SYMBIAN) && !defined(__ANDROID__)
     glPolygonMode(GL_FRONT_AND_BACK, on ? GL_LINE : GL_FILL);
 #else
     (void)on; // GL ES: sin polygonmode -> sale relleno (como hoy)

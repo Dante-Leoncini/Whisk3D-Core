@@ -108,7 +108,7 @@ void Light::RenderObject() {
         // parecen colgar el driver -> los dejamos afuera de Symbian (la luz queda puntual/direccional, sin cono).
     }
     return;
-#elif defined(W3D_WEBGL)
+#elif defined(W3D_WEBGL) || defined(__ANDROID__)
     // WebGL/ES2: el backend hace la iluminacion en un shader con UNA luz (Light0). Encendemos esta luz por
     // su id y le pasamos posicion/color/atenuacion por la abstraccion. La posicion se transforma con la
     // matriz actual (igual que glLightfv). Multi-luz real = solo desktop (pipeline fijo).
@@ -134,7 +134,7 @@ void Light::RenderObject() {
     if (aplicar){
         glEnable(LightID);
         float pos[4];
-        if (direccional) {                                  
+        if (direccional) {
             // DIRECCIONAL (sol): la direccion la da la ROTACION de la
             // lampara. Local (0,1,0)="arriba" -> la matriz del objeto (su rotacion) lo orienta: a 0° la luz viene
             // de ARRIBA = la lampara apunta ABAJO; al rotar la lampara, la luz rota con ella.

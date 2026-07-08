@@ -29,7 +29,7 @@
 // PC / Android / WebGL / Nokia N8 = 32 bits (GL_UNSIGNED_INT) -> modelos grandes (200k+ verts). El importador
 // RECHAZA en el N95 cualquier malla que pase los 16 bits;
 // usamos unsigned short/int para no usar GLushort/GLuint y evitar la dependencia de OpenGL
-#ifdef W3D_SYMBIAN
+#if defined(W3D_SYMBIAN) // || defined(__ANDROID__) // Descomentar si se requiere 1.1 despues
 typedef unsigned short MeshIndex;
 #else
 typedef unsigned int   MeshIndex;

@@ -114,10 +114,44 @@ bool DecodeImage(const char* path, unsigned char** outRGBA, int* outW, int* outH
 //   - Symbian: NO se compila aca; lo implementa platform/symbian/w3dtexload.cpp
 //     con ICL (CImageDecoder) y termina llamando a UploadRGBA.
 // ----------------------------------------------------------------------------
+
+#ifdef __ANDROID__
+	#include <SDL2/SDL.h>
+	#include <vector>
+#endif
+
 #ifndef W3D_SYMBIAN
 bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
     int w = 0, h = 0, canales = 0;
-    stbi_uc* data = stbi_load(path, &w, &h, &canales, 0);
+    stbi_uc* data = nullptr;
+
+#ifdef __ANDROID__
+    SDL_RWops* rw = SDL_RWFromFile(path, "rb");
+    if (!rw) {
+        printf("ERROR: No se pudo abrir el archivo en la ruta: %s\n", path);
+        return false;
+    }
+
+    Sint64 size = SDL_RWsize(rw);
+    if (size <= 0) {
+        SDL_RWclose(rw);
+        return false;
+    }
+    std::vector<unsigned char> buffer(size);
+    if (SDL_RWread(rw, buffer.data(), 1, size) != (size_t)size) {
+        SDL_RWclose(rw);
+        return false;
+    }
+    SDL_RWclose(rw);
+    data = stbi_load_from_memory(buffer.data(), (int)buffer.size(), &w, &h, &canales, 0);
+    if (!data) {
+        printf("ERROR: stbi_image no pudo decodificar el archivo en memoria.\n");
+        return false;
+    }
+#else
+    data = stbi_load(path, &w, &h, &canales, 0);
+#endif
+
     if (!data) {
         return false;
     }
