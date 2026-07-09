@@ -141,9 +141,57 @@ void Mesh::ActualizarNormalMapColors(const Vector3& luzLocal) {
     }
 }
 
+// === REFLEJO por SOFTWARE, matematica COMPARTIDA (la usan la malla base Y la generada) ===
+// UV de UN corner: pos LOCAL + normal LOCAL -> reflejo. equirect=true: lat-long 360 en MUNDO. false: matcap
+// (sphere-map en espacio de OJO, replica de GL_SPHERE_MAP). 'polo' marca el corner sobre el polo (equirect).
+static void ChromeUVCorner(const Vector3& lp, const Vector3& ln, const Matrix4& W, const Vector3& cam,
+                           const Vector3& cr, const Vector3& cu, const Vector3& cf, bool equirect,
+                           float& u, float& v, bool& polo) {
+    const float PI = 3.14159265358979f;
+    Vector3 wp = W * lp;
+    Vector3 wn(W.m[0]*ln.x + W.m[4]*ln.y + W.m[8]*ln.z,
+               W.m[1]*ln.x + W.m[5]*ln.y + W.m[9]*ln.z,
+               W.m[2]*ln.x + W.m[6]*ln.y + W.m[10]*ln.z);
+    wn = wn.Normalized();
+    polo = false;
+    if (equirect) {
+        Vector3 I = (wp - cam).Normalized();
+        float dd = I.x*wn.x + I.y*wn.y + I.z*wn.z;
+        Vector3 R(I.x - 2*dd*wn.x, I.y - 2*dd*wn.y, I.z - 2*dd*wn.z);
+        float ry = R.y < -1.0f ? -1.0f : (R.y > 1.0f ? 1.0f : R.y);
+        u = atan2f(R.z, R.x) / (2.0f*PI) + 0.5f;
+        v = acosf(ry) / PI;
+        polo = (ry > 0.995f || ry < -0.995f);
+    } else {
+        Vector3 rel = wp - cam;
+        Vector3 ep(rel.x*cr.x + rel.y*cr.y + rel.z*cr.z,
+                   rel.x*cu.x + rel.y*cu.y + rel.z*cu.z,
+                 -(rel.x*cf.x + rel.y*cf.y + rel.z*cf.z));  // -forward = +Z del eye space
+        Vector3 en(wn.x*cr.x + wn.y*cr.y + wn.z*cr.z,
+                   wn.x*cu.x + wn.y*cu.y + wn.z*cu.z,
+                 -(wn.x*cf.x + wn.y*cf.y + wn.z*cf.z));
+        Vector3 I = ep.Normalized();
+        float dd = I.x*en.x + I.y*en.y + I.z*en.z;
+        Vector3 R(I.x - 2*dd*en.x, I.y - 2*dd*en.y, I.z - 2*dd*en.z);
+        float mm = 2.0f * sqrtf(R.x*R.x + R.y*R.y + (R.z+1.0f)*(R.z+1.0f));
+        if (mm < 1e-5f) mm = 1e-5f;
+        u = R.x / mm + 0.5f;
+        v = 1.0f - (R.y / mm + 0.5f); // flip-V para matchear el GL_SPHERE_MAP del PC
+    }
+}
+// COSTURA + POLO del equirect POR TRIANGULO (3 corners): sin esto el atan2 wrap hace "tuc"/batidora.
+static void ChromeSeamPolo(float u[3], const bool polo[3]) {
+    float umin = 2.0f, umax = -1.0f;
+    for (int k = 0; k < 3; k++) if (!polo[k]) { if (u[k] < umin) umin = u[k]; if (u[k] > umax) umax = u[k]; }
+    if (umax > umin && umax - umin > 0.5f)
+        for (int k = 0; k < 3; k++) if (!polo[k] && u[k] < 0.5f) u[k] += 1.0f; // GL_REPEAT -> continuo
+    float sum = 0.0f; int n = 0;
+    for (int k = 0; k < 3; k++) if (!polo[k]) { sum += u[k]; n++; }
+    if (n > 0) { float avg = sum / n; for (int k = 0; k < 3; k++) if (polo[k]) u[k] = avg; } // polo = U promedio
+}
+
 // CHROME EQUIRECTANGULAR 360 (calidad, para renders): calcula por SOFTWARE la UV del reflejo de cada
-// vertice. Proyecta el vector de reflexion (vista->vertice reflejado en el normal, en MUNDO) a coords
-// equirectangulares (longitud=atan2, latitud=acos). CACHE: solo recalcula si cambio la camara, la matriz de
+// vertice (ChromeUVCorner + ChromeSeamPolo). CACHE: solo recalcula si cambio la camara, la matriz de
 // mundo o la geometria -> en una toma estatica cuesta CERO; solo "paga" al orbitar (clave para el N95).
 void Mesh::ActualizarChromeUV(bool equirect) {
     if (vertexSize <= 0 || !vertex || !normals || facesSize <= 0 || !faces) return;
@@ -162,59 +210,16 @@ void Mesh::ActualizarChromeUV(bool equirect) {
         delete[] chromeExpUV;  chromeExpUV  = new GLfloat[facesSize * 2];
         chromeExpCount = facesSize;
     }
-    const float PI = 3.14159265358979f;
     // POR TRIANGULO (3 corners): el EQUIRECT corrige costura/polo por-cara; el MATCAP no las tiene (disco).
     for (int t = 0; t + 2 < facesSize; t += 3) {
         float u[3], v[3]; bool polo[3]; Vector3 lp[3];
         for (int k = 0; k < 3; k++) {
             int vi = faces[t + k];
-            lp[k] = Vector3(vertex[vi*3], vertex[vi*3+1], vertex[vi*3+2]);                 // pos local
+            lp[k] = Vector3(vertex[vi*3], vertex[vi*3+1], vertex[vi*3+2]);
             Vector3 ln(normals[vi*3]/127.0f, normals[vi*3+1]/127.0f, normals[vi*3+2]/127.0f);
-            Vector3 wp = W * lp[k];
-            Vector3 wn(W.m[0]*ln.x + W.m[4]*ln.y + W.m[8]*ln.z,
-                       W.m[1]*ln.x + W.m[5]*ln.y + W.m[9]*ln.z,
-                       W.m[2]*ln.x + W.m[6]*ln.y + W.m[10]*ln.z);
-            wn = wn.Normalized();
-            polo[k] = false;
-            if (equirect) {
-                // EQUIRECT 360: reflejo en MUNDO -> lat-long
-                Vector3 I = (wp - cam).Normalized();
-                float dd = I.x*wn.x + I.y*wn.y + I.z*wn.z;
-                Vector3 R(I.x - 2*dd*wn.x, I.y - 2*dd*wn.y, I.z - 2*dd*wn.z);
-                float ry = R.y < -1.0f ? -1.0f : (R.y > 1.0f ? 1.0f : R.y);
-                u[k] = atan2f(R.z, R.x) / (2.0f*PI) + 0.5f;
-                v[k] = acosf(ry) / PI;
-                polo[k] = (ry > 0.995f || ry < -0.995f);
-            } else {
-                // MATCAP (sphere-map, replica de GL_SPHERE_MAP): en espacio de OJO. eye=R^T*(wp-cam), z hacia +.
-                Vector3 rel = wp - cam;
-                Vector3 ep(rel.x*cr.x + rel.y*cr.y + rel.z*cr.z,
-                           rel.x*cu.x + rel.y*cu.y + rel.z*cu.z,
-                         -(rel.x*cf.x + rel.y*cf.y + rel.z*cf.z));  // -forward = +Z del eye space
-                Vector3 en(wn.x*cr.x + wn.y*cr.y + wn.z*cr.z,
-                           wn.x*cu.x + wn.y*cu.y + wn.z*cu.z,
-                         -(wn.x*cf.x + wn.y*cf.y + wn.z*cf.z));
-                Vector3 I = ep.Normalized();                       // direccion de vista (ojo en el origen)
-                float dd = I.x*en.x + I.y*en.y + I.z*en.z;
-                Vector3 R(I.x - 2*dd*en.x, I.y - 2*dd*en.y, I.z - 2*dd*en.z);
-                float mm = 2.0f * sqrtf(R.x*R.x + R.y*R.y + (R.z+1.0f)*(R.z+1.0f));
-                if (mm < 1e-5f) mm = 1e-5f;
-                u[k] = R.x / mm + 0.5f;
-                v[k] = 1.0f - (R.y / mm + 0.5f); // flip-V para matchear el GL_SPHERE_MAP del PC (texture matrix)
-            }
+            ChromeUVCorner(lp[k], ln, W, cam, cr, cu, cf, equirect, u[k], v[k], polo[k]);
         }
-        if (equirect) {
-            // COSTURA: si los corners NO-polo cruzan la costura (rango U > 0.5), suben 1.0 (GL_REPEAT -> continuo)
-            float umin = 2.0f, umax = -1.0f;
-            for (int k = 0; k < 3; k++) if (!polo[k]) { if (u[k] < umin) umin = u[k]; if (u[k] > umax) umax = u[k]; }
-            if (umax > umin && umax - umin > 0.5f)
-                for (int k = 0; k < 3; k++) if (!polo[k] && u[k] < 0.5f) u[k] += 1.0f;
-            // POLO: al corner del polo le damos la U PROMEDIO de los no-polo -> sin "batidora"
-            float sum = 0.0f; int n = 0;
-            for (int k = 0; k < 3; k++) if (!polo[k]) { sum += u[k]; n++; }
-            if (n > 0) { float avg = sum / n; for (int k = 0; k < 3; k++) if (polo[k]) u[k] = avg; }
-        }
-        // guardar los 3 corners (posicion LOCAL + UV)
+        if (equirect) ChromeSeamPolo(u, polo);
         for (int k = 0; k < 3; k++) {
             int c = t + k;
             chromeExpPos[c*3] = (GLfloat)lp[k].x; chromeExpPos[c*3+1] = (GLfloat)lp[k].y; chromeExpPos[c*3+2] = (GLfloat)lp[k].z;
@@ -253,7 +258,6 @@ void Mesh::ActualizarChromeUVGen() {
         delete[] genChromeExpUV;  genChromeExpUV  = new GLfloat[genFacesSize * 2];
         genChromeCount = genFacesSize;
     }
-    const float PI = 3.14159265358979f;
     // por cada GRUPO con chrome, computa las UV de reflejo de SUS corners (los demas quedan sin tocar).
     for (size_t g = 0; g < genMaterialsGroup.size(); g++) {
         Material* mat = (g < materialsGroup.size()) ? materialsGroup[g].material : genMaterialsGroup[g].material;
@@ -266,46 +270,9 @@ void Mesh::ActualizarChromeUVGen() {
                 int vi = genFaces[t + k];
                 lp[k] = Vector3(genVertex[vi*3], genVertex[vi*3+1], genVertex[vi*3+2]);
                 Vector3 ln(genNormals[vi*3]/127.0f, genNormals[vi*3+1]/127.0f, genNormals[vi*3+2]/127.0f);
-                Vector3 wp = W * lp[k];
-                Vector3 wn(W.m[0]*ln.x + W.m[4]*ln.y + W.m[8]*ln.z,
-                           W.m[1]*ln.x + W.m[5]*ln.y + W.m[9]*ln.z,
-                           W.m[2]*ln.x + W.m[6]*ln.y + W.m[10]*ln.z);
-                wn = wn.Normalized();
-                polo[k] = false;
-                if (equirect) {
-                    Vector3 I = (wp - cam).Normalized();
-                    float dd = I.x*wn.x + I.y*wn.y + I.z*wn.z;
-                    Vector3 R(I.x - 2*dd*wn.x, I.y - 2*dd*wn.y, I.z - 2*dd*wn.z);
-                    float ry = R.y < -1.0f ? -1.0f : (R.y > 1.0f ? 1.0f : R.y);
-                    u[k] = atan2f(R.z, R.x) / (2.0f*PI) + 0.5f;
-                    v[k] = acosf(ry) / PI;
-                    polo[k] = (ry > 0.995f || ry < -0.995f);
-                } else {
-                    Vector3 rel = wp - cam;
-                    Vector3 ep(rel.x*cr.x + rel.y*cr.y + rel.z*cr.z,
-                               rel.x*cu.x + rel.y*cu.y + rel.z*cu.z,
-                             -(rel.x*cf.x + rel.y*cf.y + rel.z*cf.z));
-                    Vector3 en(wn.x*cr.x + wn.y*cr.y + wn.z*cr.z,
-                               wn.x*cu.x + wn.y*cu.y + wn.z*cu.z,
-                             -(wn.x*cf.x + wn.y*cf.y + wn.z*cf.z));
-                    Vector3 I = ep.Normalized();
-                    float dd = I.x*en.x + I.y*en.y + I.z*en.z;
-                    Vector3 R(I.x - 2*dd*en.x, I.y - 2*dd*en.y, I.z - 2*dd*en.z);
-                    float mm = 2.0f * sqrtf(R.x*R.x + R.y*R.y + (R.z+1.0f)*(R.z+1.0f));
-                    if (mm < 1e-5f) mm = 1e-5f;
-                    u[k] = R.x / mm + 0.5f;
-                    v[k] = 1.0f - (R.y / mm + 0.5f);
-                }
+                ChromeUVCorner(lp[k], ln, W, cam, cr, cu, cf, equirect, u[k], v[k], polo[k]);
             }
-            if (equirect) {
-                float umin = 2.0f, umax = -1.0f;
-                for (int k = 0; k < 3; k++) if (!polo[k]) { if (u[k] < umin) umin = u[k]; if (u[k] > umax) umax = u[k]; }
-                if (umax > umin && umax - umin > 0.5f)
-                    for (int k = 0; k < 3; k++) if (!polo[k] && u[k] < 0.5f) u[k] += 1.0f;
-                float sum = 0.0f; int n = 0;
-                for (int k = 0; k < 3; k++) if (!polo[k]) { sum += u[k]; n++; }
-                if (n > 0) { float avg = sum / n; for (int k = 0; k < 3; k++) if (polo[k]) u[k] = avg; }
-            }
+            if (equirect) ChromeSeamPolo(u, polo);
             for (int k = 0; k < 3; k++) {
                 int c = t + k;
                 genChromeExpPos[c*3] = (GLfloat)lp[k].x; genChromeExpPos[c*3+1] = (GLfloat)lp[k].y; genChromeExpPos[c*3+2] = (GLfloat)lp[k].z;

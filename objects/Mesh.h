@@ -313,7 +313,10 @@ class Mesh : public Object {
         // recalcula edges + posRep + bordesBuf + centroGeom. invalidarEdit=false lo
         // usa el transform de malla al CONFIRMAR (mueve vertices sin cambiar la
         // topologia -> conserva la malla de edicion y su seleccion).
-        void CalcularBordes(bool invalidarEdit = true);
+        // reagruparPosRep=false CONSERVA el agrupamiento posRep existente en vez de rederivarlo
+        // por posicion: clave al confirmar un move (el snap puede dejar 2 verts INDEPENDIENTES
+        // encima -> rederivar por posicion los SOLDARIA sin querer, desincronizando caras y edit).
+        void CalcularBordes(bool invalidarEdit = true, bool reagruparPosRep = true);
 
         // recalcula el array de normales desde faces3d (Newell por cara, agrupado
         // por POSICION si meshSmooth). Lo usa el transform de malla al confirmar.
