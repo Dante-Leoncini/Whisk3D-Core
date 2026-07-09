@@ -514,12 +514,13 @@ void Mesh::RenderObject() {
         }
 
         // glPolygonOffset (slope-aware) sobre los RELLENOS:
-        //  - object mode seleccionado: rellenos MUY adelantados -> el borde queda
-        //    bien ATRAS, no se dibuja sobre la malla.
         //  - edit mode: rellenos un toque atras (decal) -> las lineas/puntos a
         //    profundidad normal quedan ENCIMA del frente y el fondo lo tapa la malla.
+        // OBJECT MODE seleccionado: NO se tocan los rellenos. Antes se ADELANTABAN (offset -4/-8) para que el
+        // contorno quedara atras, pero eso empujaba las caras en profundidad y, con dos mallas de caras COINCIDENTES
+        // (cubos pegados), la seleccionada ganaba el z-test y se veia "corrida"/adelante. Ahora el contorno se empuja
+        // ATRAS con DepthRange (RenderBordes pushBack=true): misma silueta, sin mover las caras (bug Dante).
         if (editActiva) { gfx::Enable(gfx::PolygonOffsetFill); gfx::PolygonOffset(2.0f, 4.0f); }
-        else if (select) { gfx::Enable(gfx::PolygonOffsetFill); gfx::PolygonOffset(-4.0f, -8.0f); }
 
         size_t ng = useGen ? genMaterialsGroup.size() : materialsGroup.size();
         for (size_t g = 0; g < ng; g++) {
