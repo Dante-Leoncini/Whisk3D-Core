@@ -42,6 +42,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     genVertex = NULL; genNormals = NULL; genUV = NULL; genColor = NULL; genFaces = NULL;
     genVertexSize = 0; genFacesSize = 0; genValido = false; // sin malla generada hasta que haya modificadores
     chromeExpPos = NULL; chromeExpUV = NULL; chromeExpCount = 0; chromeUVValid = false; chromeCacheEq = true; // reflejo (lazy)
+    genChromeExpPos = NULL; genChromeExpUV = NULL; genChromeCount = 0; genChromeValid = false; // reflejo de la malla generada (lazy)
     tangents = NULL; nmColors = NULL; tangentsValid = false; // normal mapping (lazy)
 }
 
@@ -226,6 +227,97 @@ void Mesh::ActualizarChromeUV(bool equirect) {
     chromeUVValid = true;
 }
 
+// CHROME sobre la MALLA GENERADA (screw/subdiv): mismas UV de reflejo que ActualizarChromeUV pero leyendo la geo
+// GENERADA (genVertex/genNormals/genFaces), y SOLO para los mesh parts con reflejo. Si ningun part tiene chrome NO
+// hace NADA (costo 0, no recalcula frame a frame). Cache por camara/mundo -> solo "paga" al orbitar. NO toca la geo 3D.
+void Mesh::ActualizarChromeUVGen() {
+    if (!genValido || !genVertex || !genNormals || !genFaces || genFacesSize <= 0) return;
+    // hay algun mesh part con reflejo? (material LIVE de materialsGroup, mismo indice de grupo)
+    bool hayChrome = false;
+    for (size_t g = 0; g < genMaterialsGroup.size(); g++) {
+        Material* mat = (g < materialsGroup.size()) ? materialsGroup[g].material : genMaterialsGroup[g].material;
+        if (mat && mat->chrome) { hayChrome = true; break; }
+    }
+    if (!hayChrome) return; // sin reflejo: no se recalcula nada
+    Matrix4 W; GetWorldMatrix(W);
+    Vector3 cam = g_renderCamPos;
+    Vector3 cr = g_renderCamRight, cu = g_renderCamUp, cf = g_renderCamForward;
+    // cache hit: misma camara + mismo mundo + misma cantidad de corners -> nada que hacer
+    if (genChromeValid && genChromeExpUV && genChromeCount == genFacesSize) {
+        bool igual = (genChromeCam.x == cam.x && genChromeCam.y == cam.y && genChromeCam.z == cam.z);
+        for (int i = 0; igual && i < 16; i++) if (genChromeW[i] != W.m[i]) igual = false;
+        if (igual) return;
+    }
+    if (!genChromeExpUV || genChromeCount != genFacesSize) {
+        delete[] genChromeExpPos; genChromeExpPos = new GLfloat[genFacesSize * 3];
+        delete[] genChromeExpUV;  genChromeExpUV  = new GLfloat[genFacesSize * 2];
+        genChromeCount = genFacesSize;
+    }
+    const float PI = 3.14159265358979f;
+    // por cada GRUPO con chrome, computa las UV de reflejo de SUS corners (los demas quedan sin tocar).
+    for (size_t g = 0; g < genMaterialsGroup.size(); g++) {
+        Material* mat = (g < materialsGroup.size()) ? materialsGroup[g].material : genMaterialsGroup[g].material;
+        if (!mat || !mat->chrome) continue;
+        bool equirect = (mat->reflectMode == 2);
+        int s = genMaterialsGroup[g].startDrawn, cnt = genMaterialsGroup[g].indicesDrawnCount;
+        for (int t = s; t + 2 < s + cnt; t += 3) {
+            float u[3], v[3]; bool polo[3]; Vector3 lp[3];
+            for (int k = 0; k < 3; k++) {
+                int vi = genFaces[t + k];
+                lp[k] = Vector3(genVertex[vi*3], genVertex[vi*3+1], genVertex[vi*3+2]);
+                Vector3 ln(genNormals[vi*3]/127.0f, genNormals[vi*3+1]/127.0f, genNormals[vi*3+2]/127.0f);
+                Vector3 wp = W * lp[k];
+                Vector3 wn(W.m[0]*ln.x + W.m[4]*ln.y + W.m[8]*ln.z,
+                           W.m[1]*ln.x + W.m[5]*ln.y + W.m[9]*ln.z,
+                           W.m[2]*ln.x + W.m[6]*ln.y + W.m[10]*ln.z);
+                wn = wn.Normalized();
+                polo[k] = false;
+                if (equirect) {
+                    Vector3 I = (wp - cam).Normalized();
+                    float dd = I.x*wn.x + I.y*wn.y + I.z*wn.z;
+                    Vector3 R(I.x - 2*dd*wn.x, I.y - 2*dd*wn.y, I.z - 2*dd*wn.z);
+                    float ry = R.y < -1.0f ? -1.0f : (R.y > 1.0f ? 1.0f : R.y);
+                    u[k] = atan2f(R.z, R.x) / (2.0f*PI) + 0.5f;
+                    v[k] = acosf(ry) / PI;
+                    polo[k] = (ry > 0.995f || ry < -0.995f);
+                } else {
+                    Vector3 rel = wp - cam;
+                    Vector3 ep(rel.x*cr.x + rel.y*cr.y + rel.z*cr.z,
+                               rel.x*cu.x + rel.y*cu.y + rel.z*cu.z,
+                             -(rel.x*cf.x + rel.y*cf.y + rel.z*cf.z));
+                    Vector3 en(wn.x*cr.x + wn.y*cr.y + wn.z*cr.z,
+                               wn.x*cu.x + wn.y*cu.y + wn.z*cu.z,
+                             -(wn.x*cf.x + wn.y*cf.y + wn.z*cf.z));
+                    Vector3 I = ep.Normalized();
+                    float dd = I.x*en.x + I.y*en.y + I.z*en.z;
+                    Vector3 R(I.x - 2*dd*en.x, I.y - 2*dd*en.y, I.z - 2*dd*en.z);
+                    float mm = 2.0f * sqrtf(R.x*R.x + R.y*R.y + (R.z+1.0f)*(R.z+1.0f));
+                    if (mm < 1e-5f) mm = 1e-5f;
+                    u[k] = R.x / mm + 0.5f;
+                    v[k] = 1.0f - (R.y / mm + 0.5f);
+                }
+            }
+            if (equirect) {
+                float umin = 2.0f, umax = -1.0f;
+                for (int k = 0; k < 3; k++) if (!polo[k]) { if (u[k] < umin) umin = u[k]; if (u[k] > umax) umax = u[k]; }
+                if (umax > umin && umax - umin > 0.5f)
+                    for (int k = 0; k < 3; k++) if (!polo[k] && u[k] < 0.5f) u[k] += 1.0f;
+                float sum = 0.0f; int n = 0;
+                for (int k = 0; k < 3; k++) if (!polo[k]) { sum += u[k]; n++; }
+                if (n > 0) { float avg = sum / n; for (int k = 0; k < 3; k++) if (polo[k]) u[k] = avg; }
+            }
+            for (int k = 0; k < 3; k++) {
+                int c = t + k;
+                genChromeExpPos[c*3] = (GLfloat)lp[k].x; genChromeExpPos[c*3+1] = (GLfloat)lp[k].y; genChromeExpPos[c*3+2] = (GLfloat)lp[k].z;
+                genChromeExpUV[c*2] = u[k]; genChromeExpUV[c*2+1] = v[k];
+            }
+        }
+    }
+    genChromeCam = cam;
+    for (int i = 0; i < 16; i++) genChromeW[i] = W.m[i];
+    genChromeValid = true;
+}
+
 // ===================================================
 // aplica TODO el estado GL de un material, leyendolo DEL material (nada
 // hardcodeado). RenderObject la llama solo cuando el material cambia.
@@ -264,11 +356,14 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido) {
         //  0 MATCAP   = normal-del-ojo por MATRIZ DE TEXTURA -> HARDWARE en PC Y N95 (rapido). Normales como texcoords.
         //  1 SPHEREMAP= GL_SPHERE_MAP exacto -> HARDWARE en PC (texgen); en N95 (sin texgen) cae a SOFTWARE.
         //  2 EQUIRECT = 360 -> SIEMPRE por SOFTWARE (UV por-corner en CPU, calidad).
-        bool matcap     = mat->chrome && mat->reflectMode == 0;
+        // MATCAP (mode 0): por HARDWARE solo si hay matriz de textura (PC/N95). En GLES2 (Android/WebGL) esa
+        // matriz es un no-op -> el matcap va por SOFTWARE, igual que el equirect. Sino no se veia (pedido Dante).
+        bool matcap     = mat->chrome && mat->reflectMode == 0 && gfx::TieneTexGen();  // matcap HW
+        bool matcapSW   = mat->chrome && mat->reflectMode == 0 && !gfx::TieneTexGen(); // matcap SOFTWARE (GLES2)
         bool sphereExact= mat->chrome && mat->reflectMode == 1;
         bool eq         = mat->chrome && mat->reflectMode == 2;
         bool sphereHW   = sphereExact && gfx::TieneTexGen();      // PC: sphere exacto por texgen
-        bool sw         = eq || (sphereExact && !gfx::TieneTexGen()); // SOFTWARE: equirect siempre + sphere exacto en N95
+        bool sw         = eq || (sphereExact && !gfx::TieneTexGen()) || matcapSW; // SOFTWARE: equirect + sphere/matcap sin HW
         // OJO: TexGenSphere y TexMatrixMatcap tocan los DOS la matriz de textura -> nunca los dos a la vez.
         if (matcap) { gfx::TexGenSphere(false); gfx::TexMatrixMatcap(true); }   // matcap: matriz de textura (HW)
         else        { gfx::TexMatrixMatcap(false); gfx::TexGenSphere(sphereHW); } // sphere HW (flip-V) o reset
@@ -469,16 +564,42 @@ void Mesh::RenderObject() {
             Material* mat = (useGen && g < materialsGroup.size()) ? materialsGroup[g].material : grp.material;
             if (solido || !mat) mat = MaterialDefecto;
             if (mat != ultimo) { AplicarMaterial(mat, conLuz, solido); ultimo = mat; }
-            if (useGen) { // malla generada: draw indexado simple (v1 sin chrome/normalmap/capas extra)
-                // AplicarMaterial re-bindea el TexCoordPointer al uv BASE -> hay que volver a genUV (sino la
-                // textura del Screw/Subdiv sale con las UV del perfil, mal indexadas = no se ve).
-                if (genUV) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer2f(0, genUV); }
+            if (useGen) { // malla generada
+                // REFLEJO por SOFTWARE (equirect mode 2, o sphere-sw sin texgen): dibuja los corners NO-INDEXADOS
+                // con las UV de reflejo calculadas desde la GEO GENERADA. Asi el reflejo se ve sin "aplicar" el
+                // modificador. Solo se calcula para los mesh parts con chrome (ActualizarChromeUVGen lo filtra + cachea).
+                // matcap (mode 0) por SOFTWARE cuando no hay HW (GLES2) -> junto al equirect/sphere-sw. El matcap
+                // HW (matriz de textura) solo existe en PC/N95 (TieneTexGen).
+                bool chromeSW = !solido && mat->chrome && (mat->reflectMode == 2 || (mat->reflectMode == 1 && !gfx::TieneTexGen()) || (mat->reflectMode == 0 && !gfx::TieneTexGen()));
+                bool matcapHW = !solido && mat->chrome && mat->reflectMode == 0 && gfx::TieneTexGen();
+                bool sphereHW = !solido && mat->chrome && mat->reflectMode == 1 && gfx::TieneTexGen();
+                if (chromeSW && genNormals) {
+                    ActualizarChromeUVGen();
+                    if (genChromeExpPos && genChromeExpUV && genChromeCount == genFacesSize) {
+                        gfx::VertexPointer3f(0, genChromeExpPos);
+                        gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer2f(0, genChromeExpUV);
+                        gfx::DrawTrianglesArrayFrom(grp.startDrawn, grp.indicesDrawnCount);
+                        gfx::VertexPointer3f(0, genVertex); // re-bindea las posiciones gen para el proximo grupo
+                        ultimo = NULL;                      // cambiamos punteros -> re-AplicarMaterial el proximo
+                        continue;
+                    }
+                }
+                if (matcapHW && genNormals) { // matcap HW (solo PC/N95): normales como texcoords (matriz de textura ya puesta)
+                    gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer3b(genNormals);
+                    gfx::DrawTriangles(grp.indicesDrawnCount, &genFaces[grp.startDrawn]);
+                    ultimo = NULL; // cambiamos el puntero de texcoords -> re-AplicarMaterial el proximo
+                    continue;
+                }
+                // sphere HW (el texgen genera las texcoords solo) o NO-chrome: draw indexado. AplicarMaterial
+                // re-bindea el TexCoordPointer al uv BASE -> volvemos a genUV (sino la textura del Screw/Subdiv sale
+                // con las UV del perfil, mal indexadas). Con texgen (sphereHW) NO forzamos genUV.
+                if (!sphereHW && genUV) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer2f(0, genUV); }
                 gfx::DrawTriangles(grp.indicesDrawnCount, &genFaces[grp.startDrawn]);
                 continue;
             }
             // REFLECTION por SOFTWARE (equirect SIEMPRE, o sphere exacto en GLES1/N95): render NO INDEXADO por-corner.
             // El MATCAP (matriz de textura) y el sphere HW van por el draw INDEXADO normal (else) -> no entran aca.
-            if (!solido && mat->chrome && (mat->reflectMode == 2 || (mat->reflectMode == 1 && !gfx::TieneTexGen())) && chromeExpPos && chromeExpUV) {
+            if (!solido && mat->chrome && (mat->reflectMode == 2 || (mat->reflectMode == 1 && !gfx::TieneTexGen()) || (mat->reflectMode == 0 && !gfx::TieneTexGen())) && chromeExpPos && chromeExpUV) {
                 gfx::VertexPointer3f(0, chromeExpPos);
                 gfx::TexCoordPointer2f(0, chromeExpUV);
                 gfx::DrawTrianglesArrayFrom(materialsGroup[g].startDrawn, materialsGroup[g].indicesDrawnCount);

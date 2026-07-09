@@ -233,6 +233,17 @@ class Mesh : public Object {
         float    chromeCacheW[16]; // matriz de mundo con la que se calculo
         void ActualizarChromeUV(bool equirect); // recalcula los buffers (equirect 360 o matcap sphere-map por software)
 
+        // CHROME sobre la MALLA GENERADA (screw/subdiv): mismas UV de reflejo pero calculadas desde la geo GENERADA
+        // (genVertex/genNormals/genFaces), y SOLO para los mesh parts con reflejo (los demas no cuestan nada). Asi el
+        // reflejo se ve sin tener que "aplicar" el modificador, sin recalcular la malla 3D (solo las UV, y con cache).
+        GLfloat* genChromeExpPos;  // posiciones LOCALES expandidas por corner de la gen (genFacesSize*3)
+        GLfloat* genChromeExpUV;   // UV de reflejo por corner (genFacesSize*2)
+        int      genChromeCount;   // corners del buffer (= genFacesSize)
+        bool     genChromeValid;   // cache valido
+        Vector3  genChromeCam;     // camara con la que se calculo
+        float    genChromeW[16];   // matriz de mundo con la que se calculo
+        void ActualizarChromeUVGen(); // recalcula genChromeExp* para los mesh parts con reflejo (cache por camara/mundo)
+
         // NORMAL MAPPING (DOT3): base tangente POR VERTICE de render (T.xyz + handedness en .w), derivada de
         // pos+UV (cache: solo se recalcula si cambia la geometria). 'nmColors' = el vector luz L en tangent-space
         // por vertice (se rellena cada frame; es el "primary color" del DOT3). Indexados como vertex/normals/uv.
