@@ -42,6 +42,15 @@ namespace w3dEngine {
     // Libera un buffer devuelto por DecodeImage.
     void FreeImage(unsigned char* rgba);
 
+    // Borra una textura GL (glDeleteTextures). La usan las MINIATURAS del file browser para liberar la RAM/VRAM
+    // al cambiar de carpeta o cerrar (clave en el N95 con poca memoria). id 0 = no-op.
+    void DeleteTexture(unsigned int id);
+
+    // MINIATURA: decodifica una imagen y la reduce (box filter) a <= maxSize px por lado, MANTENIENDO el aspecto.
+    // El buffer FULL se decodifica y se libera ADENTRO (transitorio); solo queda la mini en *outRGBA (liberar con
+    // FreeImage). Pensado para previews livianas: nunca deja en memoria la imagen de 5MP entera. No en Symbian (ICL).
+    bool DecodeThumbnail(const char* path, int maxSize, unsigned char** outRGBA, int* outW, int* outH);
+
     // Codifica pixeles RGBA 8888 a un buffer PNG RGB en el heap (new[]; liberar con delete[] o
     // FreeImage). Entra RGBA pero el PNG se guarda como RGB: el alpha se descarta (los renders son
     // solidos; un alpha del framebuffer haria "huecos" en materiales con transparencia como pelo/hojas).

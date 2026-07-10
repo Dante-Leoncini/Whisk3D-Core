@@ -84,6 +84,14 @@ void FreeImage(unsigned char* rgba) {
     delete[] rgba;
 }
 
+// borra una textura GL (las miniaturas del browser la usan para liberar al cambiar carpeta / cerrar).
+void DeleteTexture(unsigned int id) {
+    if (!id) return;
+    GLuint g = (GLuint)id;
+    glDeleteTextures(1, &g);
+    g_texSizes.erase(id);
+}
+
 // Decodifica una imagen a pixeles con stb. La LECTURA la hace la abstraccion del
 // Core (w3dFileSystem::ReadFileBytes): un SOLO camino para todas las plataformas
 // (en Android resuelve solo si es asset del APK o archivo real del /storage). SIN SDL.
@@ -117,6 +125,39 @@ bool DecodeImage(const char* path, unsigned char** outRGBA, int* outW, int* outH
     *outRGBA = buf;
     if (outW) { *outW = w; }
     if (outH) { *outH = h; }
+    return true;
+}
+
+// MINIATURA: decode + reduccion box a <= maxSize (mantiene aspecto). El buffer full es transitorio (se libera aca);
+// solo queda la mini. Asi una foto de 5MP no se queda entera en RAM: clave para no reventar la memoria (N95).
+bool DecodeThumbnail(const char* path, int maxSize, unsigned char** outRGBA, int* outW, int* outH) {
+    if (!outRGBA || maxSize < 1) return false;
+    int w = 0, h = 0, canales = 0;
+    stbi_uc* full = CargarPixeles(path, &w, &h, &canales, STBI_rgb_alpha);
+    if (!full) return false;
+    if (w < 1 || h < 1) { stbi_image_free(full); return false; }
+    int tw, th; // destino con aspecto, lado mayor = maxSize
+    if (w >= h) { tw = maxSize; th = (int)((long long)h * maxSize / w); }
+    else        { th = maxSize; tw = (int)((long long)w * maxSize / h); }
+    if (tw < 1) tw = 1; if (th < 1) th = 1;
+    unsigned char* thumb = new unsigned char[(size_t)tw * th * 4];
+    for (int y = 0; y < th; y++) {
+        int sy0 = (int)((long long)y * h / th), sy1 = (int)((long long)(y + 1) * h / th);
+        if (sy1 <= sy0) sy1 = sy0 + 1; if (sy1 > h) sy1 = h;
+        for (int x = 0; x < tw; x++) {
+            int sx0 = (int)((long long)x * w / tw), sx1 = (int)((long long)(x + 1) * w / tw);
+            if (sx1 <= sx0) sx1 = sx0 + 1; if (sx1 > w) sx1 = w;
+            unsigned int r = 0, g = 0, b = 0, a = 0, n = 0;
+            for (int sy = sy0; sy < sy1; sy++) { const stbi_uc* row = full + (size_t)sy * w * 4;
+                for (int sx = sx0; sx < sx1; sx++) { const stbi_uc* p = row + (size_t)sx * 4;
+                    r += p[0]; g += p[1]; b += p[2]; a += p[3]; n++; } }
+            unsigned char* d = thumb + ((size_t)y * tw + x) * 4;
+            if (n) { d[0] = (unsigned char)(r/n); d[1] = (unsigned char)(g/n); d[2] = (unsigned char)(b/n); d[3] = (unsigned char)(a/n); }
+            else   { d[0] = d[1] = d[2] = 0; d[3] = 255; }
+        }
+    }
+    stbi_image_free(full);
+    *outRGBA = thumb; if (outW) *outW = tw; if (outH) *outH = th;
     return true;
 }
 #endif

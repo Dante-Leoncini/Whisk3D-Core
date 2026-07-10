@@ -679,7 +679,10 @@ void Mesh::RenderBordes(const float* color, float width, bool pushBack) {
     gfx::DisableArray(gfx::TexCoordArray);
     gfx::Color4f(color[0], color[1], color[2], 1.0f);
     gfx::LineWidth(width);
-    if (pushBack) gfx::DepthRange(0.0008f, 1.0f); // (el contorno usa glPolygonOffset)
+    // MODO OBJETO: el contorno se empuja ATRAS para que las caras del frente lo tapen y SOLO se vea la silueta
+    // (no un wireframe encima). Con perspectiva la profundidad se agolpa cerca de 1.0, asi que 0.0008 no alcanzaba
+    // para objetos lejanos (los bordes interiores traspasaban = "delante"). 0.02 los tapa bien en todo el rango.
+    if (pushBack) gfx::DepthRange(0.02f, 1.0f);
 
     gfx::VertexPointer3f(0, &buf[0]);
     gfx::DrawLines((int)(buf.size()/3));
