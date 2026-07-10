@@ -35,6 +35,10 @@ namespace w3dFileSystem {
     void SetUserDataDir(const std::string& dir);
     const std::string& GetUserDataDir();
 
+    // salida por defecto (render/export) que setea la plataforma. En Android API>=30 (scoped storage) es el dir
+    // externo PROPIO de la app (SDL_AndroidGetExternalStoragePath), unico escribible por fopen sin permisos.
+    void SetDefaultOutputDir(const std::string& dir);
+
     // ------------------------------------------------------------------
     //  Navegacion de archivos (la usa el File browser compartido). El
     //  backend es por plataforma: PC/escritorio = std::filesystem; Symbian

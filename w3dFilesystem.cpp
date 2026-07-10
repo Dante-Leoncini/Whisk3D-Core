@@ -225,6 +225,12 @@ namespace w3dFileSystem {
     void SetUserDataDir(const std::string& dir) { gUserDataDir = dir; }
     const std::string& GetUserDataDir() { return gUserDataDir.empty() ? GetResDir() : gUserDataDir; }
 
+    // salida por defecto (render/export) seteada por la PLATAFORMA. En Android API>=30 (scoped storage) NO se puede
+    // escribir a Descargas por fopen -> la capa SDL (main.cpp) setea aca el dir EXTERNO PROPIO de la app
+    // (SDL_AndroidGetExternalStoragePath), que no requiere permiso y anda en todo Android. El Core es SDL-free.
+    static std::string gAppOutputDir;
+    void SetDefaultOutputDir(const std::string& dir) { gAppOutputDir = dir; }
+
     bool ReadFileBytes(const std::string& path, std::vector<unsigned char>& out) {
         out.clear();
     #ifdef __ANDROID__
@@ -374,6 +380,9 @@ namespace w3dFileSystem {
     // carpeta de salida por defecto: en Android, Descargas (compartida, visible por USB);
     // en el resto, la carpeta del usuario. Symbian usa sus rutas fijas E:/whisk3d/* en el editor.
     std::string GetDefaultOutputDir() {
+        // si la plataforma seteo una salida (Android API>=30: dir externo propio de la app), esa gana: es la unica
+        // escribible por fopen bajo scoped storage. Sin esto, en Android 11+ el render/export fallaba en silencio.
+        if (!gAppOutputDir.empty()) return gAppOutputDir;
     #if defined(__ANDROID__)
         if (EsCarpeta("/storage/emulated/0/Download")) return "/storage/emulated/0/Download";
         if (EsCarpeta("/sdcard/Download")) return "/sdcard/Download";
