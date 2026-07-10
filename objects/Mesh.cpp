@@ -520,6 +520,23 @@ void Mesh::RenderObject() {
         // contorno quedara atras, pero eso empujaba las caras en profundidad y, con dos mallas de caras COINCIDENTES
         // (cubos pegados), la seleccionada ganaba el z-test y se veia "corrida"/adelante. Ahora el contorno se empuja
         // ATRAS con DepthRange (RenderBordes pushBack=true): misma silueta, sin mover las caras (bug Dante).
+        const bool xrayEdit = (editActiva && g_xray); // modo X-Ray (independiente de Show Overlays)
+        if (xrayEdit) {
+            // X-RAY: caras PLANAS semitransparentes (30%) SIN z-test -> la malla en edicion se ve "a traves" (retopo).
+            // El overlay (bordes/vertices, incluso los de atras) lo dibuja el hook encima, tambien sin z-test.
+            gfx::Disable(gfx::Lighting); gfx::Disable(gfx::Texture2D);
+            gfx::DisableArray(gfx::ColorArray); gfx::DisableArray(gfx::NormalArray); gfx::DisableArray(gfx::TexCoordArray);
+            gfx::Disable(gfx::CullFace);
+            gfx::Enable(gfx::Blend); gfx::BlendAlpha();
+            gfx::Disable(gfx::DepthTest); gfx::DepthMask(false);
+            const float* xc = gRenderColors[RC_wireframe];
+            gfx::Color4f(xc[0], xc[1], xc[2], 0.30f);
+            gfx::VertexPointer3f(0, useGen ? genVertex : vertex);
+            if (useGen) gfx::DrawTriangles(genFacesSize, genFaces);
+            else if (faces && facesSize >= 3) gfx::DrawTriangles(facesSize, faces);
+            gfx::Enable(gfx::DepthTest); gfx::DepthMask(true);
+            gfx::Disable(gfx::Blend);
+        } else {
         if (editActiva) { gfx::Enable(gfx::PolygonOffsetFill); gfx::PolygonOffset(2.0f, 4.0f); }
 
         size_t ng = useGen ? genMaterialsGroup.size() : materialsGroup.size();
@@ -620,6 +637,7 @@ void Mesh::RenderObject() {
                 ultimo = NULL; // la textura/blend cambio -> re-AplicarMaterial el proximo grupo
             }
         }
+        } // fin del relleno normal (else de xrayEdit)
 
         gfx::Disable(gfx::PolygonOffsetFill);
         gfx::TexMatrixMatcap(false); // CLAVE N95: resetea la matriz de textura del MATCAP. En PC el TexGenSphere(false)

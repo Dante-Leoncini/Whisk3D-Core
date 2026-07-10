@@ -201,3 +201,4 @@ extern bool w3dRenderLuces;     // aplicar las luces de escena (modo Rendered)
 extern bool w3dRenderNormalColor; // dibuja la malla unlit con color = normal (debug de normales; modo Normal View)
 extern bool w3dRenderAlpha;       // pase ALPHA (matte): blanco unlit + solo el alpha de la textura (sin fog)
 extern bool w3dRenderOverlays;    // el editor quiere overlays (contorno de seleccion / overlay de edit); el Core lo LEE
+extern bool g_xray;               // X-Ray (overlay): la malla EN EDICION se dibuja semitransparente sin z-test (retopo)
