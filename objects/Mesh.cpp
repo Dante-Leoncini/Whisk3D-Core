@@ -25,6 +25,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     //MUCHAS de estas definiciones se van a borrar. ya que NO son la base y son cosas mas relacionadas al editor 3d....
     //ejemplo: "edit" o "modificadorActivo" etc... eso es del Editor de Whisk3D
 
+    skinArmature = NULL; skinVertex = NULL; skinNormals = NULL; skinVertexCap = 0; skinConLuz = true; lastSkinFrame = -999999; // skinning apagado por defecto
     meshTipo = -1;       // no es una primitiva regenerable por defecto
     meshSize = 2.0f;
     meshSize2 = 0.0f;
@@ -56,6 +57,7 @@ Mesh::~Mesh() {
     InvalidarEdit();
     LiberarModificadores(); // definida en el editor (como InvalidarEdit): libera el stack de modificadores
     LiberarMallaModificada(); // libera las gen buffers
+    delete[] skinVertex; delete[] skinNormals; // buffers de skinning (deform por esqueleto)
 }
 
 // ===================================================
@@ -425,9 +427,23 @@ void Mesh::RenderObject() {
     // cache de estado del motor (asi sus Enable/Disable ahorran llamadas).
     gfx::Invalidate();
 
+    // SKINNING: si hay esqueleto asignado, deformar a la pose (posBuf = skinVertex). Posiciones + normales rotadas.
+    GLfloat* posBuf = vertex;
+    GLbyte*  norBuf = normals;
+    if (skinArmature) {
+        // normales rotadas SOLO si algun mesh part tiene luz (sino no vale la pena; N95). w3dRenderSinLuz -> todo unlit.
+        bool algunaLuz = false;
+        if (!w3dRenderSinLuz) for (size_t g = 0; g < materialsGroup.size(); g++)
+            if (materialsGroup[g].material && materialsGroup[g].material->lighting){ algunaLuz = true; break; }
+        skinConLuz = algunaLuz;
+        extern void SkinearMesh(Mesh*); SkinearMesh(this);
+        if (skinVertex) posBuf = skinVertex;
+        if (skinConLuz && skinNormals) norBuf = skinNormals;
+    }
+
     // punteros de los datos de la malla (una sola vez)
-    gfx::VertexPointer3f(0, vertex);
-    if (normals)     gfx::NormalPointer3b(normals);
+    gfx::VertexPointer3f(0, posBuf);
+    if (norBuf)      gfx::NormalPointer3b(norBuf);
     if (vertexColor) gfx::ColorPointer4ub(vertexColor);
     if (uv) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer2f(0, uv); }
 
@@ -444,7 +460,7 @@ void Mesh::RenderObject() {
         gfx::Enable(gfx::CullFace);
         gfx::EnableArray(gfx::ColorArray);
         gfx::ColorPointer4ub(&weightPaintColor[0]);
-        gfx::VertexPointer3f(0, vertex);
+        gfx::VertexPointer3f(0, posBuf);
         gfx::DrawTriangles(facesSize, faces);
         gfx::DisableArray(gfx::ColorArray);
         gfx::Invalidate();
@@ -526,7 +542,7 @@ void Mesh::RenderObject() {
         gfx::Disable(gfx::Blend);
         gfx::DisableArray(gfx::ColorArray);
         gfx::DisableArray(gfx::TexCoordArray);
-        if (useGen) gfx::VertexPointer3f(0, vertex); // restaura las posiciones base
+        if (useGen) gfx::VertexPointer3f(0, posBuf); // restaura las posiciones base
         return;
     }
     }
@@ -650,7 +666,7 @@ void Mesh::RenderObject() {
                 gfx::VertexPointer3f(0, chromeExpPos);
                 gfx::TexCoordPointer2f(0, chromeExpUV);
                 gfx::DrawTrianglesArrayFrom(materialsGroup[g].startDrawn, materialsGroup[g].indicesDrawnCount);
-                gfx::VertexPointer3f(0, vertex); // re-bindea las posiciones INDEXADAS para el resto/proximo grupo
+                gfx::VertexPointer3f(0, posBuf); // re-bindea las posiciones INDEXADAS para el resto/proximo grupo
                 ultimo = NULL;                   // el puntero de UV cambio -> re-AplicarMaterial el proximo grupo
             } else {
                 gfx::DrawTriangles(materialsGroup[g].indicesDrawnCount,

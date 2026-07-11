@@ -140,11 +140,23 @@ class MaterialGroup {
 // ===================================================
 // Clase Mesh
 // ===================================================
-class Mesh : public Object { 
+class Armature; // objects/Armature.h — skinning (deform por esqueleto)
+
+class Mesh : public Object {
     public:
         // defaults en el constructor (Mesh.cpp), C++03
         int vertexSize;
         GLfloat* vertex;
+
+        // SKINNING (deform por esqueleto, del CORE): si skinArmature != NULL, la malla se deforma a la pose del
+        // esqueleto (por los vertex groups = pesos por hueso) y se dibuja skinVertex en vez de vertex. El modificador
+        // "Armature" del editor setea este puntero al target. Liviano (N95): solo posiciones, y solo si cambio el frame.
+        Armature* skinArmature; // NULL = sin skinning
+        GLfloat*  skinVertex;   // posiciones deformadas (vertexSize floats)
+        GLbyte*   skinNormals;  // normales deformadas (rotadas por los huesos) -> iluminacion correcta al doblar
+        int       skinVertexCap;// floats reservados en skinVertex (realloc si vertexSize cambia -> evita overflow)
+        bool      skinConLuz;   // el render lo prende si algun meshpart tiene luz (sino no vale la pena rotar normales)
+        int       lastSkinFrame;// cache: no re-skinnea si el frame no cambio
 
         // capas persistentes EXCLUSIVAS de la malla (lista de punteros + indice ACTIVO,
         // -1 = ninguna). El render usa la activa; el editor las crea/edita/borra.

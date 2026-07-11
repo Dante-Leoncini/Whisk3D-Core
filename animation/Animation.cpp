@@ -1,10 +1,21 @@
 #include "Animation.h"
 
 // Variables globales
-bool PlayAnimation = true;
+bool PlayAnimation = false;   // arranca PAUSADO (el timeline lo togglea con Play)
+int AnimPlayDir = 1;          // +1 adelante, -1 reversa
+int AnimFPS = 30;             // fps de reproduccion de animaciones (default 30)
 int StartFrame = 1;
 int EndFrame = 250;
 int CurrentFrame = 1;
+
+// avanza un frame haciendo loop en [Start..End]; respeta la direccion del play
+void AnimTick() {
+    if (!PlayAnimation) return;
+    if (EndFrame <= StartFrame) return; // rango vacio (ej: clip nuevo start=1/end=0): nada que reproducir
+    CurrentFrame += AnimPlayDir;
+    if (CurrentFrame > EndFrame)   CurrentFrame = StartFrame; // loop hacia adelante
+    if (CurrentFrame < StartFrame) CurrentFrame = EndFrame;   // loop en reversa
+}
 
 unsigned int millisecondsPerFrame = 67;  // animación (ej: 15 FPS)
 int FrameRate = 60;                // render (ej: 60 FPS)

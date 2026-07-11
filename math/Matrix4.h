@@ -23,6 +23,10 @@ class Matrix4 {
 
         // Multiplicación de matrices
         Matrix4 operator*(const Matrix4& B) const;
+
+        // inversa general 4x4 (cofactores). Devuelve identidad si es singular. La usa el FK del esqueleto
+        // para pasar el tail de rest al espacio LOCAL del hueso.
+        Matrix4 Inverse() const;
 };
 
 #endif

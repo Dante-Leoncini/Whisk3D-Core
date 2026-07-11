@@ -48,10 +48,17 @@ public:
 };
 
 // Variables globales
-extern bool PlayAnimation;
+extern bool PlayAnimation;   // true = reproduciendo (avanza CurrentFrame en cada tick)
+extern int AnimPlayDir;      // direccion del play: +1 adelante, -1 en reversa
+extern int AnimFPS;          // fps de REPRODUCCION de las animaciones (editable en la pestania Render; default 30).
+                             // La UI puede ir a 60 fps: el frame de animacion se repite y NO se recalcula la pose.
 extern int StartFrame;
 extern int EndFrame;
 extern int CurrentFrame;
+
+// avanza CurrentFrame un paso (si PlayAnimation) haciendo loop entre Start..End. Lo llama el main loop
+// cada millisecondsPerFrame. Respeta AnimPlayDir (play normal / reversa).
+void AnimTick();
 
 extern unsigned int millisecondsPerFrame;
 extern int FrameRate;

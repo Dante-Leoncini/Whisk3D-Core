@@ -2,6 +2,7 @@
 #define ARMATURE_H
 
 #include "objects/Objects.h"
+#include "math/Matrix4.h"
 #include <vector>
 #include <string>
 
@@ -17,20 +18,55 @@
 struct W3dBone {
     std::string name;
     int parent;        // indice en bones[] (-1 = raiz)
-    Vector3 head;      // origen del hueso (rest, local a la armature)
+    Vector3 head;      // origen del hueso (rest, espacio RAW del FBX)
     Vector3 tail;      // punta del hueso (para dibujarlo como palito)
-    W3dBone() : parent(-1) {}
+    Vector3 poseHead;  // posicion ANIMADA (se calcula por FK al reproducir; = head en rest)
+    Vector3 poseTail;
+    // transform LOCAL de rest (relativo al padre), para el FK. Viene de las props del Model FBX (Lcl Translation/
+    // Rotation/Scaling + PreRotation + RotationOrder). Las curvas de animacion los REEMPLAZAN por canal.
+    Vector3 restT;     // Lcl Translation (rest)
+    Vector3 restR;     // Lcl Rotation (rest, euler grados)
+    Vector3 restS;     // Lcl Scaling (rest)
+    Vector3 preRot;    // PreRotation (euler grados)
+    int     rotOrder;  // orden de rotacion euler (0 = XYZ, el mas comun)
+    bool    hasRest;   // true si restT/R/S vienen del FBX (FK valido); false = armature manual (se dibuja bind)
+    // SKINNING: matriz de skin del hueso en el frame actual = skinA * animWorldNode * skinInvBind. Deforma los
+    // vertices (en espacio bind) a la pose animada. skinA/skinInvBind se precomputan al importar (ver PrepararSkin).
+    Matrix4 bind;      // TransformLink (bind global del hueso, espacio escena Y-up del FBX)
+    Matrix4 tlNode;    // TransformLink convertido al espacio NODO del FK (= NyInv * bind * Ny); bind real para el skinning
+    Matrix4 skinA;     // = bind * inversa(restWorldNode)  (precomputada)
+    Matrix4 skinInvBind; // = inversa(bind)                (precomputada)
+    Matrix4 skinMatrix;  // resultado por-frame (identidad en rest)
+    bool    hasSkin;   // true si bind/skinA/skinInvBind estan listos
+    bool    select;    // seleccionado en Pose Mode (click en viewport o en la lista de huesos)
+    W3dBone() : parent(-1), restS(1,1,1), rotOrder(0), hasRest(false), hasSkin(false), select(false) {
+        bind.Identity(); skinA.Identity(); skinInvBind.Identity(); skinMatrix.Identity();
+    }
 };
+
+class SkeletalAnimation; // animation/SkeletalAnimation.h (clips de animacion)
 
 class Armature : public Object {
     public:
         std::vector<W3dBone> bones;
+        // CLIPS de animacion de esqueleto (cada uno = un "take"/AnimStack de FBX). Se listan/crean/borran en el
+        // panel de propiedades (pestania Animation). Las CURVAS (posicion/rotacion/escala por hueso) viven dentro.
+        std::vector<SkeletalAnimation*> animations;
+        int animActiva;    // clip activo (-1 = ninguno)
+        bool skinUsaBind;  // true = usar el TransformLink real del FBX como bind (rigs estandar); false = FK-rest (LISA: TL en cero)
+        int boneActivo;    // hueso seleccionado/activo en Pose Mode (-1 = ninguno); indice en bones[]
+        int lastPoseFrame; // cache de pose: NO se recalcula la deformacion si el frame (y el clip) no cambiaron
+        int lastPoseAnim;
 
         Armature(Object* parent = NULL, Vector3 pos = Vector3(0, 0, 0))
-            : Object(parent, "Armature", pos) {}
+            : Object(parent, "Armature", pos), animActiva(-1), skinUsaBind(false), boneActivo(-1), lastPoseFrame(-999999), lastPoseAnim(-999) {}
+        ~Armature() override; // libera los clips (animations)
 
         ObjectType getType() override { return ObjectType::armature; }
         void RenderObject() override; // huesos como lineas AZULES, siempre encima (sin z-test)
+        // encuadre ('.'/frame selected): envuelve TODOS los huesos (poseHead/poseTail), no solo el origen
+        Vector3 PuntoFoco() const override;
+        float   RadioFoco() const override;
 };
 
 #endif // ARMATURE_H
