@@ -22,12 +22,21 @@ struct W3dBone {
     Vector3 tail;      // punta del hueso (para dibujarlo como palito)
     Vector3 poseHead;  // posicion ANIMADA (se calcula por FK al reproducir; = head en rest)
     Vector3 poseTail;
+    // POSE actual EDITABLE (Pose Mode): T/R/S local del hueso en el frame actual. Se refresca desde la curva al
+    // cambiar de frame; al posar (campos / G-R-S) se editan estos y se ve al toque, pero NO se guardan en la
+    // animacion hasta hacer "Insert Keyframe" (i). Si no hay pose seteada, valen restT/R/S.
+    Vector3 poseT, poseR, poseS;
     // transform LOCAL de rest (relativo al padre), para el FK. Viene de las props del Model FBX (Lcl Translation/
     // Rotation/Scaling + PreRotation + RotationOrder). Las curvas de animacion los REEMPLAZAN por canal.
     Vector3 restT;     // Lcl Translation (rest)
     Vector3 restR;     // Lcl Rotation (rest, euler grados)
     Vector3 restS;     // Lcl Scaling (rest)
     Vector3 preRot;    // PreRotation (euler grados)
+    Vector3 postRot;   // PostRotation (euler grados)
+    Vector3 rotPivot;  // RotationPivot   (los pivots/offsets del nodo FBX; Blender los aplica -> sin ellos el FK
+    Vector3 rotOffset; // RotationOffset   no coincide con el TransformLink real y la malla queda corrida)
+    Vector3 sclPivot;  // ScalingPivot
+    Vector3 sclOffset; // ScalingOffset
     int     rotOrder;  // orden de rotacion euler (0 = XYZ, el mas comun)
     bool    hasRest;   // true si restT/R/S vienen del FBX (FK valido); false = armature manual (se dibuja bind)
     // SKINNING: matriz de skin del hueso en el frame actual = skinA * animWorldNode * skinInvBind. Deforma los
@@ -39,7 +48,7 @@ struct W3dBone {
     Matrix4 skinMatrix;  // resultado por-frame (identidad en rest)
     bool    hasSkin;   // true si bind/skinA/skinInvBind estan listos
     bool    select;    // seleccionado en Pose Mode (click en viewport o en la lista de huesos)
-    W3dBone() : parent(-1), restS(1,1,1), rotOrder(0), hasRest(false), hasSkin(false), select(false) {
+    W3dBone() : parent(-1), restS(1,1,1), poseS(1,1,1), rotOrder(0), hasRest(false), hasSkin(false), select(false) {
         bind.Identity(); skinA.Identity(); skinInvBind.Identity(); skinMatrix.Identity();
     }
 };
@@ -54,12 +63,13 @@ class Armature : public Object {
         std::vector<SkeletalAnimation*> animations;
         int animActiva;    // clip activo (-1 = ninguno)
         bool skinUsaBind;  // true = usar el TransformLink real del FBX como bind (rigs estandar); false = FK-rest (LISA: TL en cero)
+        bool poseDirty;    // true = la pose fue editada a mano (posando) -> re-evaluar FK sin refrescar desde la curva
         int boneActivo;    // hueso seleccionado/activo en Pose Mode (-1 = ninguno); indice en bones[]
         int lastPoseFrame; // cache de pose: NO se recalcula la deformacion si el frame (y el clip) no cambiaron
         int lastPoseAnim;
 
         Armature(Object* parent = NULL, Vector3 pos = Vector3(0, 0, 0))
-            : Object(parent, "Armature", pos), animActiva(-1), skinUsaBind(false), boneActivo(-1), lastPoseFrame(-999999), lastPoseAnim(-999) {}
+            : Object(parent, "Armature", pos), animActiva(-1), skinUsaBind(false), poseDirty(false), boneActivo(-1), lastPoseFrame(-999999), lastPoseAnim(-999) {}
         ~Armature() override; // libera los clips (animations)
 
         ObjectType getType() override { return ObjectType::armature; }

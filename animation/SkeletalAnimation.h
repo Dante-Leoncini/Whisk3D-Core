@@ -63,6 +63,7 @@ extern bool g_skelAnimPreview;
 
 // gestion de clips (MISMO patron que los vertex groups del mesh: crear/borrar/mover el activo)
 void CrearAnimacion(Armature* a);                // crea un clip vacio (nombre unico) y lo deja activo
+void InsertarKeyframeEsqueleto(Armature* a);     // Insert Keyframe (i): guarda la pose de los huesos seleccionados en CurrentFrame
 void BorrarAnimacionActiva(Armature* a);         // borra el clip activo (puede quedar 0)
 void MoverAnimacionActiva(Armature* a, int dir); // reordena el clip activo (-1 arriba / +1 abajo)
 

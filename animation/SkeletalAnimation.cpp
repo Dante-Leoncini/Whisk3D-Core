@@ -99,7 +99,9 @@ void PrepararSkin(Armature* a){
         float tlN = Vector3(b.bind.m[12], b.bind.m[13], b.bind.m[14]).Length();
         float rnN = Vector3(restWorldNode.m[12], restWorldNode.m[13], restWorldNode.m[14]).Length();
         if (tlN <= 1.0f && rnN > 5.0f) b.skinA.Identity();
-        b.tlNode = NyInv * b.bind * Ny;
+        // bind del hueso en espacio NODO: el TransformLink (B->escena Y-up) convertido a B->nodo Z-up = NyInv * bind.
+        // (ANTES tenia un '* Ny' de mas -> conjugacion -> giro de 90°X extra por hueso: el "rotado 90° sobre si mismo").
+        b.tlNode = NyInv * b.bind;
         b.skinMatrix.Identity();
         totalSkin++;
         // TransformLink valido = tiene traslacion real (no cero). LISA: casi todos en cero -> invalido -> FK-rest.
@@ -107,6 +109,15 @@ void PrepararSkin(Armature* a){
     }
     // usar el bind real si la MAYORIA de los huesos tienen TransformLink con datos (banana si; LISA no)
     a->skinUsaBind = (totalSkin > 0 && conBind * 2 > totalSkin);
+    // BIND = TransformLink real (no el FK-rest): la malla fue skinneada en la pose del TransformLink, que puede
+    // diferir de la Lcl-rest. skinMatrix = world_FK * inv(tlNode) -> malla PEGADA al hueso con el FK correcto.
+    if (a->skinUsaBind){
+        for (size_t i = 0; i < N; i++) if (a->bones[i].hasSkin){
+            Matrix4 inv = a->bones[i].tlNode.Inverse();
+            a->bones[i].skinInvBind = inv;
+            a->bones[i].skinA = inv;
+        }
+    }
 }
 
 bool g_skelAnimPreview = true; // ON: FK de la animacion (para rigs FBX; los armatures manuales se dibujan en bind)
@@ -117,10 +128,12 @@ static Vector3 NodeToYup(const Vector3& v){ return Vector3(v.x, v.z, -v.y); }
 
 void EvaluarPoseEsqueleto(Armature* a, int frame){
     if (!a) return;
-    // CACHE: si el frame y el clip no cambiaron, la pose ya esta calculada (no recalcular en frames repetidos).
-    // "solo recalcula cuando ocurre el salto" (pedido Dante): la UI a 60fps repite el frame de animacion sin recomputar.
-    if (a->lastPoseFrame == frame && a->lastPoseAnim == a->animActiva) return;
+    // CACHE: si el frame y el clip no cambiaron Y la pose no fue editada a mano, ya esta calculada (no recalcular a
+    // 60fps). poseDirty (posando) fuerza re-FK sin refrescar poseT/R/S desde la curva.
+    bool frameChanged = (a->lastPoseFrame != frame || a->lastPoseAnim != a->animActiva);
+    if (!frameChanged && !a->poseDirty) return;
     a->lastPoseFrame = frame; a->lastPoseAnim = a->animActiva;
+    a->poseDirty = false;
     // por defecto: rest (poseHead/poseTail = head/tail bind)
     for (size_t i = 0; i < a->bones.size(); i++){ a->bones[i].poseHead = a->bones[i].head; a->bones[i].poseTail = a->bones[i].tail; }
     // FK solo para rigs FBX (con transforms de rest). Los armatures MANUALES (hasRest=false) se muestran en bind.
@@ -130,8 +143,9 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
 
     size_t N = a->bones.size();
     std::vector<Matrix4> local(N), world(N);
-    // matriz LOCAL de cada hueso: T/R/S = valor de la CURVA (si el canal esta animado) o el rest Lcl del hueso
-    for (size_t i = 0; i < N; i++){
+    // Al CAMBIAR de frame se refresca la POSE (poseT/R/S) de cada hueso desde la curva (o rest). Posando NO se
+    // refresca (poseDirty): se respeta lo que el usuario esta editando hasta que cambie el frame o inserte keyframe.
+    if (frameChanged) for (size_t i = 0; i < N; i++){
         W3dBone& b = a->bones[i];
         Vector3 T = b.restT, R = b.restR, S = b.restS;
         if (clip) for (size_t t = 0; t < clip->tracks.size(); t++) if (clip->tracks[t].bone == (int)i){
@@ -143,25 +157,22 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
             }
             break;
         }
-        local[i] = LocalMat(T, R, S, b.preRot, b.rotOrder);
+        b.poseT = T; b.poseR = R; b.poseS = S;
+    }
+    for (size_t i = 0; i < N; i++){
+        W3dBone& b = a->bones[i];
+        local[i] = LocalMat(b.poseT, b.poseR, b.poseS, b.preRot, b.rotOrder); // FK desde la POSE (editable)
     }
     // MUNDO por hueso; head animado en espacio nodo -> Y-up (el Object de la armature aplica la escala 0.01 al dibujar)
     std::vector<Vector3> headNode(N), tailNode(N);
     for (size_t i = 0; i < N; i++){
-        world[i] = WorldMat(a->bones, local, (int)i); // FK NORMAL: el MOVIMIENTO correcto (no se toca)
-        // SKINNING: delta rigido rest->anim (identidad en rest). Es lo que mueve la malla; se deja IGUAL que siempre.
+        world[i] = WorldMat(a->bones, local, (int)i); // FK NORMAL: el MOVIMIENTO correcto del hueso
+        headNode[i] = world[i] * Vector3(0,0,0);      // display = FK normal (el hueso rota/se mueve bien)
+        // SKINNING: skinMatrix = world_FK * inv(bind). El bind es el TransformLink REAL del FBX (skinInvBind ya
+        // apunta a inv(tlNode) cuando skinUsaBind; ver PrepararSkin) -> la malla, authored a ese bind, queda PEGADA
+        // al hueso a la vez que este se mueve con el FK correcto. LISA (sin TransformLink) usa el FK-rest/segmentado.
         if (a->bones[i].hasSkin)
             a->bones[i].skinMatrix = world[i] * (g_skinFormula == 1 ? a->bones[i].skinA : a->bones[i].skinInvBind);
-        // DISPLAY del hueso: si el TransformLink es valido, se dibuja anclado al bind REAL del FBX (D * tlNode) para que
-        // el esqueleto COINCIDA con la malla (que esta authored a ese bind). El MOVIMIENTO es el mismo delta D que la
-        // malla -> se mueven juntos. Sin TransformLink (LISA), FK normal.
-        if (a->skinUsaBind && a->bones[i].hasSkin){
-            Matrix4 D = world[i] * a->bones[i].skinInvBind;  // delta rigido rest->anim
-            Matrix4 wDisp = D * a->bones[i].tlNode;          // aplicado al bind real (TransformLink en espacio nodo)
-            headNode[i] = wDisp * Vector3(0,0,0);
-        } else {
-            headNode[i] = world[i] * Vector3(0,0,0);
-        }
     }
     // tails: hueso con hijo -> tail = head del 1er hijo (conectados); hoja -> extender en la direccion del hueso
     std::vector<int> primerHijo(N, -1);
@@ -285,6 +296,39 @@ void CrearAnimacion(Armature* a){
         ++suf; char b[16]; sprintf(b, ".%03d", suf); nombre = base + b; }
     a->animations.push_back(new SkeletalAnimation(nombre));
     a->animActiva = (int)a->animations.size() - 1;
+}
+
+// pone (o actualiza) un keyframe en 'frame' con valor v, manteniendo la lista ordenada por frame.
+static void SetKey(AnimProperty& ap, int frame, const Vector3& v){
+    for (size_t i = 0; i < ap.keyframes.size(); i++) if (ap.keyframes[i].frame == frame){
+        ap.keyframes[i].valueX = v.x; ap.keyframes[i].valueY = v.y; ap.keyframes[i].valueZ = v.z; return; }
+    keyFrame kf; kf.frame = frame; kf.valueX = v.x; kf.valueY = v.y; kf.valueZ = v.z;
+    size_t pos = 0; while (pos < ap.keyframes.size() && ap.keyframes[pos].frame < frame) pos++;
+    ap.keyframes.insert(ap.keyframes.begin() + pos, kf);
+}
+// INSERT KEYFRAME (i): guarda la POSE actual (poseT/R/S) de los huesos SELECCIONADOS en la curva del clip activo,
+// en CurrentFrame. Es lo que hace permanente la pose (antes de esto se ve pero no se guarda). Crea un clip si no hay.
+void InsertarKeyframeEsqueleto(Armature* a){
+    if (!a || a->bones.empty()) return;
+    if (a->animActiva < 0 || a->animActiva >= (int)a->animations.size()) CrearAnimacion(a); // asegurar clip activo
+    if (a->animActiva < 0 || a->animActiva >= (int)a->animations.size()) return;
+    SkeletalAnimation* clip = a->animations[a->animActiva];
+    int nSel = 0;
+    for (size_t i = 0; i < a->bones.size(); i++){
+        W3dBone& b = a->bones[i];
+        // huesos seleccionados; si no hay ninguno seleccionado, el activo
+        if (!b.select && (int)i != a->boneActivo) continue;
+        if (!b.select && a->boneActivo < 0) continue;
+        BoneTrack& tr = clip->TrackDe((int)i);
+        SetKey(tr.PropertyDe(AnimPosition), CurrentFrame, b.poseT);
+        SetKey(tr.PropertyDe(AnimRotation), CurrentFrame, b.poseR);
+        SetKey(tr.PropertyDe(AnimScale),    CurrentFrame, b.poseS);
+        nSel++;
+    }
+    if (nSel == 0) return;
+    if (CurrentFrame > clip->endFrame) clip->endFrame = CurrentFrame; // extender el rango del clip
+    if (CurrentFrame < clip->startFrame || clip->startFrame < 1) clip->startFrame = CurrentFrame < 1 ? 1 : CurrentFrame;
+    a->poseDirty = false; a->lastPoseFrame = -999999; // re-evaluar desde la curva (ya con el keyframe nuevo)
 }
 
 void BorrarAnimacionActiva(Armature* a){
