@@ -25,7 +25,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     //MUCHAS de estas definiciones se van a borrar. ya que NO son la base y son cosas mas relacionadas al editor 3d....
     //ejemplo: "edit" o "modificadorActivo" etc... eso es del Editor de Whisk3D
 
-    skinArmature = NULL; skinVertex = NULL; skinNormals = NULL; skinVertexCap = 0; skinConLuz = true; lastSkinFrame = -999999; lastSkinBordesFrame = -999999; // skinning apagado por defecto
+    skinArmature = NULL; skinVertex = NULL; skinNormals = NULL; skinVertexCap = 0; skinConLuz = true; lastSkinFrame = -999999; lastSkinBordesFrame = -999999; skinFlatSig = 0; skinGeomVersion = 1; // skinning apagado por defecto
     meshTipo = -1;       // no es una primitiva regenerable por defecto
     meshSize = 2.0f;
     meshSize2 = 0.0f;
@@ -760,8 +760,25 @@ void Mesh::RenderBordes(const float* color, float width, bool pushBack) {
             int nv = vertexSize; // cantidad de vertices
             for (size_t e = 0; e + 1 < edges.size(); e += 2){
                 int a = edges[e], b = edges[e+1];
-                if (a<0||a>=nv||b<0||b>=nv){ skinBordesBuf[e*3]=skinBordesBuf[e*3+1]=skinBordesBuf[e*3+2]=0;
-                                             skinBordesBuf[e*3+3]=skinBordesBuf[e*3+4]=skinBordesBuf[e*3+5]=0; continue; }
+                if (a<0||a>=nv||b<0||b>=nv){ // fuera de rango: colapsar al extremo valido (o degenerar) -> nunca dibujar al origen
+                    int v = (a>=0&&a<nv)?a : ((b>=0&&b<nv)?b : -1);
+                    float px = v>=0?skinVertex[v*3]:0, py = v>=0?skinVertex[v*3+1]:0, pz = v>=0?skinVertex[v*3+2]:0;
+                    skinBordesBuf[e*3]=skinBordesBuf[e*3+3]=px; skinBordesBuf[e*3+1]=skinBordesBuf[e*3+4]=py; skinBordesBuf[e*3+2]=skinBordesBuf[e*3+5]=pz;
+                    continue;
+                }
+                // ARISTA con estiramiento ANORMAL (largo skinneado >> largo bind): es un artefacto de posRep, que soldo
+                // 2 verts COINCIDENTES de PIEZAS distintas (huesos que se separan) -> un extremo "salta" a la otra pieza.
+                // En LISA daba las lineas estiradas al centro en los pies. La colapsamos a un punto (invisible). Un doblez
+                // NORMAL de junta en una malla CONECTADA no estira 4x -> se mantiene la silueta continua (no mira huesos).
+                float bxx=vertex[a*3]-vertex[b*3], byy=vertex[a*3+1]-vertex[b*3+1], bzz=vertex[a*3+2]-vertex[b*3+2];
+                float sxx=skinVertex[a*3]-skinVertex[b*3], syy=skinVertex[a*3+1]-skinVertex[b*3+1], szz=skinVertex[a*3+2]-skinVertex[b*3+2];
+                float bl2=bxx*bxx+byy*byy+bzz*bzz, sl2=sxx*sxx+syy*syy+szz*szz;
+                if (bl2 > 1e-8f && sl2 > bl2*16.0f){ // > 4x el largo de bind -> colapsar (invisible)
+                    skinBordesBuf[e*3]=skinBordesBuf[e*3+3]=skinVertex[a*3];
+                    skinBordesBuf[e*3+1]=skinBordesBuf[e*3+4]=skinVertex[a*3+1];
+                    skinBordesBuf[e*3+2]=skinBordesBuf[e*3+5]=skinVertex[a*3+2];
+                    continue;
+                }
                 skinBordesBuf[e*3]=skinVertex[a*3]; skinBordesBuf[e*3+1]=skinVertex[a*3+1]; skinBordesBuf[e*3+2]=skinVertex[a*3+2];
                 skinBordesBuf[e*3+3]=skinVertex[b*3]; skinBordesBuf[e*3+4]=skinVertex[b*3+1]; skinBordesBuf[e*3+5]=skinVertex[b*3+2];
             }

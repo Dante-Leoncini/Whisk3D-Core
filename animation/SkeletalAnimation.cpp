@@ -277,32 +277,71 @@ void SkinearMesh(Mesh* m){
     if (doN){ if (!m->skinNormals) m->skinNormals = new GLbyte[fc + 32];
         for (int i = 0; i < fc; i++) m->skinNormals[i] = m->normals[i]; } // default = bind
     if ((int)m->vertCtrlPoint.size() < nv) return; // sin mapeo render-vert -> control-point: no skinnear (no romper)
-    // nombre de hueso -> indice
-    std::map<std::string,int> boneDe;
-    for (size_t b = 0; b < a->bones.size(); b++) boneDe[a->bones[b].name] = (int)b;
-    // skinMatrix es el delta en espacio NODO = espacio de la geometria del mesh -> se aplica DIRECTO (sin conjugar)
-    std::vector<Matrix4> SL(a->bones.size());
-    std::vector<char> hasSL(a->bones.size(), 0);
-    for (size_t b = 0; b < a->bones.size(); b++) if (a->bones[b].hasSkin){ SL[b] = a->bones[b].skinMatrix; hasSL[b] = 1; }
-    // CONTROL-POINT -> lista de (hueso, peso). Los vertex groups vienen indexados por control-point del FBX.
-    std::map<int, std::vector<std::pair<int,float> > > cpW;
+
+    // ---- CACHE CSR de pesos (bone,weight) por RENDER-vert. Se arma UNA sola vez y se reusa cada frame. Antes se
+    //      reconstruia un std::map por frame sobre TODOS los verts (banana=42840) -> ~5ms/frame de allocs. Con el CSR
+    //      el costo por frame es solo la matematica (matriz*vertice). Invalida por firma de topologia (skinFlatSig):
+    //      vertexSize, armature, #huesos, #grupos + puntero/tamaño de cada grupo, #control-points. Los pesos NO se
+    //      editan in-place en el editor (weight paint es solo visual; import/duplicar/undo cambian punteros o tamaños). ----
+    unsigned sig = (unsigned)nv * 2654435761u;
+    sig ^= (unsigned)(size_t)a; sig = sig*31u + (unsigned)a->bones.size();
+    sig = sig*31u + (unsigned)m->vertexGroups.size() + (unsigned)m->vertCtrlPoint.size()*131u;
+    sig = sig*2654435761u + m->skinGeomVersion; // regenerar geometria (GenerarRender/CalcularBordes) invalida aunque nV no cambie
+    // los NOMBRES mapean grupo->hueso (boneDe.find(vg->nombre)); si se renombra un grupo o un hueso, el mapeo cambia
+    // pero punteros/tamaños no -> hay que hashear los nombres (y hasSkin) sino el CSR queda stale. Barato (~cientos de chars).
+    for (size_t b = 0; b < a->bones.size(); b++){ const std::string& nm=a->bones[b].name;
+        for (size_t c=0;c<nm.size();c++) sig = sig*31u + (unsigned char)nm[c];
+        sig = sig*2u + (a->bones[b].hasSkin?1u:0u); }
     for (size_t g = 0; g < m->vertexGroups.size(); g++){
-        VertexGroup* vg = m->vertexGroups[g];
-        std::map<std::string,int>::iterator it = boneDe.find(vg->nombre);
-        if (it == boneDe.end()) continue;
-        int b = it->second; if (!hasSL[b]) continue;
-        for (size_t j = 0; j < vg->verts.size() && j < vg->pesos.size(); j++)
-            cpW[vg->verts[j]].push_back(std::make_pair(b, vg->pesos[j]));
+        sig ^= (unsigned)(size_t)m->vertexGroups[g];
+        sig = sig*31u + (unsigned)m->vertexGroups[g]->verts.size();
+        const std::string& gn=m->vertexGroups[g]->nombre;
+        for (size_t c=0;c<gn.size();c++) sig = sig*31u + (unsigned char)gn[c];
     }
-    // por RENDER-vert: su control-point -> blend de los huesos que lo pesan
+    if (m->skinFlatSig != sig || (int)m->skinFlatOff.size() != nv+1){
+        std::map<std::string,int> boneDe;                         // nombre de hueso -> indice (solo al reconstruir)
+        for (size_t b = 0; b < a->bones.size(); b++) boneDe[a->bones[b].name] = (int)b;
+        // control-point -> lista de (hueso, peso), solo huesos con skin. Los vertex groups vienen por control-point del FBX.
+        std::map<int, std::vector<std::pair<int,float> > > cpW;
+        for (size_t g = 0; g < m->vertexGroups.size(); g++){
+            VertexGroup* vg = m->vertexGroups[g];
+            std::map<std::string,int>::iterator it = boneDe.find(vg->nombre);
+            if (it == boneDe.end()) continue;
+            int b = it->second; if (b < 0 || b >= (int)a->bones.size() || !a->bones[b].hasSkin) continue;
+            for (size_t j = 0; j < vg->verts.size() && j < vg->pesos.size(); j++)
+                cpW[vg->verts[j]].push_back(std::make_pair(b, vg->pesos[j]));
+        }
+        // aplanar a CSR por render-vert (offset[ri]..offset[ri+1] = rango de (bone,weight) del vert ri)
+        m->skinFlatOff.assign(nv+1, 0);
+        for (int ri = 0; ri < nv; ri++){
+            std::map<int, std::vector<std::pair<int,float> > >::iterator it = cpW.find(m->vertCtrlPoint[ri]);
+            m->skinFlatOff[ri+1] = (it==cpW.end()) ? 0 : (int)it->second.size();
+        }
+        for (int ri = 0; ri < nv; ri++) m->skinFlatOff[ri+1] += m->skinFlatOff[ri]; // prefix sum
+        int total = m->skinFlatOff[nv];
+        m->skinFlatBone.assign(total > 0 ? total : 0, 0); m->skinFlatW.assign(total > 0 ? total : 0, 0.0f);
+        for (int ri = 0; ri < nv; ri++){
+            std::map<int, std::vector<std::pair<int,float> > >::iterator it = cpW.find(m->vertCtrlPoint[ri]);
+            if (it == cpW.end()) continue;
+            int base = m->skinFlatOff[ri];
+            for (size_t k = 0; k < it->second.size(); k++){ m->skinFlatBone[base+(int)k]=it->second[k].first; m->skinFlatW[base+(int)k]=it->second[k].second; }
+        }
+        m->skinFlatSig = sig;
+    }
+
+    // ---- por RENDER-vert: blend de los huesos que lo pesan (CSR, sin mapas ni allocs por frame). skinMatrix es el
+    //      delta en espacio NODO = espacio de la geometria del mesh -> se aplica DIRECTO (sin conjugar). ----
+    const int*   off = &m->skinFlatOff[0];
+    const int*   fb  = m->skinFlatBone.empty() ? NULL : &m->skinFlatBone[0];
+    const float* fw  = m->skinFlatW.empty()    ? NULL : &m->skinFlatW[0];
     for (int ri = 0; ri < nv; ri++){
-        int cp = m->vertCtrlPoint[ri];
-        std::map<int, std::vector<std::pair<int,float> > >::iterator it = cpW.find(cp);
-        if (it == cpW.end()) continue; // sin peso -> queda en bind
+        int s = off[ri], e = off[ri+1];
+        if (s == e) continue; // sin peso -> queda en bind
         Vector3 v(m->vertex[ri*3], m->vertex[ri*3+1], m->vertex[ri*3+2]);
         Vector3 acc(0,0,0); float wsum = 0.0f;
-        for (size_t k = 0; k < it->second.size(); k++){ int b = it->second[k].first; float w = it->second[k].second;
-            acc += (SL[b] * v) * w; wsum += w; }
+        int nb = (int)a->bones.size();
+        for (int k = s; k < e; k++){ int bi=fb[k]; if (bi<0||bi>=nb) continue; const Matrix4& M = a->bones[bi].skinMatrix; float w = fw[k]; // clamp: indice cacheado -> defensa si el rig encoge
+            acc += (M * v) * w; wsum += w; }
         if (wsum > 0.0001f){ acc = acc * (1.0f/wsum);
             // GUARD: si una matriz degenerada mandara el vert a NaN/infinito, dejar el original (no romper el modelo)
             bool ok = (acc.x==acc.x && acc.y==acc.y && acc.z==acc.z) && // no NaN
@@ -312,14 +351,13 @@ void SkinearMesh(Mesh* m){
         if (doN){
             Vector3 n(m->normals[ri*3]/127.0f, m->normals[ri*3+1]/127.0f, m->normals[ri*3+2]/127.0f);
             Vector3 nAcc(0,0,0);
-            for (size_t k = 0; k < it->second.size(); k++){ int b = it->second[k].first; float w = it->second[k].second;
-                const float* mm = SL[b].m; // column-major: rotar direccion = 3x3 superior (sin m[12..14])
+            for (int k = s; k < e; k++){ int bi=fb[k]; if (bi<0||bi>=nb) continue; const float* mm = a->bones[bi].skinMatrix.m; float w = fw[k];
                 nAcc.x += (mm[0]*n.x + mm[4]*n.y + mm[8]*n.z) * w;
                 nAcc.y += (mm[1]*n.x + mm[5]*n.y + mm[9]*n.z) * w;
                 nAcc.z += (mm[2]*n.x + mm[6]*n.y + mm[10]*n.z) * w; }
             float ln = sqrtf(nAcc.x*nAcc.x + nAcc.y*nAcc.y + nAcc.z*nAcc.z);
-            if (ln > 1e-6f && ln==ln){ float s = 127.0f/ln;
-                m->skinNormals[ri*3]=(GLbyte)(nAcc.x*s); m->skinNormals[ri*3+1]=(GLbyte)(nAcc.y*s); m->skinNormals[ri*3+2]=(GLbyte)(nAcc.z*s); }
+            if (ln > 1e-6f && ln==ln){ float sc = 127.0f/ln;
+                m->skinNormals[ri*3]=(GLbyte)(nAcc.x*sc); m->skinNormals[ri*3+1]=(GLbyte)(nAcc.y*sc); m->skinNormals[ri*3+2]=(GLbyte)(nAcc.z*sc); }
         }
     }
 }

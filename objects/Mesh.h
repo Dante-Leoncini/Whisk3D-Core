@@ -159,6 +159,15 @@ class Mesh : public Object {
         int       lastSkinFrame;// cache: no re-skinnea si el frame no cambio
         std::vector<GLfloat> skinBordesBuf; // contorno/overlay deformado (edges con skinVertex); cache por frame
         int       lastSkinBordesFrame;      // cache del contorno skinneado
+        // CACHE CSR de pesos por render-vert (bone,weight aplanados): se arma UNA vez, no por frame. Antes SkinearMesh
+        // reconstruia un std::map por frame sobre TODOS los verts (banana=42840) -> ~5ms/frame de allocs. Con el CSR el
+        // costo por frame es solo la matematica (matriz*vertice). Invalida via firma de topologia (skinFlatSig).
+        std::vector<int>    skinFlatBone;   // indices de hueso (valores CSR)
+        std::vector<float>  skinFlatW;      // pesos 0..1 (CSR, paralelo a skinFlatBone)
+        std::vector<int>    skinFlatOff;    // offset por render-vert (size vertexSize+1)
+        unsigned            skinFlatSig;    // firma de la topologia con la que se armo el CSR (0 = sin armar)
+        unsigned            skinGeomVersion;// se incrementa en CalcularBordes (regenerar geometria); entra en skinFlatSig
+                                            // para invalidar el CSR si GenerarRender reindexa vertex[] con igual tamaño
 
         // capas persistentes EXCLUSIVAS de la malla (lista de punteros + indice ACTIVO,
         // -1 = ninguna). El render usa la activa; el editor las crea/edita/borra.
