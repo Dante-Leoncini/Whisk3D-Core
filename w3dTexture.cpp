@@ -92,6 +92,9 @@ void DeleteTexture(unsigned int id) {
     g_texSizes.erase(id);
 }
 
+// stb + su consumidor (CargarPixeles/DecodeImage/DecodeThumbnail) NO existe en Symbian: el N95 decodifica
+// con ICL en platform/symbian/src/w3dtexload.cpp. Ademas su toolchain es C++03 (sin nullptr / vector::data).
+#ifndef W3D_SYMBIAN
 // Decodifica una imagen a pixeles con stb. La LECTURA la hace la abstraccion del
 // Core (w3dFileSystem::ReadFileBytes): un SOLO camino para todas las plataformas
 // (en Android resuelve solo si es asset del APK o archivo real del /storage). SIN SDL.
@@ -106,7 +109,6 @@ static stbi_uc* CargarPixeles(const char* path, int* w, int* h, int* canales, in
 //   - PC / Android / Web: stb_image (aca mismo, forzando RGBA).
 //   - Symbian: lo implementa platform/symbian/src/w3dtexload.cpp con ICL.
 // ----------------------------------------------------------------------------
-#ifndef W3D_SYMBIAN
 bool DecodeImage(const char* path, unsigned char** outRGBA, int* outW, int* outH) {
     if (!outRGBA) {
         return false;
