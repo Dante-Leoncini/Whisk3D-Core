@@ -94,14 +94,30 @@ void PrepararSkin(Armature* a){
         // convertido al espacio nodo: tlNode. Se usa cuando es valido (rigs estandar); LISA lo tiene en cero.
         b.skinInvBind = restWorldNode.Inverse();
         b.skinA = b.skinInvBind;
-        // FALLBACK segmentado (solo para el path FK-rest, ej LISA sin TransformLink): si la pieza esta en el espacio
-        // LOCAL del hueso (bind ~0 pero el hueso lejos del origen), skinA=identidad -> skinMatrix=world[bone] la ubica.
-        float tlN = Vector3(b.bind.m[12], b.bind.m[13], b.bind.m[14]).Length();
-        float rnN = Vector3(restWorldNode.m[12], restWorldNode.m[13], restWorldNode.m[14]).Length();
-        if (tlN <= 1.0f && rnN > 5.0f) b.skinA.Identity();
         // bind del hueso en espacio NODO: el TransformLink (B->escena Y-up) convertido a B->nodo Z-up = NyInv * bind.
         // (ANTES tenia un '* Ny' de mas -> conjugacion -> giro de 90°X extra por hueso: el "rotado 90° sobre si mismo").
         b.tlNode = NyInv * b.bind;
+        // TransformLink DEGENERADO (LISA: solo escala, traslacion 0) -> el inverse-bind real es el ESTANDAR FBX
+        // inverse(TransformLink)*Transform (la 'Transform' del cluster codifica el swap de ejes/orientacion), en el
+        // frame nodo del motor: skinA = inv(NyInv*bind) * (NyInv*clusterTransform). Reduce EXACTO a worldFK*inv(TL)*Transform.
+        // El banana NO entra aca (su TransformLink tiene traslacion real -> path skinUsaBind/tlNode intacto).
+        float tlN = Vector3(b.bind.m[12], b.bind.m[13], b.bind.m[14]).Length();
+        float rnN = Vector3(restWorldNode.m[12], restWorldNode.m[13], restWorldNode.m[14]).Length();
+        if (tlN <= 1.0f && rnN > 5.0f){
+            // El TransformLink de LISA trae la ESCALA del armature (gigante, ~100) BAKEADA, pero mi FK trabaja en
+            // espacio armature-LOCAL (escala 1; el 0.01 del armature se aplica al DIBUJAR). Si no la quito, el skin
+            // se encoge 1/escala (piezas al 1%). Normalizo las columnas del bind (escala->1): queda rigido y ubicado.
+            Matrix4 bindNorm = b.bind;
+            for (int c = 0; c < 3; c++){ float l = sqrtf(bindNorm.m[c*4]*bindNorm.m[c*4] + bindNorm.m[c*4+1]*bindNorm.m[c*4+1] + bindNorm.m[c*4+2]*bindNorm.m[c*4+2]);
+                if (l > 1e-6f){ bindNorm.m[c*4]/=l; bindNorm.m[c*4+1]/=l; bindNorm.m[c*4+2]/=l; } }
+            Matrix4 tlNorm = NyInv * bindNorm;
+            // D = diag(-1,1,-1) = 180° sobre Y (eje profundidad en espacio nodo). El TransformLink degenerado + el
+            // swap de ejes del clusterTransform, al pasar por NyInv, dejan la pieza rotada 180° sobre si misma (la
+            // "cabeza con la boca para arriba" que reportaba Dante). Verificado vs Blender (ground truth): skinMatrix
+            // del motor = skin_Blender * D en los 21 huesos (diff 0.0001). Se corrige multiplicando skinA por D.
+            Matrix4 D; D.Identity(); D.m[0] = -1.0f; D.m[10] = -1.0f;
+            b.skinA = (tlNorm.Inverse() * (NyInv * b.clusterTransform)) * D;
+        }
         b.skinMatrix.Identity();
         totalSkin++;
         // TransformLink valido = tiene traslacion real (no cero). LISA: casi todos en cero -> invalido -> FK-rest.
@@ -125,6 +141,30 @@ bool g_skelAnimPreview = true; // ON: FK de la animacion (para rigs FBX; los arm
 // los transforms LOCALES del FBX vienen en espacio Z-up (nodo), pero el resto de la armature (bind head/tail,
 // malla) esta en Y-up. Se convierte la salida del FK: (x,y,z) Z-up -> (x, z, -y) Y-up.
 static Vector3 NodeToYup(const Vector3& v){ return Vector3(v.x, v.z, -v.y); }
+
+// ===== helpers PUBLICOS para el transform interactivo de huesos (Pose Mode, main/ViewPorts/LayoutInput.cpp) =====
+Matrix4 SkelNodeToYupMat(){ return MatrizNodeToYup(); }
+Matrix4 SkelMatRotEuler(const Vector3& deg, int order){ return MatRotEuler(deg, order); }
+// world (rot+trans) del hueso 'bone' en espacio NODO, con la POSE actual (poseT/R/S). Identidad si no hay hueso/padre.
+Matrix4 SkelBoneWorldNode(Armature* a, int bone){
+    Matrix4 I; I.Identity();
+    if (!a || bone < 0 || bone >= (int)a->bones.size()) return I;
+    size_t N = a->bones.size();
+    std::vector<Matrix4> local(N);
+    for (size_t i = 0; i < N; i++){ W3dBone& b = a->bones[i]; local[i] = LocalMat(b.poseT, b.poseR, b.poseS, b.preRot, b.rotOrder); }
+    return WorldMat(a->bones, local, bone);
+}
+// extrae el euler (grados) de la parte rotacional de M en el orden FBX. Inversa exacta de MatRotEuler para order 0
+// (Rz*Ry*Rx); para otros ordenes es una aproximacion XYZ (suficiente para el trackball de pose).
+Vector3 SkelMatrizAEulerFBX(const Matrix4& M, int /*order*/){
+    const float* m = M.m; // column-major m[col*4+fila]; R[fila][col] = m[col*4+fila]
+    float sy = -m[2]; if (sy > 1.0f) sy = 1.0f; if (sy < -1.0f) sy = -1.0f; // R[2][0] = -sin(y)
+    float y = asinf(sy), cy = cosf(y), x, z;
+    if (fabsf(cy) > 1e-4f){ x = atan2f(m[6], m[10]); z = atan2f(m[1], m[0]); } // R[2][1]/R[2][2] , R[1][0]/R[0][0]
+    else { x = atan2f(-m[9], m[5]); z = 0.0f; }                                // gimbal lock: fija z=0
+    const float R2D = 180.0f / 3.14159265358979f;
+    return Vector3(x * R2D, y * R2D, z * R2D);
+}
 
 void EvaluarPoseEsqueleto(Armature* a, int frame){
     if (!a) return;

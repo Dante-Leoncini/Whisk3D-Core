@@ -25,7 +25,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     //MUCHAS de estas definiciones se van a borrar. ya que NO son la base y son cosas mas relacionadas al editor 3d....
     //ejemplo: "edit" o "modificadorActivo" etc... eso es del Editor de Whisk3D
 
-    skinArmature = NULL; skinVertex = NULL; skinNormals = NULL; skinVertexCap = 0; skinConLuz = true; lastSkinFrame = -999999; // skinning apagado por defecto
+    skinArmature = NULL; skinVertex = NULL; skinNormals = NULL; skinVertexCap = 0; skinConLuz = true; lastSkinFrame = -999999; lastSkinBordesFrame = -999999; // skinning apagado por defecto
     meshTipo = -1;       // no es una primitiva regenerable por defecto
     meshSize = 2.0f;
     meshSize2 = 0.0f;
@@ -747,8 +747,29 @@ void Mesh::RenderBordes(const float* color, float width, bool pushBack) {
     // con malla GENERADA por modificadores (subdiv/screw) el contorno usa SUS aristas de poligono; sino la
     // base (bordesBuf). Sin esto, un objeto con modificador no mostraba borde de seleccion (la base no coincide).
     const bool usaGen = (genValido && !genBordesBuf.empty() && genVertex);
-    const std::vector<GLfloat>& buf = usaGen ? genBordesBuf : bordesBuf;
+    const std::vector<GLfloat>* bufPtr = usaGen ? &genBordesBuf : &bordesBuf;
     GLfloat* restore = usaGen ? genVertex : vertex;
+    // SKINNING del CONTORNO/overlay: si la malla se deforma por esqueleto (skinArmature), el contorno tambien debe
+    // seguir la pose (sino la silueta verde queda en bind mientras el render se deforma). Las condiciones que pidio
+    // Dante (Object Mode solo si seleccionado / Edit Mode solo si "Display in Edit Mode") YA estan codificadas: el
+    // contorno solo se dibuja al seleccionar, y skinArmature es NULL cuando "Display in Edit Mode" esta OFF en edit.
+    if (!usaGen && skinArmature && skinVertex && !edges.empty()){
+        extern int CurrentFrame;
+        if (lastSkinBordesFrame != CurrentFrame || (int)skinBordesBuf.size() != (int)edges.size()*3){
+            skinBordesBuf.resize(edges.size()*3);
+            int nv = vertexSize; // cantidad de vertices
+            for (size_t e = 0; e + 1 < edges.size(); e += 2){
+                int a = edges[e], b = edges[e+1];
+                if (a<0||a>=nv||b<0||b>=nv){ skinBordesBuf[e*3]=skinBordesBuf[e*3+1]=skinBordesBuf[e*3+2]=0;
+                                             skinBordesBuf[e*3+3]=skinBordesBuf[e*3+4]=skinBordesBuf[e*3+5]=0; continue; }
+                skinBordesBuf[e*3]=skinVertex[a*3]; skinBordesBuf[e*3+1]=skinVertex[a*3+1]; skinBordesBuf[e*3+2]=skinVertex[a*3+2];
+                skinBordesBuf[e*3+3]=skinVertex[b*3]; skinBordesBuf[e*3+4]=skinVertex[b*3+1]; skinBordesBuf[e*3+5]=skinVertex[b*3+2];
+            }
+            lastSkinBordesFrame = CurrentFrame;
+        }
+        bufPtr = &skinBordesBuf; restore = skinVertex;
+    }
+    const std::vector<GLfloat>& buf = *bufPtr;
     if (buf.empty() || !restore) return;
     gfx::Disable(gfx::Lighting);
     gfx::Disable(gfx::Texture2D);

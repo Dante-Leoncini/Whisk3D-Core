@@ -157,6 +157,8 @@ class Mesh : public Object {
         int       skinVertexCap;// floats reservados en skinVertex (realloc si vertexSize cambia -> evita overflow)
         bool      skinConLuz;   // el render lo prende si algun meshpart tiene luz (sino no vale la pena rotar normales)
         int       lastSkinFrame;// cache: no re-skinnea si el frame no cambio
+        std::vector<GLfloat> skinBordesBuf; // contorno/overlay deformado (edges con skinVertex); cache por frame
+        int       lastSkinBordesFrame;      // cache del contorno skinneado
 
         // capas persistentes EXCLUSIVAS de la malla (lista de punteros + indice ACTIVO,
         // -1 = ninguna). El render usa la activa; el editor las crea/edita/borra.

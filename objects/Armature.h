@@ -42,14 +42,16 @@ struct W3dBone {
     // SKINNING: matriz de skin del hueso en el frame actual = skinA * animWorldNode * skinInvBind. Deforma los
     // vertices (en espacio bind) a la pose animada. skinA/skinInvBind se precomputan al importar (ver PrepararSkin).
     Matrix4 bind;      // TransformLink (bind global del hueso, espacio escena Y-up del FBX)
-    Matrix4 tlNode;    // TransformLink convertido al espacio NODO del FK (= NyInv * bind * Ny); bind real para el skinning
+    Matrix4 clusterTransform; // matriz 'Transform' del cluster FBX (transform de la geometria al bindear). En rigs
+                              // normales (banana) es ~identidad; en otros (LISA) codifica el swap de ejes/orientacion.
+    Matrix4 tlNode;    // TransformLink convertido al espacio NODO del FK (= NyInv * bind); bind real para el skinning
     Matrix4 skinA;     // = bind * inversa(restWorldNode)  (precomputada)
     Matrix4 skinInvBind; // = inversa(bind)                (precomputada)
     Matrix4 skinMatrix;  // resultado por-frame (identidad en rest)
     bool    hasSkin;   // true si bind/skinA/skinInvBind estan listos
     bool    select;    // seleccionado en Pose Mode (click en viewport o en la lista de huesos)
     W3dBone() : parent(-1), restS(1,1,1), poseS(1,1,1), rotOrder(0), hasRest(false), hasSkin(false), select(false) {
-        bind.Identity(); skinA.Identity(); skinInvBind.Identity(); skinMatrix.Identity();
+        bind.Identity(); clusterTransform.Identity(); skinA.Identity(); skinInvBind.Identity(); skinMatrix.Identity();
     }
 };
 

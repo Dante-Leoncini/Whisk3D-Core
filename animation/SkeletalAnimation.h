@@ -64,6 +64,13 @@ extern bool g_skelAnimPreview;
 // gestion de clips (MISMO patron que los vertex groups del mesh: crear/borrar/mover el activo)
 void CrearAnimacion(Armature* a);                // crea un clip vacio (nombre unico) y lo deja activo
 void InsertarKeyframeEsqueleto(Armature* a);     // Insert Keyframe (i): guarda la pose de los huesos seleccionados en CurrentFrame
+// helpers para el transform interactivo de huesos (Pose Mode): conversion rotacion-mundo <-> euler LOCAL del hueso.
+#include "math/Matrix4.h"
+#include "math/Vector3.h"
+Matrix4 SkelNodeToYupMat();                       // matriz NodeToYup (nodo Z-up -> escena Y-up)
+Matrix4 SkelMatRotEuler(const Vector3& deg, int order); // rotacion euler (grados) en el orden FBX
+Matrix4 SkelBoneWorldNode(Armature* a, int bone); // world del hueso en espacio nodo (pose actual)
+Vector3 SkelMatrizAEulerFBX(const Matrix4& M, int order); // rotacion (matriz) -> euler (grados) orden FBX
 void BorrarAnimacionActiva(Armature* a);         // borra el clip activo (puede quedar 0)
 void MoverAnimacionActiva(Armature* a, int dir); // reordena el clip activo (-1 arriba / +1 abajo)
 
