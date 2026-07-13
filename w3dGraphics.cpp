@@ -15,8 +15,17 @@
     #ifdef _WIN32
         #define WIN32_LEAN_AND_MEAN
         #include <windows.h>
+    #else
+        // DESKTOP LINUX/Mac: los VBO (glGenBuffers/glBindBuffer/glBufferData/glDeleteBuffers) son GL 1.5, NO estan en
+        // <GL/gl.h> (que suele ser GL 1.1). Mesa/libGL SI los exporta como simbolos reales -> con GL_GLEXT_PROTOTYPES +
+        // <GL/glext.h> se declara el prototipo y linkea directo (sin cargar por glXGetProcAddress). En Windows NO se
+        // hace esto (opengl32 solo exporta GL 1.1) -> alla se cargan los punteros por wglGetProcAddress (mas abajo).
+        #define GL_GLEXT_PROTOTYPES
     #endif
     #include <GL/gl.h>
+    #ifndef _WIN32
+        #include <GL/glext.h>
+    #endif
 #endif
 #include <math.h> // tanf (Perspective)
 
