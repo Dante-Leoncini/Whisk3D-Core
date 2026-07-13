@@ -53,15 +53,51 @@ namespace w3dFileSystem {
     //  helpers de ruta (solo strings: iguales en los 4 OS)
     // ========================================================
 
-    // normaliza: '\' -> '/', saca barra final (salvo raiz "C:/" o "/")
+    // normaliza: '\' -> '/', colapsa los segmentos '.' y '..', saca barra final (salvo raiz "C:/" o "/").
+    // Colapsar '..' es CLAVE para Symbian: RFs/TParse NO resuelve componentes relativos (un '..' intermedio
+    // da KErrBadName/KErrNotFound), mientras que fopen en PC/Linux/Android los resuelve al abrir. Asi un path
+    // como "E:/modelos/banana/../textures/foo.png" (tipico de las texturas de un FBX) queda
+    // "E:/modelos/textures/foo.png" en los 4 OS. Los paths SIN './..' toman el camino viejo (byte identico).
     static std::string Normaliza(const std::string& in) {
         std::string s = in;
         for (size_t i = 0; i < s.size(); i++) if (s[i] == '\\') s[i] = '/';
-        while (s.size() > 1 && s[s.size() - 1] == '/' &&
-               !(s.size() == 3 && s[1] == ':')) {
-            s.erase(s.size() - 1);
+
+        // pre-scan barato: hay algun segmento que sea exactamente "." o ".."? si no, camino viejo.
+        bool tieneRel = false;
+        for (size_t i = 0; i < s.size(); i++) {
+            if (s[i] == '.' && (i == 0 || s[i - 1] == '/')) {
+                size_t j = i + 1;
+                if (j < s.size() && s[j] == '.') j++;
+                if (j == s.size() || s[j] == '/') { tieneRel = true; break; }
+            }
         }
-        return s;
+        if (!tieneRel) {
+            while (s.size() > 1 && s[s.size() - 1] == '/' && !(s.size() == 3 && s[1] == ':')) s.erase(s.size() - 1);
+            return s;
+        }
+
+        // raiz que NO se colapsa: "X:/" (drive Win/Symbian), "X:" (relativa a unidad) o "/" (unix). El resto, segmentos.
+        std::string root; size_t start = 0;
+        if (s.size() >= 3 && s[1] == ':' && s[2] == '/') { root = s.substr(0, 3); start = 3; }
+        else if (s.size() >= 2 && s[1] == ':')           { root = s.substr(0, 2); start = 2; }
+        else if (!s.empty() && s[0] == '/')              { root = "/"; start = 1; }
+
+        std::vector<std::string> seg; std::string cur;
+        for (size_t i = start; i <= s.size(); i++) {
+            char c = (i < s.size()) ? s[i] : '/';
+            if (c != '/') { cur += c; continue; }
+            if (cur.empty() || cur == ".") { /* segmento vacio (//) o '.' -> se descarta */ }
+            else if (cur == "..") {
+                if (!seg.empty() && seg.back() != "..") seg.pop_back();
+                else if (root.empty()) seg.push_back(".."); // relativo sin raiz: conservar el '..' que sube
+                // con raiz: un '..' de mas se descarta (no se sube por encima de la raiz)
+            } else seg.push_back(cur);
+            cur.clear();
+        }
+        std::string out = root;
+        for (size_t i = 0; i < seg.size(); i++) { if (i) out += '/'; out += seg[i]; }
+        if (out.empty()) out = "."; // ej "a/.." -> "" -> directorio actual
+        return out;
     }
 
     std::string JoinPath(const std::string& dir, const std::string& name) {

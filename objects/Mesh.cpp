@@ -462,10 +462,11 @@ void Mesh::RenderObject() {
     GLbyte*  norBuf = normals;
     if (skinArmature) {
         // normales rotadas SOLO si algun mesh part tiene luz (sino no vale la pena; N95). w3dRenderSinLuz -> todo unlit.
+        // El pase Normal View tambien las necesita (colorea por normal en view-space) aunque el material sea unlit.
         bool algunaLuz = false;
         if (!w3dRenderSinLuz) for (size_t g = 0; g < materialsGroup.size(); g++)
             if (materialsGroup[g].material && materialsGroup[g].material->lighting){ algunaLuz = true; break; }
-        skinConLuz = algunaLuz;
+        skinConLuz = algunaLuz || w3dRenderNormalColor;
         extern void SkinearMesh(Mesh*); SkinearMesh(this);
         if (skinVertex) posBuf = skinVertex;
         if (skinConLuz && skinNormals) norBuf = skinNormals;
@@ -514,17 +515,18 @@ void Mesh::RenderObject() {
         gfx::Enable(gfx::DepthTest);
 
         // normal usa la malla BASE (color por vertice tiene que matchear la geometria); el blanco puede
-        // usar la malla GENERADA por modificadores (color uniforme -> sin problema de indices).
+        // usar la malla GENERADA por modificadores (color uniforme -> sin problema de indices). posBuf =
+        // skinVertex si hay esqueleto -> los 3 pases muestran la malla DEFORMADA por la pose, no el bind.
         const bool useGen = paseBlanco && (genValido && genVertex && genFaces);
-        gfx::VertexPointer3f(0, useGen ? genVertex : vertex);
+        gfx::VertexPointer3f(0, useGen ? genVertex : posBuf);
 
-        if (paseNormal && normals) {
+        if (paseNormal && norBuf) {
             static std::vector<unsigned char> nvcol; // reusado entre frames (sin alloc)
             nvcol.resize((size_t)vertexSize * 4);
             Matrix4 W; GetWorldMatrix(W);
             Vector3 cr = g_renderCamRight, cu = g_renderCamUp, cf = g_renderCamForward;
             for (int i = 0; i < vertexSize; i++) {
-                float lx = normals[i*3+0]/127.0f, ly = normals[i*3+1]/127.0f, lz = normals[i*3+2]/127.0f;
+                float lx = norBuf[i*3+0]/127.0f, ly = norBuf[i*3+1]/127.0f, lz = norBuf[i*3+2]/127.0f;
                 Vector3 wn(W.m[0]*lx + W.m[4]*ly + W.m[8]*lz,   // object-space -> mundo (sin traslacion)
                            W.m[1]*lx + W.m[5]*ly + W.m[9]*lz,
                            W.m[2]*lx + W.m[6]*ly + W.m[10]*lz);

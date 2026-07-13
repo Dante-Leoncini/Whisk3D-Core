@@ -133,10 +133,16 @@ void PrepararSkin(Armature* a){
         }
         b.skinMatrix.Identity();
         totalSkin++;
-        // TransformLink valido = tiene traslacion real (no cero). LISA: casi todos en cero -> invalido -> FK-rest.
-        if (Vector3(b.bind.m[12], b.bind.m[13], b.bind.m[14]).Length() > 1.0f) conBind++;
+        // TransformLink usable como BIND solo si es CONSISTENTE con el FK-rest (tlNode ~= restWorldNode): la malla se
+        // bindeo en esa pose y el FK la puede alcanzar. Antes se contaba solo "TL con traslacion != 0", pero eso aceptaba
+        // TransformLinks BASURA que explotan el skinning: barney/nani traen la ESCALA del armature bakeada en el TL
+        // (traslacion ~3952 vs FK-rest ~2), chicken lo trae en OTRO espacio de ejes (swap). En esos casos el TL NO sirve
+        // de bind -> FK-rest (que siempre da identidad al rest). La banana SI es consistente (TL ~= FK-rest) -> usa TL.
+        Vector3 tlt(b.tlNode.m[12], b.tlNode.m[13], b.tlNode.m[14]);
+        Vector3 rwt(restWorldNode.m[12], restWorldNode.m[13], restWorldNode.m[14]);
+        if ((tlt - rwt).Length() < 0.25f * rwt.Length() + 1.0f) conBind++;
     }
-    // usar el bind real si la MAYORIA de los huesos tienen TransformLink con datos (banana si; LISA no)
+    // usar el TL como bind si la MAYORIA de los huesos lo tienen CONSISTENTE con el FK-rest (banana si; barney/nani/chicken/LISA no)
     a->skinUsaBind = (totalSkin > 0 && conBind * 2 > totalSkin);
     // BIND = TransformLink real (no el FK-rest): la malla fue skinneada en la pose del TransformLink, que puede
     // diferir de la Lcl-rest. skinMatrix = world_FK * inv(tlNode) -> malla PEGADA al hueso con el FK correcto.
