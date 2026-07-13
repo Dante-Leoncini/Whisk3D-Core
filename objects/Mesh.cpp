@@ -25,7 +25,8 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     //MUCHAS de estas definiciones se van a borrar. ya que NO son la base y son cosas mas relacionadas al editor 3d....
     //ejemplo: "edit" o "modificadorActivo" etc... eso es del Editor de Whisk3D
 
-    skinArmature = NULL; skinVertex = NULL; skinNormals = NULL; skinVertexCap = 0; skinConLuz = true; lastSkinFrame = -999999; lastSkinBordesFrame = -999999; skinFlatSig = 0; skinGeomVersion = 1; // skinning apagado por defecto
+    skinArmature = NULL; skinVertex = NULL; skinNormals = NULL; skinVertexCap = 0; skinConLuz = true; lastSkinFrame = -999999; lastSkinBordesFrame = -999999; skinFlatSig = 0; skinNCtrl = 0; skinGeomVersion = 1; // skinning apagado por defecto
+    skinCacheOn = false; skinCacheSkip = 0; skinCacheStart = 0; skinCacheEnd = -1; skinCacheConLuz = false; skinCacheSig = 0; // cache de vertex-animation (lazy, off)
     meshTipo = -1;       // no es una primitiva regenerable por defecto
     meshSize = 2.0f;
     meshSize2 = 0.0f;
@@ -46,7 +47,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     chromeExpPos = NULL; chromeExpUV = NULL; chromeExpCount = 0; chromeUVValid = false; chromeCacheEq = true; // reflejo (lazy)
     genChromeExpPos = NULL; genChromeExpUV = NULL; genChromeCount = 0; genChromeValid = false; // reflejo de la malla generada (lazy)
     tangents = NULL; nmColors = NULL; tangentsValid = false; // normal mapping (lazy)
-    vboPos = vboNor = vboCol = vboUV = vboIdx = 0; vboGeomVer = 0; vboSkinFrame = -999999; vboVertN = 0; vboIdxN = 0; vboRenderActivo = false; // VBOs (lazy)
+    vboPos = vboNor = vboCol = vboUV = vboIdx = 0; vboGeomVer = 0; vboSkinFrame = -999999; vboVertN = 0; vboIdxN = 0; vboRenderActivo = false; vboPoseSkinneada = false; // VBOs (lazy)
 }
 
 // ===================================================
@@ -59,6 +60,7 @@ Mesh::~Mesh() {
     LiberarModificadores(); // definida en el editor (como InvalidarEdit): libera el stack de modificadores
     LiberarMallaModificada(); // libera las gen buffers
     delete[] skinVertex; delete[] skinNormals; // buffers de skinning (deform por esqueleto)
+    LiberarSkinCache(); // snapshots del cache de vertex-animation
     // VBOs de render (buffer objects en GPU)
     namespace gfx = w3dEngine;
     gfx::DeleteBuffer(vboPos); gfx::DeleteBuffer(vboNor); gfx::DeleteBuffer(vboCol); gfx::DeleteBuffer(vboUV); gfx::DeleteBuffer(vboIdx);
@@ -69,6 +71,14 @@ Mesh::~Mesh() {
 // ===================================================
 ObjectType Mesh::getType() {
     return ObjectType::mesh;
+}
+
+// libera todos los snapshots del cache de vertex-animation (posiciones + normales). Se llama al cambiar de clip,
+// invalidar por geometria/rango, apagar el cache, o destruir la malla. Deja el cache vacio (skinCache.empty()).
+void Mesh::LiberarSkinCache() {
+    for (size_t i = 0; i < skinCache.size(); i++) { delete[] skinCache[i].pos; delete[] skinCache[i].nor; }
+    skinCache.clear();
+    skinCacheSig = 0; skinCacheEnd = -1;
 }
 
 // ===================================================
@@ -648,8 +658,9 @@ void Mesh::RenderObject() {
         bool drawVBO = false;
         if (gfx::VBOSoportado() && !useGen && !weightPaintOn && !editActiva && !anyFancy && faces && facesSize >= 3) {
             unsigned geomVer = skinGeomVersion;
-            if (vboGeomVer != geomVer || vboVertN != vertexSize || !vboPos) { SubirVBO(posBuf, norBuf, false); vboGeomVer = geomVer; vboSkinFrame = lastSkinFrame; }
-            else if (skinArmature && vboSkinFrame != lastSkinFrame)         { SubirVBO(posBuf, norBuf, true);  vboSkinFrame = lastSkinFrame; }
+            if (vboGeomVer != geomVer || vboVertN != vertexSize || !vboPos) { SubirVBO(posBuf, norBuf, false); vboGeomVer = geomVer; vboSkinFrame = lastSkinFrame; vboPoseSkinneada = (skinArmature != NULL); }
+            else if (skinArmature && vboSkinFrame != lastSkinFrame)         { SubirVBO(posBuf, norBuf, true);  vboSkinFrame = lastSkinFrame; vboPoseSkinneada = true; }
+            else if (!skinArmature && vboPoseSkinneada)                     { SubirVBO(posBuf, norBuf, true);  vboPoseSkinneada = false; } // armature removido -> re-subir el bind (sino queda la ultima pose)
             if (vboPos && vboIdx) {
                 gfx::VertexVBO(vboPos);
                 if (norBuf && vboNor)      gfx::NormalVBO(vboNor);

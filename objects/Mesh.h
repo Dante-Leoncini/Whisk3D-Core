@@ -159,15 +159,32 @@ class Mesh : public Object {
         int       lastSkinFrame;// cache: no re-skinnea si el frame no cambio
         std::vector<GLfloat> skinBordesBuf; // contorno/overlay deformado (edges con skinVertex); cache por frame
         int       lastSkinBordesFrame;      // cache del contorno skinneado
-        // CACHE CSR de pesos por render-vert (bone,weight aplanados): se arma UNA vez, no por frame. Antes SkinearMesh
-        // reconstruia un std::map por frame sobre TODOS los verts (banana=42840) -> ~5ms/frame de allocs. Con el CSR el
-        // costo por frame es solo la matematica (matriz*vertice). Invalida via firma de topologia (skinFlatSig).
-        std::vector<int>    skinFlatBone;   // indices de hueso (valores CSR)
-        std::vector<float>  skinFlatW;      // pesos 0..1 (CSR, paralelo a skinFlatBone)
-        std::vector<int>    skinFlatOff;    // offset por render-vert (size vertexSize+1)
-        unsigned            skinFlatSig;    // firma de la topologia con la que se armo el CSR (0 = sin armar)
+        // CACHE CSR de pesos por CONTROL-POINT (no por render-vert): se arma UNA vez, no por frame. Un mesh de juego
+        // duplica cada control-point en varios render-verts por seams de UV/normal/material (banana: 42840 render pero
+        // solo 7186 CP = 6x). Los render-verts de un mismo CP comparten bind + pesos -> el MISMO skinning. Por eso el
+        // blend caro de matrices se hace 1 vez POR CP (skinCpMat) y se ESCALEA a los render-verts (6x menos matematica).
+        // Invalida via firma de topologia (skinFlatSig). vertCtrlPoint[render] -> CP da el mapeo al escalear.
+        std::vector<int>    skinCpBone;   // indices de hueso (valores CSR, por CP)
+        std::vector<float>  skinCpW;      // pesos 0..1 normalizados a suma 1 (CSR, paralelo a skinCpBone)
+        std::vector<int>    skinCpOff;    // offset por control-point (size skinNCtrl+1)
+        int                 skinNCtrl;    // cantidad de control-points (max vertCtrlPoint + 1)
+        std::vector<float>  skinCpMat;    // TEMP por-frame: matriz de skin MEZCLADA 4x3 (12 floats) por CP (reusado, sin realloc)
+        unsigned            skinFlatSig;  // firma de la topologia con la que se armo el CSR (0 = sin armar)
         unsigned            skinGeomVersion;// se incrementa en CalcularBordes (regenerar geometria); entra en skinFlatSig
                                             // para invalidar el CSR si GenerarRender reindexa vertex[] con igual tamaño
+
+        // ---- CACHE de vertex-animation (bake del skinning): guarda el resultado del skinning (posiciones + normales si
+        //      hay luz) por-frame para NO recomputarlo en cada reproduccion. LAZY: la 1ra vuelta skinnea y guarda (lento,
+        //      ~4fps), despues solo copia/interpola el snapshot (rapido -> se acerca al techo de render). 'skip' decima
+        //      frames para ahorrar memoria (interpola los intermedios). Se activa desde el modificador Armature. ----
+        struct SkinSnapshot { GLfloat* pos; GLbyte* nor; }; // pos = vertexSize*3 floats; nor = vertexSize*3 bytes o NULL (unlit)
+        std::vector<SkinSnapshot> skinCache; // por slot (frame-skinCacheStart)/(skip+1); pos==NULL = todavia no bakeado
+        bool     skinCacheOn;       // flag del modificador Armature (default OFF)
+        int      skinCacheSkip;     // 0 = todos los frames; 1 = 1 si 1 no (interpola el intermedio); N = guarda cada N+1
+        int      skinCacheStart, skinCacheEnd; // rango cubierto por el cache (= StartFrame..EndFrame al (re)validar)
+        bool     skinCacheConLuz;   // se guardaron normales en los snapshots?
+        unsigned skinCacheSig;      // firma de invalidacion (geom + clip + rig + rango + skip + luz)
+        void LiberarSkinCache();    // libera todos los snapshots (pos/nor) y vacia el vector
 
         // ---- VBOs de render (buffer objects): la malla se sube 1 vez a memoria de GPU y se dibuja desde ahi, en vez
         //      de re-transferir los client-arrays de RAM en cada glDrawElements. 0 = sin crear. Solo para el caso
@@ -177,6 +194,8 @@ class Mesh : public Object {
         int          vboSkinFrame; // lastSkinFrame con el que se subieron pos/nor (skinneado: re-sube al cambiar la pose)
         int          vboVertN, vboIdxN; // cantidades subidas (para no re-crear si no cambio el tamaño)
         bool         vboRenderActivo; // true mientras se dibuja desde VBOs -> AplicarMaterial bindea el uv VBO (no client-uv)
+        bool         vboPoseSkinneada; // el VBO de posiciones tiene una pose DEFORMADA subida? -> al quitar el armature
+                                       // (skinArmature=NULL) hay que re-subir el bind 1 vez (sino queda la ultima pose pegada)
         void SubirVBO(const GLfloat* posBuf, const GLbyte* norBuf, bool soloPose); // sube/actualiza los VBOs
 
         // capas persistentes EXCLUSIVAS de la malla (lista de punteros + indice ACTIVO,
