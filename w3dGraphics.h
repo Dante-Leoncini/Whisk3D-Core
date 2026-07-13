@@ -160,6 +160,24 @@ namespace w3dEngine {
     void TexCoordPointer2f(int strideBytes, const float* p);       // 2 float
     void TexCoordPointer3b(const signed char* p);                  // 3 byte (normales como texcoords, para el matcap HW)
 
+    // --- BUFFER OBJECTS (VBO/IBO): subir la malla UNA vez a memoria de GPU y dibujar desde ahi, en vez de
+    //     re-transferir los client-arrays de RAM en CADA glDrawElements. GL ES 1.1 (N95/MBX) y GL ES 2 (WebGL) los
+    //     traen en el core; en desktop GL 1.1 (Windows) se cargan via wglGetProcAddress. handle 0 = ninguno.
+    //     La malla ESTATICA sube 1 vez cuando cambia la geometria -> gran salto de FPS (sobre todo en el MBX). ---
+    bool VBOSoportado();                                          // true si el backend/driver tiene buffer objects
+    unsigned int GenBuffer();                                     // crea un buffer object (0 si falla / no soportado)
+    void DeleteBuffer(unsigned int h);                            // lo libera
+    void ArrayBufferData(unsigned int h, const void* data, int bytes);  // sube atributos a GL_ARRAY_BUFFER (STATIC_DRAW)
+    void IndexBufferData(unsigned int h, const void* data, int bytes);  // sube indices a GL_ELEMENT_ARRAY_BUFFER (STATIC_DRAW)
+    // setup del draw DESDE VBOs (cada atributo en su propio buffer -> puntero con offset 0):
+    void VertexVBO(unsigned int h);    // bind + glVertexPointer(3,FLOAT,0,0)
+    void NormalVBO(unsigned int h);    // bind + glNormalPointer(BYTE,0,0)
+    void ColorVBO(unsigned int h);     // bind + glColorPointer(4,UBYTE,0,0)
+    void TexCoordVBO(unsigned int h);  // bind + glTexCoordPointer(2,FLOAT,0,0)
+    void BindIndexVBO(unsigned int h); // bind del IBO (GL_ELEMENT_ARRAY_BUFFER)
+    void DrawTrianglesVBO(int count, int firstIndex); // glDrawElements desde el IBO bindeado (offset = firstIndex indices)
+    void UnbindVBOs();                 // vuelve a client-side arrays (bind ARRAY/ELEMENT a 0)
+
     // dibuja triangulos indexados (indices ushort)
     void DrawTriangles(int count, const MeshIndex* indices); // index buffer 16/32 bits (ver crossplatform.h)
     void DrawTrianglesArray(int vertexCount); // glDrawArrays(GL_TRIANGLES): la UI 2D no indexa

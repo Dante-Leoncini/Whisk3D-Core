@@ -3,6 +3,7 @@
 #include "objects/Mesh.h"
 #include "math/Matrix4.h"
 #include <cstdio>
+#include <stdio.h>  // sprintf GLOBAL (C99): en Symbian/STLport <cstdio> puede dejarlo solo en std::
 #include <cmath>
 #include <vector>
 #include <map>
@@ -10,6 +11,17 @@
 
 // ===== FK: evaluar la pose del esqueleto en un frame =====
 static const float TL_PI = 3.14159265358979f;
+
+// Fast inverse sqrt (Quake III, 0x5f3759df) + 1 iteracion de Newton (~0.17% error: sobra para normalizar normales).
+// Reemplaza sqrtf + division en el hot-path del skinning. Union para el type-punning (C++03-safe; GCC lo soporta).
+union W3zFloatInt { float f; int i; };
+static inline float FastInvSqrt(float x){
+    W3zFloatInt u; u.f = x;
+    u.i = 0x5f3759df - (u.i >> 1);
+    float y = u.f;
+    y = y * (1.5f - 0.5f * x * y * y);
+    return y;
+}
 static Vector3 KfVal(const keyFrame& k){ return Vector3(k.valueX, k.valueY, k.valueZ); }
 
 // valor de una AnimProperty en 'frame' (interp LINEAL entre keyframes; keyframes ordenados por frame)
@@ -182,7 +194,10 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
     SkeletalAnimation* clip = (a->animActiva >= 0 && a->animActiva < (int)a->animations.size()) ? a->animations[a->animActiva] : NULL;
 
     size_t N = a->bones.size();
-    std::vector<Matrix4> local(N), world(N);
+    // SCRATCH persistente (reusa la capacidad entre frames -> sin 5 allocs de heap por frame; los loops de abajo
+    // sobreescriben TODOS los elementos, asi que resize alcanza). Single-thread, no re-entrante -> static seguro.
+    static std::vector<Matrix4> local, world;
+    local.resize(N); world.resize(N);
     // Al CAMBIAR de frame se refresca la POSE (poseT/R/S) de cada hueso desde la curva (o rest). Posando NO se
     // refresca (poseDirty): se respeta lo que el usuario esta editando hasta que cambie el frame o inserte keyframe.
     if (frameChanged) for (size_t i = 0; i < N; i++){
@@ -204,7 +219,7 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
         local[i] = LocalMat(b.poseT, b.poseR, b.poseS, b.preRot, b.rotOrder); // FK desde la POSE (editable)
     }
     // MUNDO por hueso; head animado en espacio nodo -> Y-up (el Object de la armature aplica la escala 0.01 al dibujar)
-    std::vector<Vector3> headNode(N), tailNode(N);
+    static std::vector<Vector3> headNode, tailNode; headNode.resize(N); tailNode.resize(N);
     for (size_t i = 0; i < N; i++){
         world[i] = WorldMat(a->bones, local, (int)i); // FK NORMAL: el MOVIMIENTO correcto del hueso
         headNode[i] = world[i] * Vector3(0,0,0);      // display = FK normal (el hueso rota/se mueve bien)
@@ -215,7 +230,7 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
             a->bones[i].skinMatrix = world[i] * (g_skinFormula == 1 ? a->bones[i].skinA : a->bones[i].skinInvBind);
     }
     // tails: hueso con hijo -> tail = head del 1er hijo (conectados); hoja -> extender en la direccion del hueso
-    std::vector<int> primerHijo(N, -1);
+    static std::vector<int> primerHijo; primerHijo.assign(N, -1);
     for (size_t i = 0; i < N; i++){ int par = a->bones[i].parent; if (par >= 0 && par < (int)N && primerHijo[par] < 0) primerHijo[par] = (int)i; }
     for (size_t i = 0; i < N; i++){
         if (primerHijo[i] >= 0) tailNode[i] = headNode[primerHijo[i]];        // conectado: tail = head del hijo
@@ -311,6 +326,16 @@ void SkinearMesh(Mesh* m){
             for (size_t j = 0; j < vg->verts.size() && j < vg->pesos.size(); j++)
                 cpW[vg->verts[j]].push_back(std::make_pair(b, vg->pesos[j]));
         }
+        // PRE-NORMALIZAR los pesos de cada control-point a suma 1 (aca, UNA sola vez) -> el hot-loop por frame ya NO
+        // divide por vertice. Los cp con peso total ~0 se DESCARTAN (el vertex queda en bind, como antes hacia el
+        // wsum<=0.0001 de SkinearMesh). Mismo resultado, menos matematica por frame.
+        for (std::map<int, std::vector<std::pair<int,float> > >::iterator it = cpW.begin(); it != cpW.end(); ){
+            std::vector<std::pair<int,float> >& lst = it->second;
+            float sum = 0.0f; for (size_t k = 0; k < lst.size(); k++) sum += lst[k].second;
+            if (sum <= 1e-6f){ std::map<int, std::vector<std::pair<int,float> > >::iterator er = it++; cpW.erase(er); continue; }
+            float inv = 1.0f/sum; for (size_t k = 0; k < lst.size(); k++) lst[k].second *= inv;
+            ++it;
+        }
         // aplanar a CSR por render-vert (offset[ri]..offset[ri+1] = rango de (bone,weight) del vert ri)
         m->skinFlatOff.assign(nv+1, 0);
         for (int ri = 0; ri < nv; ri++){
@@ -334,30 +359,35 @@ void SkinearMesh(Mesh* m){
     const int*   off = &m->skinFlatOff[0];
     const int*   fb  = m->skinFlatBone.empty() ? NULL : &m->skinFlatBone[0];
     const float* fw  = m->skinFlatW.empty()    ? NULL : &m->skinFlatW[0];
+    const int nb = (int)a->bones.size();
     for (int ri = 0; ri < nv; ri++){
         int s = off[ri], e = off[ri+1];
         if (s == e) continue; // sin peso -> queda en bind
-        Vector3 v(m->vertex[ri*3], m->vertex[ri*3+1], m->vertex[ri*3+2]);
-        Vector3 acc(0,0,0); float wsum = 0.0f;
-        int nb = (int)a->bones.size();
-        for (int k = s; k < e; k++){ int bi=fb[k]; if (bi<0||bi>=nb) continue; const Matrix4& M = a->bones[bi].skinMatrix; float w = fw[k]; // clamp: indice cacheado -> defensa si el rig encoge
-            acc += (M * v) * w; wsum += w; }
-        if (wsum > 0.0001f){ acc = acc * (1.0f/wsum);
-            // GUARD: si una matriz degenerada mandara el vert a NaN/infinito, dejar el original (no romper el modelo)
-            bool ok = (acc.x==acc.x && acc.y==acc.y && acc.z==acc.z) && // no NaN
-                      (acc.x<1e6f&&acc.x>-1e6f && acc.y<1e6f&&acc.y>-1e6f && acc.z<1e6f&&acc.z>-1e6f);
-            if (ok){ m->skinVertex[ri*3]=acc.x; m->skinVertex[ri*3+1]=acc.y; m->skinVertex[ri*3+2]=acc.z; } }
-        // NORMAL: rotar la normal de bind por los MISMOS huesos/pesos (solo la parte rotacional 3x3, sin traslacion).
+        float vx=m->vertex[ri*3], vy=m->vertex[ri*3+1], vz=m->vertex[ri*3+2];
+        float nx=0,ny=0,nz=0; if (doN){ nx=m->normals[ri*3]/127.0f; ny=m->normals[ri*3+1]/127.0f; nz=m->normals[ri*3+2]/127.0f; }
+        float ax=0,ay=0,az=0, anx=0,any=0,anz=0;
+        // pesos YA normalizados a suma 1 (en el build del CSR) -> sin wsum ni division. UN solo loop de influencias:
+        // posicion (M*v, inline sin temporales Vector3) + normal (3x3) juntas, leyendo skinMatrix y el peso 1 sola vez.
+        for (int k = s; k < e; k++){
+            int bi=fb[k]; if (bi<0||bi>=nb) continue; // defensa si el rig encogio (la firma del CSR igual lo invalidaria)
+            const float* mm = a->bones[bi].skinMatrix.m; float w = fw[k];
+            ax += (mm[0]*vx + mm[4]*vy + mm[8]*vz + mm[12]) * w;
+            ay += (mm[1]*vx + mm[5]*vy + mm[9]*vz + mm[13]) * w;
+            az += (mm[2]*vx + mm[6]*vy + mm[10]*vz + mm[14]) * w;
+            if (doN){
+                anx += (mm[0]*nx + mm[4]*ny + mm[8]*nz) * w;
+                any += (mm[1]*nx + mm[5]*ny + mm[9]*nz) * w;
+                anz += (mm[2]*nx + mm[6]*ny + mm[10]*nz) * w;
+            }
+        }
+        // POSICION: guard NaN/inf (una matriz degenerada no debe mandar el vert al infinito -> queda en bind)
+        if (ax==ax && ay==ay && az==az && ax<1e6f&&ax>-1e6f && ay<1e6f&&ay>-1e6f && az<1e6f&&az>-1e6f){
+            m->skinVertex[ri*3]=ax; m->skinVertex[ri*3+1]=ay; m->skinVertex[ri*3+2]=az; }
+        // NORMAL: normalizar a 127 con FAST INVERSE SQRT (evita el sqrtf + la division por vertice)
         if (doN){
-            Vector3 n(m->normals[ri*3]/127.0f, m->normals[ri*3+1]/127.0f, m->normals[ri*3+2]/127.0f);
-            Vector3 nAcc(0,0,0);
-            for (int k = s; k < e; k++){ int bi=fb[k]; if (bi<0||bi>=nb) continue; const float* mm = a->bones[bi].skinMatrix.m; float w = fw[k];
-                nAcc.x += (mm[0]*n.x + mm[4]*n.y + mm[8]*n.z) * w;
-                nAcc.y += (mm[1]*n.x + mm[5]*n.y + mm[9]*n.z) * w;
-                nAcc.z += (mm[2]*n.x + mm[6]*n.y + mm[10]*n.z) * w; }
-            float ln = sqrtf(nAcc.x*nAcc.x + nAcc.y*nAcc.y + nAcc.z*nAcc.z);
-            if (ln > 1e-6f && ln==ln){ float sc = 127.0f/ln;
-                m->skinNormals[ri*3]=(GLbyte)(nAcc.x*sc); m->skinNormals[ri*3+1]=(GLbyte)(nAcc.y*sc); m->skinNormals[ri*3+2]=(GLbyte)(nAcc.z*sc); }
+            float l2 = anx*anx + any*any + anz*anz;
+            if (l2 > 1e-12f && l2==l2){ float sc = 127.0f * FastInvSqrt(l2);
+                m->skinNormals[ri*3]=(GLbyte)(anx*sc); m->skinNormals[ri*3+1]=(GLbyte)(any*sc); m->skinNormals[ri*3+2]=(GLbyte)(anz*sc); }
         }
     }
 }

@@ -169,6 +169,16 @@ class Mesh : public Object {
         unsigned            skinGeomVersion;// se incrementa en CalcularBordes (regenerar geometria); entra en skinFlatSig
                                             // para invalidar el CSR si GenerarRender reindexa vertex[] con igual tamaño
 
+        // ---- VBOs de render (buffer objects): la malla se sube 1 vez a memoria de GPU y se dibuja desde ahi, en vez
+        //      de re-transferir los client-arrays de RAM en cada glDrawElements. 0 = sin crear. Solo para el caso
+        //      "simple" (solido / materiales sin chrome-normalmap, sin gen/weightpaint/xray); el resto sigue client-side. ----
+        unsigned int vboPos, vboNor, vboCol, vboUV, vboIdx; // handles (posiciones/normales/color/uv/indices)
+        unsigned     vboGeomVer;   // skinGeomVersion con el que se subieron los atributos ESTATICOS (col/uv/idx + base)
+        int          vboSkinFrame; // lastSkinFrame con el que se subieron pos/nor (skinneado: re-sube al cambiar la pose)
+        int          vboVertN, vboIdxN; // cantidades subidas (para no re-crear si no cambio el tamaño)
+        bool         vboRenderActivo; // true mientras se dibuja desde VBOs -> AplicarMaterial bindea el uv VBO (no client-uv)
+        void SubirVBO(const GLfloat* posBuf, const GLbyte* norBuf, bool soloPose); // sube/actualiza los VBOs
+
         // capas persistentes EXCLUSIVAS de la malla (lista de punteros + indice ACTIVO,
         // -1 = ninguna). El render usa la activa; el editor las crea/edita/borra.
         std::vector<UVMap*>       uvMaps;       int uvMapActivo;

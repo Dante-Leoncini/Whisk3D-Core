@@ -499,6 +499,22 @@ void DrawLineStripIndexed(int count,const unsigned short* indices){
     int nV=0; for(int i=0;i<count;i++) if((int)indices[i]+1>nV) nV=(int)indices[i]+1;
     setupState(nV); drawIndexed(GL_LINE_STRIP,count,indices);
 }
+// BUFFER OBJECTS: por ahora STUBS -> VBOSoportado()=false, asi Mesh cae al camino client-side de este backend (que
+// ya sube sus arrays a un VBO dinamico por draw). Los VBOs PERSISTENTES en el pipeline de atributos (glVertexAttrib
+// desde un VBO por-malla) son una optimizacion futura de este backend; la abstraccion ya esta lista.
+bool VBOSoportado(){ return false; }
+unsigned int GenBuffer(){ return 0; }
+void DeleteBuffer(unsigned int){}
+void ArrayBufferData(unsigned int, const void*, int){}
+void IndexBufferData(unsigned int, const void*, int){}
+void VertexVBO(unsigned int){}
+void NormalVBO(unsigned int){}
+void ColorVBO(unsigned int){}
+void TexCoordVBO(unsigned int){}
+void BindIndexVBO(unsigned int){}
+void DrawTrianglesVBO(int, int){}
+void UnbindVBOs(){}
+
 void DrawTrianglesArray(int vertexCount){ if(!ready||vertexCount<=0) return; setupState(vertexCount); glDrawArrays(GL_TRIANGLES,0,vertexCount); }
 void DrawTrianglesArrayFrom(int first,int count){ if(!ready||count<=0) return; setupState(first+count); glDrawArrays(GL_TRIANGLES,first,count); }
 void DrawLines(int vertexCount){ if(!ready||vertexCount<=0) return; setupState(vertexCount); glDrawArrays(GL_LINES,0,vertexCount); }

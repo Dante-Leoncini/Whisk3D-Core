@@ -1,8 +1,9 @@
 #pragma once
 // ============================================================================
 //  Whisk3DCore — COMPRESION (zlib/deflate). Abstraccion PORTABLE (los 4 OS), SIN
-//  dependencias externas: reusa el decoder de zlib de stb_image que ya vive con
-//  el core. El editor NO toca los detalles: usa esta abstraccion.
+//  dependencias externas: el inflate esta implementado self-contained en el .cpp
+//  (dominio publico, no depende de stb_image ni de zlib del sistema), asi compila
+//  igual en Symbian (C++03). El editor NO toca los detalles: usa esta abstraccion.
 //
 //  La usa el importador FBX (sus arrays de vertices/uv/normales suelen venir
 //  zlib-comprimidos) y va a ser la BASE del formato propio .w3d (archivo

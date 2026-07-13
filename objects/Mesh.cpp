@@ -46,6 +46,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     chromeExpPos = NULL; chromeExpUV = NULL; chromeExpCount = 0; chromeUVValid = false; chromeCacheEq = true; // reflejo (lazy)
     genChromeExpPos = NULL; genChromeExpUV = NULL; genChromeCount = 0; genChromeValid = false; // reflejo de la malla generada (lazy)
     tangents = NULL; nmColors = NULL; tangentsValid = false; // normal mapping (lazy)
+    vboPos = vboNor = vboCol = vboUV = vboIdx = 0; vboGeomVer = 0; vboSkinFrame = -999999; vboVertN = 0; vboIdxN = 0; vboRenderActivo = false; // VBOs (lazy)
 }
 
 // ===================================================
@@ -58,6 +59,9 @@ Mesh::~Mesh() {
     LiberarModificadores(); // definida en el editor (como InvalidarEdit): libera el stack de modificadores
     LiberarMallaModificada(); // libera las gen buffers
     delete[] skinVertex; delete[] skinNormals; // buffers de skinning (deform por esqueleto)
+    // VBOs de render (buffer objects en GPU)
+    namespace gfx = w3dEngine;
+    gfx::DeleteBuffer(vboPos); gfx::DeleteBuffer(vboNor); gfx::DeleteBuffer(vboCol); gfx::DeleteBuffer(vboUV); gfx::DeleteBuffer(vboIdx);
 }
 
 // ===================================================
@@ -341,13 +345,13 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido) {
         if (matcap) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer3b(normals); } // normales -> texcoords
         else if (sw) { ActualizarChromeUV(eq); // build los arrays por-corner (equirect o sphere); bind/draw en el loop
                   gfx::EnableArray(gfx::TexCoordArray); if (eq) gfx::TexWrap(true); } // REPEAT solo equirect (costura)
-        else if (uv) gfx::TexCoordPointer2f(0, uv); // restaura las UV del modelo (el sphere HW usa texgen igual)
+        else if (uv) { if (vboRenderActivo && vboUV) gfx::TexCoordVBO(vboUV); else gfx::TexCoordPointer2f(0, uv); } // UV del modelo (VBO o RAM)
     } else {
         gfx::Disable(gfx::Texture2D);
         gfx::TexMatrixMatcap(false);
         gfx::TexGenSphere(false);
         gfx::TexEnvReplace(false);
-        if (uv) gfx::TexCoordPointer2f(0, uv);
+        if (uv) { if (vboRenderActivo && vboUV) gfx::TexCoordVBO(vboUV); else gfx::TexCoordPointer2f(0, uv); }
     }
 
     // normales: las sube la LUZ y el SPHERE-MAP por HARDWARE (texgen genera las UV de la normal). El MATCAP por
@@ -409,6 +413,22 @@ void Mesh::ConstruirColorPeso(int grupo) {
         weightPaintColor[(size_t)i*4+0] = r; weightPaintColor[(size_t)i*4+1] = g;
         weightPaintColor[(size_t)i*4+2] = b; weightPaintColor[(size_t)i*4+3] = 255;
     }
+}
+
+// Sube (o actualiza) los VBOs de render con los arrays ACTUALES. soloPose=true -> re-sube SOLO pos/nor (cambio la
+// pose de skinning; col/uv/idx son estaticos y no se re-suben). Crea cada buffer on-demand. posBuf/norBuf = lo que
+// realmente se dibuja (vertex o skinVertex; normals o skinNormals).
+void Mesh::SubirVBO(const GLfloat* posBuf, const GLbyte* norBuf, bool soloPose) {
+    namespace gfx = w3dEngine;
+    if (!posBuf || vertexSize <= 0) return;
+    if (!vboPos) vboPos = gfx::GenBuffer();
+    gfx::ArrayBufferData(vboPos, posBuf, vertexSize * 3 * (int)sizeof(GLfloat));
+    if (norBuf) { if (!vboNor) vboNor = gfx::GenBuffer(); gfx::ArrayBufferData(vboNor, norBuf, vertexSize * 3 * (int)sizeof(GLbyte)); }
+    vboVertN = vertexSize;
+    if (soloPose) return; // solo la pose de skinning cambio -> col/uv/idx (estaticos) no se re-suben
+    if (vertexColor) { if (!vboCol) vboCol = gfx::GenBuffer(); gfx::ArrayBufferData(vboCol, vertexColor, vertexSize * 4 * (int)sizeof(GLubyte)); }
+    if (uv)          { if (!vboUV)  vboUV  = gfx::GenBuffer(); gfx::ArrayBufferData(vboUV,  uv,          vertexSize * 2 * (int)sizeof(GLfloat)); }
+    if (faces && facesSize > 0) { if (!vboIdx) vboIdx = gfx::GenBuffer(); gfx::IndexBufferData(vboIdx, faces, facesSize * (int)sizeof(MeshIndex)); vboIdxN = facesSize; }
 }
 
 void Mesh::RenderObject() {
@@ -617,6 +637,30 @@ void Mesh::RenderObject() {
         } else {
         if (editActiva) { gfx::Enable(gfx::PolygonOffsetFill); gfx::PolygonOffset(2.0f, 4.0f); }
 
+        // FAST PATH VBO: la malla se dibuja desde memoria de GPU en vez de re-transferir los client-arrays por frame
+        // -> gran salto de FPS orbitando (el MBX del N95 no re-lee el bus). Se sube 1 vez (o al cambiar geometria/pose)
+        // y se bindean los VBOs (override de los punteros client). Cubre Solid Y Material Preview con materiales SIMPLES
+        // (sin chrome/normalmap/capas, que re-bindean arrays por-corner -> esos quedan client-side). Bordes/overlays/gen
+        // tambien siguen client-side. Fallback total si el driver no tiene VBOs (VBOSoportado()==false).
+        bool anyFancy = false;
+        if (!solido) for (size_t gg = 0; gg < materialsGroup.size(); gg++){ Material* mt = materialsGroup[gg].material;
+            if (mt && (mt->chrome || mt->normalMap || !mt->capas.empty())) { anyFancy = true; break; } }
+        bool drawVBO = false;
+        if (gfx::VBOSoportado() && !useGen && !weightPaintOn && !editActiva && !anyFancy && faces && facesSize >= 3) {
+            unsigned geomVer = skinGeomVersion;
+            if (vboGeomVer != geomVer || vboVertN != vertexSize || !vboPos) { SubirVBO(posBuf, norBuf, false); vboGeomVer = geomVer; vboSkinFrame = lastSkinFrame; }
+            else if (skinArmature && vboSkinFrame != lastSkinFrame)         { SubirVBO(posBuf, norBuf, true);  vboSkinFrame = lastSkinFrame; }
+            if (vboPos && vboIdx) {
+                gfx::VertexVBO(vboPos);
+                if (norBuf && vboNor)      gfx::NormalVBO(vboNor);
+                if (vertexColor && vboCol) gfx::ColorVBO(vboCol);
+                if (uv && vboUV)           gfx::TexCoordVBO(vboUV);
+                gfx::BindIndexVBO(vboIdx);
+                drawVBO = true;
+            }
+        }
+        vboRenderActivo = drawVBO; // AplicarMaterial bindea el uv VBO (no client-uv) mientras esto este activo
+
         size_t ng = useGen ? genMaterialsGroup.size() : materialsGroup.size();
         for (size_t g = 0; g < ng; g++) {
             const MaterialGroup& grp = useGen ? genMaterialsGroup[g] : materialsGroup[g];
@@ -668,6 +712,8 @@ void Mesh::RenderObject() {
                 gfx::DrawTrianglesArrayFrom(materialsGroup[g].startDrawn, materialsGroup[g].indicesDrawnCount);
                 gfx::VertexPointer3f(0, posBuf); // re-bindea las posiciones INDEXADAS para el resto/proximo grupo
                 ultimo = NULL;                   // el puntero de UV cambio -> re-AplicarMaterial el proximo grupo
+            } else if (drawVBO) {
+                gfx::DrawTrianglesVBO(materialsGroup[g].indicesDrawnCount, materialsGroup[g].startDrawn); // desde el IBO (GPU)
             } else {
                 gfx::DrawTriangles(materialsGroup[g].indicesDrawnCount,
                                    &faces[materialsGroup[g].startDrawn]);
@@ -715,6 +761,7 @@ void Mesh::RenderObject() {
                 ultimo = NULL; // la textura/blend cambio -> re-AplicarMaterial el proximo grupo
             }
         }
+        if (drawVBO) { gfx::UnbindVBOs(); vboRenderActivo = false; } // volver a client-side (bordes/overlays/proximas mallas usan RAM)
         } // fin del relleno normal (else de xrayEdit)
 
         gfx::Disable(gfx::PolygonOffsetFill);

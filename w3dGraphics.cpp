@@ -33,6 +33,51 @@
     #define GL_MULTISAMPLE 0x809D // GL 1.3/ES1: apagar el MSAA durante el color-ID pick
 #endif
 
+// ---- BUFFER OBJECTS (VBO/IBO): enums GL 1.5/ES1.1 (el GL/gl.h de escritorio 1.1 no los trae) ----
+#ifndef GL_ARRAY_BUFFER
+    #define GL_ARRAY_BUFFER 0x8892
+#endif
+#ifndef GL_ELEMENT_ARRAY_BUFFER
+    #define GL_ELEMENT_ARRAY_BUFFER 0x8893
+#endif
+#ifndef GL_STATIC_DRAW
+    #define GL_STATIC_DRAW 0x88E4
+#endif
+#include <stddef.h> // ptrdiff_t / size_t (offset de VBO)
+
+// En Symbian/GLES 1.1 los buffer objects son CORE (<GLES/gl.h> los declara). En desktop GL 1.1 (Windows, opengl32)
+// son GL 1.5 -> hay que cargar los punteros por wglGetProcAddress. Se abstrae con macros GLB_* + un flag gVBOok.
+#if defined(_WIN32) && !defined(W3D_SYMBIAN)
+    typedef void (APIENTRY *W3D_PFNGENBUF)(GLsizei, GLuint*);
+    typedef void (APIENTRY *W3D_PFNDELBUF)(GLsizei, const GLuint*);
+    typedef void (APIENTRY *W3D_PFNBINDBUF)(GLenum, GLuint);
+    typedef void (APIENTRY *W3D_PFNBUFDATA)(GLenum, ptrdiff_t, const void*, GLenum);
+    static W3D_PFNGENBUF  w3d_glGenBuffers    = 0;
+    static W3D_PFNDELBUF  w3d_glDeleteBuffers = 0;
+    static W3D_PFNBINDBUF w3d_glBindBuffer    = 0;
+    static W3D_PFNBUFDATA w3d_glBufferData    = 0;
+    static bool w3d_vboLoaded = false, w3d_vboOk = false;
+    static void w3d_CargarVBO(){
+        if (w3d_vboLoaded) return; w3d_vboLoaded = true;
+        w3d_glGenBuffers    = (W3D_PFNGENBUF) wglGetProcAddress("glGenBuffers");
+        w3d_glDeleteBuffers = (W3D_PFNDELBUF) wglGetProcAddress("glDeleteBuffers");
+        w3d_glBindBuffer    = (W3D_PFNBINDBUF)wglGetProcAddress("glBindBuffer");
+        w3d_glBufferData    = (W3D_PFNBUFDATA)wglGetProcAddress("glBufferData");
+        w3d_vboOk = w3d_glGenBuffers && w3d_glDeleteBuffers && w3d_glBindBuffer && w3d_glBufferData;
+    }
+    #define GLB_GEN    w3d_glGenBuffers
+    #define GLB_DEL    w3d_glDeleteBuffers
+    #define GLB_BIND   w3d_glBindBuffer
+    #define GLB_DATA   w3d_glBufferData
+#else
+    static bool w3d_vboOk = true;         // GLES 1.1 / ES2: core
+    static void w3d_CargarVBO(){}
+    #define GLB_GEN    glGenBuffers
+    #define GLB_DEL    glDeleteBuffers
+    #define GLB_BIND   glBindBuffer
+    #define GLB_DATA   glBufferData
+#endif
+
 namespace w3dEngine {
 
 // ============================================================================
@@ -402,6 +447,28 @@ void ColorPointer4ub(const unsigned char* p)            { glColorPointer(4, GL_U
 void NormalPointer3b(const signed char* p)              { glNormalPointer(GL_BYTE, 0, p); }
 void TexCoordPointer2f(int strideBytes, const float* p) { glTexCoordPointer(2, GL_FLOAT, strideBytes, p); }
 void TexCoordPointer3b(const signed char* p)            { glTexCoordPointer(3, GL_BYTE, 0, p); } // normales como texcoords (matcap HW)
+
+// ---- BUFFER OBJECTS (VBO/IBO): subir 1 vez, dibujar desde GPU (ver w3dGraphics.h) ----
+bool VBOSoportado(){ w3d_CargarVBO(); return w3d_vboOk; }
+unsigned int GenBuffer(){ w3d_CargarVBO(); if (!w3d_vboOk) return 0; GLuint b = 0; GLB_GEN(1, &b); return (unsigned int)b; }
+void DeleteBuffer(unsigned int h){ if (h && w3d_vboOk){ GLuint b = (GLuint)h; GLB_DEL(1, &b); } }
+void ArrayBufferData(unsigned int h, const void* data, int bytes){
+    if (!w3d_vboOk || !h) return; GLB_BIND(GL_ARRAY_BUFFER, (GLuint)h); GLB_DATA(GL_ARRAY_BUFFER, (ptrdiff_t)bytes, data, GL_STATIC_DRAW); }
+void IndexBufferData(unsigned int h, const void* data, int bytes){
+    if (!w3d_vboOk || !h) return; GLB_BIND(GL_ELEMENT_ARRAY_BUFFER, (GLuint)h); GLB_DATA(GL_ELEMENT_ARRAY_BUFFER, (ptrdiff_t)bytes, data, GL_STATIC_DRAW); }
+void VertexVBO(unsigned int h){ GLB_BIND(GL_ARRAY_BUFFER, (GLuint)h); glVertexPointer(3, GL_FLOAT, 0, (const GLvoid*)0); }
+void NormalVBO(unsigned int h){ GLB_BIND(GL_ARRAY_BUFFER, (GLuint)h); glNormalPointer(GL_BYTE, 0, (const GLvoid*)0); }
+void ColorVBO(unsigned int h){ GLB_BIND(GL_ARRAY_BUFFER, (GLuint)h); glColorPointer(4, GL_UNSIGNED_BYTE, 0, (const GLvoid*)0); }
+void TexCoordVBO(unsigned int h){ GLB_BIND(GL_ARRAY_BUFFER, (GLuint)h); glTexCoordPointer(2, GL_FLOAT, 0, (const GLvoid*)0); }
+void BindIndexVBO(unsigned int h){ GLB_BIND(GL_ELEMENT_ARRAY_BUFFER, (GLuint)h); }
+void DrawTrianglesVBO(int count, int firstIndex){
+#if defined(W3D_SYMBIAN) || defined(__ANDROID__)
+    glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_SHORT, (const GLvoid*)(size_t)(firstIndex * 2)); // 16-bit
+#else
+    glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_INT, (const GLvoid*)(size_t)(firstIndex * 4));   // 32-bit
+#endif
+}
+void UnbindVBOs(){ if (!w3d_vboOk) return; GLB_BIND(GL_ARRAY_BUFFER, 0); GLB_BIND(GL_ELEMENT_ARRAY_BUFFER, 0); }
 
 // ---- dibujo de triangulos indexados ----
 void DrawTriangles(int count, const MeshIndex* indices) {
