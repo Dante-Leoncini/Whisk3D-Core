@@ -94,6 +94,19 @@ static Matrix4 MatrizNodeToYup(){
 void PrepararSkin(Armature* a){
     if (!a) return;
     size_t N = a->bones.size();
+    // glTF: modelo LIMPIO. La inverseBindMatrix ya viene dada por el importador (skinInvBind) y el bind global tambien.
+    // FK estandar en Y-up -> skinMatrix = worldFK * inverseBindMatrix. Sin NyInv, sin reconstruccion, sin biped.
+    if (a->skinGltf){
+        for (size_t i = 0; i < N; i++){ W3dBone& b = a->bones[i];
+            b.hasSkin = b.hasRest;
+            if (!b.hasSkin){ b.skinA.Identity(); b.skinInvBind.Identity(); b.skinMatrix.Identity(); b.tlNode.Identity(); continue; }
+            b.tlNode = b.bind;        // bind global (rest), por si algo lo consulta
+            b.skinA = b.skinInvBind;  // g_skinFormula 1 usa skinA; ambos = inverseBindMatrix
+            b.skinMatrix.Identity();
+        }
+        a->skinReconstruirFK = false; a->skinUsaBind = true;
+        return;
+    }
     std::vector<Matrix4> local(N);
     for (size_t i = 0; i < N; i++) local[i] = LocalDe(a->bones[i]);
     Matrix4 Ny = MatrizNodeToYup(), NyInv = Ny.Inverse();
@@ -165,6 +178,7 @@ void PrepararSkin(Armature* a){
         float ls[3];
         for (int c = 0; c < 3; c++) ls[c] = sqrtf(m.m[c*4]*m.m[c*4] + m.m[c*4+1]*m.m[c*4+1] + m.m[c*4+2]*m.m[c*4+2]);
         float s = (ls[0] + ls[1] + ls[2]) / 3.0f; if (s < 1e-8f) s = 1.0f; // escala uniforme del figure
+        if (i == 0) a->figureScale = s; // guardar la escala del figure (uniforme) para meter la traslacion animada
         for (int c = 0; c < 3; c++) if (ls[c] > 1e-8f){ m.m[c*4]/=ls[c]; m.m[c*4+1]/=ls[c]; m.m[c*4+2]/=ls[c]; }
         m.m[12]/=s; m.m[13]/=s; m.m[14]/=s; // la POSICION tambien: sino el esqueleto queda 85x mas grande que la malla
     }
@@ -222,6 +236,7 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
     if (!frameChanged && !a->poseDirty) return;
     a->lastPoseFrame = frame; a->lastPoseAnim = animPlay;
     a->poseDirty = false;
+    a->poseSerial++; // la pose se RECALCULA -> las mallas skinneadas re-deforman/re-suben el VBO aunque el frame no cambie
     // por defecto: rest (poseHead/poseTail = head/tail bind)
     for (size_t i = 0; i < a->bones.size(); i++){ a->bones[i].poseHead = a->bones[i].head; a->bones[i].poseTail = a->bones[i].tail; }
     // FK solo para rigs FBX (con transforms de rest). Los armatures MANUALES (hasRest=false) se muestran en bind.
@@ -260,10 +275,27 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
             // tlNode ya viene NORMALIZADO (escala 1) desde PrepararSkin -> Lcorrect y el delta trabajan en escala 1.
             Matrix4 Lcorrect = (b.parent >= 0 && b.parent < (int)N)
                              ? a->bones[b.parent].tlNode.Inverse() * b.tlNode : b.tlNode;
-            // la animacion se aplica como DELTA de ROTACION del Lcl (restR->poseR) sobre el rest reconstruido. Solo la
-            // rotacion (las Lcl translations del biped son ~0); el preRot se cancela. En rest -> local = Lcorrect.
-            Matrix4 deltaRot = MatRotEuler(b.restR, b.rotOrder).Inverse() * MatRotEuler(b.poseR, b.rotOrder);
-            local[i] = Lcorrect * deltaRot;
+            // ROTACION: delta del Lcl (restR->poseR). PERO el bind (TL) y el rest-Lcl NO orientan igual el hueso: la
+            // orientacion Q de Lcorrect (del TransformLink) difiere de MatRotEuler(restR) hasta ~20 deg en las EXTREMIDADES
+            // (bind-pose != rest-pose, tipico de rigs de juego). El delta se APLICA en el frame del bind (Q) pero se CALCULA
+            // en el frame Lcl (restR): si difieren, el eje del delta sale rotado -> negligible en rest/walk (rotacion chica)
+            // pero CATASTROFICO en caidas/ataques (rotacion grande) -> el esqueleto se abre y la malla se desarma. Fix:
+            // conjugar el delta por la correccion fija C = inv(Rrest)*Q -> delta expresado en el frame del bind. En rest
+            // (poseR=restR) el delta es identidad -> local = Lcorrect (reproduce el TL exacto).
+            Matrix4 deltaR = MatRotEuler(b.restR, b.rotOrder).Inverse() * MatRotEuler(b.poseR, b.rotOrder);
+            Matrix4 Q; Q.Identity(); // orientacion pura del bind (columnas de Lcorrect normalizadas, sin traslacion)
+            for (int c = 0; c < 3; c++){ float l = sqrtf(Lcorrect.m[c*4]*Lcorrect.m[c*4] + Lcorrect.m[c*4+1]*Lcorrect.m[c*4+1] + Lcorrect.m[c*4+2]*Lcorrect.m[c*4+2]);
+                if (l < 1e-6f) l = 1.0f; Q.m[c*4] = Lcorrect.m[c*4]/l; Q.m[c*4+1] = Lcorrect.m[c*4+1]/l; Q.m[c*4+2] = Lcorrect.m[c*4+2]/l; }
+            Matrix4 C = MatRotEuler(b.restR, b.rotOrder).Inverse() * Q; // correccion fija bind(TL) vs rest(Lcl)
+            Matrix4 deltaRot = C.Inverse() * deltaR * C;
+            // TRASLACION: la traslacion Lcl animada (poseT-restT) es el ROOT MOTION (la raiz avanza/baja al caminar).
+            // La Lcl viene en la MISMA escala que el esqueleto reconstruido (el tlNode ya se dividio por figureScale en
+            // PrepararSkin -> escala de la malla; la Lcl rest/anim tambien esta en esa escala, ~decenas). Se aplica
+            // CRUDA: sin esto el personaje FLOTA (root motion aplastado ~100x). En rest (poseT=restT) el delta es 0; los
+            // huesos rigidos del biped tienen poseT~restT -> solo la RAIZ (Bip01) traslada.
+            Vector3 dt = b.poseT - b.restT;
+            Matrix4 Tdelta; Tdelta.Identity(); Tdelta.m[12] = dt.x; Tdelta.m[13] = dt.y; Tdelta.m[14] = dt.z;
+            local[i] = Tdelta * Lcorrect * deltaRot;
         } else {
             local[i] = LocalMat(b.poseT, b.poseR, b.poseS, b.preRot, b.rotOrder); // FK desde la POSE (editable)
         }
@@ -289,8 +321,9 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
                                                         : headNode[i] + Vector3(0, 0, 5); }
     }
     for (size_t i = 0; i < N; i++){
-        a->bones[i].poseHead = NodeToYup(headNode[i]);
-        a->bones[i].poseTail = NodeToYup(tailNode[i]);
+        // glTF ya viene Y-up (el FK trabaja en espacio escena) -> sin NodeToYup. FBX trabaja en espacio nodo Z-up -> convierte.
+        a->bones[i].poseHead = a->skinGltf ? headNode[i] : NodeToYup(headNode[i]);
+        a->bones[i].poseTail = a->skinGltf ? tailNode[i] : NodeToYup(tailNode[i]);
     }
 }
 
@@ -395,7 +428,10 @@ void SkinearMesh(Mesh* m){
     if (!m || !m->skinArmature || !m->vertex || m->vertexSize <= 0) return;
     Armature* a = m->skinArmature;
     EvaluarPoseEsqueleto(a, CurrentFrame); // asegura skinMatrix de cada hueso al frame actual (cacheado)
-    if (m->lastSkinFrame == CurrentFrame && m->skinVertex) return; // ya skinneado este frame
+    // ya skinneado para ESTA pose? cache por (frame, poseSerial): si la pose se recalculo (posar/elegir clip en el mismo
+    // frame) el serial cambio -> re-skinnea aunque el frame sea el mismo (antes solo miraba el frame -> quedaba stale).
+    if (m->lastSkinFrame == CurrentFrame && m->skinPoseSerial == a->poseSerial && m->skinVertex) return;
+    m->skinPoseSerial = a->poseSerial;
     // ---- CACHE de vertex-animation: reproducir el snapshot si esta bakeado; si no, skinnear y guardarlo (lazy) ----
     int slotAGuardar = -1;
     if (m->skinCacheOn){

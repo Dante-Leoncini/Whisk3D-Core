@@ -157,8 +157,12 @@ class Mesh : public Object {
         int       skinVertexCap;// floats reservados en skinVertex (realloc si vertexSize cambia -> evita overflow)
         bool      skinConLuz;   // el render lo prende si algun meshpart tiene luz (sino no vale la pena rotar normales)
         int       lastSkinFrame;// cache: no re-skinnea si el frame no cambio
+        unsigned  skinPoseSerial;// poseSerial del armature con el que se calculo skinVertex; si cambia (posar/elegir clip
+                                 // en el MISMO frame) se re-skinnea aunque lastSkinFrame no cambie
         std::vector<GLfloat> skinBordesBuf; // contorno/overlay deformado (edges con skinVertex); cache por frame
         int       lastSkinBordesFrame;      // cache del contorno skinneado
+        unsigned  skinBordesPoseSerial;     // poseSerial con el que se calculo el contorno; si cambia (posar/elegir clip
+                                            // en el mismo frame) se recalcula el borde (sino la silueta flota en bind)
         // CACHE CSR de pesos por CONTROL-POINT (no por render-vert): se arma UNA vez, no por frame. Un mesh de juego
         // duplica cada control-point en varios render-verts por seams de UV/normal/material (banana: 42840 render pero
         // solo 7186 CP = 6x). Los render-verts de un mismo CP comparten bind + pesos -> el MISMO skinning. Por eso el
@@ -195,6 +199,8 @@ class Mesh : public Object {
         int          vboSkinFramePrev; // lastSkinFrame del render ANTERIOR: detecta si la pose esta cambiando ACTIVAMENTE
                                        // (animando) -> se dibuja de client-array para NO re-especificar el VBO cada frame
                                        // (el re-spec del buffer que el tiler MBX todavia lee = STALL de sync = jitter de fps)
+        unsigned     vboPoseSerial;    // poseSerial subido al VBO de pos/nor (se re-sube si cambia; capta posar/elegir clip
+        unsigned     vboPoseSerialPrev;// en el mismo frame, donde vboSkinFrame no alcanzaba). Prev = el del render anterior.
         int          vboVertN, vboIdxN; // cantidades subidas (para no re-crear si no cambio el tamaño)
         bool         vboRenderActivo; // true mientras se dibuja desde VBOs -> AplicarMaterial bindea el uv VBO (no client-uv)
         bool         vboPoseSkinneada; // el VBO de posiciones tiene una pose DEFORMADA subida? -> al quitar el armature

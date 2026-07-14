@@ -1,7 +1,7 @@
 #include "Animation.h"
 #include "SkeletalAnimation.h"   // clips de armature (startFrame/endFrame/FrameRate) para el rango por animacion
 #include "objects/Armature.h"    // ActiveAnimArm->animations / animActiva
-#include <cstdio> // std::snprintf (nombre unico de escena)
+#include <stdio.h> // sprintf GLOBAL (nombre unico de escena); Symbian/STLport no tiene std::snprintf
 
 // Variables globales
 bool PlayAnimation = false;   // arranca PAUSADO (el timeline lo togglea con Play)
@@ -47,7 +47,7 @@ int NuevaEscena() {
     // nombre unico "Scene N"
     std::string nombre;
     for (int n = 2; ; n++) {
-        char buf[32]; std::snprintf(buf, sizeof(buf), "Scene %d", n);
+        char buf[32]; sprintf(buf, "Scene %d", n); // sprintf GLOBAL: Symbian/STLport no tiene std::snprintf
         nombre = buf; bool usado = false;
         for (size_t i = 0; i < SceneAnimations.size(); i++) if (SceneAnimations[i]->name == nombre) { usado = true; break; }
         if (!usado) break;

@@ -68,13 +68,20 @@ class Armature : public Object {
         bool skinReconstruirFK; // true = el Lcl-FK es DEGENERADO (restT ~0 -> se colapsa; biped 3ds Max nani/barney): el
                            // rest local se reconstruye del TransformLink (inv(tlNode_padre)*tlNode) y la animacion se
                            // aplica como DELTA del Lcl. Sin esto el FK sale ~100x chico y la malla se rompe al animar.
+        bool skinGltf;     // true = esqueleto importado de glTF: FK ESTANDAR en Y-up con skinInvBind = inverseBindMatrix
+                           // dada (sin NodeToYup, sin reconstruccion). El modelo de glTF es limpio -> skinMatrix = world*IBM.
         bool poseDirty;    // true = la pose fue editada a mano (posando) -> re-evaluar FK sin refrescar desde la curva
         int boneActivo;    // hueso seleccionado/activo en Pose Mode (-1 = ninguno); indice en bones[]
         int lastPoseFrame; // cache de pose: NO se recalcula la deformacion si el frame (y el clip) no cambiaron
         int lastPoseAnim;
+        float figureScale; // (biped skinReconstruirFK) escala del FIGURE bakeada en el TL, con la que se NORMALIZO el
+                           // tlNode en PrepararSkin (skeleton a escala de la malla). 1 = sin escala. Solo diagnostico.
+        unsigned poseSerial; // sube cada vez que EvaluarPoseEsqueleto RECALCULA la pose (frame nuevo, clip nuevo, o posar
+                           // a mano). La malla re-skinnea y re-sube su VBO cuando cambia -> se ve al toque aunque el FRAME
+                           // no cambie (antes: cache por # de frame -> posar/elegir clip en el mismo frame no refrescaba).
 
         Armature(Object* parent = NULL, Vector3 pos = Vector3(0, 0, 0))
-            : Object(parent, "Armature", pos), animActiva(-1), skinUsaBind(false), skinReconstruirFK(false), poseDirty(false), boneActivo(-1), lastPoseFrame(-999999), lastPoseAnim(-999) {}
+            : Object(parent, "Armature", pos), animActiva(-1), skinUsaBind(false), skinReconstruirFK(false), skinGltf(false), poseDirty(false), boneActivo(-1), lastPoseFrame(-999999), lastPoseAnim(-999), figureScale(1.0f), poseSerial(1) {}
         ~Armature() override; // libera los clips (animations)
 
         ObjectType getType() override { return ObjectType::armature; }

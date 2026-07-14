@@ -1,4 +1,5 @@
 #include "Mesh.h"
+#include "objects/Armature.h" // skinArmature->poseSerial (gate del VBO skinneado por pose, no por frame)
 #include "w3dGraphics.h"    // abstraccion de graficos del engine (sin GL)
 #include "CameraBase.h"     // g_renderCamPos (camara del render, para el chrome equirect)
 #include "RenderColors.h"   // paleta de render del CORE (sin depender de la UI)
@@ -25,7 +26,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     //MUCHAS de estas definiciones se van a borrar. ya que NO son la base y son cosas mas relacionadas al editor 3d....
     //ejemplo: "edit" o "modificadorActivo" etc... eso es del Editor de Whisk3D
 
-    skinArmature = NULL; skinVertex = NULL; skinNormals = NULL; skinVertexCap = 0; skinConLuz = true; lastSkinFrame = -999999; lastSkinBordesFrame = -999999; skinFlatSig = 0; skinNCtrl = 0; skinGeomVersion = 1; // skinning apagado por defecto
+    skinArmature = NULL; skinVertex = NULL; skinNormals = NULL; skinVertexCap = 0; skinConLuz = true; lastSkinFrame = -999999; skinPoseSerial = 0; lastSkinBordesFrame = -999999; skinBordesPoseSerial = 0; skinFlatSig = 0; skinNCtrl = 0; skinGeomVersion = 1; // skinning apagado por defecto
     skinCacheOn = false; skinCacheSkip = 0; skinCacheStart = 0; skinCacheEnd = -1; skinCacheConLuz = false; skinCacheSig = 0; // cache de vertex-animation (lazy, off)
     meshTipo = -1;       // no es una primitiva regenerable por defecto
     meshSize = 2.0f;
@@ -47,7 +48,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     chromeExpPos = NULL; chromeExpUV = NULL; chromeExpCount = 0; chromeUVValid = false; chromeCacheEq = true; // reflejo (lazy)
     genChromeExpPos = NULL; genChromeExpUV = NULL; genChromeCount = 0; genChromeValid = false; // reflejo de la malla generada (lazy)
     tangents = NULL; nmColors = NULL; tangentsValid = false; // normal mapping (lazy)
-    vboPos = vboNor = vboCol = vboUV = vboIdx = 0; vboGeomVer = 0; vboSkinFrame = -999999; vboSkinFramePrev = -999999; vboVertN = 0; vboIdxN = 0; vboRenderActivo = false; vboPoseSkinneada = false; // VBOs (lazy)
+    vboPos = vboNor = vboCol = vboUV = vboIdx = 0; vboGeomVer = 0; vboSkinFrame = -999999; vboSkinFramePrev = -999999; vboPoseSerial = 0; vboPoseSerialPrev = 0; vboVertN = 0; vboIdxN = 0; vboRenderActivo = false; vboPoseSkinneada = false; // VBOs (lazy)
 }
 
 // ===================================================
@@ -660,22 +661,26 @@ void Mesh::RenderObject() {
         bool drawVBO = false;
         if (gfx::VBOSoportado() && !useGen && !weightPaintOn && !editActiva && !anyFancy && faces && facesSize >= 3) {
             unsigned geomVer = skinGeomVersion;
+            unsigned poseSer = skinArmature ? skinArmature->poseSerial : 0u; // pose ACTUAL del esqueleto (sube al posar/animar)
             // atributos ESTATICOS (col/uv/idx + pos/nor base): re-subir solo al cambiar la geometria
-            if (vboGeomVer != geomVer || vboVertN != vertexSize || !vboPos) { SubirVBO(posBuf, norBuf, false); vboGeomVer = geomVer; vboSkinFrame = lastSkinFrame; vboPoseSkinneada = (skinArmature != NULL); }
-            // POSE skinneada: el VBO de pos/nor ya tiene la pose ACTUAL?
-            bool poseEnVBO = (!skinArmature) || (vboSkinFrame == lastSkinFrame);
+            if (vboGeomVer != geomVer || vboVertN != vertexSize || !vboPos) { SubirVBO(posBuf, norBuf, false); vboGeomVer = geomVer; vboSkinFrame = lastSkinFrame; vboPoseSerial = poseSer; vboPoseSkinneada = (skinArmature != NULL); }
+            // POSE skinneada: el VBO de pos/nor ya tiene la pose ACTUAL? Se compara por SERIAL, no por # de frame: posar
+            // un hueso o elegir un clip en el MISMO frame cambia la pose sin cambiar el frame -> el chequeo por frame la
+            // daba por "ya subida" y quedaba la malla STALL (el bug: el esqueleto se movia pero la malla no).
+            bool poseEnVBO = (!skinArmature) || (vboPoseSerial == poseSer);
             if (skinArmature && !poseEnVBO) {
                 // la pose cambio desde la ultima subida. Si esta ANIMANDO (cambio TAMBIEN desde el render anterior) NO
                 // re-subimos: re-especificar el VBO que el tiler del MBX todavia lee del frame previo = STALL de sync
                 // (la causa del jitter de fps). Se dibuja pos/nor de client-array este frame (mismo transfer, sin stall).
                 // Cuando la anim se ASIENTA (pose estable entre 2 renders) subimos 1 vez y volvemos al VBO (recupera el
                 // beneficio de orbitar un personaje pausado).
-                bool animandoActivo = (lastSkinFrame != vboSkinFramePrev);
-                if (!animandoActivo) { SubirVBO(posBuf, norBuf, true); vboSkinFrame = lastSkinFrame; vboPoseSkinneada = true; poseEnVBO = true; }
+                bool animandoActivo = (poseSer != vboPoseSerialPrev);
+                if (!animandoActivo) { SubirVBO(posBuf, norBuf, true); vboSkinFrame = lastSkinFrame; vboPoseSerial = poseSer; vboPoseSkinneada = true; poseEnVBO = true; }
             } else if (!skinArmature && vboPoseSkinneada) {
                 SubirVBO(posBuf, norBuf, true); vboPoseSkinneada = false; // armature removido -> re-subir el bind (sino queda la ultima pose)
             }
             vboSkinFramePrev = lastSkinFrame;
+            vboPoseSerialPrev = poseSer;
             if (vboPos && vboIdx && poseEnVBO) {
                 gfx::VertexVBO(vboPos);
                 if (norBuf && vboNor)      gfx::NormalVBO(vboNor);
@@ -830,7 +835,9 @@ void Mesh::RenderBordes(const float* color, float width, bool pushBack) {
     // contorno solo se dibuja al seleccionar, y skinArmature es NULL cuando "Display in Edit Mode" esta OFF en edit.
     if (!usaGen && skinArmature && skinVertex && !edges.empty()){
         extern int CurrentFrame;
-        if (lastSkinBordesFrame != CurrentFrame || (int)skinBordesBuf.size() != (int)edges.size()*3){
+        // gate por (frame, poseSerial): al elegir un clip o posar en el MISMO frame la pose cambia sin cambiar el frame
+        // -> sin el serial el contorno se quedaba en la pose vieja (flotando) hasta el play.
+        if (lastSkinBordesFrame != CurrentFrame || skinBordesPoseSerial != skinArmature->poseSerial || (int)skinBordesBuf.size() != (int)edges.size()*3){
             skinBordesBuf.resize(edges.size()*3);
             int nv = vertexSize; // cantidad de vertices
             for (size_t e = 0; e + 1 < edges.size(); e += 2){
@@ -858,6 +865,7 @@ void Mesh::RenderBordes(const float* color, float width, bool pushBack) {
                 skinBordesBuf[e*3+3]=skinVertex[b*3]; skinBordesBuf[e*3+4]=skinVertex[b*3+1]; skinBordesBuf[e*3+5]=skinVertex[b*3+2];
             }
             lastSkinBordesFrame = CurrentFrame;
+            skinBordesPoseSerial = skinArmature->poseSerial;
         }
         bufPtr = &skinBordesBuf; restore = skinVertex;
     }
