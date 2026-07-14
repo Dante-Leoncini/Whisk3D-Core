@@ -65,13 +65,16 @@ class Armature : public Object {
         std::vector<SkeletalAnimation*> animations;
         int animActiva;    // clip activo (-1 = ninguno)
         bool skinUsaBind;  // true = usar el TransformLink real del FBX como bind (rigs estandar); false = FK-rest (LISA: TL en cero)
+        bool skinReconstruirFK; // true = el Lcl-FK es DEGENERADO (restT ~0 -> se colapsa; biped 3ds Max nani/barney): el
+                           // rest local se reconstruye del TransformLink (inv(tlNode_padre)*tlNode) y la animacion se
+                           // aplica como DELTA del Lcl. Sin esto el FK sale ~100x chico y la malla se rompe al animar.
         bool poseDirty;    // true = la pose fue editada a mano (posando) -> re-evaluar FK sin refrescar desde la curva
         int boneActivo;    // hueso seleccionado/activo en Pose Mode (-1 = ninguno); indice en bones[]
         int lastPoseFrame; // cache de pose: NO se recalcula la deformacion si el frame (y el clip) no cambiaron
         int lastPoseAnim;
 
         Armature(Object* parent = NULL, Vector3 pos = Vector3(0, 0, 0))
-            : Object(parent, "Armature", pos), animActiva(-1), skinUsaBind(false), poseDirty(false), boneActivo(-1), lastPoseFrame(-999999), lastPoseAnim(-999) {}
+            : Object(parent, "Armature", pos), animActiva(-1), skinUsaBind(false), skinReconstruirFK(false), poseDirty(false), boneActivo(-1), lastPoseFrame(-999999), lastPoseAnim(-999) {}
         ~Armature() override; // libera los clips (animations)
 
         ObjectType getType() override { return ObjectType::armature; }

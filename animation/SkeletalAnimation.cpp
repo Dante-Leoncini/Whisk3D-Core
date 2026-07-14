@@ -98,6 +98,8 @@ void PrepararSkin(Armature* a){
     for (size_t i = 0; i < N; i++) local[i] = LocalDe(a->bones[i]);
     Matrix4 Ny = MatrizNodeToYup(), NyInv = Ny.Inverse();
     int conBind = 0, totalSkin = 0;
+    // bounding de los origenes del FK-rest (Lcl) y del TransformLink -> detectar el FK DEGENERADO (biped 3ds Max)
+    Vector3 fkMn(1e9f,1e9f,1e9f), fkMx(-1e9f,-1e9f,-1e9f), tlMn(1e9f,1e9f,1e9f), tlMx(-1e9f,-1e9f,-1e9f);
     for (size_t i = 0; i < N; i++){
         W3dBone& b = a->bones[i];
         b.hasSkin = b.hasRest; // sin transforms de rest del FBX no hay FK -> no se skinnea con este hueso
@@ -141,9 +143,25 @@ void PrepararSkin(Armature* a){
         Vector3 tlt(b.tlNode.m[12], b.tlNode.m[13], b.tlNode.m[14]);
         Vector3 rwt(restWorldNode.m[12], restWorldNode.m[13], restWorldNode.m[14]);
         if ((tlt - rwt).Length() < 0.25f * rwt.Length() + 1.0f) conBind++;
+        if(rwt.x<fkMn.x)fkMn.x=rwt.x; if(rwt.y<fkMn.y)fkMn.y=rwt.y; if(rwt.z<fkMn.z)fkMn.z=rwt.z;
+        if(rwt.x>fkMx.x)fkMx.x=rwt.x; if(rwt.y>fkMx.y)fkMx.y=rwt.y; if(rwt.z>fkMx.z)fkMx.z=rwt.z;
+        if(tlt.x<tlMn.x)tlMn.x=tlt.x; if(tlt.y<tlMn.y)tlMn.y=tlt.y; if(tlt.z<tlMn.z)tlMn.z=tlt.z;
+        if(tlt.x>tlMx.x)tlMx.x=tlt.x; if(tlt.y>tlMx.y)tlMx.y=tlt.y; if(tlt.z>tlMx.z)tlMx.z=tlt.z;
     }
-    // usar el TL como bind si la MAYORIA de los huesos lo tienen CONSISTENTE con el FK-rest (banana si; barney/nani/chicken/LISA no)
-    a->skinUsaBind = (totalSkin > 0 && conBind * 2 > totalSkin);
+    // FK DEGENERADO (biped 3ds Max nani/barney): el esqueleto del Lcl-FK es MUCHO mas chico que el del TransformLink
+    // (las Lcl translations vienen ~0 -> el FK se colapsa ~100x). El TL tiene el esqueleto REAL -> reconstruir el rest
+    // desde el TL y animar por delta (ver EvaluarPoseEsqueleto). Requiere un TL VALIDO (spread > 1).
+    float fkDiag = (fkMx - fkMn).Length(), tlDiag = (tlMx - tlMn).Length();
+    a->skinReconstruirFK = (totalSkin > 0 && tlDiag > 1.0f && fkDiag < 0.25f * tlDiag);
+    // usar el TL como bind si la MAYORIA de los huesos lo tienen CONSISTENTE con el FK-rest (banana), O si el FK es
+    // degenerado (biped): en ambos casos el bind real es el TransformLink (barney/nani antes caian a FK-rest roto).
+    a->skinUsaBind = (totalSkin > 0 && conBind * 2 > totalSkin) || a->skinReconstruirFK;
+    // el TransformLink del biped trae la ESCALA del armature BAKEADA (escCols ~100). Se normaliza (escala->1)
+    // preservando posicion+orientacion, para que el FK reconstruido, el bind y el delta de animacion trabajen TODOS
+    // en escala 1. Sin esto: el delta derecha dispara los huesos (x100), o el izquierda deja la malla 100x chica.
+    if (a->skinReconstruirFK) for (size_t i = 0; i < N; i++){ Matrix4& m = a->bones[i].tlNode;
+        for (int c = 0; c < 3; c++){ float l = sqrtf(m.m[c*4]*m.m[c*4] + m.m[c*4+1]*m.m[c*4+1] + m.m[c*4+2]*m.m[c*4+2]);
+            if (l > 1e-8f){ m.m[c*4]/=l; m.m[c*4+1]/=l; m.m[c*4+2]/=l; } } }
     // BIND = TransformLink real (no el FK-rest): la malla fue skinneada en la pose del TransformLink, que puede
     // diferir de la Lcl-rest. skinMatrix = world_FK * inv(tlNode) -> malla PEGADA al hueso con el FK correcto.
     if (a->skinUsaBind){
@@ -187,18 +205,23 @@ Vector3 SkelMatrizAEulerFBX(const Matrix4& M, int /*order*/){
 
 void EvaluarPoseEsqueleto(Armature* a, int frame){
     if (!a) return;
-    // CACHE: si el frame y el clip no cambiaron Y la pose no fue editada a mano, ya esta calculada (no recalcular a
-    // 60fps). poseDirty (posando) fuerza re-FK sin refrescar poseT/R/S desde la curva.
-    bool frameChanged = (a->lastPoseFrame != frame || a->lastPoseAnim != a->animActiva);
+    // GATING de playback: este armature reproduce su clip SOLO si es la animacion ACTIVA (ActiveAnimKind 1 + este
+    // armature). Con una ESCENA activa (kind 0) o con OTRO armature activo, se muestra en REST -> "solo se mueve lo
+    // seleccionado", no todos a la vez. (Posar a mano igual anda: poseDirty corta antes de leer la curva.)
+    int animPlay = (ActiveAnimKind == 1 && ActiveAnimArm == a &&
+                    a->animActiva >= 0 && a->animActiva < (int)a->animations.size()) ? a->animActiva : -1;
+    // CACHE: si el frame y el clip efectivo no cambiaron Y la pose no fue editada a mano, ya esta calculada (no
+    // recalcular a 60fps). poseDirty (posando) fuerza re-FK sin refrescar poseT/R/S desde la curva.
+    bool frameChanged = (a->lastPoseFrame != frame || a->lastPoseAnim != animPlay);
     if (!frameChanged && !a->poseDirty) return;
-    a->lastPoseFrame = frame; a->lastPoseAnim = a->animActiva;
+    a->lastPoseFrame = frame; a->lastPoseAnim = animPlay;
     a->poseDirty = false;
     // por defecto: rest (poseHead/poseTail = head/tail bind)
     for (size_t i = 0; i < a->bones.size(); i++){ a->bones[i].poseHead = a->bones[i].head; a->bones[i].poseTail = a->bones[i].tail; }
     // FK solo para rigs FBX (con transforms de rest). Los armatures MANUALES (hasRest=false) se muestran en bind.
     bool fbxRig = !a->bones.empty() && a->bones[0].hasRest;
     if (!g_skelAnimPreview || !fbxRig) return;
-    SkeletalAnimation* clip = (a->animActiva >= 0 && a->animActiva < (int)a->animations.size()) ? a->animations[a->animActiva] : NULL;
+    SkeletalAnimation* clip = (animPlay >= 0) ? a->animations[animPlay] : NULL;
 
     size_t N = a->bones.size();
     // SCRATCH persistente (reusa la capacidad entre frames -> sin 5 allocs de heap por frame; los loops de abajo
@@ -223,7 +246,21 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
     }
     for (size_t i = 0; i < N; i++){
         W3dBone& b = a->bones[i];
-        local[i] = LocalMat(b.poseT, b.poseR, b.poseS, b.preRot, b.rotOrder); // FK desde la POSE (editable)
+        if (a->skinReconstruirFK){
+            // FK DEGENERADO (biped): el rest local se reconstruye del TransformLink (esqueleto real, sin colapsar) y la
+            // animacion se aplica como DELTA de ROTACION del Lcl (restR->poseR). Solo la rotacion: las Lcl translations
+            // y la escala del biped vienen degeneradas y contaminaban el delta (disparaban los huesos). El preRot se
+            // cancela en el delta. En rest (poseR=restR) el delta es identidad -> local = Lcorrect -> FK reproduce el TL.
+            // tlNode ya viene NORMALIZADO (escala 1) desde PrepararSkin -> Lcorrect y el delta trabajan en escala 1.
+            Matrix4 Lcorrect = (b.parent >= 0 && b.parent < (int)N)
+                             ? a->bones[b.parent].tlNode.Inverse() * b.tlNode : b.tlNode;
+            // la animacion se aplica como DELTA de ROTACION del Lcl (restR->poseR) sobre el rest reconstruido. Solo la
+            // rotacion (las Lcl translations del biped son ~0); el preRot se cancela. En rest -> local = Lcorrect.
+            Matrix4 deltaRot = MatRotEuler(b.restR, b.rotOrder).Inverse() * MatRotEuler(b.poseR, b.rotOrder);
+            local[i] = Lcorrect * deltaRot;
+        } else {
+            local[i] = LocalMat(b.poseT, b.poseR, b.poseS, b.preRot, b.rotOrder); // FK desde la POSE (editable)
+        }
     }
     // MUNDO por hueso; head animado en espacio nodo -> Y-up (el Object de la armature aplica la escala 0.01 al dibujar)
     static std::vector<Vector3> headNode, tailNode; headNode.resize(N); tailNode.resize(N);

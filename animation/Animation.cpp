@@ -1,4 +1,7 @@
 #include "Animation.h"
+#include "SkeletalAnimation.h"   // clips de armature (startFrame/endFrame/FrameRate) para el rango por animacion
+#include "objects/Armature.h"    // ActiveAnimArm->animations / animActiva
+#include <cstdio> // std::snprintf (nombre unico de escena)
 
 // Variables globales
 bool PlayAnimation = false;   // arranca PAUSADO (el timeline lo togglea con Play)
@@ -7,6 +10,93 @@ int AnimFPS = 30;             // fps de reproduccion de animaciones (default 30)
 int StartFrame = 1;
 int EndFrame = 250;
 int CurrentFrame = 1;
+
+// === Animaciones de ESCENA + seleccion de animacion activa a nivel app ===
+std::vector<SceneAnimation*> SceneAnimations;
+int SceneAnimActiva = 0;
+int ActiveAnimKind = 0;          // 0 = escena, 1 = clip de armature
+Armature* ActiveAnimArm = NULL;  // armature del clip activo (kind 1)
+
+void InitSceneAnimations() {
+    if (SceneAnimations.empty()) {
+        SceneAnimations.push_back(new SceneAnimation("Scene"));
+        SceneAnimActiva = 0;
+    }
+    if (SceneAnimActiva < 0 || SceneAnimActiva >= (int)SceneAnimations.size()) SceneAnimActiva = 0;
+}
+
+const char* NombreEscenaActiva() {
+    InitSceneAnimations();
+    return SceneAnimations[SceneAnimActiva]->name.c_str();
+}
+
+void SetEscenaActiva(int idx) {
+    InitSceneAnimations();
+    if (idx < 0 || idx >= (int)SceneAnimations.size() || idx == SceneAnimActiva) return;
+    // guardar las curvas de la escena que estaba activa; cargar las de la nueva (swap: sin copias)
+    SceneAnimations[SceneAnimActiva]->objetos.swap(AnimationObjects);
+    SceneAnimActiva = idx;
+    AnimationObjects.swap(SceneAnimations[SceneAnimActiva]->objetos);
+}
+
+int NuevaEscena() {
+    InitSceneAnimations();
+    // guardar las curvas de la escena activa (AnimationObjects queda vacio = curvas de la escena nueva)
+    SceneAnimations[SceneAnimActiva]->objetos.swap(AnimationObjects);
+    AnimationObjects.clear();
+    // nombre unico "Scene N"
+    std::string nombre;
+    for (int n = 2; ; n++) {
+        char buf[32]; std::snprintf(buf, sizeof(buf), "Scene %d", n);
+        nombre = buf; bool usado = false;
+        for (size_t i = 0; i < SceneAnimations.size(); i++) if (SceneAnimations[i]->name == nombre) { usado = true; break; }
+        if (!usado) break;
+    }
+    SceneAnimations.push_back(new SceneAnimation(nombre));
+    SceneAnimActiva = (int)SceneAnimations.size() - 1;
+    return SceneAnimActiva;
+}
+
+void RenombrarEscenaActiva(const std::string& nombre) {
+    InitSceneAnimations();
+    if (!nombre.empty()) SceneAnimations[SceneAnimActiva]->name = nombre;
+}
+
+void BorrarEscenaActiva() {
+    InitSceneAnimations();
+    if (SceneAnimations.size() <= 1) {          // siempre queda "Scene": solo se vacian sus curvas
+        AnimationObjects.clear();
+        SceneAnimations[0]->objetos.clear();
+        return;
+    }
+    delete SceneAnimations[SceneAnimActiva];    // su ->objetos esta vacio (las curvas vivas estan en AnimationObjects)
+    SceneAnimations.erase(SceneAnimations.begin() + SceneAnimActiva);
+    if (SceneAnimActiva >= (int)SceneAnimations.size()) SceneAnimActiva = (int)SceneAnimations.size() - 1;
+    AnimationObjects.clear();                    // descartar las curvas de la escena borrada
+    AnimationObjects.swap(SceneAnimations[SceneAnimActiva]->objetos); // cargar las de la escena que quedo activa
+}
+
+// ===== Start/End/FPS PROPIOS por animacion (escena o clip). Los comparten la tarjeta y el timeline. =====
+static SkeletalAnimation* AnimClipActivo(){
+    if (ActiveAnimKind == 1 && ActiveAnimArm &&
+        ActiveAnimArm->animActiva >= 0 && ActiveAnimArm->animActiva < (int)ActiveAnimArm->animations.size())
+        return ActiveAnimArm->animations[ActiveAnimArm->animActiva];
+    return NULL;
+}
+void AnimCargarRangoActivo(){
+    SkeletalAnimation* c = AnimClipActivo();
+    if (c){ StartFrame = c->startFrame; EndFrame = c->endFrame; if (c->FrameRate > 0) AnimFPS = c->FrameRate; }
+    else { InitSceneAnimations(); SceneAnimation* s = SceneAnimations[SceneAnimActiva];
+           StartFrame = s->startFrame; EndFrame = s->endFrame; AnimFPS = s->fps; }
+    if (CurrentFrame < StartFrame) CurrentFrame = StartFrame;
+    if (CurrentFrame > EndFrame && EndFrame >= StartFrame) CurrentFrame = EndFrame;
+}
+void AnimSetStart(int v){ SkeletalAnimation* c = AnimClipActivo(); if (c) c->startFrame = v;
+    else { InitSceneAnimations(); SceneAnimations[SceneAnimActiva]->startFrame = v; } StartFrame = v; }
+void AnimSetEnd(int v){ SkeletalAnimation* c = AnimClipActivo(); if (c) c->endFrame = v;
+    else { InitSceneAnimations(); SceneAnimations[SceneAnimActiva]->endFrame = v; } EndFrame = v; }
+void AnimSetFps(int v){ SkeletalAnimation* c = AnimClipActivo(); if (c) c->FrameRate = v;
+    else { InitSceneAnimations(); SceneAnimations[SceneAnimActiva]->fps = v; } AnimFPS = v; }
 
 // avanza un frame haciendo loop en [Start..End]; respeta la direccion del play
 void AnimTick() {

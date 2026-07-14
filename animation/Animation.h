@@ -113,6 +113,42 @@ public:
 // Variables globales de objetos animados
 extern std::vector<AnimationObject> AnimationObjects;
 
+// === Animacion de ESCENA: contenedor con nombre que agrupa las curvas de transform de objetos (mallas, luces,
+// camaras) de la escena. Por defecto hay una llamada "Scene"; pueden crearse mas. Las curvas de la escena ACTIVA
+// viven en el global AnimationObjects (arriba); al cambiar de escena se hace swap con la copia guardada aca. ===
+class SceneAnimation {
+public:
+    std::string name;
+    int startFrame;                       // rango + fps PROPIOS de esta escena (se cargan a los globales al activarla)
+    int endFrame;
+    int fps;
+    std::vector<AnimationObject> objetos; // curvas guardadas (vacio mientras esta es la escena activa)
+    SceneAnimation(const std::string& n) : name(n), startFrame(1), endFrame(250), fps(30) {}
+};
+extern std::vector<SceneAnimation*> SceneAnimations; // lista global de animaciones de escena
+extern int SceneAnimActiva;                          // indice de la escena activa (sus curvas estan en AnimationObjects)
+
+// Seleccion de animacion ACTIVA a nivel APP (la comparten la tarjeta Animation y el Timeline; no depende del objeto
+// seleccionado, asi clickear un armature NO cambia la animacion activa):
+//   ActiveAnimKind 0 = una animacion de ESCENA (SceneAnimations[SceneAnimActiva])
+//   ActiveAnimKind 1 = un CLIP de un armature (ActiveAnimArm y su animActiva)
+class Armature; // tipo completo en objects/Armature.h
+extern int ActiveAnimKind;
+extern Armature* ActiveAnimArm;
+
+void InitSceneAnimations();        // crea "Scene" si la lista esta vacia (idempotente)
+const char* NombreEscenaActiva();  // nombre de la escena activa
+void SetEscenaActiva(int idx);     // hace activa la escena idx (swap de curvas con AnimationObjects)
+int  NuevaEscena();                // crea una escena nueva, la deja activa, devuelve su indice
+void RenombrarEscenaActiva(const std::string& nombre);
+void BorrarEscenaActiva();         // borra la escena activa (siempre queda al menos "Scene")
+
+// Start/End/FPS PROPIOS de la animacion activa (escena o clip de armature). La comparten la tarjeta y el timeline.
+void AnimCargarRangoActivo();      // StartFrame/EndFrame/AnimFPS <- animacion activa (al seleccionarla)
+void AnimSetStart(int v);          // animacion activa.start = v; StartFrame = v
+void AnimSetEnd(int v);            // animacion activa.end   = v; EndFrame   = v
+void AnimSetFps(int v);            // animacion activa.fps   = v; AnimFPS    = v
+
 // Funciones de búsqueda
 int BuscarAnimacionObj();
 int BuscarAnimProperty(int indice, int propertySelect);

@@ -8,6 +8,9 @@
 void Armature::RenderObject() {}
 
 Armature::~Armature() {
+    // si este armature era la animacion activa a nivel app, volver a "Scene" (evita puntero colgante)
+    extern int ActiveAnimKind; extern Armature* ActiveAnimArm;
+    if (ActiveAnimArm == this) { ActiveAnimArm = NULL; ActiveAnimKind = 0; }
     for (size_t i = 0; i < animations.size(); i++) delete animations[i];
 }
 
