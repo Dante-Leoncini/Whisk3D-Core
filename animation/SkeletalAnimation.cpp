@@ -23,22 +23,10 @@ static inline float FastInvSqrt(float x){
     y = y * (1.5f - 0.5f * x * y * y);
     return y;
 }
-static Vector3 KfVal(const keyFrame& k){ return Vector3(k.valueX, k.valueY, k.valueZ); }
 
 // valor de una AnimProperty en 'frame' (interp LINEAL entre keyframes; keyframes ordenados por frame)
-static Vector3 EvalProp(const AnimProperty& ap, int frame, const Vector3& def){
-    const std::vector<keyFrame>& k = ap.keyframes;
-    if (k.empty()) return def;
-    if (frame <= k.front().frame) return KfVal(k.front());
-    if (frame >= k.back().frame)  return KfVal(k.back());
-    for (size_t i = 1; i < k.size(); i++) if (k[i].frame >= frame){
-        int f0 = k[i-1].frame, f1 = k[i].frame;
-        float t = (f1 == f0) ? 0.0f : (float)(frame - f0) / (float)(f1 - f0);
-        Vector3 a = KfVal(k[i-1]), b = KfVal(k[i]);
-        return a + (b - a) * t;
-    }
-    return KfVal(k.back());
-}
+// (la evaluacion de curvas vive en Animation.cpp: AnimProperty::Eval / EvalPropVec. Cada componente X/Y/Z es su
+//  propia curva, asi que se evaluan por separado.)
 
 static Matrix4 MatTrans(const Vector3& t){ Matrix4 m; m.Identity(); m.m[12]=t.x; m.m[13]=t.y; m.m[14]=t.z; return m; }
 static Matrix4 MatScale(const Vector3& s){ Matrix4 m; m.Identity(); m.m[0]=s.x; m.m[5]=s.y; m.m[10]=s.z; return m; }
@@ -223,6 +211,51 @@ Vector3 SkelMatrizAEulerFBX(const Matrix4& M, int /*order*/){
     return Vector3(x * R2D, y * R2D, z * R2D);
 }
 
+// APLICAR TRANSFORM (Ctrl+A) sobre un ARMATURE: hornea la matriz B (= inv(M_arm_reseteado) * M_arm) en la REST de los
+// huesos de modo que el FK mundial quede world_FK' = B * world_FK para TODOS. Como skinA/skinInvBind NO se tocan ->
+// skinMatrix' = world_FK' * skinA = B * skinMatrix, y las mallas skinneadas HIJAS del armature (deformadas en espacio
+// nodo, con el transform del objeto aplicado al dibujar) quedan IDENTICAS al resetear ese transform del objeto.
+//   - Bake en la LOCAL rest de cada ROOT (parent<0): world[i] = local[root]*...*local[i] -> reemplazar local[root] por
+//     B*local[root] escala/rota/traslada TODO el arbol. Se descompone a T/R/S (orden XYZ, preRot plegado en restR).
+//   - Biped (skinReconstruirFK, FK desde tlNode y NO desde restT/R/S): se pre-multiplican TODOS los tlNode por B (los
+//     ratios inv(padre)*hijo quedan iguales, la raiz queda B*tlNode) -> mismo world' = B*world sin tocar la rest/delta.
+// B ∈ {escala, rotacion, traslacion, o el M_arm completo} mantiene B*local como T*R*S limpio (sin shear) para rigs
+// limpios. Ejemplo tipico (escala uniforme s): restT*=s, restS*=s en los roots (la posicion y escala de los huesos, no
+// la rotacion) -> es lo que se espera al normalizar un rig que venia 100x.
+void HornearTransformEnHuesos(Armature* a, const Matrix4& B){
+    if (!a) return;
+    bool biped = a->skinReconstruirFK;
+    for (size_t i = 0; i < a->bones.size(); i++){
+        W3dBone& b = a->bones[i];
+        if (biped){
+            b.tlNode = B * b.tlNode; // FK del biped sale del tlNode -> hornear en todos (raiz=B*tl, ratios hijos intactos)
+        } else if (b.parent < 0){
+            // ROOT de un rig normal/gltf: newLocal = B * local(rest); descomponer a T/R/S (XYZ, sin preRot)
+            Matrix4 nl = B * LocalMat(b.restT, b.restR, b.restS, b.preRot, b.rotOrder);
+            Vector3 cx(nl.m[0], nl.m[1], nl.m[2]);   // columnas (rotacion*escala)
+            Vector3 cy(nl.m[4], nl.m[5], nl.m[6]);
+            Vector3 cz(nl.m[8], nl.m[9], nl.m[10]);
+            float sx = sqrtf(cx.x*cx.x + cx.y*cx.y + cx.z*cx.z);
+            float sy = sqrtf(cy.x*cy.x + cy.y*cy.y + cy.z*cy.z);
+            float sz = sqrtf(cz.x*cz.x + cz.y*cz.y + cz.z*cz.z);
+            Matrix4 R; R.Identity();
+            if (sx > 1e-8f){ R.m[0]=cx.x/sx; R.m[1]=cx.y/sx; R.m[2]=cx.z/sx; }
+            if (sy > 1e-8f){ R.m[4]=cy.x/sy; R.m[5]=cy.y/sy; R.m[6]=cy.z/sy; }
+            if (sz > 1e-8f){ R.m[8]=cz.x/sz; R.m[9]=cz.y/sz; R.m[10]=cz.z/sz; }
+            b.restT = Vector3(nl.m[12], nl.m[13], nl.m[14]);
+            b.restS = Vector3(sx, sy, sz);
+            b.restR = SkelMatrizAEulerFBX(R, 0); // orden XYZ (inversa exacta de MatRotEuler order 0)
+            b.preRot = Vector3(0, 0, 0);
+            b.rotOrder = 0;
+        }
+        // head/tail (espacio nodo) para el foco/display fallback; en rigs FK poseHead se recalcula igual
+        b.head = B * b.head;
+        b.tail = B * b.tail;
+        b.poseT = b.restT; b.poseR = b.restR; b.poseS = b.restS; // ver en rest tras aplicar
+    }
+    a->lastPoseFrame = -999999; a->lastPoseAnim = -999; a->poseDirty = false; a->poseSerial++; // re-evaluar FK + re-skinnear
+}
+
 void EvaluarPoseEsqueleto(Armature* a, int frame){
     if (!a) return;
     // GATING de playback: este armature reproduce su clip SOLO si es la animacion ACTIVA (ActiveAnimKind 1 + este
@@ -256,11 +289,11 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
         Vector3 T = b.restT, R = b.restR, S = b.restS;
         if (clip) for (size_t t = 0; t < clip->tracks.size(); t++) if (clip->tracks[t].bone == (int)i){
             BoneTrack& tr = clip->tracks[t];
-            for (size_t p = 0; p < tr.Propertys.size(); p++){
-                if      (tr.Propertys[p].Property == AnimPosition) T = EvalProp(tr.Propertys[p], frame, b.restT);
-                else if (tr.Propertys[p].Property == AnimRotation) R = EvalProp(tr.Propertys[p], frame, b.restR);
-                else if (tr.Propertys[p].Property == AnimScale)    S = EvalProp(tr.Propertys[p], frame, b.restS);
-            }
+            // cada componente (X/Y/Z) tiene SU curva -> se evaluan por separado; el que no tenga keyframes
+            // propios queda en su valor de rest.
+            T = EvalPropVec(tr.Propertys, AnimPosition, frame, b.restT);
+            R = EvalPropVec(tr.Propertys, AnimRotation, frame, b.restR);
+            S = EvalPropVec(tr.Propertys, AnimScale,    frame, b.restS);
             break;
         }
         b.poseT = T; b.poseR = R; b.poseS = S;
@@ -329,16 +362,9 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
 
 
 
-// devuelve (creando si falta) la curva de una propiedad (Position/Rotation/Scale)
-AnimProperty& BoneTrack::PropertyDe(int property){
-    for (size_t i = 0; i < Propertys.size(); i++)
-        if (Propertys[i].Property == property) return Propertys[i];
-    AnimProperty p;
-    p.Property = property;
-    p.firstFrameIndex = 0;
-    p.lastFrameIndex = 0;
-    Propertys.push_back(p);
-    return Propertys.back();
+// devuelve (creando si falta) la CURVA de un (propiedad, componente). Ej: (AnimPosition, AnimX) = "X Location".
+AnimProperty& BoneTrack::PropertyDe(int property, int component){
+    return PropertyDeLista(Propertys, property, component);
 }
 
 // devuelve (creando si falta) el track de un hueso
@@ -619,13 +645,13 @@ void DuplicarAnimacionActiva(Armature* a){
     a->animActiva = (int)a->animations.size() - 1;
 }
 
-// pone (o actualiza) un keyframe en 'frame' con valor v, manteniendo la lista ordenada por frame.
-static void SetKey(AnimProperty& ap, int frame, const Vector3& v){
-    for (size_t i = 0; i < ap.keyframes.size(); i++) if (ap.keyframes[i].frame == frame){
-        ap.keyframes[i].valueX = v.x; ap.keyframes[i].valueY = v.y; ap.keyframes[i].valueZ = v.z; return; }
-    keyFrame kf; kf.frame = frame; kf.valueX = v.x; kf.valueY = v.y; kf.valueZ = v.z;
-    size_t pos = 0; while (pos < ap.keyframes.size() && ap.keyframes[pos].frame < frame) pos++;
-    ap.keyframes.insert(ap.keyframes.begin() + pos, kf);
+// pone (o actualiza) un keyframe en 'frame' en las TRES curvas (X/Y/Z) de una propiedad del hueso.
+// Cada componente es una curva independiente; keyar la pose las toca a las 3 en el mismo frame, pero despues
+// se pueden mover/borrar/curvar por separado desde el dope sheet.
+static void SetKey3(BoneTrack& tr, int prop, int frame, const Vector3& v){
+    SetKeyCurva(tr.PropertyDe(prop, AnimX), frame, v.x);
+    SetKeyCurva(tr.PropertyDe(prop, AnimY), frame, v.y);
+    SetKeyCurva(tr.PropertyDe(prop, AnimZ), frame, v.z);
 }
 // INSERT KEYFRAME (i): guarda la POSE actual (poseT/R/S) de los huesos SELECCIONADOS en la curva del clip activo,
 // en CurrentFrame. Es lo que hace permanente la pose (antes de esto se ve pero no se guarda). Crea un clip si no hay.
@@ -641,15 +667,22 @@ void InsertarKeyframeEsqueleto(Armature* a){
         if (!b.select && (int)i != a->boneActivo) continue;
         if (!b.select && a->boneActivo < 0) continue;
         BoneTrack& tr = clip->TrackDe((int)i);
-        SetKey(tr.PropertyDe(AnimPosition), CurrentFrame, b.poseT);
-        SetKey(tr.PropertyDe(AnimRotation), CurrentFrame, b.poseR);
-        SetKey(tr.PropertyDe(AnimScale),    CurrentFrame, b.poseS);
+        SetKey3(tr, AnimPosition, CurrentFrame, b.poseT);
+        SetKey3(tr, AnimRotation, CurrentFrame, b.poseR);
+        SetKey3(tr, AnimScale,    CurrentFrame, b.poseS);
         nSel++;
     }
     if (nSel == 0) return;
     if (CurrentFrame > clip->endFrame) clip->endFrame = CurrentFrame; // extender el rango del clip
     if (CurrentFrame < clip->startFrame || clip->startFrame < 1) clip->startFrame = CurrentFrame < 1 ? 1 : CurrentFrame;
-    a->poseDirty = false; a->lastPoseFrame = -999999; // re-evaluar desde la curva (ya con el keyframe nuevo)
+    // NO forzar re-lectura de la curva: eso pulia poseT/R/S de TODOS los huesos desde el clip, y los que NO tienen
+    // keyframe (EvalProp devuelve rest) se RESETEABAN -> se perdia la pose que el usuario hizo a mano en los demas
+    // huesos al keyar uno solo (bug Dante). En cambio: dejar el frame como "ya evaluado" (lastPoseFrame=CurrentFrame,
+    // frameChanged=false) + poseDirty=true -> EvaluarPoseEsqueleto re-corre el FK con la pose ACTUAL sin refrescar
+    // desde la curva -> se conserva la pose visible de todos los huesos (los sin key vuelven a rest recien al scrollear,
+    // igual que Blender). El hueso keyado ya coincide con su key.
+    int animPlay = (ActiveAnimKind == 1 && ActiveAnimArm == a && a->animActiva >= 0 && a->animActiva < (int)a->animations.size()) ? a->animActiva : -1;
+    a->lastPoseFrame = CurrentFrame; a->lastPoseAnim = animPlay; a->poseDirty = true;
 }
 
 void BorrarAnimacionActiva(Armature* a){

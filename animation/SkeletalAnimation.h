@@ -25,7 +25,9 @@ public:
     std::vector<AnimProperty> Propertys;   // Position / Rotation / Scale
     BoneTrack() : bone(-1) {}
     // devuelve (creando si falta) la AnimProperty de una propiedad (AnimPosition/AnimRotation/AnimScale)
-    AnimProperty& PropertyDe(int property);
+    // devuelve (creando si falta) la CURVA de un (propiedad, componente): (AnimPosition, AnimX) = "X Location".
+    // Cada componente tiene sus PROPIOS keyframes -> se puede curvar/mover X sin tocar Y ni Z.
+    AnimProperty& PropertyDe(int property, int component);
 };
 
 // un CLIP de animacion de esqueleto (= un AnimationStack de FBX).
@@ -71,6 +73,10 @@ Matrix4 SkelNodeToYupMat();                       // matriz NodeToYup (nodo Z-up
 Matrix4 SkelMatRotEuler(const Vector3& deg, int order); // rotacion euler (grados) en el orden FBX
 Matrix4 SkelBoneWorldNode(Armature* a, int bone); // world del hueso en espacio nodo (pose actual)
 Vector3 SkelMatrizAEulerFBX(const Matrix4& M, int order); // rotacion (matriz) -> euler (grados) orden FBX
+// Apply Transform (Ctrl+A) sobre un armature: hornea B (= inv(M_arm_reseteado)*M_arm) en la rest de los huesos de modo
+// que world_FK'=B*world_FK -> skinMatrix'=B*skinMatrix (skinA intacto) y las mallas skinneadas hijas quedan identicas
+// al resetear el transform del objeto. El editor llama a esto y luego resetea el pos/rot/scale del objeto armature.
+void HornearTransformEnHuesos(Armature* a, const Matrix4& B);
 void DuplicarAnimacionActiva(Armature* a);       // duplica el clip activo (nombre+fps+rango+keyframes) y lo deja activo
 // HOOK del editor: al elegir un clip desde la LISTA de animaciones (PropList modo 5, tab Armature) hay que sincronizar
 // la seleccion APP-WIDE (ActiveAnimKind/ActiveAnimArm) + cargar Start/End/FPS, cosa que vive en el editor. La lista

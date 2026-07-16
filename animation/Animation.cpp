@@ -1,4 +1,5 @@
 #include "Animation.h"
+#include "math/Vector3.h"        // EvalPropVec (las 3 curvas de una propiedad)
 #include "SkeletalAnimation.h"   // clips de armature (startFrame/endFrame/FrameRate) para el rango por animacion
 #include "objects/Armature.h"    // ActiveAnimArm->animations / animActiva
 #include <stdio.h> // sprintf GLOBAL (nombre unico de escena); Symbian/STLport no tiene std::snprintf
@@ -155,6 +156,159 @@ bool compareKeyFrames(const keyFrame& a, const keyFrame& b) {
 // AnimProperty
 void AnimProperty::SortKeyFrames() {
     QuickSort(keyframes, 0, keyframes.size() - 1);
+}
+
+// ============================================================================
+//  EVALUACION de UNA curva (un canal). Es el UNICO lugar donde se interpola: el esqueleto y los objetos
+//  llaman aca, asi que agregar bezier/easing se hace en un solo sitio (y el editor de curvas lo hereda).
+// ============================================================================
+// Handle EFECTIVO del keyframe i (offset dF/dV desde el). Ver el enum H* en Animation.h.
+void AnimProperty::HandleEfectivo(size_t i, bool salida, float& dF, float& dV) const {
+    const size_t n = keyframes.size();
+    const keyFrame& k = keyframes[i];
+    dF = 0.0f; dV = 0.0f;
+    if (n < 2) return;
+
+    // el vecino de ESTE lado (en las puntas se usa el unico que hay: el handle sale simetrico)
+    size_t vec = salida ? (i + 1 < n ? i + 1 : (i > 0 ? i - 1 : i))
+                        : (i > 0 ? i - 1 : (i + 1 < n ? i + 1 : i));
+    // largo por defecto: un tercio del tramo de este lado, con el signo del lado
+    float largo = (float)(keyframes[vec].frame - k.frame) / 3.0f;
+    if (salida  && largo <= 0.0f) largo =  -largo;   // en la punta derecha el vecino esta a la IZQUIERDA
+    if (!salida && largo >= 0.0f) largo =  -largo;
+    if (largo == 0.0f) largo = salida ? 1.0f : -1.0f;
+
+    if (k.handleType == HFree || k.handleType == HAligned){
+        dF = salida ? k.outDF : k.inDF;
+        dV = salida ? k.outDV : k.inDV;
+        return;
+    }
+    if (k.handleType == HVector){
+        // apunta al vecino: el tramo de este lado sale RECTO
+        int df = keyframes[vec].frame - k.frame;
+        if (df == 0){ dF = largo; dV = 0.0f; return; }
+        float t = largo / (float)df;                        // fraccion hacia el vecino (1/3, con el signo del lado)
+        dF = largo;
+        dV = (keyframes[vec].value - k.value) * t;
+        return;
+    }
+    // HAuto / HAutoClamped: pendiente suave (Catmull-Rom) por los dos vecinos
+    size_t a = (i == 0) ? 0 : i - 1;
+    size_t b = (i + 1 >= n) ? n - 1 : i + 1;
+    int spanAB = keyframes[b].frame - keyframes[a].frame;
+    float m = (spanAB != 0) ? (keyframes[b].value - keyframes[a].value) / (float)spanAB : 0.0f;
+    if (k.handleType == HAutoClamped && i > 0 && i + 1 < n){
+        // PICO: si los dos vecinos caen del mismo lado, este keyframe es un maximo/minimo local -> handle PLANO,
+        // asi la curva no se pasa de largo (que es justo lo que arruina una animacion: un rebote que se hunde
+        // por debajo del piso).
+        float dPrev = keyframes[i-1].value - k.value;
+        float dNext = keyframes[i+1].value - k.value;
+        if ((dPrev > 0.0f && dNext > 0.0f) || (dPrev < 0.0f && dNext < 0.0f)) m = 0.0f;
+    }
+    dF = largo;
+    dV = m * largo;
+    if (k.handleType == HAutoClamped){
+        // ...y ademas el punto de control no puede irse mas alla del valor del VECINO. Aplanar solo los picos no
+        // alcanza: el handle de un keyframe que NO es pico igual puede empujar la curva por encima del vecino
+        // (una bezier vive dentro de la cascara de sus puntos de control, asi que acotando el control se acota la
+        // curva). Esto es lo que hace que "clamped" de verdad no se pase.
+        float vv = keyframes[vec].value;
+        float lo = (k.value < vv) ? k.value : vv;
+        float hi = (k.value > vv) ? k.value : vv;
+        float cp = k.value + dV;
+        if (cp < lo) dV = lo - k.value;
+        else if (cp > hi) dV = hi - k.value;
+    }
+}
+
+float AnimProperty::Eval(int frame, float def) const { return EvalF((float)frame, def); }
+
+float AnimProperty::EvalF(float frame, float def) const {
+    const size_t n = keyframes.size();
+    if (n == 0) return def;                                  // canal sin keyframes -> su valor de reposo
+    if (frame <= (float)keyframes[0].frame)     return keyframes[0].value;      // antes del 1ro: clamp
+    if (frame >= (float)keyframes[n-1].frame)   return keyframes[n-1].value;    // despues del ultimo: clamp
+    for (size_t i = 1; i < n; i++) {
+        if ((float)keyframes[i].frame < frame) continue;
+        const keyFrame& a = keyframes[i-1];
+        const keyFrame& b = keyframes[i];
+        // ESCALON: mantiene a.value hasta el proximo key... pero EN el frame de b ya vale b.value. El bucle corta
+        // con keyframes[i].frame >= frame, asi que aca 'frame' puede ser EXACTAMENTE b.frame: sin este chequeo el
+        // escalon caia un frame tarde (y el editor lo dibuja en b, con lo cual lo que veias no era lo que corria).
+        if (a.Interpolation == KfConstant) return (frame >= (float)b.frame) ? b.value : a.value;
+        int span = b.frame - a.frame;
+        if (span <= 0) return b.value;
+        float t = (frame - (float)a.frame) / (float)span;
+        if (a.Interpolation != KfBezier)
+            return a.value + (b.value - a.value) * t;         // lineal
+        return EvalBezier(i, frame);
+    }
+    return keyframes[n-1].value;
+}
+
+// Valor del tramo BEZIER [i-1, i] en 'frame'. Los handles son PUNTOS, asi que el tramo es una bezier cubica en
+// (frame, valor): x(t) e y(t). Para saber el valor en un frame hay que despejar el t cuyo x(t) es ese frame — no
+// alcanza con meter t = fraccion del tramo, porque los handles corren el x. Es lo mismo que hace una curva de
+// easing: el eje del tiempo tambien esta curvado.
+float AnimProperty::EvalBezier(size_t i, float frame) const {
+    const keyFrame& a = keyframes[i-1];
+    const keyFrame& b = keyframes[i];
+    const float x0 = (float)a.frame, x3 = (float)b.frame;
+    const float span = x3 - x0;
+    if (span <= 0.0f) return b.value;
+
+    float aDF, aDV, bDF, bDV;
+    HandleEfectivo(i-1, true,  aDF, aDV);   // handle de SALIDA del izquierdo
+    HandleEfectivo(i,   false, bDF, bDV);   // handle de ENTRADA del derecho
+    float x1 = x0 + aDF, x2 = x3 + bDF;
+    // x TIENE que ser monotono o la curva deja de ser una funcion del tiempo (se doblaria hacia atras y un frame
+    // tendria dos valores). Los puntos de control se clampean al tramo: es lo mismo que hace cualquier editor.
+    if (x1 < x0) x1 = x0; if (x1 > x3) x1 = x3;
+    if (x2 < x0) x2 = x0; if (x2 > x3) x2 = x3;
+    const float y0 = a.value, y1 = a.value + aDV, y2 = b.value + bDV, y3 = b.value;
+
+    // despejar t / x(t) = frame, por biseccion. x(t) es monotona creciente (recien clampeada), asi que converge
+    // siempre; 24 pasos dan 1/16M del tramo, de sobra para un frame.
+    float lo = 0.0f, hi = 1.0f, t = 0.5f;
+    for (int it = 0; it < 24; it++){
+        t = (lo + hi) * 0.5f;
+        float u = 1.0f - t;
+        float x = u*u*u*x0 + 3.0f*u*u*t*x1 + 3.0f*u*t*t*x2 + t*t*t*x3;
+        if (x < frame) lo = t; else hi = t;
+    }
+    float u = 1.0f - t;
+    return u*u*u*y0 + 3.0f*u*u*t*y1 + 3.0f*u*t*t*y2 + t*t*t*y3;
+}
+
+// las 3 curvas (X/Y/Z) de una propiedad: cada componente se evalua POR SEPARADO (puede tener sus propios frames)
+Vector3 EvalPropVec(const std::vector<AnimProperty>& props, int property, int frame, const Vector3& def) {
+    Vector3 r = def;
+    for (size_t p = 0; p < props.size(); p++) {
+        if (props[p].Property != property) continue;
+        float d = (props[p].component == AnimX) ? def.x : (props[p].component == AnimY) ? def.y : def.z;
+        float v = props[p].Eval(frame, d);
+        if      (props[p].component == AnimX) r.x = v;
+        else if (props[p].component == AnimY) r.y = v;
+        else                                  r.z = v;
+    }
+    return r;
+}
+
+AnimProperty& PropertyDeLista(std::vector<AnimProperty>& props, int property, int component) {
+    for (size_t i = 0; i < props.size(); i++)
+        if (props[i].Property == property && props[i].component == component) return props[i];
+    AnimProperty p; p.Property = property; p.component = component;
+    p.firstFrameIndex = 0; p.lastFrameIndex = 0;
+    props.push_back(p);
+    return props.back();
+}
+
+void SetKeyCurva(AnimProperty& ap, int frame, float value) {
+    for (size_t i = 0; i < ap.keyframes.size(); i++)
+        if (ap.keyframes[i].frame == frame) { ap.keyframes[i].value = value; return; } // ya hay uno: se actualiza
+    keyFrame kf; kf.frame = frame; kf.value = value; kf.Interpolation = KfLinear;
+    size_t pos = 0; while (pos < ap.keyframes.size() && ap.keyframes[pos].frame < frame) pos++;
+    ap.keyframes.insert(ap.keyframes.begin() + pos, kf);   // insertado EN ORDEN (no hace falta ordenar)
 }
 
 // AnimationObject

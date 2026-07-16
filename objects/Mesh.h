@@ -260,7 +260,11 @@ class Mesh : public Object {
 
         // REBUILD completo: destruye y rehace verts/uv/color/normal/faces3d desde los corners
         // + capas activas (mergeando verts). Para cambios de TOPOLOGIA. Lento.
-        void GenerarRender();
+        // recomputarNormales=false: CONSERVA las normales actuales (normals[]) en vez de recalcularlas.
+        // Lo usa el JOIN: las mallas importadas (glTF/FBX) traen normales del archivo con SPLITS en los bordes
+        // filosos, y recalcularlas (promediando) los REDONDEA. Al anexar no cambia la forma de cada malla, asi
+        // que sus normales siguen siendo validas -> se preservan.
+        void GenerarRender(bool recomputarNormales = true);
 
         // JOIN (Ctrl+J): anexa la geometria de 'otra' a ESTA malla, transformando cada vertice por M (lleva el
         // espacio LOCAL de 'otra' al LOCAL de esta). Preserva UV/color (via capas) + materiales (mesh parts nuevos).

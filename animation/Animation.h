@@ -71,15 +71,40 @@ void CalculateMillisecondsPerFrame(int aFPS);
 
 // Constantes de animación
 enum { AnimPosition, AnimRotation, AnimScale };
+// COMPONENTE de una propiedad. Cada uno es una CURVA INDEPENDIENTE: X puede tener keyframes en frames
+// distintos que Y o Z (antes los tres compartian el mismo keyframe y no se les podia dar curva propia).
+enum { AnimX = 0, AnimY = 1, AnimZ = 2 };
+// Interpolacion del TRAMO que SALE de un keyframe (igual que el escalon: manda el keyframe IZQUIERDO).
+//   KfConstant = escalon: se mantiene y cambia de golpe EXACTAMENTE en el frame del proximo keyframe
+//   KfLinear   = recta
+//   KfBezier   = curva; es la unica que tiene handles
+// OJO: el default de keyFrame es KfLinear, NO Constant.
+enum { KfConstant = 0, KfLinear = 1, KfBezier = 2 };
 
-// Keyframe
-class keyFrame { 
+// Tipo del par de handles de un keyframe bezier. Los tres ultimos se CALCULAN solos desde los vecinos (lo que
+// haya guardado en los offsets se ignora); los dos primeros los pone el usuario.
+//   HFree        los dos lados van por libre, cada uno donde lo dejes
+//   HAligned     los dos lados quedan SIEMPRE en la misma recta (mover uno gira el otro; cada uno conserva su largo)
+//   HVector      cada lado apunta al keyframe vecino -> el tramo sale recto
+//   HAuto        pendiente suave que pasa por los vecinos (Catmull-Rom)
+//   HAutoClamped como HAuto, pero se aplana en los picos: la curva NUNCA se pasa del valor de los keyframes
+enum { HFree = 0, HAligned = 1, HVector = 2, HAuto = 3, HAutoClamped = 4 };
+
+// Keyframe de UNA curva: UN solo valor (el de su canal) + como sale de el.
+class keyFrame {
 public:
     int frame;
-    GLfloat valueX;
-    GLfloat valueY;
-    GLfloat valueZ;
-    int Interpolation;
+    GLfloat value;          // valor de ESTE canal (X, Y o Z segun la AnimProperty que lo contiene)
+    int Interpolation;      // KfConstant / KfLinear / KfBezier
+    int handleType;         // HFree / HAligned / HVector / HAuto / HAutoClamped
+    // Handles guardados como OFFSET desde el keyframe, en (frames, valor). Es un PUNTO, no una pendiente: hace
+    // falta para poder girarlos y para que escalarlos alargue la distancia. Con offsets (y no puntos absolutos)
+    // mover el keyframe se lleva los handles solo. Solo valen para HFree/HAligned; los demas tipos los calcula
+    // HandleEfectivo desde los vecinos.
+    GLfloat inDF, inDV;     // handle de ENTRADA: dF < 0 (queda a la izquierda del keyframe)
+    GLfloat outDF, outDV;   // handle de SALIDA:  dF > 0 (a la derecha)
+    keyFrame() : frame(0), value(0.0f), Interpolation(KfLinear), handleType(HAuto),
+                 inDF(0.0f), inDV(0.0f), outDF(0.0f), outDV(0.0f) {}
 };
 
 // Funciones auxiliares
@@ -88,16 +113,41 @@ int Partition(std::vector<keyFrame>& arr, int low, int high);
 void QuickSort(std::vector<keyFrame>& arr, int low, int high);
 bool compareKeyFrames(const keyFrame& a, const keyFrame& b);
 
-// Propiedad de animación
-class AnimProperty { 
+// Una CURVA de animacion = (Property, component). Ej: (AnimPosition, AnimX) = "X Location".
+// Cada componente tiene SUS PROPIOS keyframes -> se puede mover/borrar/curvar X sin tocar Y ni Z.
+class AnimProperty {
 public:
-    int Property;
+    int Property;   // AnimPosition / AnimRotation / AnimScale
+    int component;  // AnimX / AnimY / AnimZ
     int firstFrameIndex;
     int lastFrameIndex;
     std::vector<keyFrame> keyframes;
 
+    AnimProperty() : Property(AnimPosition), component(AnimX), firstFrameIndex(0), lastFrameIndex(0) {}
     void SortKeyFrames();
+    // evalua la curva en 'frame' (devuelve def si no tiene keyframes). Clampea fuera del rango.
+    float Eval(int frame, float def) const;
+    // igual que Eval pero en frame CONTINUO. La animacion solo pisa frames enteros, asi que Eval(int) es este
+    // mismo con t entero; el editor lo usa para dibujar.
+    float EvalF(float frame, float def) const;
+    // Handle EFECTIVO del keyframe i, como offset (dF, dV) desde el. 'salida' = el de la derecha. Segun handleType
+    // devuelve el guardado (HFree/HAligned) o lo calcula desde los vecinos (HVector/HAuto/HAutoClamped). Es el
+    // UNICO lugar donde se decide donde cae un handle: lo usan la evaluacion y el editor, asi que lo que ves es
+    // lo que corre.
+    void HandleEfectivo(size_t i, bool salida, float& dF, float& dV) const;
+    // valor del tramo BEZIER [i-1, i] en 'frame' (despeja t de la bezier cubica: los handles curvan tambien el
+    // eje del tiempo, asi que t NO es la fraccion del tramo)
+    float EvalBezier(size_t i, float frame) const;
 };
+
+class Vector3; // math/Vector3.h (lo incluye el .cpp)
+// evalua las 3 curvas (X/Y/Z) de una propiedad en 'frame'. Cada componente se evalua POR SEPARADO: si Y no
+// tiene keyframes propios, ese componente queda en su 'def'.
+Vector3 EvalPropVec(const std::vector<AnimProperty>& props, int property, int frame, const Vector3& def);
+// devuelve (creando si falta) la curva (property, component) de una lista de propiedades
+AnimProperty& PropertyDeLista(std::vector<AnimProperty>& props, int property, int component);
+// pone/actualiza un keyframe en 'frame' con 'value', manteniendo la lista ordenada por frame
+void SetKeyCurva(AnimProperty& ap, int frame, float value);
 
 // Animación de objeto
 class AnimationObject { 
