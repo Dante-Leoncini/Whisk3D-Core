@@ -199,6 +199,10 @@ class SaveState {
 };
 extern std::vector<SaveState> estadoObjetos;
 
+// El LOCAL de un transform (T*R*S). Lo usan Object::GetMatrix y el motion trail (que arma la matriz de un objeto
+// en otro frame sin tocarlo): una sola composicion, imposible que diverjan.
+Matrix4 W3dLocalTRS(const Vector3& pos, const Quaternion& rot, const Vector3& scale);
+
 void ApagarLucesHijas(Object* obj);
 void SetDesplegado(bool desplegado);
 void ChangeVisibilityObj();

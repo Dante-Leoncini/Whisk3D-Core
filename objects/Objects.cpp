@@ -271,12 +271,13 @@ void Object::ReloadAll(){
     }      
 }
 
-void Object::GetMatrix(Matrix4& out) const {
-    // --- Rotación ---
+// El LOCAL de un transform: T * R * S. Esta suelta (no es metodo) porque tambien la necesita el motion trail,
+// que arma la matriz de un objeto en OTRO frame sin tocar el objeto. Un solo lugar compone el local -> el trail
+// no puede quedar con una convencion distinta a la del render.
+Matrix4 W3dLocalTRS(const Vector3& pos, const Quaternion& rot, const Vector3& scale){
     Matrix4 R;
     rot.ToMatrix(R.m);
 
-    // --- Escala ---
     Matrix4 S;
     S.Identity();
     S.m[0]  = scale.x;
@@ -289,7 +290,11 @@ void Object::GetMatrix(Matrix4& out) const {
     T.m[13] = pos.y;
     T.m[14] = pos.z;
 
-    out = T * R * S;
+    return T * R * S;
+}
+
+void Object::GetMatrix(Matrix4& out) const {
+    out = W3dLocalTRS(pos, rot, scale);
 }
 
 void Object::RotateLocal(float pitch, float yaw, float roll){

@@ -66,6 +66,16 @@ extern bool g_skelAnimPreview;
 // gestion de clips (MISMO patron que los vertex groups del mesh: crear/borrar/mover el activo)
 void CrearAnimacion(Armature* a);                // crea un clip vacio (nombre unico) y lo deja activo
 void InsertarKeyframeEsqueleto(Armature* a);     // Insert Keyframe (i): guarda la pose de los huesos seleccionados en CurrentFrame
+// AUTO KEY de la pose: guarda SOLO los canales del hueso que cambiaron respecto de (T0,R0,S0) = su pose de ANTES
+// del transform. Uso: Prep una vez, AutoKeyHueso por hueso, Fin una vez (si se guardo algo).
+// MOTION TRAIL de un HUESO: el camino (SOLO POSICION) de su cabeza en espacio NODO, frame a frame. Reusa el FK
+// real (EvaluarPoseEsqueleto) y deja el esqueleto como estaba. 'keys' = los frames con keyframe de posicion.
+bool MotionTrailHuesoNodo(Armature* a, int bone, std::vector<Vector3>& pts, std::vector<int>& keys,
+                          int& desde, int& hasta);
+
+bool AutoKeyEsqueletoPrep(Armature* a);
+int  AutoKeyHueso(Armature* a, int i, const Vector3& T0, const Vector3& R0, const Vector3& S0);
+void AutoKeyEsqueletoFin(Armature* a);
 // helpers para el transform interactivo de huesos (Pose Mode): conversion rotacion-mundo <-> euler LOCAL del hueso.
 #include "math/Matrix4.h"
 #include "math/Vector3.h"

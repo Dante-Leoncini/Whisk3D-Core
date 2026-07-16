@@ -148,6 +148,11 @@ Vector3 EvalPropVec(const std::vector<AnimProperty>& props, int property, int fr
 AnimProperty& PropertyDeLista(std::vector<AnimProperty>& props, int property, int component);
 // pone/actualiza un keyframe en 'frame' con 'value', manteniendo la lista ordenada por frame
 void SetKeyCurva(AnimProperty& ap, int frame, float value);
+// Borra el keyframe de 'frame' tratando de MANTENER LA FORMA de la curva: ajusta los handles de los vecinos por
+// minimos cuadrados contra la curva original (conserva las direcciones, ajusta los largos). Es una simplificacion:
+// un tramo no siempre puede reproducir dos, pero los extremos y las tangentes quedan iguales.
+// Si el tramo no es bezier (o el keyframe es la punta), es un borrado comun: no hay forma que mantener.
+void BorrarKeyframeManteniendoForma(AnimProperty& ap, int frame);
 
 // Animación de objeto
 class AnimationObject { 

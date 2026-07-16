@@ -1,4 +1,5 @@
 #include "animation/SkeletalAnimation.h"
+#include <algorithm>   // sort (frames del motion trail)
 #include "objects/Armature.h"
 #include "objects/Mesh.h"
 #include "math/Matrix4.h"
@@ -653,6 +654,123 @@ static void SetKey3(BoneTrack& tr, int prop, int frame, const Vector3& v){
     SetKeyCurva(tr.PropertyDe(prop, AnimY), frame, v.y);
     SetKeyCurva(tr.PropertyDe(prop, AnimZ), frame, v.z);
 }
+// ============================================================================
+//  MOTION TRAIL de un HUESO: por donde pasa su cabeza (poseHead), en espacio NODO, frame a frame.
+//  Reusa EvaluarPoseEsqueleto en vez de recalcular el FK: ese FK tiene toda la correccion del biped
+//  (delta de rotacion conjugado, root motion, tlNode...) y duplicarlo seria garantizar que se desincronicen.
+//  Como EvaluarPoseEsqueleto PISA la pose viva, se guarda y se restaura: al salir, el esqueleto queda igual que
+//  como estaba (incluida la pose que el usuario este editando a mano).
+//  Es SOLO POSICION, igual que el trail de objetos.
+// ============================================================================
+bool MotionTrailHuesoNodo(Armature* a, int bone, std::vector<Vector3>& pts, std::vector<int>& keys,
+                          int& desde, int& hasta){
+    pts.clear(); keys.clear(); desde = 0; hasta = -1;
+    if (!a || bone < 0 || bone >= (int)a->bones.size()) return false;
+    if (a->animActiva < 0 || a->animActiva >= (int)a->animations.size()) return false;
+    SkeletalAnimation* clip = a->animations[a->animActiva];
+    // el rango + los frames con keyframe salen de las curvas de POSICION de ESTE hueso. Si no tiene ninguna, el
+    // hueso no traslada por si mismo... pero igual se puede mover porque lo arrastra un PADRE que si rota. Por eso
+    // el rango cae al del clip: el trail muestra el camino real, venga de donde venga.
+    int mn = 0x7fffffff, mx = -0x7fffffff;
+    for (size_t t = 0; t < clip->tracks.size(); t++){
+        if (clip->tracks[t].bone != bone) continue;
+        const std::vector<AnimProperty>& P = clip->tracks[t].Propertys;
+        for (size_t p2 = 0; p2 < P.size(); p2++){
+            if (P[p2].Property != AnimPosition) continue;
+            for (size_t k = 0; k < P[p2].keyframes.size(); k++){
+                int f = P[p2].keyframes[k].frame;
+                if (f < mn) mn = f; if (f > mx) mx = f;
+                bool ya = false; for (size_t j = 0; j < keys.size(); j++) if (keys[j] == f){ ya = true; break; }
+                if (!ya) keys.push_back(f);
+            }
+        }
+        break;
+    }
+    if (mn > mx){                       // sin curvas de posicion propias: el rango del clip (lo arrastra el padre)
+        mn = clip->startFrame; mx = clip->endFrame;
+        if (mn > mx) return false;
+    }
+    std::sort(keys.begin(), keys.end());
+    desde = mn; hasta = mx;
+
+    // --- guardar la pose viva + el estado del cache ---
+    size_t N = a->bones.size();
+    static std::vector<Vector3> sT, sR, sS;
+    sT.resize(N); sR.resize(N); sS.resize(N);
+    for (size_t i = 0; i < N; i++){ sT[i] = a->bones[i].poseT; sR[i] = a->bones[i].poseR; sS[i] = a->bones[i].poseS; }
+    int lpf = a->lastPoseFrame, lpa = a->lastPoseAnim; bool pd = a->poseDirty;
+    unsigned int ps = a->poseSerial;
+    // ...y el gating: EvaluarPoseEsqueleto solo lee la curva si ESTE armature es la animacion activa
+    int kind0 = ActiveAnimKind; Armature* arm0 = ActiveAnimArm;
+    ActiveAnimKind = 1; ActiveAnimArm = a;
+
+    for (int f = mn; f <= mx; f++){
+        a->lastPoseFrame = -999999; a->poseDirty = false;   // forzar re-lectura de la curva en ESTE frame
+        EvaluarPoseEsqueleto(a, f);
+        pts.push_back(a->bones[bone].poseHead);
+    }
+
+    // --- restaurar TODO: el esqueleto queda como estaba ---
+    for (size_t i = 0; i < N; i++){ a->bones[i].poseT = sT[i]; a->bones[i].poseR = sR[i]; a->bones[i].poseS = sS[i]; }
+    // ...y rehacer el FK para que poseHead/poseTail vuelvan a matchear esa pose. OJO: NO con lastPoseFrame en
+    // -999999. Eso da frameChanged=true y EvaluarPoseEsqueleto REFRESCA poseT/R/S DESDE LA CURVA -> pisaria la
+    // pose que se acaba de restaurar (y con ella la que el usuario esta editando a mano). La forma de re-correr
+    // SOLO el FK es frameChanged=false + poseDirty=true (mismo criterio que InsertarKeyframeEsqueleto).
+    int fVivo = (lpf == -999999) ? CurrentFrame : lpf;
+    a->lastPoseFrame = fVivo; a->lastPoseAnim = a->animActiva; a->poseDirty = true;
+    EvaluarPoseEsqueleto(a, fVivo);
+    ActiveAnimKind = kind0; ActiveAnimArm = arm0;
+    a->lastPoseFrame = lpf; a->lastPoseAnim = lpa; a->poseDirty = pd; a->poseSerial = ps;
+    return !pts.empty();
+}
+
+// AUTO KEY de UN hueso: guarda solo los canales que CAMBIARON respecto de (T0,R0,S0), que es su pose de ANTES
+// del transform. Es por CANAL: si solo rotaste en X, se guarda X Euler Rotation y nada mas.
+// El clip lo asegura el llamador (AutoKeyEsqueletoPrep). Devuelve cuantos canales guardo.
+int AutoKeyHueso(Armature* a, int i, const Vector3& T0, const Vector3& R0, const Vector3& S0){
+    if (!a || i < 0 || i >= (int)a->bones.size()) return 0;
+    if (a->animActiva < 0 || a->animActiva >= (int)a->animations.size()) return 0;
+    SkeletalAnimation* clip = a->animations[a->animActiva];
+    W3dBone& b = a->bones[i];
+    BoneTrack& tr = clip->TrackDe(i);
+    int n = 0;
+    // tolerancia RELATIVA: la pose pasa por matrices y trigonometria, un canal que no se toco vuelve con basura
+    // en el ultimo bit -> con == se guardarian los 9 canales siempre y el "solo lo que cambio" no serviria de nada
+    struct C { static bool cambio(float x, float y){
+        float d = x-y; if (d<0) d=-d;
+        float m = (x<0?-x:x), mb = (y<0?-y:y); if (mb>m) m=mb;
+        return d > 1e-5f * (1.0f + m); } };
+    const int props[3] = { AnimPosition, AnimRotation, AnimScale };
+    const Vector3 nuevo[3] = { b.poseT, b.poseR, b.poseS };
+    const Vector3 viejo[3] = { T0, R0, S0 };
+    for (int p2 = 0; p2 < 3; p2++){
+        for (int c = 0; c < 3; c++){
+            float vn = (c==0)?nuevo[p2].x : (c==1)?nuevo[p2].y : nuevo[p2].z;
+            float vv = (c==0)?viejo[p2].x : (c==1)?viejo[p2].y : viejo[p2].z;
+            if (!C::cambio(vn, vv)) continue;
+            SetKeyCurva(tr.PropertyDe(props[p2], (c==0)?AnimX:(c==1)?AnimY:AnimZ), CurrentFrame, vn);
+            n++;
+        }
+    }
+    return n;
+}
+// Prepara el clip para auto-keyear (lo crea si no hay) y devuelve si se puede. Va antes de AutoKeyHueso.
+bool AutoKeyEsqueletoPrep(Armature* a){
+    if (!a || a->bones.empty()) return false;
+    if (a->animActiva < 0 || a->animActiva >= (int)a->animations.size()) CrearAnimacion(a);
+    return (a->animActiva >= 0 && a->animActiva < (int)a->animations.size());
+}
+// Cierra el auto key: extiende el rango del clip y deja la pose visible sin refrescarla desde la curva (mismo
+// criterio que InsertarKeyframeEsqueleto: refrescar reseteaba a rest los huesos sin keyframe).
+void AutoKeyEsqueletoFin(Armature* a){
+    if (!a || a->animActiva < 0 || a->animActiva >= (int)a->animations.size()) return;
+    SkeletalAnimation* clip = a->animations[a->animActiva];
+    if (CurrentFrame > clip->endFrame) clip->endFrame = CurrentFrame;
+    if (CurrentFrame < clip->startFrame || clip->startFrame < 1) clip->startFrame = CurrentFrame < 1 ? 1 : CurrentFrame;
+    int animPlay = (ActiveAnimKind == 1 && ActiveAnimArm == a) ? a->animActiva : -1;
+    a->lastPoseFrame = CurrentFrame; a->lastPoseAnim = animPlay; a->poseDirty = true;
+}
+
 // INSERT KEYFRAME (i): guarda la POSE actual (poseT/R/S) de los huesos SELECCIONADOS en la curva del clip activo,
 // en CurrentFrame. Es lo que hace permanente la pose (antes de esto se ve pero no se guarda). Crea un clip si no hay.
 void InsertarKeyframeEsqueleto(Armature* a){

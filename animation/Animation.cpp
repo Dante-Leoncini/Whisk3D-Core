@@ -280,6 +280,92 @@ float AnimProperty::EvalBezier(size_t i, float frame) const {
     return u*u*u*y0 + 3.0f*u*u*t*y1 + 3.0f*u*t*t*y2 + t*t*t*y3;
 }
 
+// ============================================================================
+//  BORRAR UN KEYFRAME MANTENIENDO LA FORMA de la curva ("simplificacion").
+//  Al sacar B de A-B-C, el tramo A->C tiene que parecerse lo mas posible a lo que hacian A->B->C.
+//  Se conservan las DIRECCIONES de los handles en A y en C (la curva sale y entra igual que antes) y se ajustan
+//  sus LARGOS por MINIMOS CUADRADOS contra la curva original, muestreada frame a frame. Es el ajuste clasico de
+//  bezier con tangentes fijas: quedan 2 incognitas (un largo por lado) y un sistema de 2x2.
+//  Solo tiene sentido si el tramo es BEZIER: en lineal/constante no hay forma que mantener (borrar deja la recta).
+// ============================================================================
+// aDF/aDV y cDF/cDV son las direcciones de los handles TAL COMO ESTABAN ANTES de borrar. Se pasan de afuera y no
+// se leen aca: con handleType automatico, HandleEfectivo las RECALCULA desde los vecinos, y despues del erase los
+// vecinos ya son otros -> se obtenia la direccion NUEVA y el ajuste no hacia nada (quedaba igual que borrar crudo).
+static void FitHandles(AnimProperty& ap, size_t iA, size_t iC, const std::vector<float>& fs,
+                       const std::vector<float>& vs,
+                       float aDF, float aDV, float cDF, float cDV){
+    keyFrame& A = ap.keyframes[iA];
+    keyFrame& C = ap.keyframes[iC];
+    const float x0 = (float)A.frame, y0 = A.value, x3 = (float)C.frame, y3 = C.value;
+    const float span = x3 - x0;
+    if (span <= 0.0f || fs.size() < 2) return;
+
+    float l0 = sqrtf(aDF*aDF + aDV*aDV), l1 = sqrtf(cDF*cDF + cDV*cDV);
+    if (l0 < 1e-9f || l1 < 1e-9f) return;
+    const float d0x = aDF/l0, d0y = aDV/l0;   // sale de A hacia adelante
+    const float d1x = cDF/l1, d1y = cDV/l1;   // entra a C desde atras (dF < 0)
+
+    // minimos cuadrados sobre las muestras. u = fraccion del tramo (parametrizacion uniforme: alcanza porque los
+    // extremos y las tangentes ya estan fijos, y lo que se ajusta es cuanto "panzea").
+    double c00=0, c01=0, c11=0, r0=0, r1=0;
+    for (size_t k = 0; k < fs.size(); k++){
+        float u = (fs[k] - x0) / span;
+        if (u <= 0.0f || u >= 1.0f) continue;
+        float t = 1.0f - u;
+        float B0 = t*t*t, B1 = 3.0f*t*t*u, B2 = 3.0f*t*u*u, B3 = u*u*u;
+        // lo que falta cubrir con los handles (el resto lo ponen los extremos)
+        float rx = (fs[k] - (B0+B1)*x0 - (B2+B3)*x3);
+        float ry = (vs[k]  - (B0+B1)*y0 - (B2+B3)*y3);
+        float a1x = B1*d0x, a1y = B1*d0y;     // aporte del handle de A (por unidad de largo)
+        float a2x = B2*d1x, a2y = B2*d1y;     // aporte del handle de C
+        c00 += a1x*a1x + a1y*a1y;
+        c01 += a1x*a2x + a1y*a2y;
+        c11 += a2x*a2x + a2y*a2y;
+        r0  += a1x*rx + a1y*ry;
+        r1  += a2x*rx + a2y*ry;
+    }
+    double det = c00*c11 - c01*c01;
+    float n0, n1;
+    if (det > 1e-12 || det < -1e-12){
+        n0 = (float)((r0*c11 - r1*c01) / det);
+        n1 = (float)((c00*r1 - c01*r0) / det);
+    } else {
+        n0 = n1 = span / 3.0f;                // degenerado: el largo por defecto
+    }
+    // los handles no pueden cruzar al otro lado ni salirse del tramo: si lo hicieran, x dejaria de ser monotono y
+    // un frame tendria dos valores
+    const float maxL = span;
+    if (n0 < 0.0f) n0 = 0.0f; if (n0 > maxL) n0 = maxL;
+    if (n1 < 0.0f) n1 = 0.0f; if (n1 > maxL) n1 = maxL;
+
+    A.handleType = HFree; C.handleType = HFree;   // los largos son propios: ya no los puede recalcular nadie
+    A.outDF = d0x*n0; A.outDV = d0y*n0;
+    C.inDF  = d1x*n1; C.inDV  = d1y*n1;
+    A.Interpolation = KfBezier;                   // el tramo A->C es el que queda
+}
+
+void BorrarKeyframeManteniendoForma(AnimProperty& ap, int frame){
+    size_t n = ap.keyframes.size();
+    size_t i = n;
+    for (size_t k = 0; k < n; k++) if (ap.keyframes[k].frame == frame){ i = k; break; }
+    if (i >= n) return;
+    // sin vecinos de los dos lados, o el tramo no es bezier -> borrado comun (no hay forma que mantener)
+    bool bez = (i > 0 && i + 1 < n) &&
+               (ap.keyframes[i-1].Interpolation == KfBezier || ap.keyframes[i].Interpolation == KfBezier);
+    if (!bez){ ap.keyframes.erase(ap.keyframes.begin() + i); return; }
+    // las direcciones de los handles que se conservan: se capturan ANTES de borrar (despues, los automaticos se
+    // recalculan desde los vecinos nuevos y ya no son las de la curva original)
+    float aDF, aDV, cDF, cDV;
+    ap.HandleEfectivo(i-1, true,  aDF, aDV);   // como SALE de A
+    ap.HandleEfectivo(i+1, false, cDF, cDV);   // como ENTRA a C
+    // muestrear la curva ORIGINAL entre los vecinos, frame a frame (que es lo que la animacion pisa)
+    int fA = ap.keyframes[i-1].frame, fC = ap.keyframes[i+1].frame;
+    std::vector<float> fs, vs;
+    for (int f = fA; f <= fC; f++){ fs.push_back((float)f); vs.push_back(ap.EvalF((float)f, 0.0f)); }
+    ap.keyframes.erase(ap.keyframes.begin() + i);
+    FitHandles(ap, i-1, i, fs, vs, aDF, aDV, cDF, cDV);   // tras el erase, C quedo en el indice i
+}
+
 // las 3 curvas (X/Y/Z) de una propiedad: cada componente se evalua POR SEPARADO (puede tener sus propios frames)
 Vector3 EvalPropVec(const std::vector<AnimProperty>& props, int property, int frame, const Vector3& def) {
     Vector3 r = def;
