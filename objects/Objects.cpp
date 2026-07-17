@@ -70,8 +70,51 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
 // refresca los valores de DISPLAY (rotEuler / rotAxis+rotAngle) desde 'rot'.
 // El round-trip Euler XYZ es exacto (estable al editar); el axis-angle muestra
 // el eje normalizado y el angulo en [0,360].
+// ============================================================================
+//  EULER Y VUELTAS
+//  Un quaternion NO distingue 0 de 360: son la misma orientacion. El euler SI, y esa diferencia es lo que hace
+//  que una animacion gire una vuelta entera en vez de quedarse quieta.
+//  Antes el euler se RE-DERIVABA del quaternion en cada actualizacion (ToEulerXYZ devuelve el canonico, -180..180)
+//  y ahi se borraban las vueltas: rotar 360 volvia a 0, rotar 405 quedaba en 45. No se podia AUTORAR un giro, y
+//  peor: keyframear encima de una animacion importada que SI tenia 405 la aplastaba a 45 en silencio.
+//  Ahora el euler es el dato que MANDA: al re-derivarlo del quaternion se elige, entre todas sus formas
+//  equivalentes, la mas parecida a la que ya tenia -> las vueltas se acumulan solas mientras cada paso sea menor a
+//  media vuelta (que es siempre: el transform aplica el movimiento del mouse frame a frame).
+// ============================================================================
+
+// el equivalente de 'v' (mod 360) mas cercano a 'ref'
+static float CercaMod360(float v, float ref){
+    float k = floorf((ref - v) / 360.0f + 0.5f);
+    return v + k * 360.0f;
+}
+
+Vector3 W3dEulerCercano(const Vector3& e, const Vector3& ref){
+    // un euler no es unico: (a) sumarle 360 a cualquier componente da la MISMA rotacion, y (b) tambien la da la
+    // forma "dada vuelta" (x+180, 180-y, z+180). Se prueban las dos familias y gana la que menos se aleja de 'ref'.
+    Vector3 mejor = e; float mejorD = 1e30f;
+    for (int flip = 0; flip < 2; flip++){
+        Vector3 c = flip ? Vector3(e.x + 180.0f, 180.0f - e.y, e.z + 180.0f) : e;
+        c.x = CercaMod360(c.x, ref.x);
+        c.y = CercaMod360(c.y, ref.y);
+        c.z = CercaMod360(c.z, ref.z);
+        float d = fabsf(c.x - ref.x) + fabsf(c.y - ref.y) + fabsf(c.z - ref.z);
+        if (d < mejorD){ mejorD = d; mejor = c; }
+    }
+    return mejor;
+}
+
 void Object::ActualizarDisplayRot(){
-    rotEuler = rot.ToEulerXYZ();
+    // el euler se re-deriva del quaternion CONSERVANDO las vueltas que ya tenia (ver arriba)
+    rotEuler = W3dEulerCercano(rot.ToEulerXYZ(), rotEuler);
+    rot.ToAxisAngle(rotAngle, rotAxis);
+}
+
+// Pone la rotacion desde un EULER que ya trae sus vueltas (la curva de animacion, el panel): el euler MANDA y el
+// quaternion se deriva de el. Usarla en vez de escribir rot y llamar a ActualizarDisplayRot: ese camino tomaria el
+// euler como "a que se parece" en vez de como el dato.
+void Object::SetRotEuler(const Vector3& e){
+    rotEuler = e;
+    rot = Quaternion::FromEulerXYZ(e.x, e.y, e.z);
     rot.ToAxisAngle(rotAngle, rotAxis);
 }
 

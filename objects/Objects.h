@@ -100,7 +100,13 @@ class Object {
         Vector3 rotAxis;       // display Axis Angle: eje
         // refresca los valores de DISPLAY (rotEuler / rotAxis+rotAngle) desde el
         // quaternion 'rot'. Se llama al rotar en la vista y al seleccionar.
+        // Re-deriva rotEuler y rotAngle/rotAxis del quaternion. El euler CONSERVA sus vueltas (ver Objects.cpp):
+        // se elige la forma equivalente mas parecida a la que ya tenia.
         void ActualizarDisplayRot();
+        // Pone la rotacion desde un euler que YA trae sus vueltas (curva de animacion / panel): el euler manda y el
+        // quaternion se deriva. NO usar rot=... + ActualizarDisplayRot para esto: ahi el euler seria solo "a que
+        // parecerse" y una vuelta entera se perderia.
+        void SetRotEuler(const Vector3& e);
 
         virtual ObjectType getType() { return ObjectType::baseObject; }
 
@@ -194,14 +200,23 @@ class SaveState {
         Object* obj;
         Vector3 pos;
         Quaternion rot;
+        Vector3 rotEuler; // el euler CON sus vueltas: el quaternion no distingue 0 de 360, asi que sin esto
+                          // cancelar un transform te devolvia la orientacion pero te comia los giros
         Vector3 scale;
         Vector3 worldPos; // posicion en MUNDO al empezar el transform (pivot rotar/escalar)
+        // sin esto, olvidarse de llenar un campo dejaba BASURA de la pila: el auto key comparaba contra ella y
+        // se inventaba keyframes. Con el constructor el olvido da un valor determinista y se ve enseguida.
+        SaveState() : obj(0), scale(1,1,1) {}
 };
 extern std::vector<SaveState> estadoObjetos;
 
 // El LOCAL de un transform (T*R*S). Lo usan Object::GetMatrix y el motion trail (que arma la matriz de un objeto
 // en otro frame sin tocarlo): una sola composicion, imposible que diverjan.
 Matrix4 W3dLocalTRS(const Vector3& pos, const Quaternion& rot, const Vector3& scale);
+
+// Entre todas las formas equivalentes del euler 'e' (mismas rotacion), la mas parecida a 'ref'. Es lo que conserva
+// las vueltas al re-derivar el euler de un quaternion.
+Vector3 W3dEulerCercano(const Vector3& e, const Vector3& ref);
 
 void ApagarLucesHijas(Object* obj);
 void SetDesplegado(bool desplegado);
