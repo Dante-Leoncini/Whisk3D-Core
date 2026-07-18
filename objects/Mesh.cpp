@@ -347,7 +347,7 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido) {
         if (matcap) { gfx::TexGenSphere(false); gfx::TexMatrixMatcap(true); }   // matcap: matriz de textura (HW)
         else        { gfx::TexMatrixMatcap(false); gfx::TexGenSphere(sphereHW); } // sphere HW (flip-V) o reset
         gfx::TexEnvReplace(mat->chrome);        // reflejo (cualquier modo) = espejo: textura directa, sin luz
-        if (matcap) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer3b(normals); } // normales -> texcoords
+        if (matcap) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer3b(normals, vertexSize); } // normales -> texcoords
         else if (sw) { ActualizarChromeUV(eq); // build los arrays por-corner (equirect o sphere); bind/draw en el loop
                   gfx::EnableArray(gfx::TexCoordArray); if (eq) gfx::TexWrap(true); } // REPEAT solo equirect (costura)
         else if (uv) { if (vboRenderActivo && vboUV) gfx::TexCoordVBO(vboUV); else gfx::TexCoordPointer2f(0, uv); } // UV del modelo (VBO o RAM)
@@ -719,7 +719,7 @@ void Mesh::RenderObject() {
                     }
                 }
                 if (matcapHW && genNormals) { // matcap HW (solo PC/N95): normales como texcoords (matriz de textura ya puesta)
-                    gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer3b(genNormals);
+                    gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer3b(genNormals, genVertexSize);
                     gfx::DrawTriangles(grp.indicesDrawnCount, &genFaces[grp.startDrawn]);
                     ultimo = NULL; // cambiamos el puntero de texcoords -> re-AplicarMaterial el proximo
                     continue;

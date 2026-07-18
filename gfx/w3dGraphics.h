@@ -158,7 +158,7 @@ namespace w3dEngine {
     void ColorPointer4ub(const unsigned char* p);                  // 4 ubyte
     void NormalPointer3b(const signed char* p);                    // 3 byte
     void TexCoordPointer2f(int strideBytes, const float* p);       // 2 float
-    void TexCoordPointer3b(const signed char* p);                  // 3 byte (normales como texcoords, para el matcap HW)
+    void TexCoordPointer3b(const signed char* p, int count);       // 3 byte (normales como texcoords, matcap HW). count=vertices (desktop convierte a GL_SHORT)
 
     // --- BUFFER OBJECTS (VBO/IBO): subir la malla UNA vez a memoria de GPU y dibujar desde ahi, en vez de
     //     re-transferir los client-arrays de RAM en CADA glDrawElements. GL ES 1.1 (N95/MBX) y GL ES 2 (WebGL) los

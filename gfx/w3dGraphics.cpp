@@ -455,7 +455,23 @@ void VertexPointer2s(int strideBytes, const short* p)   { glVertexPointer(2, GL_
 void ColorPointer4ub(const unsigned char* p)            { glColorPointer(4, GL_UNSIGNED_BYTE, 0, p); }
 void NormalPointer3b(const signed char* p)              { glNormalPointer(GL_BYTE, 0, p); }
 void TexCoordPointer2f(int strideBytes, const float* p) { glTexCoordPointer(2, GL_FLOAT, strideBytes, p); }
-void TexCoordPointer3b(const signed char* p)            { glTexCoordPointer(3, GL_BYTE, 0, p); } // normales como texcoords (matcap HW)
+// normales como texcoords (matcap HW). count = cantidad de vertices (para poder convertir el tipo en desktop).
+void TexCoordPointer3b(const signed char* p, int count) {
+#if defined(W3D_SYMBIAN) || defined(__ANDROID__)
+    (void)count;
+    glTexCoordPointer(3, GL_BYTE, 0, p); // GLES1 (N95/Android): GL_BYTE ES un tipo valido para texcoords
+#else
+    // OpenGL de ESCRITORIO: glTexCoordPointer NO acepta GL_BYTE -> daba GL_INVALID_ENUM y la llamada se ignoraba,
+    // asi que el matcap por matriz de textura no tenia sus texcoords -> la textura salia PLANA y no seguia la camara.
+    // Se convierte a GL_SHORT (si valido en desktop). El factor s=0.5/127 de TexMatrixMatcap sigue igual: GL_SHORT
+    // NO se normaliza (127 -> 127.0). Buffer estatico que crece = sin alloc por-frame tras el warmup.
+    static GLshort* tmp = 0; static int cap = 0;
+    int n = count * 3;
+    if (n > cap) { delete[] tmp; tmp = new GLshort[n]; cap = n; }
+    for (int i = 0; i < n; i++) tmp[i] = (GLshort)p[i];
+    glTexCoordPointer(3, GL_SHORT, 0, n > 0 ? tmp : (const GLshort*)0);
+#endif
+}
 
 // ---- BUFFER OBJECTS (VBO/IBO): subir 1 vez, dibujar desde GPU (ver w3dGraphics.h) ----
 bool VBOSoportado(){ w3d_CargarVBO(); return w3d_vboOk; }

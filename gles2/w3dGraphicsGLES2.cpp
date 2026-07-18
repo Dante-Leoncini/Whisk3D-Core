@@ -415,7 +415,7 @@ void VertexPointer2s(int stride,const short* p){ aPos.size=2; aPos.type=GL_SHORT
 void NormalPointer3b(const signed char* p){ aNrm.size=3; aNrm.type=GL_BYTE; aNrm.stride=0; aNrm.ptr=p; }
 void ColorPointer4ub(const unsigned char* p){ aCol.size=4; aCol.type=GL_UNSIGNED_BYTE; aCol.stride=0; aCol.ptr=p; }
 void TexCoordPointer2f(int stride,const float* p){ aUV.size=2; aUV.type=GL_FLOAT; aUV.stride=stride; aUV.ptr=p; }
-void TexCoordPointer3b(const signed char* p){ aUV.size=3; aUV.type=GL_BYTE; aUV.stride=0; aUV.ptr=p; } // matcap (normales como UV): TODO en el shader
+void TexCoordPointer3b(const signed char* p, int count){ (void)count; aUV.size=3; aUV.type=GL_BYTE; aUV.stride=0; aUV.ptr=p; } // matcap (normales como UV): TODO en el shader
 
 // ============================================================================
 //  Draw: setup compartido de uniforms + atributos, y las variantes
