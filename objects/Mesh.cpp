@@ -3,13 +3,7 @@
 #include "w3dGraphics.h"    // abstraccion de graficos del engine (sin GL)
 #include "CameraBase.h"     // g_renderCamPos (camara del render, para el chrome equirect)
 #include "RenderColors.h"   // paleta de render del CORE (sin depender de la UI)
-#include <iostream>
 #include <math.h> // C puro: compila en RVCT y PC por igual
-#include <set>
-#include <map>
-#include <utility>
-#include <string>
-#include <cstring>
 
 // NOTA IMPORTANTE: mucho de este codigo NO va aca y se va a borrar/simplificar.....
 // es que hay codigo que va en el EDITOR 3d de Whisk3D y que no deberia estar en el codigo base del "core".

@@ -15,7 +15,7 @@
 #include <set>
 #include <algorithm>
 
-#include "variables.h" // cursor3D/estado/etc REALES (portable)
+#include "base/W3dInteractionState.h" // InteractionMode/estado (el Core NO depende del header del editor)
 
 // Dialecto C++03 compartido (PLAN-UNIFICACION.md): este header compila tanto
 // en PC/Android (C++11) como en Symbian/RVCT 2.2 (C++03). Por eso:
@@ -36,7 +36,6 @@
     #include <functional>
     #include <sstream>
     #include <GL/gl.h>
-    #include "variables.h"
 #endif
 
 class Viewport3D;

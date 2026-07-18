@@ -19,8 +19,6 @@ unsigned int w3dGetTicks();
 #endif
 #include <iostream>
 
-#include <iostream>
-
 #include "objects/Objects.h"
 
 // Clases de shape key

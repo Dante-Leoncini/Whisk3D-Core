@@ -2,16 +2,13 @@
 #include "w3dGraphics.h" // flags de estado de render (w3dRenderLuces) — PC y Symbian
 
 #ifdef W3D_SYMBIAN
-// En Symbian el modelo compartido compila sin variables.h (que arrastra SDL).
-// Shim minimo del estado de app hasta que variables.h sea compartido
-// (Fase 3b); son static: no chocan con los globales viejos de Whisk3D.cpp.
+// Symbian: GLES + utilidades de C que en PC llegan por otros headers.
 #include <GLES/gl.h>
 #include <iostream>
 #include <sstream>
 #include <iomanip>
 #include <stdlib.h>   // atoi
 #include <ctype.h>    // isdigit
-// (el shim de estado murio: variables.h/.cpp reales compilan en Symbian)
 #endif
 
 // Variables globales

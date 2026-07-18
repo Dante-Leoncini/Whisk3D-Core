@@ -1,5 +1,4 @@
 #include "Materials.h"
-#include <iostream>
 
 // Variables globales
 std::vector<Material*> Materials;
