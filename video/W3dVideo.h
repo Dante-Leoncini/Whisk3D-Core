@@ -1,6 +1,8 @@
 #ifndef W3D_VIDEO_H
 #define W3D_VIDEO_H
 
+#include <stddef.h> // size_t
+
 // ============================================================================
 //  Reproduccion de VIDEO en el motor. MODULO OPCIONAL.
 //
@@ -46,6 +48,12 @@ public:
 // (-DW3D_ENABLE_VIDEO ausente), el archivo no existe, o el backend no soporta el
 // formato. El caller es duenio del puntero: delete para cerrar y liberar la textura.
 W3dVideo* W3dVideoOpen(const char* path, bool loop);
+
+// Igual pero desde bytes EN MEMORIA -> assets PROTEGIDOS: los bytes salen descifrados
+// de un .w3dpack (ver io/W3dPack.h) y NUNCA son un archivo ni una URL. 'mime' identifica
+// el contenedor para el backend web ("video/mp4", "video/webm"). Manten los bytes vivos
+// hasta el primer frame (el backend web arma un Blob interno a partir de ellos).
+W3dVideo* W3dVideoOpenMemory(const void* bytes, size_t len, const char* mime, bool loop);
 
 } // namespace w3dEngine
 

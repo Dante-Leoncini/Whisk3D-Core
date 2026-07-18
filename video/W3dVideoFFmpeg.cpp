@@ -33,18 +33,65 @@ extern "C" {
 #endif
 #include <GL/gl.h>
 #include <cstring>
+#include <cstdio> // SEEK_SET/CUR/END
 
 namespace w3dEngine {
+
+// IO sobre un buffer en MEMORIA (para assets descifrados de un .w3dpack): FFmpeg lee
+// el contenedor desde RAM, sin archivo temporal ni ruta.
+struct W3dMemIO { const unsigned char* data; size_t size, pos; };
+static int w3dMemRead(void* opaque, uint8_t* buf, int bufSize) {
+    W3dMemIO* m = (W3dMemIO*)opaque;
+    size_t remain = m->size - m->pos;
+    if (remain == 0) return AVERROR_EOF;
+    int n = bufSize; if ((size_t)n > remain) n = (int)remain;
+    memcpy(buf, m->data + m->pos, n); m->pos += n; return n;
+}
+static int64_t w3dMemSeek(void* opaque, int64_t offset, int whence) {
+    W3dMemIO* m = (W3dMemIO*)opaque;
+    if (whence == AVSEEK_SIZE) return (int64_t)m->size;
+    int64_t np;
+    if (whence == SEEK_SET)      np = offset;
+    else if (whence == SEEK_CUR) np = (int64_t)m->pos + offset;
+    else if (whence == SEEK_END) np = (int64_t)m->size + offset;
+    else return -1;
+    if (np < 0 || np > (int64_t)m->size) return -1;
+    m->pos = (size_t)np; return np;
+}
 
 class W3dVideoFFmpeg : public W3dVideo {
 public:
     W3dVideoFFmpeg() : fmt(0), codecCtx(0), swsCtx(0), hwDev(0), frame(0), swFrame(0),
-                       pkt(0), rgba(0), tex(0), vStream(-1), w(0), h(0), alpha(false),
-                       t0(-1.0), ok(false) {}
+                       pkt(0), rgba(0), tex(0), avio(0), ioBuf(0), ownedBytes(0),
+                       vStream(-1), w(0), h(0), alpha(false), loop(false), ok(false), t0(-1.0) {
+        mem.data = 0; mem.size = 0; mem.pos = 0;
+    }
 
     bool Open(const char* path, bool doLoop) {
         loop = doLoop;
         if (avformat_open_input(&fmt, path, 0, 0) != 0) return false;
+        return OpenComun();
+    }
+
+    // Abre el contenedor desde bytes en memoria (assets protegidos). Copia los bytes:
+    // se hace duenio, asi el caller puede liberar el .w3dpack cuando quiera.
+    bool OpenMem(const void* bytes, size_t len, bool doLoop) {
+        loop = doLoop;
+        ownedBytes = (unsigned char*)av_malloc(len ? len : 1);
+        memcpy(ownedBytes, bytes, len);
+        mem.data = ownedBytes; mem.size = len; mem.pos = 0;
+        const int bufSz = 1 << 16;
+        ioBuf = (unsigned char*)av_malloc(bufSz);
+        avio = avio_alloc_context(ioBuf, bufSz, 0, &mem, w3dMemRead, 0, w3dMemSeek);
+        if (!avio) return false;
+        fmt = avformat_alloc_context();
+        fmt->pb = avio;
+        if (avformat_open_input(&fmt, 0, 0, 0) != 0) return false;
+        return OpenComun();
+    }
+
+    // Comun a Open(path) y OpenMem: ya tenemos 'fmt' abierto.
+    bool OpenComun() {
         if (avformat_find_stream_info(fmt, 0) < 0) return false;
         const AVCodec* codec = 0;
         vStream = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
@@ -81,6 +128,8 @@ public:
         if (hwDev) av_buffer_unref(&hwDev);
         if (codecCtx) avcodec_free_context(&codecCtx);
         if (fmt) avformat_close_input(&fmt);
+        if (avio) { av_freep(&avio->buffer); avio_context_free(&avio); } // AVIO propio (memoria): lo liberamos nosotros
+        if (ownedBytes) av_free(ownedBytes);
     }
 
     bool Update(double nowMs) {
@@ -134,8 +183,11 @@ private:
         swsCtx = sws_getCachedContext(swsCtx, w, h, (AVPixelFormat)f->format,
                                       w, h, dst, SWS_BILINEAR, 0, 0, 0);
         if (!rgba) rgba = (uint8_t*)av_malloc(av_image_get_buffer_size(dst, w, h, 1));
-        uint8_t* dstData[4] = { rgba, 0, 0, 0 };
-        int dstLines[4] = { w * 4, 0, 0, 0 };
+        // flip vertical (stride negativo desde la ultima fila): deja la textura bottom-up
+        // como GL espera, igual que el backend web (UNPACK_FLIP_Y). Asi la demo usa las
+        // mismas UVs en las dos plataformas.
+        uint8_t* dstData[4] = { rgba + (size_t)(h - 1) * w * 4, 0, 0, 0 };
+        int dstLines[4] = { -w * 4, 0, 0, 0 };
         sws_scale(swsCtx, f->data, f->linesize, 0, h, dstData, dstLines);
 
         glBindTexture(GL_TEXTURE_2D, tex);
@@ -161,6 +213,10 @@ private:
     AVPacket*        pkt;
     uint8_t*         rgba;
     unsigned int     tex;
+    AVIOContext*     avio;       // IO en memoria (assets protegidos); 0 si se abrio por archivo
+    unsigned char*   ioBuf;
+    unsigned char*   ownedBytes; // copia propia de los bytes descifrados
+    W3dMemIO         mem;
     int  vStream, w, h;
     bool alpha, loop, ok;
     double t0;
@@ -169,6 +225,12 @@ private:
 W3dVideo* W3dVideoOpenBackend(const char* path, bool loop) {
     W3dVideoFFmpeg* v = new W3dVideoFFmpeg();
     if (!v->Open(path, loop)) { delete v; return 0; }
+    return v;
+}
+
+W3dVideo* W3dVideoOpenMemoryBackend(const void* bytes, size_t len, const char* /*mime*/, bool loop) {
+    W3dVideoFFmpeg* v = new W3dVideoFFmpeg(); // FFmpeg detecta el contenedor solo; el mime no hace falta
+    if (!v->OpenMem(bytes, len, loop)) { delete v; return 0; }
     return v;
 }
 
