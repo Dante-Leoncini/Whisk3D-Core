@@ -281,6 +281,9 @@ class Mesh : public Object {
         void OptimizarCacheRender(); // reordena los triangulos de faces[] para el cache de vertices del GPU (Forsyth, MIT)
         // (def en main/edit/MeshEdit.cpp: usan el EditMesh + la seleccion de caras)
         void AsignarFacesAMeshPart(int idx);    // caras SELECCIONADAS (edit) -> mesh part idx
+        // llena sel3d[f] (por faces3d) = 1 para las caras "seleccionadas" segun el EditSelectMode ACTUAL (una
+        // cara cuenta si TODOS sus corners estan seleccionados). Sirve en modo vertice/borde/cara (como Delete>Faces).
+        void CarasSelPorModo(std::vector<char>& sel3d);
         void SeleccionarMeshPart(int idx, bool sel); // (de)selecciona en edit las caras del mesh part idx
         GLubyte* vertexColor;
         GLbyte* normals;
