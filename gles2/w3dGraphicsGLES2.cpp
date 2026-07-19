@@ -343,6 +343,34 @@ void BlendMode(int modo){
     else if(modo==2) glBlendFunc(GL_ONE, GL_ONE);               // Add
     else             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // Mix
 }
+// modos de mezcla nombrados (ver enum Mezcla). GLES2/WebGL: glBlendEquation es nativo.
+void SetMezcla(int m){
+    glBlendEquation(GL_FUNC_ADD); // reset (por si venia de Substract)
+    switch(m){
+        case MezclaOff:      glBlendFunc(GL_ONE, GL_ZERO); break;
+        case MezclaAdd:      glBlendFunc(GL_ONE, GL_ONE); break;
+        case MezclaAddAlpha: glBlendFunc(GL_SRC_ALPHA, GL_ONE); break;
+        case MezclaMultiply: glBlendFunc(GL_DST_COLOR, GL_ZERO); break;
+        case MezclaScreen:   glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR); break;
+        case MezclaPremult:  glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
+        case MezclaSubtract: glBlendEquation(GL_FUNC_REVERSE_SUBTRACT); glBlendFunc(GL_ONE, GL_ONE); break;
+        case MezclaAlpha:
+        default:             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;
+    }
+}
+const char* MezclaNombre(int m){
+    switch(m){
+        case MezclaOff:      return "Opaco";
+        case MezclaAlpha:    return "Alpha (normal)";
+        case MezclaAdd:      return "Aditiva";
+        case MezclaAddAlpha: return "Aditiva (alpha)";
+        case MezclaMultiply: return "Multiplicar";
+        case MezclaScreen:   return "Screen";
+        case MezclaPremult:  return "Alpha premult.";
+        case MezclaSubtract: return "Substractiva";
+    }
+    return "?";
+}
 void SmoothShading(bool){}   // ES2 siempre interpola (smooth); FLAT seria un shader aparte -> TODO
 void FastPerspective(){}     // ES2 corrige perspectiva siempre
 void Invalidate(){}          // este backend no cachea estado GL

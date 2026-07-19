@@ -38,6 +38,12 @@
 #ifndef GL_COORD_REPLACE
     #define GL_COORD_REPLACE 0x8862 // idem (point sprite coord replace)
 #endif
+#ifndef GL_FUNC_ADD
+    #define GL_FUNC_ADD 0x8006 // blend equation (GL 1.4+/GLES2); el header 1.1 no lo trae
+#endif
+#ifndef GL_FUNC_REVERSE_SUBTRACT
+    #define GL_FUNC_REVERSE_SUBTRACT 0x800B
+#endif
 #ifndef GL_MULTISAMPLE
     #define GL_MULTISAMPLE 0x809D // GL 1.3/ES1: apagar el MSAA durante el color-ID pick
 #endif
@@ -429,6 +435,42 @@ void MaterialShininess(float s) {
 }
 
 void BlendAlpha() { glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); }
+// modos de mezcla nombrados (ver enum Mezcla). Fixed-function: anda en PC y GL ES 1.1 (N95).
+void SetMezcla(int m) {
+#ifndef W3D_SYMBIAN
+    glBlendEquation(GL_FUNC_ADD); // reset (por si venia de Substract)
+#endif
+    switch (m) {
+        case MezclaOff:      glBlendFunc(GL_ONE, GL_ZERO); break;                    // opaco
+        case MezclaAdd:      glBlendFunc(GL_ONE, GL_ONE); break;                     // aditiva
+        case MezclaAddAlpha: glBlendFunc(GL_SRC_ALPHA, GL_ONE); break;              // aditiva x alpha
+        case MezclaMultiply: glBlendFunc(GL_DST_COLOR, GL_ZERO); break;            // multiplica
+        case MezclaScreen:   glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR); break;   // screen
+        case MezclaPremult:  glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;   // alpha premult
+        case MezclaSubtract:
+#ifndef W3D_SYMBIAN
+            glBlendEquation(GL_FUNC_REVERSE_SUBTRACT); glBlendFunc(GL_ONE, GL_ONE); // resta real
+#else
+            glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_COLOR);                           // aprox (oscurece)
+#endif
+            break;
+        case MezclaAlpha:
+        default:             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break; // normal
+    }
+}
+const char* MezclaNombre(int m) {
+    switch (m) {
+        case MezclaOff:      return "Opaco";
+        case MezclaAlpha:    return "Alpha (normal)";
+        case MezclaAdd:      return "Aditiva";
+        case MezclaAddAlpha: return "Aditiva (alpha)";
+        case MezclaMultiply: return "Multiplicar";
+        case MezclaScreen:   return "Screen";
+        case MezclaPremult:  return "Alpha premult.";
+        case MezclaSubtract: return "Substractiva";
+    }
+    return "?";
+}
 void BlendMode(int modo) { // capa multi-pass sobre lo de abajo
     if (modo == 1)      glBlendFunc(GL_DST_COLOR, GL_ZERO);                 // Multiply (oscurece)
     else if (modo == 2) glBlendFunc(GL_ONE, GL_ONE);                       // Add (aclara)

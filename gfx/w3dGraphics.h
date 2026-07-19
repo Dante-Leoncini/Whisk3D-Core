@@ -146,6 +146,24 @@ namespace w3dEngine {
     void BlendAlpha();
     void BlendMode(int modo); // capa multi-pass: 0=Mix(alpha encima), 1=Multiply, 2=Add
 
+    // --- MODOS DE MEZCLA (blend) ---
+    // Todos con glBlendFunc estandar -> andan en GL ES 1.1 (N95), PC y WebGL. El unico que
+    // necesita glBlendEquation es Substract (nativo en PC/WebGL; en GL ES 1.1 cae a una
+    // aproximacion que oscurece). Acordate de Enable(Blend) antes de dibujar.
+    enum Mezcla {
+        MezclaOff,       // opaco (ONE, ZERO)
+        MezclaAlpha,     // normal:    SRC_ALPHA, ONE_MINUS_SRC_ALPHA
+        MezclaAdd,       // aditiva:   ONE, ONE                 (aclara: brillos, fuego, particulas)
+        MezclaAddAlpha,  // aditiva ponderada por alpha: SRC_ALPHA, ONE
+        MezclaMultiply,  // multiplica: DST_COLOR, ZERO         (oscurece: tintes, sombras)
+        MezclaScreen,    // screen:    ONE, ONE_MINUS_SRC_COLOR (aclara suave)
+        MezclaPremult,   // alpha premultiplicado: ONE, ONE_MINUS_SRC_ALPHA
+        MezclaSubtract,  // resta:     REVERSE_SUBTRACT / aprox en GL ES 1.1 (oscurece)
+        MezclaCount_     // (cantidad; dejalo ultimo)
+    };
+    void SetMezcla(int m);          // configura glBlendFunc/Equation segun el modo
+    const char* MezclaNombre(int m); // nombre legible (para el menu del editor)
+
     // --- parametros de la textura 2D ACTIVA (la del ultimo BindTexture) ---
     void TexFilter(bool linear); // true=LINEAR, false=NEAREST (min y mag)
     void TexWrap(bool repeat);   // true=REPEAT, false=CLAMP_TO_EDGE (S y T)
