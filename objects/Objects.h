@@ -175,7 +175,6 @@ bool DetectLoop(Object* node,
                 std::set<Object*>& stack,
                 int depth = 0);
 void SearchLoop();
-size_t GetIndexInParent(Object* obj);
 Object* GetDeepestDFS(Object* node);
 Object* GetPrevDFS(Object* current);
 Object* GetNextDFS(Object* current);

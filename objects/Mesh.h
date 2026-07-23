@@ -22,19 +22,10 @@
     #include <GL/gl.h>
 #endif
 
-#ifndef GL_CLAMP_TO_EDGE
-#define GL_CLAMP_TO_EDGE 0x812F
-#endif
-
-#if !defined(_WIN32) && !defined(W3D_SYMBIAN)
-#include <GL/glext.h>
-#endif
-
 #include "crossplatform.h" // MeshIndex (16 bits N95 / 32 bits PC/Android/WebGL/N8)
 #include "Materials.h"
 #include "Objects.h"
 
-typedef GLshort Edge[2];
 
 class FaceCorner {
 	public:
@@ -564,7 +555,6 @@ class Mesh : public Object {
 // Funciones globales
 // ===================================================
 Object* NewMesh(MeshType type = MeshType::cube, Object* parent = NULL, bool query = false);
-int DuplicateMesh(int meshIndex);
 
 // HOOK del EDITOR: RenderObject lo llama tras dibujar la malla para pintar los overlays
 // (contorno de seleccion, normales, edit mode). NULL por defecto -> una app/juego sin

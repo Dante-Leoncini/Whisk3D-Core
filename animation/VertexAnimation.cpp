@@ -1,12 +1,79 @@
 #include "VertexAnimation.h"
 
-// Normal (-1..1) -> byte con signo. Era una lambda: el Core se compila en C++03 para Symbian,
-// que no las tiene.
-static GLbyte conv(double v) {
-    v = ((v + 1.0) * 0.5) * 255.0 - 128.0;
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <cassert>
+#include <cstring>
+
+
+// Normal (-1..1) -> byte con signo (C++03: sin lambdas, el Core compila en Symbian).
+static GLbyte NrmFloatToByte(float v) {
+    v = ((v + 1.0f) * 0.5f) * 255.0f - 128.0f;
     if (v > 127) v = 127;
     if (v < -128) v = -128;
     return (GLbyte)v;
+}
+
+static void ParseFace(const std::string& line, Face& f) {
+    std::istringstream ss(line.substr(2));
+    std::string tok;
+
+    while (ss >> tok) {
+        FaceCorner fc;
+
+        int v = -1, t = -1, n = -1;
+
+        if (tok.find("//") != std::string::npos) {
+            sscanf(tok.c_str(), "%d//%d", &v, &n);
+        } else {
+            sscanf(tok.c_str(), "%d/%d/%d", &v, &t, &n);
+        }
+
+        fc.vertex = v - 1;
+        fc.normal = n - 1;
+
+        f.corners.push_back(fc);
+    }
+}
+
+static GLbyte* BuildVertexNormals(
+    size_t vertexCount,
+    const std::vector<GLbyte>& tempNormals,
+    const std::vector<Face>& faces
+) {
+    GLbyte* out = new GLbyte[vertexCount * 3];
+
+    // default
+    for (size_t i = 0; i < vertexCount * 3; i++)
+        out[i] = 127;
+
+    for (size_t fi = 0; fi < faces.size(); fi++) {
+        const Face& f = faces[fi];
+        if (f.corners.size() < 3) continue;
+
+        for (size_t i = 1; i < f.corners.size() - 1; i++) {
+            const FaceCorner tri[3] = {
+                f.corners[0],
+                f.corners[i],
+                f.corners[i + 1]
+            };
+
+            for (int k = 0; k < 3; k++) {
+                const FaceCorner& fc = tri[k];
+                if (fc.vertex < 0 || fc.normal < 0) continue;
+
+                size_t v = fc.vertex * 3;
+                size_t n = fc.normal * 3;
+
+                out[v + 0] = tempNormals[n + 0];
+                out[v + 1] = tempNormals[n + 1];
+                out[v + 2] = tempNormals[n + 2];
+            }
+        }
+    }
+
+    return out;
 }
 
 VertexAnimation::VertexAnimation(Mesh* tgt, const std::string& animName, bool useNormals, float Speed, bool Repeat, int ProximaAnimacion):
@@ -15,11 +82,23 @@ VertexAnimation::VertexAnimation(Mesh* tgt, const std::string& animName, bool us
     name = animName;
 }
 
+void VertexAnimation::LiberarFrames() {
+    for (size_t i = 0; i < frames.size(); ++i) {
+        if (!frames[i]) continue;
+        delete[] frames[i]->positions;
+        delete[] frames[i]->normals;
+        delete frames[i];
+    }
+    frames.clear();
+}
+
+VertexAnimation::~VertexAnimation() { LiberarFrames(); }
+
 bool VertexAnimation::LoadFrames() {
     if (!target || !target->vertex || target->vertexSize <= 0)
         return false;
 
-    frames.clear();
+    LiberarFrames();   // recargar sin fugar los frames anteriores
 
     for (int i = 1; i <= frameCount; ++i) {
 
@@ -57,9 +136,9 @@ bool VertexAnimation::LoadFrames() {
                 double nx, ny, nz;
                 sscanf(line.c_str(), "vn %lf %lf %lf", &nx, &ny, &nz);
 
-                tempNormals.push_back(conv(nx));
-                tempNormals.push_back(conv(ny));
-                tempNormals.push_back(conv(nz));
+                tempNormals.push_back(NrmFloatToByte((float)nx));
+                tempNormals.push_back(NrmFloatToByte((float)ny));
+                tempNormals.push_back(NrmFloatToByte((float)nz));
             }
             else if (UseNormals && line.rfind("f ", 0) == 0) {
                 Face f;
@@ -69,7 +148,7 @@ bool VertexAnimation::LoadFrames() {
         }
 
         // ---------- VALIDACIÓN ----------
-        if ((int)verts.size() != target->vertexSize) {
+        if ((int)verts.size() != target->vertexSize * 3) {   // verts trae x,y,z por VERTICE
             std::cerr << "[Anim] Vertex count mismatch en "
                       << path.str() << "\n";
             return false;
@@ -108,16 +187,17 @@ void ApplyVertexFrame(const VertexAnimation& anim, size_t frameIndex) {
     Mesh* mesh = anim.target;
     const VertexFrame* frame = anim.frames[frameIndex];
 
-    // ---------- posiciones ----------
+    // ---------- posiciones (3 floats por VERTICE) ----------
     const GLfloat* srcPos = frame->positions;
-    for (size_t i = 0; i < mesh->vertexSize; ++i) {
+    const size_t nFloats = (size_t)mesh->vertexSize * 3;
+    for (size_t i = 0; i < nFloats; ++i) {
         mesh->vertex[i] = srcPos[i];
     }
 
-    // ---------- normales (opcional) ----------
+    // ---------- normales (opcional, 3 bytes por VERTICE) ----------
     if (anim.UseNormals && frame->normals && mesh->normals) {
         const GLbyte* srcNrm = frame->normals;
-        for (size_t i = 0; i < mesh->vertexSize; ++i) {
+        for (size_t i = 0; i < nFloats; ++i) {
             mesh->normals[i] = srcNrm[i];
         }
     }
@@ -125,13 +205,6 @@ void ApplyVertexFrame(const VertexAnimation& anim, size_t frameIndex) {
 
 static inline float NrmByteToFloat(GLbyte v) {
     return (float(v) + 128.0f) / 255.0f * 2.0f - 1.0f;
-}
-
-static inline GLbyte NrmFloatToByte(float v) {
-    v = ((v + 1.0f) * 0.5f) * 255.0f - 128.0f;
-    if (v > 127) v = 127;
-    if (v < -128) v = -128;
-    return (GLbyte)v;
 }
 
 void BlendVertexAnimations(
@@ -163,8 +236,9 @@ void BlendVertexAnimations(
     const VertexFrame* A = fromAnim.frames[fromFrame];
     const VertexFrame* B = toAnim.frames[toFrame];
 
-    // ---------- posiciones ----------
-    for (size_t i = 0; i < mesh->vertexSize; ++i) {
+    // ---------- posiciones (3 floats por VERTICE) ----------
+    const size_t nFloats = (size_t)mesh->vertexSize * 3;
+    for (size_t i = 0; i < nFloats; ++i) {
         mesh->vertex[i] =
             A->positions[i] * (1.0f - blendT) +
             B->positions[i] * blendT;
@@ -174,7 +248,7 @@ void BlendVertexAnimations(
     if (fromAnim.UseNormals && toAnim.UseNormals &&
         A->normals && B->normals && mesh->normals) {
 
-        for (size_t i = 0; i < mesh->vertexSize; ++i) {
+        for (size_t i = 0; i < nFloats; ++i) {
             float na = NrmByteToFloat(A->normals[i]);
             float nb = NrmByteToFloat(B->normals[i]);
 
@@ -241,11 +315,6 @@ void VertexAnimationActive::UpdateAnimation(){
         }
 
         VertexAnimation* anim = meshToAnim->animations[currentAnim];
-        /*if (anim && !anim->frames.empty() &&
-            nextFrame >= static_cast<int>(anim->frames.size())) {
-            nextFrame = 0;
-        }*/
-
         if (anim && !anim->frames.empty()) {
             int lastFrame = (int)anim->frames.size() - 1;
 

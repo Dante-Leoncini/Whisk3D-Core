@@ -806,13 +806,6 @@ void Mesh::RenderObject() {
     }
 }
 
-// angulo (rad) en el vertice p del triangulo p-q-r. Pondera la normal de cara
-// en el vertex-normal: asi un quad (2 triangulos) cuenta como UNA cara y el
-// promedio da 45 grados en las esquinas del cubo (no sesgado por la diagonal).
-
-
-
-
 
 // dibuja el buffer de bordes PRECALCULADO (bordesBuf) como GL_LINES. No arma nada
 // por frame: solo color + DrawLines. Lo usan el contorno de seleccion y el wireframe.

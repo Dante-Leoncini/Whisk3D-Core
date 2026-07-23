@@ -8,7 +8,6 @@ namespace w3dFileSystem {
     void Init();
 
     // rutas cacheadas
-    const std::string& GetExeDir();
     const std::string& GetResDir();
 
     // ------------------------------------------------------------------
@@ -37,7 +36,6 @@ namespace w3dFileSystem {
 
     // salida por defecto (render/export) que setea la plataforma. En Android API>=30 (scoped storage) es el dir
     // externo PROPIO de la app (SDL_AndroidGetExternalStoragePath), unico escribible por fopen sin permisos.
-    void SetDefaultOutputDir(const std::string& dir);
 
     // ------------------------------------------------------------------
     //  Navegacion de archivos (la usa el File browser compartido). El

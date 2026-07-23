@@ -5,11 +5,9 @@ typedef float ColorType;
 void w3dSetColor(const ColorType c[4]);
 
 #ifdef W3D_OPENGL
-    #ifdef _WIN32
-        #ifndef W3D_SYMBIAN
-            #include <windows.h>
-        #endif
-    #endif
+    // windows.h ya lo resuelve crossplatform.h (con LEAN_AND_MEAN y NOMINMAX: sin las
+    // macros min/max que rompen std::min/std::max en todo lo que incluya este header)
+    #include "crossplatform.h"
 
     #include <GL/gl.h>
 

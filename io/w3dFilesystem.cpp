@@ -24,6 +24,7 @@
 #endif
 
 #include "w3dFilesystem.h"
+#include <algorithm>   // std::sort
 
 #include <string>
 #include <vector>
@@ -240,7 +241,6 @@ namespace w3dFileSystem {
         gExeDir = DetectExeDir();
         gResDir = DetectResDir();
     }
-    const std::string& GetExeDir() { return gExeDir; }
     const std::string& GetResDir() { return gResDir; }
 
     // ========================================================
@@ -261,12 +261,6 @@ namespace w3dFileSystem {
     void SetUserDataDir(const std::string& dir) { gUserDataDir = dir; }
     const std::string& GetUserDataDir() { return gUserDataDir.empty() ? GetResDir() : gUserDataDir; }
 
-    // salida por defecto (render/export) seteada por la PLATAFORMA. En Android API>=30 (scoped storage) NO se puede
-    // escribir a Descargas por fopen -> la capa SDL (main.cpp) setea aca el dir EXTERNO PROPIO de la app
-    // (SDL_AndroidGetExternalStoragePath), que no requiere permiso y anda en todo Android. El Core es SDL-free.
-    static std::string gAppOutputDir;
-    void SetDefaultOutputDir(const std::string& dir) { gAppOutputDir = dir; }
-
     bool ReadFileBytes(const std::string& path, std::vector<unsigned char>& out) {
         out.clear();
     #ifdef __ANDROID__
@@ -286,13 +280,15 @@ namespace w3dFileSystem {
         fseek(f, 0, SEEK_END);
         long len = ftell(f);
         fseek(f, 0, SEEK_SET);
+        if (len < 0) { fclose(f); return false; }   // ftell miente con directorios/pipes: no es un archivo legible
+        size_t rd = 0;
         if (len > 0) {
             out.resize((size_t)len);
-            size_t rd = fread(&out[0], 1, (size_t)len, f);
+            rd = fread(&out[0], 1, (size_t)len, f);
             out.resize(rd);
         }
         fclose(f);
-        return true;
+        return rd == (size_t)len;   // lectura CORTA = fallo (antes devolvia true con datos truncados)
     }
 
     std::string ReadTextFile(const std::string& path, bool* ok) {
@@ -325,12 +321,7 @@ namespace w3dFileSystem {
         return x.size() < y.size();
     }
     static void Ordenar(std::vector<DirEntry>& v) {
-        for (size_t i = 1; i < v.size(); i++) {      // insertion sort (listas chicas)
-            DirEntry key = v[i];
-            size_t j = i;
-            while (j > 0 && Menor(key, v[j - 1])) { v[j] = v[j - 1]; j--; }
-            v[j] = key;
-        }
+        std::sort(v.begin(), v.end(), Menor);   // una carpeta real (Descargas) puede tener miles de entradas
     }
 
     // ========================================================
@@ -416,9 +407,6 @@ namespace w3dFileSystem {
     // carpeta de salida por defecto: en Android, Descargas (compartida, visible por USB);
     // en el resto, la carpeta del usuario. Symbian usa sus rutas fijas E:/whisk3d/* en el editor.
     std::string GetDefaultOutputDir() {
-        // si la plataforma seteo una salida (Android API>=30: dir externo propio de la app), esa gana: es la unica
-        // escribible por fopen bajo scoped storage. Sin esto, en Android 11+ el render/export fallaba en silencio.
-        if (!gAppOutputDir.empty()) return gAppOutputDir;
     #if defined(__ANDROID__)
         if (EsCarpeta("/storage/emulated/0/Download")) return "/storage/emulated/0/Download";
         if (EsCarpeta("/sdcard/Download")) return "/sdcard/Download";

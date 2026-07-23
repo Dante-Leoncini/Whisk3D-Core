@@ -14,82 +14,8 @@
 #else
     #include <GL/gl.h>
 #endif
-#if !defined(_WIN32) && !defined(W3D_SYMBIAN)
-#include <GL/glext.h>
-#endif
-
-#ifndef W3D_SYMBIAN
-#endif
 #include "objects/Mesh.h"
-
-#include <fstream>
-#include <sstream>
-#include <iostream>
-#include <iomanip>
-#include <cassert>
-#include <cstring>
-
-
-static void ParseFace(const std::string& line, Face& f) {
-    std::istringstream ss(line.substr(2));
-    std::string tok;
-
-    while (ss >> tok) {
-        FaceCorner fc;
-
-        int v = -1, t = -1, n = -1;
-
-        if (tok.find("//") != std::string::npos) {
-            sscanf(tok.c_str(), "%d//%d", &v, &n);
-        } else {
-            sscanf(tok.c_str(), "%d/%d/%d", &v, &t, &n);
-        }
-
-        fc.vertex = v - 1;
-        fc.normal = n - 1;
-
-        f.corners.push_back(fc);
-    }
-}
-
-static GLbyte* BuildVertexNormals(
-    size_t vertexCount,
-    const std::vector<GLbyte>& tempNormals,
-    const std::vector<Face>& faces
-) {
-    GLbyte* out = new GLbyte[vertexCount * 3];
-
-    // default
-    for (size_t i = 0; i < vertexCount * 3; i++)
-        out[i] = 127;
-
-    for (size_t fi = 0; fi < faces.size(); fi++) {
-        const Face& f = faces[fi];
-        if (f.corners.size() < 3) continue;
-
-        for (size_t i = 1; i < f.corners.size() - 1; i++) {
-            const FaceCorner tri[3] = {
-                f.corners[0],
-                f.corners[i],
-                f.corners[i + 1]
-            };
-
-            for (int k = 0; k < 3; k++) {
-                const FaceCorner& fc = tri[k];
-                if (fc.vertex < 0 || fc.normal < 0) continue;
-
-                size_t v = fc.vertex * 3;
-                size_t n = fc.normal * 3;
-
-                out[v + 0] = tempNormals[n + 0];
-                out[v + 1] = tempNormals[n + 1];
-                out[v + 2] = tempNormals[n + 2];
-            }
-        }
-    }
-
-    return out;
-}
+#include <string>
 
 // Guarda SOLO posiciones de vértices para un frame
 struct VertexFrame {
@@ -126,6 +52,9 @@ class VertexAnimation {
               repeat(true), target(NULL), UseNormals(false) {}
         VertexAnimation(Mesh* tgt, const std::string& animName, bool useNormals = false, float Speed = 1, bool Repeat = true, int ProximaAnimacion = -1);
     
+        ~VertexAnimation();          // libera los frames (posiciones/normales new[])
+        void LiberarFrames();
+
         // Cargar animaciones desde archivos .obj
         bool LoadFrames();
 

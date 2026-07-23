@@ -42,6 +42,9 @@ Material* BuscarMaterialPorNombre(const std::string& name) {
 // Implementación de Material animado
 // ===================================================
 void AnimatedMaterial::Update() {
+    // un material animado mal cargado (listas vacias o de largos distintos) no puede tirar
+    // el motor: sin este guard habia division por cero e indexado fuera de rango.
+    if (frameTextures.empty() || frameDurations.size() != frameTextures.size()) return;
     tickCounter++;
 
     if (tickCounter >= frameDurations[frameIndex]) {

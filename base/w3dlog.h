@@ -11,9 +11,11 @@
 //  RFile; PC/escritorio a whisk3d.log via stdio. Cada linea se abre/escribe/
 //  cierra con flush: si la app muere, el log queda completo hasta el final.
 //
-//  Poner W3D_DEV_LOG en 0 para builds de release: las llamadas quedan vacias.
+//  Para builds de release: -DW3D_DEV_LOG=0 desde el build (las llamadas quedan vacias).
 // ============================================================================
+#ifndef W3D_DEV_LOG
 #define W3D_DEV_LOG 1
+#endif
 
 #if W3D_DEV_LOG
 void w3dLogReset();                   // trunca/abre el log (al iniciar la app)

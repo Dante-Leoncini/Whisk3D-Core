@@ -1,4 +1,5 @@
 #include "Animation.h"
+#include <algorithm>   // std::sort (fuera el quicksort a mano)
 #include "math/Vector3.h"        // EvalPropVec (las 3 curvas de una propiedad)
 #include "SkeletalAnimation.h"   // clips de armature (startFrame/endFrame/FrameRate) para el rango por animacion
 #include "objects/Armature.h"    // ActiveAnimArm->animations / animActiva
@@ -13,11 +14,13 @@ static W3dRelojFn gReloj = 0;
 
 void W3dSetReloj(W3dRelojFn fn) { gReloj = fn; }
 
+#ifndef W3D_SYMBIAN   // en Symbian la define w3dskelstubs.cpp (User::NTickCount): dos definiciones = error de link
 unsigned int w3dGetTicks() {
     if (gReloj) return gReloj();
     // respaldo portable: sirve para animar, aunque mida tiempo de CPU y no de pared.
     return (unsigned int)((double)clock() * 1000.0 / (double)CLOCKS_PER_SEC);
 }
+#endif
 
 // Variables globales
 bool PlayAnimation = false;   // arranca PAUSADO (el timeline lo togglea con Play)
@@ -123,54 +126,18 @@ void AnimTick() {
     if (CurrentFrame < StartFrame) CurrentFrame = EndFrame;   // loop en reversa
 }
 
-unsigned int millisecondsPerFrame = 67;  // animación (ej: 15 FPS)
-int FrameRate = 60;                // render (ej: 60 FPS)
-
 unsigned int lastAnimTime = w3dGetTicks();
 unsigned int lastRenderTime = w3dGetTicks();
 
-// Funciones
-void CalculateMillisecondsPerFrame(int aFPS) {
-    FrameRate = aFPS;
-    millisecondsPerFrame = 1000 / aFPS;
-}
 
-// Funciones de keyframes
-void Swap(keyFrame& a, keyFrame& b) {
-    keyFrame temp = a;
-    a = b;
-    b = temp;
-}
-
-int Partition(std::vector<keyFrame>& arr, int low, int high) {
-    int pivot = arr[high].frame;
-    int i = low - 1;
-
-    for (int j = low; j < high; j++) {
-        if (arr[j].frame < pivot) {
-            i++;
-            Swap(arr[i], arr[j]);
-        }
-    }
-    Swap(arr[i + 1], arr[high]);
-    return i + 1;
-}
-
-void QuickSort(std::vector<keyFrame>& arr, int low, int high) {
-    if (low < high) {
-        int pi = Partition(arr, low, high);
-        QuickSort(arr, low, pi - 1);
-        QuickSort(arr, pi + 1, high);
-    }
-}
-
-bool compareKeyFrames(const keyFrame& a, const keyFrame& b) {
+// orden por numero de frame (para std::sort)
+static bool compareKeyFrames(const keyFrame& a, const keyFrame& b) {
     return a.frame < b.frame;
 }
 
 // AnimProperty
 void AnimProperty::SortKeyFrames() {
-    QuickSort(keyframes, 0, keyframes.size() - 1);
+    std::sort(keyframes.begin(), keyframes.end(), compareKeyFrames);
 }
 
 // ============================================================================
@@ -399,7 +366,6 @@ AnimProperty& PropertyDeLista(std::vector<AnimProperty>& props, int property, in
     for (size_t i = 0; i < props.size(); i++)
         if (props[i].Property == property && props[i].component == component) return props[i];
     AnimProperty p; p.Property = property; p.component = component;
-    p.firstFrameIndex = 0; p.lastFrameIndex = 0;
     props.push_back(p);
     return props.back();
 }
@@ -430,23 +396,3 @@ void AnimationObject::UpdateFirstLastFrame() {
 
 // Vector global de objetos animados
 std::vector<AnimationObject> AnimationObjects;
-
-// Funciones de búsqueda (implementa según necesites)
-int BuscarAnimacionObj() {
-    int index = -1;
-    return index;
-}
-
-int BuscarAnimProperty(int indice, int propertySelect) {
-    int index = -1;
-    return index;
-}
-
-int BuscarShapeKeyAnimation(Object* obj, bool mostrarError) {
-    return -1;
-}
-
-void ReloadAnimation() {	
-    // sin cuerpo: el avance de la animacion vive en el sistema esqueletal (EvaluarPoseEsqueleto).
-    // Se mantiene como hook llamado por la UI/reproduccion; el viejo blend de shape-keys quedo obsoleto.
-}

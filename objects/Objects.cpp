@@ -488,18 +488,6 @@ void SearchLoop(){
     }
 }
 
-size_t GetIndexInParent(Object* obj) {
-    /*if (!obj->Parent) {
-        auto it = std::find(Objects.begin(), Objects.end(), obj);
-        if (it == Objects.end()) return (size_t)-1;
-        return it - Objects.begin();
-    }*/
-    std::vector<Object*>& siblings = obj->Parent->Childrens;
-    std::vector<Object*>::iterator it = std::find(siblings.begin(), siblings.end(), obj);
-    if (it == siblings.end()) return (size_t)-1;
-    return it - siblings.begin();
-}
-
 // Devuelve el último nodo DFS (más profundo) a partir de 'node'
 Object* GetDeepestDFS(Object* node){
     if (!node) return NULL;

@@ -23,33 +23,8 @@ unsigned int w3dGetTicks();
 #else
     #include <GL/gl.h>     // PC: OpenGL de escritorio
 #endif
-#include <iostream>
 
 #include "objects/Objects.h"
-
-// Clases de shape key
-class ShapeKeyVertex { 
-public:
-    int index;
-    GLshort vertexX;
-    GLshort vertexY;
-    GLshort vertexZ;
-    GLbyte normalX;
-    GLbyte normalY;
-    GLbyte normalZ;
-};
-
-class ShapeKey { 
-public:
-    std::vector<ShapeKeyVertex> Vertex;
-};
-
-// Clase de animación
-class Animation { 
-public:
-    std::vector<ShapeKey> Frames;
-    int MixSpeed;
-};
 
 // Variables globales
 extern bool PlayAnimation;   // true = reproduciendo (avanza CurrentFrame en cada tick)
@@ -61,17 +36,13 @@ extern int EndFrame;
 extern int CurrentFrame;
 
 // avanza CurrentFrame un paso (si PlayAnimation) haciendo loop entre Start..End. Lo llama el main loop
-// cada millisecondsPerFrame. Respeta AnimPlayDir (play normal / reversa).
+// en cada tick de animacion. Respeta AnimPlayDir (play normal / reversa).
 void AnimTick();
-
-extern unsigned int millisecondsPerFrame;
-extern int FrameRate;
 
 extern unsigned int lastAnimTime;
 extern unsigned int lastRenderTime;
 
 // Funciones de animación
-void CalculateMillisecondsPerFrame(int aFPS);
 
 // Constantes de animación
 enum { AnimPosition, AnimRotation, AnimScale };
@@ -111,23 +82,15 @@ public:
                  inDF(0.0f), inDV(0.0f), outDF(0.0f), outDV(0.0f) {}
 };
 
-// Funciones auxiliares
-void Swap(keyFrame& a, keyFrame& b);
-int Partition(std::vector<keyFrame>& arr, int low, int high);
-void QuickSort(std::vector<keyFrame>& arr, int low, int high);
-bool compareKeyFrames(const keyFrame& a, const keyFrame& b);
-
 // Una CURVA de animacion = (Property, component). Ej: (AnimPosition, AnimX) = "X Location".
 // Cada componente tiene SUS PROPIOS keyframes -> se puede mover/borrar/curvar X sin tocar Y ni Z.
 class AnimProperty {
 public:
     int Property;   // AnimPosition / AnimRotation / AnimScale
     int component;  // AnimX / AnimY / AnimZ
-    int firstFrameIndex;
-    int lastFrameIndex;
     std::vector<keyFrame> keyframes;
 
-    AnimProperty() : Property(AnimPosition), component(AnimX), firstFrameIndex(0), lastFrameIndex(0) {}
+    AnimProperty() : Property(AnimPosition), component(AnimX) {}
     void SortKeyFrames();
     // evalua la curva en 'frame' (devuelve def si no tiene keyframes). Clampea fuera del rango.
     float Eval(int frame, float def) const;
@@ -207,13 +170,5 @@ void AnimCargarRangoActivo();      // StartFrame/EndFrame/AnimFPS <- animacion a
 void AnimSetStart(int v);          // animacion activa.start = v; StartFrame = v
 void AnimSetEnd(int v);            // animacion activa.end   = v; EndFrame   = v
 void AnimSetFps(int v);            // animacion activa.fps   = v; AnimFPS    = v
-
-// Funciones de búsqueda
-int BuscarAnimacionObj();
-int BuscarAnimProperty(int indice, int propertySelect);
-int BuscarShapeKeyAnimation(Object* obj, bool mostrarError);
-
-// Función para recargar animación
-void ReloadAnimation();
 
 #endif

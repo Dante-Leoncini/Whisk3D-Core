@@ -2,6 +2,8 @@
 #define SKELETAL_ANIMATION_H
 
 #include <vector>
+#include "math/Matrix4.h"
+#include "math/Vector3.h"
 #include <string>
 #include "animation/Animation.h"   // AnimProperty, keyFrame, enum AnimPosition/AnimRotation/AnimScale
 
@@ -77,8 +79,6 @@ bool AutoKeyEsqueletoPrep(Armature* a);
 int  AutoKeyHueso(Armature* a, int i, const Vector3& T0, const Vector3& R0, const Vector3& S0);
 void AutoKeyEsqueletoFin(Armature* a);
 // helpers para el transform interactivo de huesos (Pose Mode): conversion rotacion-mundo <-> euler LOCAL del hueso.
-#include "math/Matrix4.h"
-#include "math/Vector3.h"
 Matrix4 SkelNodeToYupMat();                       // matriz NodeToYup (nodo Z-up -> escena Y-up)
 Matrix4 SkelMatRotEuler(const Vector3& deg, int order); // rotacion euler (grados) en el orden FBX
 Matrix4 SkelBoneWorldNode(Armature* a, int bone); // world del hueso en espacio nodo (pose actual)
