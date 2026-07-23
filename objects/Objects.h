@@ -44,7 +44,8 @@ struct ObjectType {
     enum Enum {
         scene, mesh, camera, light, empty, armature, curve,
         collection, baseObject, mirror, gamepad, instance, constraint,
-        ui              // raiz de una INTERFAZ 2D (se edita en el viewport Editor 2D)
+        ui,             // raiz de una INTERFAZ 2D (se edita en el viewport Editor 2D)
+        texto2d         // elemento de TEXTO de una interfaz 2D (vive siempre dentro de un UI)
     };
     Enum v;
     ObjectType(Enum e) : v(e) {}
