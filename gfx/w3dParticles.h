@@ -54,7 +54,8 @@ struct ParticleSystem {
     // se quiere: colorPlano deja el color quieto y solo baja el alfa.
     bool  colorPlano;
     int   maxParts;               // tope de particulas vivas
-    unsigned texs[8]; int nTex;   // texturas (elige una al azar por particula)
+    enum { MaxTexs = 8 };
+    unsigned texs[MaxTexs]; int nTex;   // texturas (elige una al azar por particula)
 
     // ---------- RUNTIME ----------
     std::vector<Particle> parts;
@@ -76,7 +77,7 @@ struct ParticleSystem {
         blend=MezclaAdd; colorPlano=false; maxParts=200; nTex=0; acc=0; phase=0; rng=2463534242u;
     }
 
-    void SetTexturas(const unsigned* t, int n) { if(n>8)n=8; nTex=n; for(int i=0;i<n;i++) texs[i]=t[i]; }
+    void SetTexturas(const unsigned* t, int n) { if(n>MaxTexs)n=MaxTexs; nTex=n; for(int i=0;i<n;i++) texs[i]=t[i]; }
 
     // RNG: LCG -> [0,1). Deterministico (misma secuencia siempre); no usa Math.random.
     float frnd() { rng = rng*1664525u + 1013904223u; return (float)((rng>>8)&0xFFFFFFu)/16777216.0f; }
@@ -119,7 +120,7 @@ struct ParticleSystem {
 
     // brillo por vida: aparece en 'fadeIn' (arranque), se mantiene, y se apaga en 'fadeOut' (final,
     // llega a 0 al morir). Asi puede quedar brillante casi toda la vida y recien apagarse al final.
-    float FadeDe(const Particle& p) const {
+    float BrilloPorVida(const Particle& p) const {   // 0..1 segun cuanta vida le queda
         float t = 1.0f - p.life/p.lifeMax;        // 0=nace, 1=muere
         float fin  = (fadeIn>0.0f  && t < fadeIn)       ? t/fadeIn         : 1.0f;
         float fout = (fadeOut>0.0f && t > 1.0f-fadeOut) ? (1.0f-t)/fadeOut : 1.0f;
@@ -136,7 +137,7 @@ struct ParticleSystem {
         static const float UV[12] = { 0,0, 1,0, 1,1,  0,0, 1,1, 0,1 };
         for (size_t i=0; i<parts.size(); ++i) {
             const Particle& p = parts[i];
-            float b = p.a0 * FadeDe(p); if (b<=0.0f) continue;
+            float b = p.a0 * BrilloPorVida(p); if (b<=0.0f) continue;
             float lt = 1.0f - p.life/p.lifeMax;
             float s = p.size + (p.sizeEnd - p.size)*lt;          // tamanio interpolado por vida
             float px = p.x+offsetX, py = p.y+offsetY, pz = p.z+offsetZ; // corrimiento global (parallax)

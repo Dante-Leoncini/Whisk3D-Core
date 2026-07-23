@@ -22,14 +22,14 @@ static bool  gListo = false;
 static void aplicar() {
     W3dMusicRefrescarVolumenes();          // pistas de musica ya sonando
 #ifdef W3D_ENABLE_AUDIO
-    W3dAudioMasterVolume(AudioGanancia()); // mixer de efectos
+    W3dAudioMasterVolume(VolumenGanancia()); // mixer de efectos
 #endif
 }
 
 // Version del bloque de audio en la config. Sirve para MIGRAR ajustes viejos.
 enum { AUDIO_CFG_VER = 2 };
 
-void AudioInit() {
+void VolumenInit() {
     if (gListo) return;
     gListo = true;
     ConfigLoad();                          // idempotente: si ya estaba cargada no molesta
@@ -49,11 +49,11 @@ void AudioInit() {
     aplicar();
 }
 
-float AudioVolumen() { return gVol; }
-bool  AudioMute()    { return gMute; }
-float AudioGanancia(){ return gMute ? 0.0f : gVol; }
+float VolumenGet() { return gVol; }
+bool  VolumenMute()    { return gMute; }
+float VolumenGanancia(){ return gMute ? 0.0f : gVol; }
 
-void AudioSetVolumen(float v) {
+void VolumenSet(float v) {
     if (v < 0.0f) v = 0.0f;
     if (v > 1.0f) v = 1.0f;
     gVol = v;
@@ -62,7 +62,7 @@ void AudioSetVolumen(float v) {
     aplicar();
 }
 
-void AudioSetMute(bool m) {
+void VolumenSetMute(bool m) {
     gMute = m;
     ConfigSetInt("audio.mute", m ? 1 : 0);
     ConfigSave();

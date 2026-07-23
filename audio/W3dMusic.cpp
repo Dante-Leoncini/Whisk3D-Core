@@ -23,9 +23,9 @@ void W3dMusic::SetVolume(float v) {
     if (v < 0.0f) v = 0.0f;
     if (v > 1.0f) v = 1.0f;
     propio = v;
-    AplicarVolumen(propio * AudioGanancia());
+    AplicarVolumen(propio * VolumenGanancia());
 }
-void W3dMusic::RefrescarVolumen() { AplicarVolumen(propio * AudioGanancia()); }
+void W3dMusic::RefrescarVolumen() { AplicarVolumen(propio * VolumenGanancia()); }
 
 void W3dMusicRefrescarVolumenes() {
     for (int i = 0; i < W3D_MUSIC_MAX; i++) if (gPistas[i]) gPistas[i]->RefrescarVolumen();

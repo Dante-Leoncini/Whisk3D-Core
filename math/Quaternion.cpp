@@ -169,7 +169,7 @@ Vector3 Quaternion::ToEulerYXZ() const {
     return euler;
 }
 
-Quaternion Quaternion::FromEuler(float pitchDeg, float yawDeg, float rollDeg){
+Quaternion Quaternion::FromEulerYXZ(float pitchDeg, float yawDeg, float rollDeg){
     float xRad = pitchDeg * (M_PI / 180.0f);
     float yRad = yawDeg  * (M_PI / 180.0f);
     float zRad = rollDeg * (M_PI / 180.0f);

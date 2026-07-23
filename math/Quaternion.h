@@ -46,7 +46,7 @@ struct Quaternion {
         float t
     );
 
-    static Quaternion FromEuler(float pitchDeg, float yawDeg, float rollDeg);
+    static Quaternion FromEulerYXZ(float pitchDeg, float yawDeg, float rollDeg);
 
     // --- modos de rotacion del editor ---
     // Euler XYZ: compone Qx*Qy*Qz (rotar X, luego Y, luego Z). ToEulerXYZ es su

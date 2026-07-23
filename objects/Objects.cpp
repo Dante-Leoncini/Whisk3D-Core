@@ -383,19 +383,9 @@ Vector3 Object::LocalAMundo(const Vector3& local) const {
 }
 
 Matrix4 Object::BuildMatrix(const Vector3& pos, const Quaternion& rot, const Vector3& scale) {
-    Matrix4 R = rot.ToMatrix();
-    
-    // Aplicar Escala (S)
-    R.m[0] *= scale.x; R.m[1] *= scale.x; R.m[2] *= scale.x; 
-    R.m[4] *= scale.y; R.m[5] *= scale.y; R.m[6] *= scale.y;
-    R.m[8] *= scale.z; R.m[9] *= scale.z; R.m[10] *= scale.z;
-
-    // Aplicar Traslación (T)
-    R.m[12] = pos.x;
-    R.m[13] = pos.y;
-    R.m[14] = pos.z;
-    
-    return R; // Esta es la matriz T * R * S
+    // misma composicion T*R*S que W3dLocalTRS: UNA sola fuente de verdad (esta version escalaba
+    // columnas a mano; si divergian, el motion trail y el objeto dibujado no coincidian)
+    return W3dLocalTRS(pos, rot, scale);
 }
 
 void Object::RenderObject(){}

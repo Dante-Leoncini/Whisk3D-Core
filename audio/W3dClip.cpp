@@ -116,7 +116,7 @@ W3dClip* W3dClipLoad(const void* bytes, size_t len, const char* mime) {
     W3dClip* c = new W3dClip(); c->h = h; return c;
 }
 void W3dClipPlay(W3dClip* c, float vol) {
-    if (c) w3dClipJS_Play(c->h, vol * AudioGanancia());
+    if (c) w3dClipJS_Play(c->h, vol * VolumenGanancia());
 }
 void W3dClipFree(W3dClip* c) { if (c) { w3dClipJS_Free(c->h); delete c; } }
 void W3dClipInstalarDesbloqueo() { w3dClipJS_Ctx(); w3dClipJS_Desbloqueo(); }
@@ -137,7 +137,7 @@ W3dClip* W3dClipLoad(const void* bytes, size_t len, const char* /*mime*/) {
     W3dClip* c = new W3dClip(); c->s = s; return c;
 }
 void W3dClipPlay(W3dClip* c, float vol) {
-    if (c && c->s) W3dSoundPlay(c->s, vol * AudioGanancia(), false);
+    if (c && c->s) W3dSoundPlay(c->s, vol * VolumenGanancia(), false);
 }
 void W3dClipFree(W3dClip* c) { if (c) { W3dSoundFree(c->s); delete c; } }
 void W3dClipInstalarDesbloqueo() {}   // sin navegador no hay nada que desbloquear

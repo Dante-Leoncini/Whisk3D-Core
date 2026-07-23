@@ -18,7 +18,6 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
-#include <random>
 
 using namespace w3dEngine;
 
@@ -55,8 +54,14 @@ int main(int argc, char** argv) {
     int firstAsset;
 
     if (strcmp(argv[2], "--genkey") == 0) {
-        std::random_device rd; // fuente del SO (no determinista)
-        for (int i = 0; i < 32; i++) key[i] = (unsigned char)(rd() & 0xff);
+        // la clave sale del SO (/dev/urandom): C++03 puro, sin <random> de C++11.
+        FILE* ur = fopen("/dev/urandom", "rb");
+        if (!ur || fread(key, 1, 32, ur) != 32) {
+            fprintf(stderr, "ERROR: no pude leer /dev/urandom (no genero claves debiles)\n");
+            if (ur) fclose(ur);
+            return 1;
+        }
+        fclose(ur);
         printf("clave generada (guardala, la necesita tu app):\n  ");
         for (int i = 0; i < 32; i++) printf("%02x", key[i]);
         printf("\n");
