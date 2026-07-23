@@ -43,7 +43,8 @@ extern Viewport3D* Viewport3DActive;
 struct ObjectType {
     enum Enum {
         scene, mesh, camera, light, empty, armature, curve,
-        collection, baseObject, mirror, gamepad, instance, constraint
+        collection, baseObject, mirror, gamepad, instance, constraint,
+        ui              // raiz de una INTERFAZ 2D (se edita en el viewport Editor 2D)
     };
     Enum v;
     ObjectType(Enum e) : v(e) {}
