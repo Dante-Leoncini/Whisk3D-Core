@@ -1,4 +1,5 @@
 #include "Objects.h"
+#include "script/W3dScript.h" // W3dScriptDatos completo (el destructor lo libera)
 #include "w3dGraphics.h" // flags de estado de render (w3dRenderLuces) — PC y Symbian
 
 // RAIZ de la escena. La DEFINE el Core (antes solo la declaraba y la definia el editor, asi que
@@ -57,6 +58,7 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
     rotMode = RotEulerXYZ;       // default: XYZ Euler
     rotAngle = 0.0f;
     rotAxis = Vector3(0, 0, 1);
+    scriptDatos = NULL;          // script lua opcional (ver script/W3dScript.h)
     ActualizarDisplayRot();
 
     if (Parent) {
@@ -130,6 +132,7 @@ static void DesvincularDelArbol(Object* nodo, Object* borrado){
 }
 
 Object::~Object() {
+    delete scriptDatos; scriptDatos = NULL;   // datos del script lua (si tenia)
     // antes de irse: soltar cualquier puntero que apunte a este objeto (las
     // instancias linkeadas a el) para evitar punteros colgados al renderizar
     if (SceneCollection && SceneCollection != this)

@@ -28,6 +28,8 @@ int AnimPlayDir = 1;          // +1 adelante, -1 reversa
 int AnimFPS = 30;             // fps de reproduccion de animaciones (default 30)
 int StartFrame = 1;
 int EndFrame = 250;
+bool AnimEsJuego = false;          // "Es un juego": timeline infinito (sin Fin)
+bool AnimConservarEstados = false; // play hacia adelante no pisa lo ya grabado
 int CurrentFrame = 1;
 
 // === Animaciones de ESCENA + seleccion de animacion activa a nivel app ===

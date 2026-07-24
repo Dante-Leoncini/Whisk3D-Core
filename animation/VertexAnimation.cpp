@@ -201,6 +201,7 @@ void ApplyVertexFrame(const VertexAnimation& anim, size_t frameIndex) {
             mesh->normals[i] = srcNrm[i];
         }
     }
+    mesh->skinGeomVersion++;   // re-subir el VBO (ver BlendVertexAnimations)
 }
 
 static inline float NrmByteToFloat(GLbyte v) {
@@ -257,14 +258,19 @@ void BlendVertexAnimations(
             mesh->normals[i] = NrmFloatToByte(n);
         }
     }
+
+    // el render por VBO solo RE-SUBE la geometria cuando cambia su version: sin
+    // esto, la vertex animation escribia los vertices y la pantalla quedaba
+    // CONGELADA en la pose vieja (bug del refactor de VBOs)
+    mesh->skinGeomVersion++;
 }
 
 VertexAnimationActive::VertexAnimationActive(Mesh* mesh):
     meshToAnim(mesh), currentAnim(0), nextAnim(0), currentFrame(0),
-    nextFrame(1), blendStep(0) {
+    nextFrame(1), blendStep(0.0f) {
 }
 
-void VertexAnimationActive::UpdateAnimation(){
+void VertexAnimationActive::UpdateAnimation(float dtSeg){
     if (!meshToAnim || meshToAnim->animations.empty()) return;
 
     VertexAnimation* fromAnim = meshToAnim->animations[currentAnim];
@@ -273,8 +279,10 @@ void VertexAnimationActive::UpdateAnimation(){
     if (!fromAnim || !toAnim) return;
     if (fromAnim->frames.empty() || toAnim->frames.empty()) return;
 
-    // Avanza el blend
-    blendStep++;
+    // Avanza el blend por TIEMPO REAL: a cualquier framerate la animacion dura lo
+    // mismo. El 'speed' del contenido se calibro con el loop viejo (~120 updates/seg
+    // con el busy-spin): ESE es el tick de referencia.
+    blendStep += dtSeg * 120.0f;
 
     float speed = fromAnim->speed;
     if (speed <= 0.0f) speed = 1.0f;
@@ -299,7 +307,7 @@ void VertexAnimationActive::UpdateAnimation(){
 
     // Si terminó el blend
     if (blendStep >= speed) {
-        blendStep = 0;
+        blendStep = 0.0f;
 
         bool changedAnim = (currentAnim != nextAnim);
 
@@ -380,8 +388,8 @@ void LoadVertexFrames(Mesh* mesh){
     }
 }
 
-void UpdateAnimations(){
+void UpdateAnimations(float dtSeg){
     for (size_t i = 0; i < VertexAnimationActives.size(); ++i) {
-        VertexAnimationActives[i]->UpdateAnimation();
+        VertexAnimationActives[i]->UpdateAnimation(dtSeg);
     }
 }

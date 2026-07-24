@@ -41,11 +41,14 @@ Material* BuscarMaterialPorNombre(const std::string& name) {
 // ===================================================
 // Implementación de Material animado
 // ===================================================
-void AnimatedMaterial::Update() {
+void AnimatedMaterial::Update(float dtSeg) {
     // un material animado mal cargado (listas vacias o de largos distintos) no puede tirar
     // el motor: sin este guard habia division por cero e indexado fuera de rango.
     if (frameTextures.empty() || frameDurations.size() != frameTextures.size()) return;
-    tickCounter++;
+    // avanza por TIEMPO REAL: a 30 o a 120 fps la textura animada va a la MISMA
+    // velocidad. Las duraciones del contenido se calibraron con el loop viejo
+    // (~120 updates/seg): ESE es el tick de referencia.
+    tickCounter += dtSeg * 120.0f;
 
     if (tickCounter >= frameDurations[frameIndex]) {
         tickCounter = 0;
@@ -59,10 +62,10 @@ void AnimatedMaterial::Update() {
 
 std::vector<AnimatedMaterial*> AnimatedMaterials;
 
-void UpdateAnimatedMaterials() {
+void UpdateAnimatedMaterials(float dtSeg) {
     for (size_t a = 0; a < AnimatedMaterials.size(); a++) {
         if (AnimatedMaterials[a])
-            AnimatedMaterials[a]->Update();
+            AnimatedMaterials[a]->Update(dtSeg);
     }
 }
 

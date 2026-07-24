@@ -72,11 +72,11 @@ class VertexAnimationActive {
         int currentFrame;
         int nextFrame;
 
-        int blendStep;
+        float blendStep;    // en TICKS de 120 Hz (el speed del contenido se calibro con el loop viejo)
 
         VertexAnimationActive(Mesh* mesh);
 
-        void UpdateAnimation();
+        void UpdateAnimation(float dtSeg);   // dt REAL: la anim no depende de los fps
 };
 
 // Mezcla dos animaciones y escribe en la malla target
@@ -106,7 +106,7 @@ extern std::vector<VertexAnimationActive*> VertexAnimationActives;
 
 VertexAnimationActive* FindTargetAnim(Mesh* target);
 
-void UpdateAnimations();
+void UpdateAnimations(float dtSeg = 1.0f / 60.0f);
 void NewActiveVertexAnimation(Mesh* mesh, VertexAnimation* anim);
 
 #endif

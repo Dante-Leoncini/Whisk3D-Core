@@ -83,14 +83,15 @@ class AnimatedMaterial {
         std::vector<int> frameDurations;     // speeds → duración por frame (en ticks)
 
         int frameIndex;     // índice del frame actual (0)
-        int tickCounter;    // tiempo acumulado en el frame actual (-1)
+        float tickCounter;  // tiempo acumulado en el frame actual, en TICKS de 120 Hz (el loop viejo
+                            // corria a ~120 updates/seg: el contenido esta calibrado asi)
 
-        AnimatedMaterial() : frameIndex(0), tickCounter(-1) {}
-        void Update();
+        AnimatedMaterial() : frameIndex(0), tickCounter(-1.0f) {}
+        void Update(float dtSeg);   // dt REAL del frame: la velocidad no depende de los fps
 };
 
 extern std::vector<AnimatedMaterial*> AnimatedMaterials;
-extern void UpdateAnimatedMaterials();
+extern void UpdateAnimatedMaterials(float dtSeg = 1.0f / 60.0f);
 
 // true si hay un material animado activo (animacion EN PLAY). Lo usa el render
 // event-driven del loop (PC/Symbian) para seguir redibujando mientras algo se

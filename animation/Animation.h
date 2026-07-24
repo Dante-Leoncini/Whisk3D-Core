@@ -33,6 +33,13 @@ extern int AnimFPS;          // fps de REPRODUCCION de las animaciones (editable
                              // La UI puede ir a 60 fps: el frame de animacion se repite y NO se recalcula la pose.
 extern int StartFrame;
 extern int EndFrame;
+// MODO JUEGO (checkbox "Es un juego" de la tarjeta Animacion): la linea de tiempo es
+// INFINITA (sin Fin, sin loop, sin Render Animation); el PLAY corre la simulacion de
+// scripts y el editor graba el estado frame a frame (ver main/script/SimJuego).
+extern bool AnimEsJuego;
+// con esto prendido, PLAY desde un frame anterior NO borra lo grabado hacia adelante:
+// lo REPRODUCE (util para revisar una partida sin perderla)
+extern bool AnimConservarEstados;
 extern int CurrentFrame;
 
 // avanza CurrentFrame un paso (si PlayAnimation) haciendo loop entre Start..End. Lo llama el main loop

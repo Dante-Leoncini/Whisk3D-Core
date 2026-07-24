@@ -51,7 +51,8 @@ struct ObjectType {
         cont2d,         // elemento CONTENEDOR: rectangulo invisible que solo ordena a sus hijos
         slice9,         // elemento SLICE 9: imagen con bordes fijos (marcos, botones, paneles)
         boton2d,        // elemento BOTON: card con texto y/o icono (estilo Whisk3D)
-        expandir2d      // elemento EXPANDIR: absorbe el espacio libre en filas/columnas
+        expandir2d,     // elemento EXPANDIR: absorbe el espacio libre en filas/columnas
+        video2d         // elemento VIDEO: fondos animados y festejos (sin sonido)
     };
     Enum v;
     ObjectType(Enum e) : v(e) {}
@@ -113,6 +114,11 @@ class Object {
         void SetRotEuler(const Vector3& e);
 
         virtual ObjectType getType() { return ObjectType::baseObject; }
+
+        // SCRIPT estilo Unity (opcional, casi nadie lo usa: puntero, NULL default).
+        // La ruta del .lua + las referencias expuestas viven aca; el runtime (las
+        // instancias lua vivas durante el play) lo maneja script/W3dScript.
+        struct W3dScriptDatos* scriptDatos;
 
         Object(
             Object* parent,
