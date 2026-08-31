@@ -118,14 +118,34 @@ static void AsegurarOps() {
     listo = true;
 }
 
-Texture* TexturaBuscar(const std::string& path) {
-    if (path.empty()) return NULL;
+// LA CLAVE del cache es la ruta NORMALIZADA: separador '/', y los "dir/../"
+// colapsados. Sin esto, la MISMA textura pedida desde .mtl de carpetas
+// distintas ("escenario/../texturas/atlas.png" vs "modelos/crash/../../
+// texturas/atlas.png") eran DOS claves -> DOS copias del atlas en GPU (2x4MB
+// en el N95, y el editor UV la listaba dos veces). Colapsar tambien hace que
+// la ruta exista como entrada del contenedor v4 (el VFS no resuelve "..").
+static std::string TexClave(std::string r) {
+    for (size_t i = 0; i < r.size(); i++)
+        if (r[i] == '\\') r[i] = '/';
+    size_t p;
+    while ((p = r.find("/../")) != std::string::npos) {
+        size_t s = r.rfind('/', p ? p - 1 : 0);
+        if (s == std::string::npos) break;   // "../x" sin dir previo: se queda
+        r.erase(s, p + 3 - s);
+    }
+    return r;
+}
+
+Texture* TexturaBuscar(const std::string& pathCrudo) {
+    if (pathCrudo.empty()) return NULL;
+    std::string path = TexClave(pathCrudo);
     W3dRecurso* r = W3dRecursoBuscar(W3DREC_TEXTURA, path);
     return (r && r->estado == W3DREC_LISTO) ? (Texture*)r->dato : NULL;
 }
 
-Texture* TexturaTomar(const std::string& path) {
-    if (path.empty()) return NULL;
+Texture* TexturaTomar(const std::string& pathCrudo) {
+    if (pathCrudo.empty()) return NULL;
+    std::string path = TexClave(pathCrudo);
     AsegurarOps();
     if (!gCacheOn) {
         // el camino de ANTES: una copia nueva en GPU por cada pedido, aunque la

@@ -241,6 +241,25 @@ namespace w3dEngine {
     bool PixeladoGlobal();
     void SetPixeladoGlobal(bool on);
 
+    // MIPMAPPING GLOBAL (default true; el .w3d lo apaga con "mipmaps: false").
+    // Solo las texturas POT suben piramide; TexFilter elige el min-filter mipmap
+    // (NEAREST_MIPMAP_LINEAR con pixelado) SOLO para las que la tienen
+    // (TexTieneMips), porque una sin piramide con ese filtro queda incompleta.
+    // Igual que el pixelado, se lee al SUBIR: cambiarlo no re-arma lo ya cargado.
+    bool MipmapsGlobal();
+    void SetMipmapsGlobal(bool on);
+    bool TexTieneMips(unsigned int id);
+    void TexBaseLevel(int nivel);   // ver un nivel puntual de la piramide (0 = normal; PC solamente)
+
+    // CACHE de parametros POR TEXTURA (glTexParameter = estado del OBJETO textura,
+    // no del contexto: re-mandar el mismo filtro/wrap por malla era churn puro).
+    // Devuelven true si la firma CAMBIO (hay que llamar al driver). Viven en
+    // w3dTexture.cpp junto al registro de mips; DeleteTexture olvida la entrada.
+    bool TexFiltroCambia(unsigned int id, int firma);
+    bool TexWrapCambia(unsigned int id, int firma);
+    void TexParamsRegistrar(unsigned int id, int firmaFiltro, int firmaWrap);
+    void TexParamsOlvidar(unsigned int id);
+
     // --- punteros de los arrays del pipeline fijo (stride en BYTES) ---
     void VertexPointer2f(int strideBytes, const float* p);         // 2 float (UI 2D)
     void VertexPointer3f(int strideBytes, const float* p);         // 3 float
@@ -371,4 +390,5 @@ extern bool w3dRenderLuces;     // aplicar las luces de escena (modo Rendered)
 extern bool w3dRenderNormalColor; // dibuja la malla unlit con color = normal (debug de normales; modo Normal View)
 extern bool w3dRenderAlpha;       // pase ALPHA (matte): blanco unlit + solo el alpha de la textura (sin fog)
 extern bool w3dRenderOverlays;    // el editor quiere overlays (contorno de seleccion / overlay de edit); el Core lo LEE
+extern bool w3dVerSeleccion;      // "Ver seleccion" (menu Select del viewport): OFF = sin contorno NI tinte de seleccion
 extern bool g_xray;               // X-Ray (overlay): la malla EN EDICION se dibuja semitransparente sin z-test (retopo)

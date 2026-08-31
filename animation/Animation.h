@@ -212,6 +212,19 @@ std::string RenombrarEscenaActiva(const std::string& nombre);
 std::string SceneAnimNombreLibre(const std::string& base, int excepto);
 void BorrarEscenaActiva();         // borra la escena activa (siempre queda al menos "Scene")
 
+// ---- REPRODUCTOR de animaciones de ESCENA para el MODO JUEGO (kind 2) ----
+// El editor evalua las curvas de escena SOLO con kind 0 (AplicarAnimacionObjetos,
+// main/); en un juego las dispara el script Lua: animEscena("walk_player", loop).
+// UN clip activo por vez (alcanza para el personaje del demo; instancias en
+// paralelo para NPCs es el paso siguiente). El tick lo llama la simulacion
+// (TickReal de SimJuego) una vez por frame: avanza el reloj y APLICA las curvas
+// pos/rot/escala/visible sobre los objetos referenciados.
+int   W3dAnimEscenaIdx(const char* nombre);   // indice en SceneAnimations (-1 si no esta)
+float W3dAnimEscenaDur(int idx);              // duracion en segundos (0 si invalido)
+bool  W3dAnimEscenaPlay(int idx, bool loop);  // arranca desde su startFrame
+void  W3dAnimEscenaTick(float dt);            // avanzar + aplicar (1 vez por tick de sim)
+void  W3dAnimEscenaReset();                   // al STOP del juego: nada sonando
+
 // Start/End/FPS PROPIOS de la animacion activa (escena o clip de armature). La comparten la tarjeta y el timeline.
 void AnimCargarRangoActivo();      // StartFrame/EndFrame/AnimFPS <- animacion activa (al seleccionarla)
 void AnimSetStart(int v);          // animacion activa.start = v; StartFrame = v

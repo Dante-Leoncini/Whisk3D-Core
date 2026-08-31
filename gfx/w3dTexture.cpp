@@ -39,10 +39,15 @@
 
 #include "w3dFilesystem.h" // lectura de archivos UNIFICADA del Core (asset del APK o archivo real)
 #include <vector>
+#include <set>
 
 // GL_CLAMP_TO_EDGE es GL 1.2+; el <GL/gl.h> 1.1 de Windows no lo declara.
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE 0x812F
+#endif
+// GL_GENERATE_MIPMAP es GL 1.4+ / ES 1.1; el <GL/gl.h> 1.1 de Windows no lo declara.
+#ifndef GL_GENERATE_MIPMAP
+#define GL_GENERATE_MIPMAP 0x8191
 #endif
 
 namespace w3dEngine {
@@ -53,6 +58,59 @@ namespace w3dEngine {
 static bool g_pixeladoGlobal = false;
 bool PixeladoGlobal()          { return g_pixeladoGlobal; }
 void SetPixeladoGlobal(bool on){ g_pixeladoGlobal = on; }
+
+// MIPMAPPING GLOBAL (pedido del dueno: "este proyecto tiene que tener mipmapping").
+// Default true; el proyecto lo puede apagar con `mipmaps: false` en la cabecera del
+// .w3d. Con pixelado la piramide va NEAREST_MIPMAP_LINEAR: conserva el look pixel
+// perfect de cerca y de lejos usa los niveles chicos (menos ruido y menos ancho de
+// banda de textura, clave en el N95). Cada piramide cuesta +33% de memoria.
+static bool g_mipmapsGlobal = true;
+bool MipmapsGlobal()          { return g_mipmapsGlobal; }
+void SetMipmapsGlobal(bool on){ g_mipmapsGlobal = on; }
+
+// que texturas subieron PIRAMIDE: pedirle un min-filter mipmap a una textura sin
+// piramide la vuelve INCOMPLETA (negra), asi que TexFilter consulta aca antes.
+static std::set<unsigned int> g_texConMips;
+bool TexTieneMips(unsigned int id) { return g_texConMips.count(id) != 0; }
+static void TexMipsRegistrar(unsigned int id, bool con) {
+    if (con) g_texConMips.insert(id); else g_texConMips.erase(id);
+}
+
+// ---------------------------------------------------------------------------
+//  CACHE de PARAMETROS por textura (min/mag filter + wrap). glTexParameter es
+//  estado DEL OBJETO textura (persiste con la textura, no con el contexto):
+//  re-mandar el mismo filtro/wrap en cada malla que la usa era churn puro de
+//  driver (con 16 mallas del mismo material: 64 glTexParameter identicos por
+//  frame). TexFilter/TexWrap (w3dGraphics.cpp) preguntan aca antes de llamar.
+//  La 'firma' es un entero opaco que arma el caller (filtro: bit0 = linear,
+//  bit1 = con piramide; wrap: 0/1 = clamp/repeat). -1 = desconocida.
+//  DeleteTexture OLVIDA la entrada: GL recicla los ids y una textura nueva no
+//  puede heredar la firma de la borrada.
+// ---------------------------------------------------------------------------
+struct TexParamEstado {
+    signed char filtro, wrap;
+    TexParamEstado() : filtro(-1), wrap(-1) {}
+};
+static std::map<unsigned int, TexParamEstado> g_texParams;
+
+bool TexFiltroCambia(unsigned int id, int firma) {
+    TexParamEstado& e = g_texParams[id];
+    if (e.filtro == (signed char)firma) return false;
+    e.filtro = (signed char)firma;
+    return true;
+}
+bool TexWrapCambia(unsigned int id, int firma) {
+    TexParamEstado& e = g_texParams[id];
+    if (e.wrap == (signed char)firma) return false;
+    e.wrap = (signed char)firma;
+    return true;
+}
+void TexParamsRegistrar(unsigned int id, int firmaFiltro, int firmaWrap) {
+    TexParamEstado& e = g_texParams[id];
+    e.filtro = (signed char)firmaFiltro;
+    e.wrap = (signed char)firmaWrap;
+}
+void TexParamsOlvidar(unsigned int id) { g_texParams.erase(id); }
 
 // dimensiones de cada textura subida (id GL -> w,h). Lo llena UploadRGBA, por la que pasan TODOS los
 // uploads (PC stb + Symbian ICL + procedural) -> el UV editor lee el aspect ratio sin tocar la struct Texture.
@@ -68,7 +126,7 @@ bool TextureSize(unsigned int id, int& w, int& h) {
 // texturas de UI que ya vienen como pixeles (cursor, atlas, etc.). Comun a
 // todos los backends GL/GLES.
 // ----------------------------------------------------------------------------
-unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado) {
+unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, bool conMips) {
     if (!rgba || w <= 0 || h <= 0) {
         return 0;
     }
@@ -78,20 +136,39 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado) 
     // y un bind por afuera lo deja mintiendo (la proxima BindTexture(id) se saltea y dibuja otra).
     w3dEngine::BindTexture(id);
 
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-
-    const GLint filtro = filtrado ? GL_LINEAR : GL_NEAREST;
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtro);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtro);
     // wrap: REPEAT solo si ambos lados son potencia de 2. En WebGL1 (y GLES2 sin
     // extension) una textura NPOT con REPEAT es INCOMPLETA y samplea negro: un
     // icono de 24x24 se dibujaba como cuadrado negro en el navegador (funcionaba
     // en hardware que banca NPOT y por eso costo verlo). NPOT -> CLAMP_TO_EDGE.
     const bool pot = ((w & (w - 1)) == 0) && ((h & (h - 1)) == 0);
+
+    // MIPMAPS (solo POT: NPOT + piramide es incompleta en ES1/WebGL1). Por aca pasan
+    // TODAS las texturas del N95 (el ICL de Symbian decodifica y sube con UploadRGBA).
+    const bool mips = conMips && pot && MipmapsGlobal();
+#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    if (mips) glGenerateMipmap(GL_TEXTURE_2D);
+#else
+    // PC (GL 1.4+) y Symbian (ES 1.1): la piramide la genera el driver al subir
+    if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_TRUE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_FALSE);
+#endif
+    TexMipsRegistrar(id, mips);
+
+    const GLint filtro = filtrado ? GL_LINEAR : GL_NEAREST;
+    const GLint filtroMin = !mips ? filtro
+                          : (filtrado ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtro);
     const GLint wrap = pot ? GL_REPEAT : GL_CLAMP_TO_EDGE;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
+    // el cache de parametros arranca sabiendo lo que se acaba de poner (misma
+    // firma que arma TexFilter/TexWrap): el primer frame ya no re-manda nada
+    TexParamsRegistrar(id, (filtrado ? 1 : 0) | (mips ? 2 : 0), pot ? 1 : 0);
 
     w3dEngine::BindTexture(0);
     g_texSizes[id] = std::make_pair(w, h); // recordar el tamano para el aspect ratio del UV editor
@@ -111,6 +188,8 @@ void DeleteTexture(unsigned int id) {
     GLuint g = (GLuint)id;
     glDeleteTextures(1, &g);
     w3dEngine::BindTexture(0);   // GL desbindea lo borrado; el cache del motor tiene que saberlo
+    TexMipsRegistrar(id, false); // GL recicla ids: que el nuevo no herede "tiene mips"
+    TexParamsOlvidar(id);        // idem su firma de filtro/wrap
     g_texSizes.erase(id);
 }
 
@@ -201,47 +280,64 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
     if (!data) {
         return false;
     }
-    const GLenum formato = GL_RGBA;
+    // PNG SIN canal alpha (canales <= 3, lo reporta stb aunque se fuerce RGBA): se
+    // RE-EMPACA el buffer ya-RGBA a RGB apretado y se sube GL_RGB -> 25% menos de
+    // memoria de GPU en las texturas opacas (idea del dueno: atlas opaco 8,8,8).
+    // OJO: NO pedir reqComp=0 (una imagen gris entrega 1-2 bpp y GL_RGB sobre-lee).
+    GLenum formato = GL_RGBA;
+    if (canales > 0 && canales <= 3) {
+        stbi_uc* p = data;                              // in-place: RGB queda adelante
+        for (int i = 0; i < w * h; i++) {
+            p[i*3]   = p[i*4];
+            p[i*3+1] = p[i*4+1];
+            p[i*3+2] = p[i*4+2];
+        }
+        formato = GL_RGB;
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);          // filas RGB no-multiplo-de-4
+    }
 
     GLuint id = 0;
     glGenTextures(1, &id);
     w3dEngine::BindTexture(id);   // por la abstraccion: el cache del backend queda al dia
 
-    // PIXELADO GLOBAL (pedido del dueno: "pixela todas las texturas y no uses
-    // filtros de textura"): NEAREST en min y mag y SIN piramide de mipmaps. Sin
-    // mipmaps no es solo estetica -- gluBuild2DMipmaps sube ~33 % de bytes de mas
-    // a la GPU, y el motor ni los usaba (gfx::TexFilter deja GL_TEXTURE_MIN_FILTER
-    // en LINEAR/NEAREST a secas en cada AplicarMaterial, o sea que la piramide
-    // entera era memoria tirada).
+    // PIXELADO GLOBAL (pedido del dueno): NEAREST en min y mag. MIPMAPS: piramide
+    // segun MipmapsGlobal() (default ON; el .w3d lo apaga con `mipmaps: false`).
+    // Con pixelado + mips el min-filter va NEAREST_MIPMAP_LINEAR: pixel perfect de
+    // cerca, niveles chicos de lejos (TexFilter respeta esto en cada material).
     const bool pix = w3dEngine::PixeladoGlobal();
+    const bool pot = ((w & (w - 1)) == 0) && ((h & (h - 1)) == 0);
+    const bool mips = pot && w3dEngine::MipmapsGlobal();
     const GLint filtroPix = pix ? GL_NEAREST : GL_LINEAR;
+    const GLint filtroMin = !mips ? filtroPix
+                          : (pix ? GL_NEAREST_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_LINEAR);
 #ifdef __ANDROID__
     glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0,
                  formato, GL_UNSIGNED_BYTE, data);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroPix);
+    if (mips) glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtroPix);
 #elif defined(__EMSCRIPTEN__)
-    // WebGL: sin GLU. Sin mipmaps + CLAMP -> anda con cualquier tamano (WebGL1 pide
-    // POT para mipmaps/REPEAT; asi evitamos esa restriccion).
+    // WebGL: POT -> piramide con glGenerateMipmap; NPOT -> sin mips + CLAMP (WebGL1
+    // pide POT para mipmaps/REPEAT).
     glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0,
                  formato, GL_UNSIGNED_BYTE, data);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroPix);
+    if (mips) glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtroPix);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 #else
-    if (pix) {
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0,
-                     formato, GL_UNSIGNED_BYTE, data);
-    } else {
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtroPix);
+    if (mips) {
         gluBuild2DMipmaps(GL_TEXTURE_2D, formato, w, h,
                           formato, GL_UNSIGNED_BYTE, data);
+    } else {
+        glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0,
+                     formato, GL_UNSIGNED_BYTE, data);
     }
 #endif
+    TexMipsRegistrar(id, mips);
 
     w3dEngine::BindTexture(0);
     stbi_image_free(data);

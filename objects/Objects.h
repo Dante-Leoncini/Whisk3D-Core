@@ -66,7 +66,8 @@ struct ObjectType {
         lod,            // dibuja UN solo hijo segun la distancia a la camara (niveles de detalle)
         culling,        // frustum culling de sus hijos por AABB (y orden adelante->atras)
         particulas,     // emisor de PARTICULAS (billboards del Core, gfx/w3dParticles.h)
-        viszona         // selector de CELDA de visibilidad (VisSet/.w3dvis): grilla/volumenes/curva/manual
+        viszona,        // selector de CELDA de visibilidad (VisSet/.w3dvis): grilla/volumenes/curva/manual
+        gridcull        // culling ESPACIAL POR GRILLA (estilo GTA/RenderWare): celdas + frustum + distancia + LOD
     };
     Enum v;
     ObjectType(Enum e) : v(e) {}
@@ -77,6 +78,10 @@ struct ObjectType {
 class Object;
 extern Object* SceneCollection;
 extern std::vector<Object*> ObjSelects;
+// LOCAL VIEW (aislar la seleccion en un viewport, tecla "/" del editor): el editor publica esto por-frame ANTES
+// del pase de escena; el Core lo LEE en Object::Render. En el runtime del juego queda en false/NULL (gratis).
+extern bool g_localViewActivo;
+extern const std::set<Object*>* g_localViewVisibles; // objetos a traversar/dibujar (NULL = no filtrar)
 extern Object* CollectionActive;
 extern Object* ObjActivo;
 
@@ -106,6 +111,10 @@ class Object {
         // se VE en el viewport pero puede NO salir en el render final (la foto/
         // los pases): la marca clasica de "renderizable" de los editores 3D
         bool renderizable;
+        // ESTATICO vs DINAMICO (para el culling por GRILLA, W3dGridCull): true = NO se mueve en runtime, su
+        // celda se cachea (escenario, cajas); false = DINAMICO (Crash, enemigos), se re-evalua su celda por
+        // frame. Solo importa cuando el objeto cuelga de un GridCull (afuera se ignora). Default true.
+        bool estatico;
         bool desplegado;
         bool showRelantionshipsLines;
         // EL PLAYHEAD POSO A ESTE OBJETO alguna vez en esta sesion (lo prende W3dAplicarCurvasEnFrame
@@ -232,6 +241,12 @@ class Object {
         // La ruta del .lua + las referencias expuestas viven aca; el runtime (las
         // instancias lua vivas durante el play) lo maneja script/W3dScript.
         struct W3dScriptDatos* scriptDatos;
+
+        // FISICA de cuerpo rigido (opcional, puntero, NULL default): la
+        // DEFINICION que persiste en el .w3d (tipo, masa, caja, centro,
+        // friccion, rebote). El cuerpo runtime lo maneja physics/W3dRigido
+        // durante el play; sin definicion el objeto no paga nada.
+        struct W3dRigidoDef* fisica;
 
         Object(
             Object* parent,

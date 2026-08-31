@@ -127,6 +127,21 @@ static int   gSmoothCache    = -1;   // 0/1 (shade model)
 static float gAlphaRefCache  = -1e9f;
 static signed char gArrOn[4]    = { -1, -1, -1, -1 }; // client arrays: -1 desconocido / 0 / 1
 
+// ---- cache de MATERIAL y COLOR actual (por VALOR) ----
+// AplicarMaterial re-manda los 4 glMaterialfv + shininess + glColor4f por CADA
+// malla: con N mallas del mismo material eran ~6N llamadas identicas por frame
+// (el reporte del dueno: Claude, 16 mallas, UN material). El valor ES la clave:
+// mandar lo que ya esta puesto no llama al driver.
+// OJO GL: con COLOR_MATERIAL prendido, ambient/diffuse del material TRACKEAN el
+// color actual -> ahi el cache de esos dos canales se invalida (Enable/Disable
+// de la cap, Color4f/4ub, y todo draw con ColorArray, que ademas deja el color
+// actual INDEFINIDO segun la spec).
+static float gMatCache[4][4];
+static bool  gMatKnown[4] = { false, false, false, false };
+static float gShinCache   = -1e9f;
+static float gColCache[4];
+static bool  gColKnown    = false;
+
 // ---- capacidades ----
 static GLenum CapGL(Cap c) {
     switch (c) {
@@ -169,6 +184,9 @@ void Enable(Cap c) {
     gCapOn[c] = true; gCapKnown[c] = true;
     g_statStateChanges++;
     glEnable(CapGL(c));
+    // COLOR_MATERIAL: al prenderse, ambient/diffuse del material pasan a seguir
+    // el color actual -> lo que el cache creia puesto ya no vale
+    if (c == ColorMaterial) { gMatKnown[MatAmbient] = false; gMatKnown[MatDiffuse] = false; }
 }
 
 void Disable(Cap c) {
@@ -176,6 +194,9 @@ void Disable(Cap c) {
     gCapOn[c] = false; gCapKnown[c] = true;
     g_statStateChanges++;
     glDisable(CapGL(c));
+    // COLOR_MATERIAL: al apagarse, el material queda con lo ULTIMO trackeado
+    // (el color que hubiera), no con lo que mando glMaterial -> desconocido
+    if (c == ColorMaterial) { gMatKnown[MatAmbient] = false; gMatKnown[MatDiffuse] = false; }
 }
 
 // ---- arrays de vertices ----
@@ -357,11 +378,21 @@ static int gStatCat = StatCatEscena;  // categoria del pase que esta dibujando
 void StatCategoria(StatCat c) { gStatCat = (int)c; }
 // el conteo comun de TODO draw de triangulos: total + categoria + opaco/blend.
 // gCapOn[Blend] es el cache del motor: fiel mientras todo el estado pase por aca.
+// tras un draw con ColorArray prendido el "color actual" queda INDEFINIDO (spec
+// de GL): el cache de Color4f no puede confiar en lo ultimo seteado. Y si ademas
+// COLOR_MATERIAL estaba prendido, arrastra ambient/diffuse del material.
+static inline void PostDrawColor() {
+    if (gArrOn[ColorArray] == 1) {
+        gColKnown = false;
+        if (gCapOn[ColorMaterial]) { gMatKnown[MatAmbient] = false; gMatKnown[MatDiffuse] = false; }
+    }
+}
 static inline void StatDrawTri(int nIndices) {
     g_statDrawTris++; g_statIndices += nIndices;
     g_statDcCat[gStatCat]++;
     if (gCapOn[Blend]) g_statTrisBlend  += nIndices / 3;
     else               g_statTrisOpacos += nIndices / 3;
+    PostDrawColor();   // todo draw de triangulos pasa por aca
 }
 void StatsReset() {
     g_statDrawTris = 0; g_statDrawVBO = 0; g_statIndices = 0; g_statTexBinds = 0; g_statMeshes = 0;
@@ -541,9 +572,17 @@ void FrontFace(bool ccw) { glFrontFace(ccw ? GL_CCW : GL_CW); }
 void ColorMask(bool r, bool g, bool b, bool a) { glColorMask(r, g, b, a); }
 void PointSpriteCoordReplace(bool on) { glTexEnvi(GL_POINT_SPRITE, GL_COORD_REPLACE, on ? GL_TRUE : GL_FALSE); }
 
-void Color4f(float r, float g, float b, float a) { glColor4f(r, g, b, a); }
-// glColor4fv NO existe en GLES1 (solo glColor4f/4ub/4x): expandir a glColor4f (los 2 OK)
-void Color4fv(const float* c) { glColor4f(c[0], c[1], c[2], c[3]); }
+void Color4f(float r, float g, float b, float a) {
+    if (gColKnown && gColCache[0] == r && gColCache[1] == g &&
+        gColCache[2] == b && gColCache[3] == a) return;   // mismo color -> nada
+    gColCache[0] = r; gColCache[1] = g; gColCache[2] = b; gColCache[3] = a;
+    gColKnown = true;
+    // con COLOR_MATERIAL prendido este color PISA ambient/diffuse del material
+    if (gCapOn[ColorMaterial]) { gMatKnown[MatAmbient] = false; gMatKnown[MatDiffuse] = false; }
+    glColor4f(r, g, b, a);
+}
+// glColor4fv NO existe en GLES1 (solo glColor4f/4ub/4x): expandir a Color4f (cacheado)
+void Color4fv(const float* c) { Color4f(c[0], c[1], c[2], c[3]); }
 
 // --- niebla ---
 void FogMode(bool linear) { glFogf(GL_FOG_MODE, (float)(linear ? GL_LINEAR : GL_EXP)); }
@@ -579,7 +618,11 @@ bool IsEnabled(Cap c) { return gCapOn[c]; }
 void ReadPixelsRGBA(int x, int y, int w, int h, unsigned char* p) {
     glReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, p);
 }
-void Color4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a) { glColor4ub(r, g, b, a); }
+void Color4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a) {
+    gColKnown = false;   // otra precision: el cache de Color4f deja de valer
+    if (gCapOn[ColorMaterial]) { gMatKnown[MatAmbient] = false; gMatKnown[MatDiffuse] = false; }
+    glColor4ub(r, g, b, a);
+}
 
 // ---- material: float en escritorio / GL ES 1.1 (Symbian); punto fijo en
 //      GL ES 1.0 (Android viejo). Aca vive el unico #ifdef ANDROID. ----
@@ -593,6 +636,13 @@ static GLenum MatParamGL(MatParam p) {
     return GL_DIFFUSE;
 }
 void Material(MatParam p, const float* rgba) {
+    float* c = gMatCache[p];
+    if (gMatKnown[p] && c[0] == rgba[0] && c[1] == rgba[1] &&
+        c[2] == rgba[2] && c[3] == rgba[3]) return;   // ya puesto -> nada
+    c[0] = rgba[0]; c[1] = rgba[1]; c[2] = rgba[2]; c[3] = rgba[3];
+    // con COLOR_MATERIAL prendido, GL trackea ambient/diffuse desde el color
+    // actual: lo que se mande aca queda pisado -> no se puede dar por puesto
+    gMatKnown[p] = !(gCapOn[ColorMaterial] && (p == MatAmbient || p == MatDiffuse));
 #ifdef __ANDROID__
     GLfixed x[4]; // 16.16: float * 65536
     for (int i = 0; i < 4; i++) x[i] = (GLfixed)(rgba[i] * 65536.0f);
@@ -602,6 +652,8 @@ void Material(MatParam p, const float* rgba) {
 #endif
 }
 void MaterialShininess(float s) {
+    if (gShinCache == s) return;
+    gShinCache = s;
 #ifdef __ANDROID__
     glMaterialx(GL_FRONT_AND_BACK, GL_SHININESS, (GLfixed)(s * 65536.0f));
 #else
@@ -715,15 +767,43 @@ void BlendMode(int modo) { // capa multi-pass sobre lo de abajo
 }
 
 // ---- parametros de la textura activa ----
+// glTexParameter es estado DEL OBJETO textura: persiste con ella. La firma de lo
+// puesto se cachea POR TEXTURA (w3dTexture.cpp): re-mandar lo mismo por cada
+// malla que la usa era churn puro (Claude: 16 mallas x 4 glTexParameter = 64
+// llamadas identicas por frame). Con el bind desconocido se manda sin cachear.
 void TexFilter(bool linear) {
     GLint f = linear ? GL_LINEAR : GL_NEAREST;
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, f);
+    // min-filter con MIPMAPS si esta textura subio piramide (TexTieneMips) y el
+    // mipmapping global esta prendido; pedirselo a una sin piramide = incompleta.
+    GLint fmin = f;
+    const bool conMips = MipmapsGlobal() && TexTieneMips(gTexBound);
+    if (conMips)
+        fmin = linear ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR;
+    if (gTexBound != 0xFFFFFFFFu &&
+        !TexFiltroCambia(gTexBound, (linear ? 1 : 0) | (conMips ? 2 : 0))) return;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, fmin);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
 }
 void TexWrap(bool repeat) {
+    if (gTexBound != 0xFFFFFFFFu &&
+        !TexWrapCambia(gTexBound, repeat ? 1 : 0)) return;
     GLfloat w = (GLfloat)(repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, w);
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, w);
+}
+
+// fija el nivel BASE de la piramide de la textura activa (0 = normal). Lo usa el
+// inspector de mipmaps del editor UV para VER un nivel puntual. Solo escritorio:
+// GLES 1.1 (N95) no tiene GL_TEXTURE_BASE_LEVEL.
+#ifndef GL_TEXTURE_BASE_LEVEL
+#define GL_TEXTURE_BASE_LEVEL 0x813C
+#endif
+void TexBaseLevel(int nivel) {
+#if defined(W3D_SYMBIAN) || defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+    (void)nivel;
+#else
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, nivel < 0 ? 0 : nivel);
+#endif
 }
 
 // ---- punteros de los arrays ----
@@ -794,6 +874,7 @@ void DrawTrianglesClientIdx(int count, const MeshIndex* indices) {
 // material con `lineas` (el mismo camino sirve en los dos modos de dibujo).
 void DrawLinesClientIdx(int count, const MeshIndex* indices) {
     if (w3d_vboOk) GLB_BIND(GL_ELEMENT_ARRAY_BUFFER, 0);
+    PostDrawColor();
     g_statUploadBytes += count * (int)sizeof(MeshIndex);
 #if defined(W3D_SYMBIAN) || defined(__ANDROID__)
     glDrawElements(GL_LINES, count, GL_UNSIGNED_SHORT, indices);
@@ -827,18 +908,22 @@ void DrawTrianglesByte(int count, const unsigned char* indices) {
 
 // lineas sueltas (overlay de normales): dibuja vertexCount vertices de a pares
 void DrawLines(int vertexCount) {
+    PostDrawColor();
     glDrawArrays(GL_LINES, 0, vertexCount);
 }
 void DrawLineStrip(int vertexCount) {
+    PostDrawColor();
     glDrawArrays(GL_LINE_STRIP, 0, vertexCount);
 }
 void DrawLineStripIndexed(int count, const unsigned short* indices) {
+    PostDrawColor();
     glDrawElements(GL_LINE_STRIP, count, GL_UNSIGNED_SHORT, indices);
 }
 
 // puntos (vertices en Edit Mode). glDrawArrays(GL_POINTS) anda en la fase 3D
 // (no es la fase 2D rota del N95, y no usa glDrawElements)
 void DrawPoints(int vertexCount) {
+    PostDrawColor();
     glDrawArrays(GL_POINTS, 0, vertexCount);
 }
 void PointSize(float px) { glPointSize(px); }
@@ -846,12 +931,19 @@ void PointSize(float px) { glPointSize(px); }
 // lineas INDEXADAS (bordes de edit mode con vertex color compartido): en la fase
 // 3D glDrawElements funciona (la malla rellena ya lo usa para los triangulos).
 void DrawLinesIndexed(int count, const unsigned short* indices) {
+    PostDrawColor();
     glDrawElements(GL_LINES, count, GL_UNSIGNED_SHORT, indices);
 }
 
 // offset de profundidad del relleno (slope-aware). Negativo = lo tira hacia la
 // camara; se usa para el contorno: los rellenos tapan las lineas internas.
-void PolygonOffset(float factor, float units) { glPolygonOffset(factor, units); }
+// Cacheado: AplicarMaterial re-manda (0,0) por cada malla comun.
+static float gPolyOffF = -1e9f, gPolyOffU = -1e9f;
+void PolygonOffset(float factor, float units) {
+    if (gPolyOffF == factor && gPolyOffU == units) return;
+    gPolyOffF = factor; gPolyOffU = units;
+    glPolygonOffset(factor, units);
+}
 
 // empuja el rango de profundidad (contorno: las lineas internas quedan tapadas
 // por la malla y solo se ve el borde/silueta)
@@ -888,6 +980,15 @@ void Invalidate() {
     gTexEnvCache = -1; gTexGenCache = -1; gMatcapCache = -1;
     gSmoothCache = -1; gAlphaRefCache = -1e9f;
     for (int i = 0; i < 4; i++) gArrOn[i] = -1;
+    // material/color actual: tambien a "desconocido".
+    // El cache POR TEXTURA (TexFiltroCambia/TexWrapCambia) NO se toca a
+    // proposito: glTexParameter es estado del OBJETO textura, el GL directo de
+    // un pase ajeno no lo cambia (y quien borra texturas pasa por DeleteTexture,
+    // que olvida su entrada).
+    for (int i = 0; i < 4; i++) gMatKnown[i] = false;
+    gShinCache = -1e9f;
+    gColKnown = false;
+    gPolyOffF = gPolyOffU = -1e9f;
 }
 
 // ---------------------------------------------------------------------------
@@ -956,5 +1057,6 @@ bool w3dRenderLuces     = false;
 bool w3dRenderNormalColor = false;
 bool w3dRenderAlpha       = false; // pase ALPHA (matte): blanco unlit + solo el alpha de la textura
 bool w3dRenderOverlays    = true;
+bool w3dVerSeleccion      = true;  // "Ver seleccion" (menu Select): OFF = ni contorno verde ni tinte de seleccion
 bool g_xray               = false; // X-Ray OFF por defecto (lo togglea el menu Overlays)
 

@@ -46,7 +46,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     edit = NULL; // la malla de edicion se crea on-demand al entrar a Edit Mode
     uvMapActivo = -1; colorActivo = -1; grupoActivo = -1; uvGrupoActivo = -1; // sin capas hasta PoblarCapas
     armature2dActivo = -1; // armatures 2D del mesh: la lista arranca vacia
-    uvAnim = NULL; // sin animacion UV "tira de atlas" (SetUVAnimTira la crea)
+    flipbook = NULL; flipbookPropio = true; flipAplicado = -1; flipGeomVer = 0; // sin flipbook (SetUVAnimTira lo crea)
     last2dFrame = -999999; last2dAnim = -999; pose2dDirty = false; // cache de evaluacion de los clips 2D
     weightPaintOn = false; // se prende en modo Weight Paint
     modificadorActivo = -1; // stack de modificadores vacio (lo gestiona el editor)
@@ -58,6 +58,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     vboPos = vboNor = vboCol = vboUV = vboIdx = 0; vboGeomVer = 0; vboSkinFrame = -999999; vboSkinFramePrev = -999999; vboPoseSerial = 0; vboPoseSerialPrev = 0; vboVertN = 0; vboIdxN = 0; vboRenderActivo = false; vboPoseSkinneada = false; // VBOs (lazy)
     pvsFaces = NULL; pvsFacesSize = 0; pvsVersion = 0; vboPvsVer = 0; pvsOrdenado = false; // sin override PVS (malla completa; vboPvsVer retirado por P3, ver Mesh.h)
     enLoteEstatico = 0; // (P4) sin sello: la malla se dibuja sola
+    noEditable = false; tintaNoEditable = false; // malla editable (el import con noEditable / el boton de la card Mesh lo prenden)
     datosRec = NULL; datosComp = 0; // geometria propia hasta que el importador la comparta (MallaDatos.h)
 }
 
@@ -117,85 +118,97 @@ ObjectType Mesh::getType() {
 }
 
 // ===========================================================================
-//  ANIMACION UV "tira de atlas" — ver el contrato en Mesh.h (struct UVAnimTira).
-//  Registro global plano (patron AnimatedMaterials): UpdateUVAnims recorre SOLO
-//  las mallas que declararon animacion, sin caminar la escena entera.
+//  ANIMACION UV de la malla = FLIPBOOK del Core (ver Mesh.h). Registro plano de
+//  mallas: UpdateUVAnims tickea el player de cada una Y escribe su uv[] (por eso NO
+//  van en el registro global de UpdateFlipbooks, que solo lee uvActual sin tocar geometria).
 // ===========================================================================
 static std::vector<Mesh*> gUVAnimMeshes;
 
-void Mesh::SetUVAnimTira(int frames, float fps, int eje, int desfase) {
+void Mesh::SetUVAnimTira(int frames, float fps, int eje, int desfase, float ancho, float alto) {
     if (frames < 1) frames = 1;
     if (fps < 0.0f) fps = 0.0f;
     if (eje != 1) eje = 0;
     if (desfase < 0) desfase = 0;
-    if (!uvAnim) {
-        uvAnim = new UVAnimTira();
+    if (flipbook && !flipbookPropio) QuitarUVAnimTira();   // suelta el compartido antes de crear el propio
+    if (!flipbook) {
+        flipbook = new Flipbook(); flipbookPropio = true;
         gUVAnimMeshes.push_back(this);
     }
-    uvAnim->frames = frames; uvAnim->fps = fps;
-    uvAnim->eje = eje;       uvAnim->desfase = desfase % frames;
-    // reconfigurar resetea la reproduccion (la base se recaptura al primer tick)
-    uvAnim->acum = 0.0f; uvAnim->cuadro = -1; uvAnim->geomVer = 0;
-    uvAnim->uvBase.clear();
+    // eje u = tira horizontal (cols=frames, filas=1); eje v = vertical (cols=1, filas=frames).
+    // ancho/alto (default 1) = fraccion de la textura que ocupa la tira: con la tira
+    // metida en el atlas unico el paso por celda es ancho/frames, no 1/frames.
+    flipbook->ConfigurarTira("", eje ? 1 : frames, eje ? frames : 1, frames, fps, ancho, alto);
+    flipPlay.Set(flipbook, desfase % frames, false);   // false: la malla lo tickea (escribe uv[])
+    // reconfigurar resetea la aplicacion (la base se recaptura al primer tick)
+    flipAplicado = -1; flipGeomVer = 0; flipUvBase.clear();
+}
+
+// usa un flipbook COMPARTIDO con nombre (SceneFlipbooks): NO lo posee, no lo libera al quitar.
+void Mesh::UsarFlipbook(Flipbook* fb, int desfase) {
+    if (!fb) { QuitarUVAnimTira(); return; }
+    if (flipbook && flipbookPropio) delete flipbook;   // soltar el propio anterior si lo habia
+    bool reg = false;
+    for (size_t i = 0; i < gUVAnimMeshes.size(); i++) if (gUVAnimMeshes[i] == this) { reg = true; break; }
+    if (!reg) gUVAnimMeshes.push_back(this);
+    flipbook = fb; flipbookPropio = false;
+    flipPlay.Set(fb, desfase, false);
+    flipAplicado = -1; flipGeomVer = 0; flipUvBase.clear();
 }
 
 void Mesh::QuitarUVAnimTira() {
-    if (!uvAnim) return;
-    delete uvAnim; uvAnim = NULL;
+    if (!flipbook) return;
+    flipPlay.Set(0, 0, false);
+    if (flipbookPropio) delete flipbook;   // el compartido vive en SceneFlipbooks: NO se libera aca
+    flipbook = NULL; flipbookPropio = true;
+    flipUvBase.clear(); flipAplicado = -1;
     for (size_t i = 0; i < gUVAnimMeshes.size(); i++)
         if (gUVAnimMeshes[i] == this) { gUVAnimMeshes.erase(gUVAnimMeshes.begin() + i); break; }
 }
 
 bool Mesh::TickUVAnimTira(float dtSeg) {
-    UVAnimTira* a = uvAnim;
-    if (!a || !uv || vertexSize < 1 || a->frames < 1) return false;
-    if (dtSeg > 0.0f) a->acum += dtSeg;
-    int cuadro = ((int)(a->acum * a->fps) + a->desfase) % a->frames;
+    if (!flipbook || !uv || vertexSize < 1 || flipbook->cuadros < 1) return false;
+    flipPlay.Tick(dtSeg);                 // avanza el player (no esta en el registro global de UpdateFlipbooks)
+    int cuadro = flipPlay.cuadroActual;
     const size_t n = (size_t)vertexSize * 2;
-    // (re)captura de la base: primera vez, cambio de topologia, o un rebuild AJENO
-    // (CalcularBordes / editor) que regenero uv[] desde las esquinas fuente -> lo
-    // que hay en uv[] vuelve a ser el reposo y la base vieja ya no vale.
-    // OJO: una VERTEX ANIM en la misma malla tambien sube skinGeomVersion cada
-    // frame SIN tocar uv[] (posiciones nomas). Recapturar a ciegas ahi arrastraria
-    // el offset aplicado a la base (deriva infinita) -> antes de recapturar se
-    // verifica si uv[] TODAVIA es base+offset: si lo es, la base sigue valiendo.
-    if (a->uvBase.size() != n) {
-        a->uvBase.assign(uv, uv + n);
-        a->cuadro = -1;   // uv[] esta en base: nada aplicado todavia
-    } else if (a->geomVer != skinGeomVersion) {
-        bool intacto = (a->cuadro >= 0);
-        if (intacto) {
-            const float offAp = (float)a->cuadro / (float)a->frames;
-            for (size_t i = 0; i < n && intacto; i++) {
-                const float esp = ((int)(i & 1) == a->eje) ? a->uvBase[i] + offAp : a->uvBase[i];
-                if (uv[i] != esp) intacto = false;
-            }
-        }
-        if (!intacto) {
-            a->uvBase.assign(uv, uv + n);   // uv[] regenerado: es el reposo nuevo
-            a->cuadro = -1;
-        }
-        a->geomVer = skinGeomVersion;   // no re-verificar hasta el proximo salto ajeno
+    // offset APLICADO (para el chequeo de 'intacto'): corner0 de la celda ya aplicada
+    float apU = 0.0f, apV = 0.0f;
+    if (flipAplicado >= 0) {
+        float u0, v0, u1, v1; flipbook->RectDeCelda(flipAplicado, u0, v0, u1, v1); apU = u0; apV = v0;
     }
-    if (cuadro == a->cuadro) return false;
-    DesinstanciarDatos(W3DMD_UV);   // COW: la tira escribe uv[] (geometria compartida)
-    const float off = (float)cuadro / (float)a->frames;
-    for (size_t i = a->eje ? 1 : 0; i < n; i += 2)
-        uv[i] = a->uvBase[i] + off;
-    a->cuadro = cuadro;
-    skinGeomVersion++;            // re-subir el VBO (mismo camino que EvalVertexAnim)
-    a->geomVer = skinGeomVersion; // nuestra propia subida no invalida la base
+    // (re)captura de la base: primera vez, cambio de topologia, o un rebuild AJENO que regenero
+    // uv[]. Una VERTEX ANIM en la misma malla sube skinGeomVersion sin tocar uv[]; recapturar a
+    // ciegas arrastraria el offset aplicado (deriva) -> antes se verifica que uv[] siga siendo base+offset.
+    if (flipUvBase.size() != n) {
+        flipUvBase.assign(uv, uv + n);
+        flipAplicado = -1;   // uv[] esta en base: nada aplicado
+    } else if (flipGeomVer != skinGeomVersion) {
+        bool intacto = (flipAplicado >= 0);
+        for (size_t i = 0; i < n && intacto; i++) {
+            const float esp = flipUvBase[i] + (((i & 1) == 0) ? apU : apV);
+            if (uv[i] != esp) intacto = false;
+        }
+        if (!intacto) { flipUvBase.assign(uv, uv + n); flipAplicado = -1; }
+        flipGeomVer = skinGeomVersion;
+    }
+    if (cuadro == flipAplicado) return false;
+    DesinstanciarDatos(W3DMD_UV);         // COW: escribimos uv[] (geometria compartida)
+    const float offU = flipPlay.uvActual[0], offV = flipPlay.uvActual[1];   // corner0 de la celda actual
+    for (size_t i = 0; i < n; i += 2) {
+        uv[i]     = flipUvBase[i]     + offU;
+        uv[i + 1] = flipUvBase[i + 1] + offV;   // offV = 0 en una tira horizontal (no toca v)
+    }
+    flipAplicado = cuadro;
+    skinGeomVersion++;                    // re-subir el VBO (mismo camino que EvalVertexAnim)
+    flipGeomVer = skinGeomVersion;        // nuestra propia subida no invalida la base
     return true;
 }
 
 void Mesh::ReposarUVAnimTira() {
-    UVAnimTira* a = uvAnim;
-    if (!a || !uv || a->cuadro < 0) return;
+    if (!flipbook || !uv || flipAplicado < 0) return;
     const size_t n = (size_t)vertexSize * 2;
-    if (a->uvBase.size() != n) return;   // base invalida: uv[] ya es lo mejor que hay
-    for (size_t i = a->eje ? 1 : 0; i < n; i += 2)
-        uv[i] = a->uvBase[i];
-    a->cuadro = -1;   // el proximo tick reaplica el cuadro actual (y re-sube el VBO)
+    if (flipUvBase.size() != n) return;   // base invalida: uv[] ya es lo mejor que hay
+    for (size_t i = 0; i < n; i++) uv[i] = flipUvBase[i];
+    flipAplicado = -1;   // el proximo tick reaplica el cuadro actual (y re-sube el VBO)
 }
 
 bool UpdateUVAnims(float dtSeg) {
@@ -528,6 +541,10 @@ void Mesh::ActualizarChromeUVGen() {
     genChromeValid = true;
 }
 
+// un material FONDO dejo el DepthRange en 1..1: el epilogo de RenderObject lo devuelve
+// a 0..1 (flag para no pagar un glDepthRange por malla cuando no hay cielo de por medio)
+static bool gFondoActivo = false;
+
 // ===================================================
 // aplica TODO el estado GL de un material, leyendolo DEL material (nada
 // hardcodeado). RenderObject la llama solo cuando el material cambia.
@@ -541,7 +558,16 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     gfx::MaterialShininess(mat->shininess);
 
     // color por vertice (via ColorMaterial) o el difuso plano del material
-    if (mat->vertexColor && vertexColor) {
+    if (tintaNoEditable) {
+        // SELECCION de malla no editable: 75% material + 25% verde, plano (el vcolor cede:
+        // el tinte tiene que VERSE). Reemplaza al contorno de seleccion, que no existe sin edges.
+        float td[4] = { mat->diffuse[0]*0.75f + 0.075f, mat->diffuse[1]*0.75f + 0.25f,
+                        mat->diffuse[2]*0.75f + 0.075f, mat->diffuse[3] };
+        gfx::Material(gfx::MatDiffuse, td);
+        gfx::Color4f(td[0], td[1], td[2], td[3]);
+        gfx::DisableArray(gfx::ColorArray);
+        gfx::Disable(gfx::ColorMaterial);
+    } else if (mat->vertexColor && vertexColor) {
         gfx::Color4f(0.0f, 0.0f, 0.0f, 1.0f); // el color real lo pone el array
         gfx::EnableArray(gfx::ColorArray);
         gfx::Enable(gfx::ColorMaterial);
@@ -638,6 +664,17 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     // sigue siendo el que la hace ganar contra la superficie y perder contra lo
     // que este de verdad delante. Se restaura a LESS en el epilogo de RenderObject.
     if (mat->orden_pasada == 1) gfx::DepthFunc(gfx::DepthLEqual);
+    // FONDO (el cielo): dibujado ULTIMO de los opacos, clavado al plano lejano.
+    // DepthRange 1..1 + LEQUAL: el fragmento sale a z=1.0 y solo pasa donde el
+    // buffer sigue en el clear (1.0) = los pixeles que ningun opaco toco. Cero
+    // overdraw del cielo, sin escribir z. gFondoActivo lo restaura el epilogo.
+    if (mat->fondo) {
+        gfx::Enable(gfx::DepthTest);
+        gfx::DepthFunc(gfx::DepthLEqual);
+        gfx::DepthRange(1.0f, 1.0f);
+        gfx::DepthMask(false);
+        gFondoActivo = true;
+    }
     if (mat->depth_bias != 0.0f) {
         float unidades = mat->depth_bias;
 #ifdef W3D_SYMBIAN
@@ -1517,6 +1554,10 @@ void Mesh::RenderObject() {
         const bool conLuz = !w3dRenderSinLuz;
         Material* ultimo = NULL;
         bool nmListo = false; // los nmColors (L en tangent-space) se calculan UNA vez por frame
+        // SELECCION de una malla NO EDITABLE: sin edges no hay contorno -> tinte verde ~25%
+        // en el propio material (mas barato que redibujar la malla y sin z-fighting). Solo
+        // editor con overlays (el hook existe): jugando o exportado nunca tinta.
+        tintaNoEditable = noEditable && select && w3dRenderOverlays && w3dVerSeleccion && g_meshOverlayHook && !solido;
 
         // MALLA GENERADA por modificadores: se dibuja el PREVIEW en Object Y en Edit Mode (real-time; en Edit el
         // overlay de vertices/aristas -editable- se dibuja ENCIMA -> editas el original y ves el resultado). En Edit,
@@ -1798,6 +1839,7 @@ void Mesh::RenderObject() {
         gfx::TexGenSphere(false); // resetea el chrome (que no leakee al contorno/overlays/proxima malla)
         gfx::TexEnvReplace(false); // vuelve a GL_MODULATE: sino la UI/fuente quedan sin tinte de color
         gfx::DepthFunc(gfx::DepthLess);
+        if (gFondoActivo) { gfx::DepthRange(0.0f, 1.0f); gFondoActivo = false; } // el cielo (FONDO) deja el range tocado
 
         // overlays (contorno de seleccion / normales / overlay de edit): los dibuja el EDITOR
         // via hook, JUSTO tras el relleno (mismo timing que antes). NULL en una app sin editor.

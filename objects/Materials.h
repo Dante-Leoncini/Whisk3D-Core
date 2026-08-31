@@ -69,6 +69,10 @@ class Material {
         bool uv8bit;
         bool culling;
         bool depth_test;
+        // FONDO (el cielo): se dibuja ULTIMO de los opacos, clavado al plano lejano
+        // (DepthRange 1..1 + LEQUAL, sin escribir z): solo pinta los pixeles que ningun
+        // opaco toco -> cero overdraw del cielo. En el .mtl es la palabra `FONDO`.
+        bool fondo;
         // ---- DECAL / orden de pasada (calcomanias: sombras, blobs, manchas) ----
         // Una calcomania se dibuja PEGADA a una superficie que ya escribio z. Si escribe z
         // ella tambien queda coplanar y pelea (z-fighting). La receta es la misma que usa

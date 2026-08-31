@@ -25,6 +25,7 @@
 #include "crossplatform.h" // MeshIndex (16 bits N95 / 32 bits PC/Android/WebGL/N8)
 #include "Materials.h"
 #include "Objects.h"
+#include "animation/Flipbook.h"  // Flipbook + FlipbookPlayer (la animacion UV UNIFICADA del Core)
 
 
 class FaceCorner {
@@ -283,39 +284,21 @@ struct W3dAjenos {
 };
 
 // ===========================================================================
-//  ANIMACION UV "TIRA DE ATLAS" (Core, C++03, compila en las 4 plataformas).
+//  ANIMACION UV de la malla = un FLIPBOOK del Core (ver animation/Flipbook.h).
 //
-//  La textura de la malla es una TIRA horizontal (eje u) o vertical (eje v) de
-//  'frames' celdas IGUALES; animar = sumarle a la capa UV del render un offset
-//  de cuadro/frames sobre ese eje, a 'fps' celdas por segundo, arrancando en la
-//  celda 'desfase'. El wrap lo da GL_REPEAT (los uv pueden pasar de 1.0) y la
-//  tira exacta de N celdas garantiza que cada offset cae JUSTO en una celda.
+//  La malla referencia un Flipbook (grilla de celdas + curvas de UV) y lo reproduce
+//  con un FlipbookPlayer PROPIO. Animar = sumarle a la capa UV del render el OFFSET
+//  de la esquina 0 de la ventana actual (uvActual[0],[1]); para una tira clasica de
+//  N celdas eso es cuadro/N sobre u (o v), igual que antes. El wrap lo da GL_REPEAT.
 //
-//  AUTOPLAY: UpdateUVAnims(dt) corre en el loop del editor, del juego y del N95
-//  (junto a UpdateAnimatedMaterials), sin lua ni timeline. Los OBJ con delays
-//  por-poligono del PSX se hornean en el vt del frame 0 (el exportador separa
-//  por mask/latency): el archivo queda v/vt/vn ESTANDAR.
+//  AUTOPLAY: el player se tickea en UpdateUVAnims(dt) (el mismo pase de siempre, que
+//  ademas ESCRIBE uv[]); NO va en el registro global de UpdateFlipbooks porque la
+//  malla escribe geometria, no solo lee uvActual. Sin lua ni timeline.
 //
-//  uvBase: copia del uv[] SIN desplazar, capturada perezosamente. Si OTRO
-//  sistema regenera la geometria (CalcularBordes/editor: skinGeomVersion salta
-//  sin pasar por aca) la base se recaptura sola del uv[] nuevo, que vuelve a
-//  ser el de reposo porque el render se rearma desde las esquinas fuente.
-//  GUARDAR: ReposarUVAnimTira() deja uv[] = base antes de escribir el .w3dm
-//  (mismo contrato que W3dReposoVertexAnim con la geometria).
+//  flipUvBase: copia del uv[] SIN desplazar, capturada perezosamente. Si OTRO sistema
+//  regenera la geometria (skinGeomVersion salta sin pasar por aca) la base se recaptura
+//  sola. GUARDAR: ReposarUVAnimTira() deja uv[] = base antes de escribir el .w3dm.
 // ===========================================================================
-struct UVAnimTira {
-    int   frames;    // celdas de la tira (>= 1)
-    float fps;       // celdas por segundo (0 = congelada en 'desfase')
-    int   eje;       // 0 = u (tira horizontal), 1 = v (vertical)
-    int   desfase;   // celda inicial (permite desfasar copias del mismo objeto)
-    // ---- estado de reproduccion (NO se serializa) ----
-    float acum;      // tiempo acumulado en segundos
-    int   cuadro;    // celda APLICADA en uv[] (-1 = ninguna: uv[] esta en base)
-    unsigned geomVer;             // skinGeomVersion tras nuestra aplicacion (detecta rebuilds ajenos)
-    std::vector<GLfloat> uvBase;  // uv[] sin desplazar (2 floats por render-vert)
-    UVAnimTira() : frames(1), fps(0.0f), eje(0), desfase(0),
-                   acum(0.0f), cuadro(-1), geomVer(0) {}
-};
 
 // avanza TODAS las animaciones UV de la escena (autoplay). true si alguna malla
 // cambio (el caller redibuja). Llamar una vez por frame con el dt real.
@@ -439,9 +422,18 @@ class Mesh : public Object {
         std::vector<VertexGroup*> vertexGroups; int grupoActivo;
         std::vector<UVGroup*>     uvGroups;     int uvGrupoActivo;
 
-        // ===== ANIMACION UV "tira de atlas" (ver struct UVAnimTira arriba) =====
-        UVAnimTira* uvAnim;   // NULL = la malla no anima sus UV
-        void SetUVAnimTira(int frames, float fps, int eje, int desfase); // crea/reconfigura y registra
+        // ===== ANIMACION UV de la malla = FLIPBOOK del Core (ver comentario arriba) =====
+        Flipbook*      flipbook;   // NULL = la malla no anima sus UV (heap, como uvAnim antes)
+        bool           flipbookPropio; // true = la malla creo/posee el flipbook (lo borra al quitar);
+                                       // false = es un asset CON NOMBRE compartido (SceneFlipbooks, NO se borra)
+        FlipbookPlayer flipPlay;   // estado de reproduccion (fuera del registro global: la malla lo tickea)
+        std::vector<GLfloat> flipUvBase;  // uv[] sin desplazar (2 floats por render-vert)
+        int      flipAplicado;     // cuadro APLICADO en uv[] (-1 = uv[] esta en base)
+        unsigned flipGeomVer;      // skinGeomVersion tras aplicar (detecta rebuilds ajenos)
+        bool EsFlipbookMesh() const { return flipbook != 0; }
+        void SetUVAnimTira(int frames, float fps, int eje, int desfase,
+                           float ancho = 1.0f, float alto = 1.0f); // crea/reconfigura y registra; ancho/alto = fraccion de sub-tira en el atlas
+        void UsarFlipbook(Flipbook* fb, int desfase);   // usa un flipbook COMPARTIDO (con nombre) sin poseerlo
         void QuitarUVAnimTira();          // libera + desregistra (tambien la llama ~Mesh)
         bool TickUVAnimTira(float dtSeg); // avanza y escribe uv[]; true si cambio el cuadro
         void ReposarUVAnimTira();         // uv[] = base (llamar ANTES de escribir el .w3dm)
@@ -604,6 +596,18 @@ class Mesh : public Object {
         struct PvsRun { int grupo; int start; int count; };
         std::vector<PvsRun> pvsRuns;
         void PvsLimpiar();      // libera el override (vuelve a la malla completa)
+
+        // noEditable: malla de ESCENARIO cerrada a edicion. Al importar NO se calculan
+        // posRep/edges/bordesBuf (CalcularAABBSolo deja solo AABB+radio para el culling)
+        // y el Tab a Edit Mode la ignora. Ahorra tiempo de carga y memoria. La oclusion
+        // por triangulo de estas mallas la lleva el modificador CullingTri ("Oclusion"),
+        // que puede seguir un PATH (Curve o malla de aristas) eligiendo el nodo solo.
+        bool noEditable;
+        void CalcularAABBSolo();      // AABB + radioGeom + centroGeom sin soldaduras ni edges
+        // (runtime, por frame) SELECCION de una malla no editable: sin edges no hay contorno
+        // que dibujar -> las caras se tintan ~25% verde EN EL MISMO draw (AplicarMaterial),
+        // sin segunda pasada ni z-fighting. Lo computa RenderObject; solo editor con overlays.
+        bool tintaNoEditable;
 
         // NORMAL autoritativa POR CORNER (3 GLbyte/corner). El render la DERIVA (no al
         // reves): las edit-ops la ACARREAN (copiar/interpolar via los helpers de capas) ->

@@ -25,8 +25,10 @@ namespace w3dEngine {
     // Sube pixeles RGBA 8888 ya decodificados como textura 2D y devuelve su id
     // (0 si falla). 'filtrado' = LINEAR si true, NEAREST si false. Formato
     // interno GL_RGBA: valido tanto en GL de escritorio como en GLES 1.1.
+    // 'conMips' = false la excluye del mipmapping global (la UI 2D lo evita a
+    // proposito: los mips promediaban los slice9 chicos).
     unsigned int UploadRGBA(const unsigned char* rgba, int w, int h,
-                            bool filtrado = true);
+                            bool filtrado = true, bool conMips = true);
 
     // dimensiones con que se subio una textura (para el aspect ratio). false si no se conoce.
     bool TextureSize(unsigned int id, int& w, int& h);

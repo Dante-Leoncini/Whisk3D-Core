@@ -11,6 +11,7 @@
 #include "w3dFilesystem.h"   // leer el .lua para ORDENAR las propiedades como estan declaradas
 #include "base/W3dConfig.h"  // config()/setConfig()/silenciar(): persistencia + mute para los juegos lua
 #include "physics/W3dFisica.h"  // fisica minima del Core: velocidad/rebotar/... (los binds los registra ella)
+#include "physics/W3dRigido.h"  // cuerpos rigidos del Core (fisicaVel/fisicaRayo/contactos/...)
 #include "w3dlog.h"
 #include <math.h>
 #include <map>
@@ -243,6 +244,73 @@ static int LInstanciar(lua_State* L) {
     }
     Object* o = W3dInstanciarPrefabHook ? W3dInstanciarPrefabHook(n, pp) : 0;
     if (o) lua_pushlightuserdata(L, o); else lua_pushnil(L);
+    return 1;
+}
+
+// buscar("nombre") -> el objeto de la escena con ese nombre (busqueda recursiva
+// por el arbol), o nil. Es la via para agarrar lo que entro EN RUNTIME
+// (importarW3D), que no puede estar cableado en `propiedades` porque no existia
+// cuando el editor resolvio las referencias.
+static Object* BuscarNombreRec(Object* padre, const char* n) {
+    if (!padre) return NULL;
+    for (size_t i = 0; i < padre->Childrens.size(); i++) {
+        Object* h = padre->Childrens[i];
+        if (!h) continue;
+        if (h->name == n) return h;
+        Object* r = BuscarNombreRec(h, n);
+        if (r) return r;
+    }
+    return NULL;
+}
+static int LBuscar(lua_State* L) {
+    const char* n = luaL_checkstring(L, 1);
+    extern Object* SceneCollection;
+    // buscar("nombre" [, raiz]): con raiz busca SOLO en ese subarbol. Es la
+    // manera de agarrar la pieza de UN auto cuando hay dos importados con las
+    // mismas partes ("door_lf_dummy" del taxi Y del patrullero).
+    Object* raiz = SceneCollection;
+    if (lua_islightuserdata(L, 2)) {
+        Object* r = (Object*)lua_touserdata(L, 2);
+        if (r) raiz = r;
+    }
+    if (raiz && raiz->name == n) { lua_pushlightuserdata(L, raiz); return 1; }
+    Object* o = BuscarNombreRec(raiz, n);
+    if (o) lua_pushlightuserdata(L, o); else lua_pushnil(L);
+    return 1;
+}
+
+// puntoMundo(obj, lx,ly,lz) -> x,y,z : transforma un punto LOCAL del objeto a
+// MUNDO (cadena completa de padres). Sirve para anclar cosas a un objeto que
+// la fisica mueve y rota (el asiento de un auto, la punta de un canio).
+static int LPuntoMundo(lua_State* L) {
+    Object* o = W3dScriptParamObjeto((void*)L, 1);
+    if (!o) { lua_pushnil(L); return 1; }
+    Vector3 p((float)luaL_checknumber(L, 2),
+              (float)luaL_checknumber(L, 3),
+              (float)luaL_checknumber(L, 4));
+    Vector3 w = o->LocalAMundo(p);
+    lua_pushnumber(L, w.x);
+    lua_pushnumber(L, w.y);
+    lua_pushnumber(L, w.z);
+    return 3;
+}
+
+// animEscena("nombre" [, loop=true]) -> reproduce una ANIMACION DE ESCENA (las
+// curvas de transform de objetos) durante el juego, por nombre. Devuelve la
+// duracion en SEGUNDOS (para armar timers en lua), o nil si no existe. loop
+// false = one-shot: al terminar queda clavada en la ultima pose. UNA activa por
+// vez; el tick lo corre la simulacion (W3dAnimEscenaTick).
+static int LAnimEscena(lua_State* L) {
+    const char* n = luaL_checkstring(L, 1);
+    const bool loop = lua_isnoneornil(L, 2) ? true : (lua_toboolean(L, 2) != 0);
+    int idx = W3dAnimEscenaIdx(n);
+    if (idx < 0 || !W3dAnimEscenaPlay(idx, loop)) {
+        static bool avisado = false;   // una vez por sesion (no spamear el log)
+        if (!avisado) { avisado = true; w3dLogfW("animEscena(): no existe la animacion '%s'", n); }
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushnumber(L, W3dAnimEscenaDur(idx));
     return 1;
 }
 
@@ -696,16 +764,55 @@ static int LSetVerticeColor(lua_State* L) {
     Redibujar();
     return 0;
 }
-// setVertices(m, t): BATCH — t es una tabla PLANA {i1,x1,y1,z1, i2,x2,y2,z2, ...}
+// setVerticesColor(m, t[, n]): BATCH de setVerticeColor — t es una tabla PLANA
+// {i1,r1,g1,b1,a1, i2,r2,g2,b2,a2, ...} (0..1). UN cruce lua<->C y UNA
+// invalidacion por tanda, en vez de una por vertice (cristal, halos del portal).
+// El 3er argumento opcional acota cuantas entradas se leen (multiplo de 5).
+static int LSetVerticesColor(lua_State* L) {
+    Mesh* m = ComoMalla(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    if (!m || !m->vertexColor) return 0;
+    m->DesinstanciarDatos(W3DMD_COL);   // COW: geometria compartida (MallaDatos.h)
+    lua_Integer n = luaL_optinteger(L, 3, 0);
+    if (n <= 0) n = (lua_Integer)lua_rawlen(L, 2);
+    bool cambio = false;
+    for (lua_Integer k = 1; k + 4 <= n; k += 5) {
+        lua_rawgeti(L, 2, k);
+        lua_rawgeti(L, 2, k + 1);
+        lua_rawgeti(L, 2, k + 2);
+        lua_rawgeti(L, 2, k + 3);
+        lua_rawgeti(L, 2, k + 4);
+        int i = (int)lua_tointeger(L, -5) - 1;
+        if (i >= 0 && i < m->vertexSize) {
+            GLubyte* c = m->vertexColor + (size_t)i * 4;
+            c[0] = CanalColor(lua_tonumber(L, -4));
+            c[1] = CanalColor(lua_tonumber(L, -3));
+            c[2] = CanalColor(lua_tonumber(L, -2));
+            c[3] = CanalColor(lua_tonumber(L, -1));
+            cambio = true;
+        }
+        lua_pop(L, 5);
+    }
+    if (cambio) {
+        m->skinGeomVersion++;   // UNA sola invalidacion por batch
+        Redibujar();
+    }
+    return 0;
+}
+// setVertices(m, t[, n]): BATCH — t es una tabla PLANA {i1,x1,y1,z1, i2,x2,y2,z2, ...}
 // con los indices de grupoVertices. UN solo cruce lua<->C por frame y CERO allocs
 // en C: es la forma eficiente de animar el agua (mover N vertices en circulos).
+// El 3er argumento opcional acota cuantas ENTRADAS de la tabla se leen (en
+// numeros, multiplo de 4): el script rellena solo el prefijo y evita rearmar
+// la tabla o pagar rawlen sobre una tabla gigante reciclada.
 // Los indices invalidos se saltean; las entradas incompletas del final se ignoran.
 static int LSetVertices(lua_State* L) {
     Mesh* m = ComoMalla(L, 1);
     luaL_checktype(L, 2, LUA_TTABLE);
     if (!m || !m->vertex) return 0;
     m->DesinstanciarDatos(W3DMD_POS);   // COW: geometria compartida (MallaDatos.h)
-    lua_Integer n = (lua_Integer)lua_rawlen(L, 2);
+    lua_Integer n = luaL_optinteger(L, 3, 0);
+    if (n <= 0) n = (lua_Integer)lua_rawlen(L, 2);
     bool cambio = false;
     for (lua_Integer k = 1; k + 3 <= n; k += 4) {
         lua_rawgeti(L, 2, k);
@@ -1063,12 +1170,16 @@ static void RegistrarAPI(lua_State* L) {
     lua_pushcfunction(L, LGirarHacia); lua_setglobal(L, "girarHacia");
     lua_pushcfunction(L, LAnimar); lua_setglobal(L, "animar");
     lua_pushcfunction(L, LInstanciar); lua_setglobal(L, "instanciar");
+    lua_pushcfunction(L, LBuscar); lua_setglobal(L, "buscar");
+    lua_pushcfunction(L, LPuntoMundo); lua_setglobal(L, "puntoMundo");
+    lua_pushcfunction(L, LAnimEscena); lua_setglobal(L, "animEscena");
     // vertices por grupo (sidecar .grupos.json; ver el bloque VERTICES POR SCRIPT)
     lua_pushcfunction(L, LGrupoVertices);   lua_setglobal(L, "grupoVertices");
     lua_pushcfunction(L, LVerticePos);      lua_setglobal(L, "verticePos");
     lua_pushcfunction(L, LSetVerticePos);   lua_setglobal(L, "setVerticePos");
     lua_pushcfunction(L, LSetVerticeColor); lua_setglobal(L, "setVerticeColor");
     lua_pushcfunction(L, LSetVertices);     lua_setglobal(L, "setVertices");
+    lua_pushcfunction(L, LSetVerticesColor);lua_setglobal(L, "setVerticesColor");
     // ---- API DE OBJETOS (cualquier tipo: mesh, luz, camara, vacio, ui, texto...) ----
     // identidad
     lua_pushcfunction(L, LTipo);        lua_setglobal(L, "tipo");
@@ -1112,6 +1223,9 @@ static void RegistrarAPI(lua_State* L) {
     // FISICA minima del Core (velocidad/acelerar/caja/rebotar/rebotarEn/rebotarDentro): el motor
     // integra y rebota, el lua no calcula posiciones a mano. Ver physics/W3dFisica.h.
     W3dFisicaRegistrarBinds((void*)L);
+    // CUERPOS RIGIDOS (fisicaVel/fisicaImpulso/fisicaFuerza/fisicaRayo/contactos/
+    // fisicaActiva/fisicaGravedad): cajas con masa, gravedad e impulsos. Ver physics/W3dRigido.h.
+    W3dRigidosRegistrarBinds((void*)L);
     if (gBindExtra) gBindExtra((void*)L);   // la API 2D del editor / plataforma
 }
 

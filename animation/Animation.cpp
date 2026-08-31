@@ -450,3 +450,89 @@ void AnimationObject::UpdateFirstLastFrame() {
 
 // Vector global de objetos animados
 std::vector<AnimationObject> AnimationObjects;
+
+// ============================================================================
+//  REPRODUCTOR de animaciones de ESCENA para el MODO JUEGO (ver Animation.h).
+//  El editor solo evalua estas curvas con kind 0; un juego (kind 2) las dispara
+//  desde Lua con animEscena() y este tick las avanza y APLICA. Se aplican los
+//  canales de OBJETO (pos/rot/escala/visible); los de camara/luz son del editor.
+// ============================================================================
+
+// las curvas de la escena i: la ACTIVA vive en el global AnimationObjects
+// (invariante del swap de SetEscenaActiva; misma regla que el guardado)
+static std::vector<AnimationObject>* ObjetosDeEscena(int i) {
+    if (i < 0 || i >= (int)SceneAnimations.size() || !SceneAnimations[i]) return NULL;
+    return (i == SceneAnimActiva) ? &AnimationObjects : &SceneAnimations[i]->objetos;
+}
+
+static int   gEscJuego     = -1;     // indice sonando (-1 = nada)
+static float gEscJuegoF    = 0.0f;   // frame FLOTANTE (avanza por dt * fps)
+static bool  gEscJuegoLoop = true;
+
+int W3dAnimEscenaIdx(const char* nombre) {
+    if (!nombre) return -1;
+    for (size_t i = 0; i < SceneAnimations.size(); i++)
+        if (SceneAnimations[i] && SceneAnimations[i]->name == nombre) return (int)i;
+    return -1;
+}
+
+float W3dAnimEscenaDur(int idx) {
+    if (idx < 0 || idx >= (int)SceneAnimations.size() || !SceneAnimations[idx]) return 0.0f;
+    const SceneAnimation* e = SceneAnimations[idx];
+    int fps = (e->fps > 0) ? e->fps : 30;
+    int n = e->endFrame - e->startFrame + 1;
+    return (n > 0 ? (float)n : 1.0f) / (float)fps;
+}
+
+bool W3dAnimEscenaPlay(int idx, bool loop) {
+    if (!ObjetosDeEscena(idx)) return false;
+    gEscJuego = idx;
+    gEscJuegoF = (float)SceneAnimations[idx]->startFrame;
+    gEscJuegoLoop = loop;
+    return true;
+}
+
+void W3dAnimEscenaReset() { gEscJuego = -1; }
+
+// los canales de OBJETO de una lista de curvas, en 'frame' (la parte que el
+// juego necesita de W3dAplicarCurvasEnFrame del editor)
+static void AplicarCurvasJuego(Object* o, std::vector<AnimProperty>& props, int frame) {
+    bool hayP = false, hayR = false, hayS = false, hayV = false;
+    for (size_t p = 0; p < props.size(); p++) {
+        if (props[p].keyframes.empty()) continue;
+        int P = props[p].Property;
+        if      (P == AnimPosition) hayP = true;
+        else if (P == AnimRotation) hayR = true;
+        else if (P == AnimScale)    hayS = true;
+        else if (P == AnimVisible)  hayV = true;
+    }
+    if (hayP) o->pos   = EvalPropVec(props, AnimPosition, frame, o->pos);
+    if (hayS) o->scale = EvalPropVec(props, AnimScale,    frame, o->scale);
+    if (hayR) { Vector3 e = EvalPropVec(props, AnimRotation, frame, o->rotEuler); o->SetRotEuler(e); }
+    if (hayV) o->visible = PropertyDeLista(props, AnimVisible, AnimX).Eval(frame, o->visible ? 1.0f : 0.0f) >= 0.5f;
+}
+
+void W3dAnimEscenaTick(float dt) {
+    if (gEscJuego < 0) return;
+    std::vector<AnimationObject>* objs = ObjetosDeEscena(gEscJuego);
+    if (!objs) { gEscJuego = -1; return; }
+    const SceneAnimation* e = SceneAnimations[gEscJuego];
+    const int fps = (e->fps > 0) ? e->fps : 30;
+    gEscJuegoF += dt * (float)fps;
+    const float ini = (float)e->startFrame, fin = (float)e->endFrame;
+    if (gEscJuegoF > fin) {
+        if (gEscJuegoLoop) {
+            float largo = fin - ini + 1.0f;
+            if (largo < 1.0f) largo = 1.0f;
+            while (gEscJuegoF > fin) gEscJuegoF -= largo;
+            if (gEscJuegoF < ini) gEscJuegoF = ini;
+        } else {
+            gEscJuegoF = fin;   // one-shot: queda clavada en la ultima pose
+        }
+    }
+    const int f = (int)gEscJuegoF;
+    for (size_t i = 0; i < objs->size(); i++) {
+        AnimationObject& ao = (*objs)[i];
+        if (ao.obj) AplicarCurvasJuego(ao.obj, ao.Propertys, f);
+    }
+}

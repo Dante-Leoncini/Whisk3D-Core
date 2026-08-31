@@ -1,5 +1,6 @@
 #include "Objects.h"
 #include "script/W3dScript.h" // W3dScriptDatos completo (el destructor lo libera)
+#include "physics/W3dRigido.h" // W3dRigidoDef completo (idem) + W3dRigidosOlvidar
 #include "w3dGraphics.h" // flags de estado de render (w3dRenderLuces) — PC y Symbian
 #include "W3dNombres.h"  // LA regla de nombres unicos (una sola, compartida por todo el editor)
 #include "CameraBase.h"  // la vista BINDEADA (g_renderCam*): es lo que leen los constraints
@@ -9,6 +10,9 @@
 // nadie podia enlazar contra el motor sin traerse el editor entero). El editor la llena con su
 // propia raiz (una Scene) en el arranque; para el motor alcanza con que exista y valga 0.
 Object* SceneCollection = 0;
+// LOCAL VIEW (ver Objects.h): el editor los publica por-frame; Object::Render los lee para AISLAR la seleccion.
+bool g_localViewActivo = false;
+const std::set<Object*>* g_localViewVisibles = 0;
 
 #ifdef W3D_SYMBIAN
 // Symbian: GLES + utilidades de C que en PC llegan por otros headers.
@@ -60,6 +64,7 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
     : Parent(parent),
       visible(true),
       renderizable(true),
+      estatico(true),   // por defecto NO se mueve en runtime (convencion RenderWare); el juego marca dinamicos a Crash/enemigos
       desplegado(true),
       showRelantionshipsLines(true),
       posadoPorCurvas(false),   // nace en reposo: nadie lo poso todavia
@@ -89,6 +94,7 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
     rotAngle = 0.0f;
     rotAxis = Vector3(0, 0, 1);
     scriptDatos = NULL;          // script lua opcional (ver script/W3dScript.h)
+    fisica = NULL;               // cuerpo rigido opcional (ver physics/W3dRigido.h)
     ActualizarDisplayRot();
 
     if (Parent) {
@@ -334,6 +340,8 @@ static void DesvincularDelArbol(Object* nodo, Object* borrado){
 
 Object::~Object() {
     delete scriptDatos; scriptDatos = NULL;   // datos del script lua (si tenia)
+    W3dRigidosOlvidar(this);                  // su cuerpo rigido runtime (si tenia)
+    delete fisica; fisica = NULL;             // y la definicion de fisica
     // antes de irse: soltar cualquier puntero que apunte a este objeto (las
     // instancias linkeadas a el) para evitar punteros colgados al renderizar
     if (SceneCollection && SceneCollection != this)
@@ -999,8 +1007,11 @@ Matrix4 Object::BuildMatrix(const Vector3& pos, const Quaternion& rot, const Vec
 void Object::RenderObject(){}
 
 // Funcion recursiva para renderizar un objeto y sus hijos
-void Object::Render(){   
+void Object::Render(){
     if (!visible) return;
+    // LOCAL VIEW: si un viewport esta aislando, solo se traversa/dibuja lo que esta en el set (seleccion +
+    // descendencia + cadena de padres para poder ALCANZAR a los seleccionados). Fuera del editor: false -> gratis.
+    if (g_localViewActivo && g_localViewVisibles && !g_localViewVisibles->count(this)) return;
     // Guardar la matriz actual (por la abstraccion: glPushMatrix en desktop, stack propio en ES2/WebGL)
     w3dEngine::PushMatrix();
 

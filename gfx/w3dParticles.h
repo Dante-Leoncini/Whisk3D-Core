@@ -61,6 +61,15 @@ struct ParticleSystem {
     int   maxParts;               // tope de particulas vivas
     enum { MaxTexs = 8 };
     unsigned texs[MaxTexs]; int nTex;   // texturas (elige una al azar por particula)
+    // FLIPBOOK por EDAD: la textura es un atlas de flipCols x flipFilas celdas; cada particula
+    // recorre flipCuadros celdas segun su edad (0=nace -> flipCuadros-1=muere). flipCuadros=0 = sin
+    // flipbook (UV entero). Es CONSTANTE (celda entera por edad): 0 mezcla, solo apunta a la celda.
+    int flipCols, flipFilas, flipCuadros;
+    // SUB-RECT del atlas unico (default 0,0,1,1 = la textura entera): el sprite
+    // (y su grilla de flipbook) viven en [uvU0..uvU1] x [uvV0..uvV1]. Con TODOS
+    // los emisores apuntando al mismo atlas, el pase de particulas queda en UN
+    // solo bind de textura (los draws solo se parten por mezcla).
+    float uvU0, uvV0, uvU1, uvV1;
 
     // ---------- RUNTIME ----------
     std::vector<Particle> parts;
@@ -80,6 +89,28 @@ struct ParticleSystem {
         fadeIn=0.12f; fadeOut=0.30f; rate=0; turbAmp=0; tintR=1; tintG=1; tintB=1;
         offsetX=0; offsetY=0; offsetZ=0;
         blend=MezclaAdd; colorPlano=false; maxParts=200; nTex=0; acc=0; phase=0; rng=2463534242u;
+        flipCols=1; flipFilas=1; flipCuadros=0;
+        uvU0=0; uvV0=0; uvU1=1; uvV1=1;
+    }
+
+    // UV (12 floats = 2 triangulos) del CUADRO del flipbook para una edad lt (0..1). Sin flipbook
+    // (flipCuadros<=0) devuelve el quad entero. Celda entera por edad: constante, sin curvas ni CPU.
+    // Todo REMAPEADO al sub-rect uv* (0,0,1,1 = identico a antes).
+    void CeldaUV(float lt, float* out) const {
+        float ru = uvU1 - uvU0, rv = uvV1 - uvV0;
+        if (flipCuadros <= 0) {
+            out[0]=uvU0; out[1]=uvV0;  out[2]=uvU1; out[3]=uvV0;  out[4]=uvU1;  out[5]=uvV1;
+            out[6]=uvU0; out[7]=uvV0;  out[8]=uvU1; out[9]=uvV1;  out[10]=uvU0; out[11]=uvV1;
+            return;
+        }
+        int cel = (int)(lt * flipCuadros); if (cel < 0) cel = 0; if (cel >= flipCuadros) cel = flipCuadros - 1;
+        int cols = flipCols > 0 ? flipCols : 1, filas = flipFilas > 0 ? flipFilas : 1;
+        int col = cel % cols, fila = (cel / cols) % filas;
+        float du = ru / (float)cols, dv = rv / (float)filas;
+        float u0 = uvU0 + col * du, u1 = u0 + du;
+        float v0 = uvV0 + fila * dv, v1 = v0 + dv;   // fila 0 = arriba del atlas
+        out[0]=u0; out[1]=v0;  out[2]=u1; out[3]=v0;  out[4]=u1;  out[5]=v1;
+        out[6]=u0; out[7]=v0;  out[8]=u1; out[9]=v1;  out[10]=u0; out[11]=v1;
     }
 
     void SetTexturas(const unsigned* t, int n) { if(n>MaxTexs)n=MaxTexs; nTex=n; for(int i=0;i<n;i++) texs[i]=t[i]; }
@@ -223,9 +254,9 @@ struct ParticleSystem {
                          float rx, float ry, float rz, float ux, float uy, float uz,
                          std::vector<float>& pos, std::vector<float>& uvs,
                          std::vector<unsigned char>& col) const {
-        static const float UV[12] = { 0,0, 1,0, 1,1,  0,0, 1,1, 0,1 };
         float b = p.a0 * BrilloPorVida(p); if (b <= 0.0f) return false;
         float lt = 1.0f - p.life/p.lifeMax;
+        float UV[12]; CeldaUV(lt, UV);   // flipbook por edad (o quad entero si no hay flipbook)
         float s = p.size + (p.sizeEnd - p.size)*lt;
         float px = p.x+offsetX, py = p.y+offsetY, pz = p.z+offsetZ;
         float c = cosf(p.rot)*s, sn = sinf(p.rot)*s;
@@ -255,9 +286,9 @@ struct ParticleSystem {
     void DrawBillboardUno(const Particle& p,
                           float rx, float ry, float rz, float ux, float uy, float uz) {
         if (nTex<=0) return;
-        static const float UV[12] = { 0,0, 1,0, 1,1,  0,0, 1,1, 0,1 };
         float b = p.a0 * BrilloPorVida(p); if (b<=0.0f) return;
         float lt = 1.0f - p.life/p.lifeMax;
+        float UV[12]; CeldaUV(lt, UV);   // flipbook por edad (o quad entero si no hay flipbook)
         float s = p.size + (p.sizeEnd - p.size)*lt;          // tamanio interpolado por vida
         float px = p.x+offsetX, py = p.y+offsetY, pz = p.z+offsetZ; // corrimiento global (parallax)
         float c = cosf(p.rot)*s, sn = sinf(p.rot)*s;         // quad rotado, medio-lado = s

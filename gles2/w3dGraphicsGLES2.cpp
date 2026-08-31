@@ -116,6 +116,7 @@ bool w3dRenderLuces     = false;
 bool w3dRenderNormalColor = false;
 bool w3dRenderAlpha       = false; // pase ALPHA (matte): blanco unlit + solo el alpha de la textura
 bool w3dRenderOverlays    = true;
+bool w3dVerSeleccion      = true;  // "Ver seleccion" (menu Select): OFF = ni contorno ni tinte de seleccion
 bool g_xray               = false; // X-Ray OFF por defecto (lo togglea el menu Overlays)
 
 namespace w3dEngine {
