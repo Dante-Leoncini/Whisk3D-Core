@@ -49,6 +49,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     flipbook = NULL; flipbookPropio = true; flipAplicado = -1; flipGeomVer = 0; // sin flipbook (SetUVAnimTira lo crea)
     last2dFrame = -999999; last2dAnim = -999; pose2dDirty = false; // cache de evaluacion de los clips 2D
     weightPaintOn = false; // se prende en modo Weight Paint
+    vertexPaintOn = false; // idem en modo Vertex Paint (dibuja el vertex color sin luz)
     modificadorActivo = -1; // stack de modificadores vacio (lo gestiona el editor)
     genVertex = NULL; genNormals = NULL; genUV = NULL; genColor = NULL; genFaces = NULL;
     genVertexSize = 0; genFacesSize = 0; genValido = false; // sin malla generada hasta que haya modificadores
@@ -1426,6 +1427,27 @@ void Mesh::RenderObject() {
         return;
     }
 
+    // VERTEX PAINT: la malla se dibuja SOLIDA con el VERTEX COLOR de la capa activa, sin luz ni
+    // textura. Es el inspector de lo que se esta pintando: con el material y las luces encima no
+    // se distingue el color propio del sombreado. Misma forma que el pase de weight paint.
+    if (vertexPaintOn && vertexColor && faces && facesSize >= 3) {
+        gfx::Disable(gfx::Lighting);
+        gfx::DisableArray(gfx::NormalArray);
+        gfx::Disable(gfx::Texture2D);
+        gfx::DisableArray(gfx::TexCoordArray);
+        gfx::TexEnvAlphaOnly(false);
+        gfx::Disable(gfx::Blend);
+        gfx::Enable(gfx::DepthTest);
+        gfx::Enable(gfx::CullFace);
+        gfx::EnableArray(gfx::ColorArray);
+        gfx::ColorPointer4ub(vertexColor);
+        gfx::VertexPointer3f(0, posBuf);
+        gfx::DrawTriangles(facesSize, faces);
+        gfx::DisableArray(gfx::ColorArray);
+        gfx::Invalidate();
+        return;
+    }
+
     // PASES PLANOS (Normal View / ZBuffer / Alpha): la malla se dibuja UNLIT con un COLOR PLANO y, para
     // los materiales TRANSPARENTES, se usa SOLO el alpha de su textura (el COLOR de la textura NO se
     // muestra) via TexEnvAlphaOnly. El editor elige el modo con estos flags; el Core solo sabe "dibujar
@@ -1614,7 +1636,7 @@ void Mesh::RenderObject() {
         const bool usePvs = (!useGen && !editActiva && pvsFaces &&
                              pvsGroups.size() == materialsGroup.size());
         bool drawVBO = false;
-        if (gfx::VBOSoportado() && !useGen && !weightPaintOn && !editActiva && !anyFancy && faces && facesSize >= 3) {
+        if (gfx::VBOSoportado() && !useGen && !weightPaintOn && !vertexPaintOn && !editActiva && !anyFancy && faces && facesSize >= 3) {
             unsigned geomVer = skinGeomVersion;
             unsigned poseSer = skinArmature ? skinArmature->poseSerial : 0u; // pose ACTUAL del esqueleto (sube al posar/animar)
             // atributos ESTATICOS (col/uv/idx + pos/nor base): re-subir solo al cambiar la geometria

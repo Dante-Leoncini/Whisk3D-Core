@@ -78,7 +78,20 @@ class ColorLayer {
         std::string nombre;
         bool porVertice;             // true = 1 color por posicion unica; false = por corner
         std::vector<GLubyte> color;  // 4 (rgba) por corner (o por posicion unica si porVertice)
-        ColorLayer(const std::string& n) : nombre(n), porVertice(false) {}
+
+        // ---- COLOR POR INDICE DE PALETA (concepto del EDITOR) ----
+        // Con porIndice, cada elemento no guarda un color libre sino el INDICE de un color de la
+        // paleta EFECTIVA del objeto (-1 = sin asignar, se respeta el color libre que tenga).
+        // El CORE no interpreta esto: sigue rindiendo 'color', que es el RGBA ya resuelto -- al
+        // final del dia en GL hay que dejar en memoria como se dibuja. El editor es el que
+        // rehornea 'color' desde los indices cuando se pinta o cuando cambia la paleta, y de ahi
+        // sale el palette-swap: cambiar la paleta del padre re-pinta a todos sus herederos.
+        // Combinado con porVertice dan las cuatro formas de guardar el vertex color:
+        //   corner libre | corner por indice | vertice libre | vertice por indice
+        bool porIndice;
+        std::vector<int> indice;     // 1 por elemento (mismo largo que color/4). Vacio = sin usar.
+
+        ColorLayer(const std::string& n) : nombre(n), porVertice(false), porIndice(false) {}
 };
 
 // ====================================================================
@@ -800,6 +813,10 @@ class Mesh : public Object {
         // amarillo=0.5 -> rojo=1). weightPaintOn lo prende el editor en modo Weight Paint; RenderObject lo dibuja.
         std::vector<GLubyte> weightPaintColor;
         bool weightPaintOn;
+        // VERTEX PAINT: lo prende el editor en modo Vertex Paint. La malla se dibuja SOLIDA con
+        // el vertexColor de la capa ACTIVA, sin luz ni textura: con el material encima no se
+        // entiende que estas pintando (es el mismo criterio que weightPaintOn).
+        bool vertexPaintOn;
         // rellena weightPaintColor (rampa azul 0 -> amarillo 0.5 -> rojo 1) desde UNO de los dos
         // grupos. Sin grupo valido queda todo en azul (peso 0). Una entrada POR ENTIDAD, sin flags:
         //   ConstruirColorPeso   -> VIEWPORT 3D: vertex group 'grupo', pesos por CONTROL-POINT
