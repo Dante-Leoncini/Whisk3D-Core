@@ -551,11 +551,18 @@ static bool gFondoActivo = false;
 // hardcodeado). RenderObject la llama solo cuando el material cambia.
 void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetEdit) {
     namespace gfx = w3dEngine;
+    // X-RAY: la malla se dibuja al 50% para poder ver lo que queda detras. Se aplica sobre el
+    // ALPHA (copias locales: el material REAL no se toca), asi vale igual en Solid, Material y
+    // Rendered sin duplicar cada camino de dibujo.
+    const float xrayA = g_xray ? 0.5f : 1.0f;
+    const float amb[4] = { mat->ambient[0],  mat->ambient[1],  mat->ambient[2],  mat->ambient[3]  * xrayA };
+    const float dif[4] = { mat->diffuse[0],  mat->diffuse[1],  mat->diffuse[2],  mat->diffuse[3]  * xrayA };
+    const float emi[4] = { mat->emission[0], mat->emission[1], mat->emission[2], mat->emission[3] * xrayA };
     gfx::SmoothShading(true); // el look suave/plano lo dan las NORMALES de la malla, no el material
-    gfx::Material(gfx::MatAmbient,  mat->ambient);
-    gfx::Material(gfx::MatDiffuse,  mat->diffuse);
+    gfx::Material(gfx::MatAmbient,  amb);
+    gfx::Material(gfx::MatDiffuse,  dif);
     gfx::Material(gfx::MatSpecular, mat->specular);
-    gfx::Material(gfx::MatEmission, mat->emission);
+    gfx::Material(gfx::MatEmission, emi);
     gfx::MaterialShininess(mat->shininess);
 
     // color por vertice (via ColorMaterial) o el difuso plano del material
@@ -563,7 +570,7 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         // SELECCION de malla no editable: 75% material + 25% verde, plano (el vcolor cede:
         // el tinte tiene que VERSE). Reemplaza al contorno de seleccion, que no existe sin edges.
         float td[4] = { mat->diffuse[0]*0.75f + 0.075f, mat->diffuse[1]*0.75f + 0.25f,
-                        mat->diffuse[2]*0.75f + 0.075f, mat->diffuse[3] };
+                        mat->diffuse[2]*0.75f + 0.075f, dif[3] };
         gfx::Material(gfx::MatDiffuse, td);
         gfx::Color4f(td[0], td[1], td[2], td[3]);
         gfx::DisableArray(gfx::ColorArray);
@@ -576,9 +583,9 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         // con NORMAL MAP la base va sin luz -> la tiño con el COLOR de la luz aca (sino el N.L sale BLANCO).
         if (mat->normalMap)
             gfx::Color4f(mat->diffuse[0]*g_renderLightColor.x, mat->diffuse[1]*g_renderLightColor.y,
-                         mat->diffuse[2]*g_renderLightColor.z, mat->diffuse[3]);
+                         mat->diffuse[2]*g_renderLightColor.z, dif[3]);
         else
-            gfx::Color4f(mat->diffuse[0], mat->diffuse[1], mat->diffuse[2], mat->diffuse[3]);
+            gfx::Color4f(mat->diffuse[0], mat->diffuse[1], mat->diffuse[2], dif[3]);
         gfx::DisableArray(gfx::ColorArray);
         gfx::Disable(gfx::ColorMaterial);
     }
@@ -698,6 +705,11 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         gfx::Enable(gfx::Blend);
         if (mat->mezcla) gfx::SetMezcla(mat->mezcla); else gfx::BlendAlpha();
     }
+    // X-RAY: aunque el material sea OPACO, se dibuja al 50% para ver lo que hay detras. Va
+    // ACA y no arriba porque este if/else es el que decide el blend: prenderlo antes no servia
+    // de nada (el 'else' de opaco lo apagaba). Sin escribir z, sino la propia malla se tapa a
+    // si misma y no se ve nada a traves.
+    else if (g_xray) { gfx::Enable(gfx::Blend); gfx::BlendAlpha(); gfx::DepthMask(false); }
     else                    gfx::Disable(gfx::Blend);
 }
 
