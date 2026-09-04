@@ -48,6 +48,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     armature2dActivo = -1; // armatures 2D del mesh: la lista arranca vacia
     flipbook = NULL; flipbookPropio = true; flipAplicado = -1; flipGeomVer = 0; // sin flipbook (SetUVAnimTira lo crea)
     last2dFrame = -999999; last2dAnim = -999; pose2dDirty = false; // cache de evaluacion de los clips 2D
+    geoVersion = 1;        // la geometria editable arranca en la version 1 (0 = "nunca vista")
     weightPaintOn = false; // se prende en modo Weight Paint
     vertexPaintOn = false; // idem en modo Vertex Paint (dibuja el vertex color sin luz)
     modificadorActivo = -1; // stack de modificadores vacio (lo gestiona el editor)
@@ -1431,6 +1432,9 @@ void Mesh::RenderObject() {
         gfx::Enable(gfx::DepthTest);
         gfx::Enable(gfx::CullFace);
         gfx::EnableArray(gfx::ColorArray);
+        // OJO: este pase dibuja la malla BASE aunque haya modificadores. No es un descuido: el degradado
+        // es por CONTROL-POINT (vertCtrlPoint) y la malla generada no tiene esos pesos -- el stack
+        // interpola color y uv, no peso. Mostrar la generada pide primero pasar el peso por el stack.
         gfx::ColorPointer4ub(&weightPaintColor[0]);
         gfx::VertexPointer3f(0, posBuf);
         gfx::DrawTriangles(facesSize, faces);
@@ -1452,10 +1456,14 @@ void Mesh::RenderObject() {
         gfx::Enable(gfx::DepthTest);
         gfx::Enable(gfx::CullFace);
         gfx::EnableArray(gfx::ColorArray);
-        gfx::ColorPointer4ub(vertexColor);
-        gfx::VertexPointer3f(0, posBuf);
-        gfx::DrawTriangles(facesSize, faces);
+        // Igual que el pase de peso: con el stack vivo se dibuja la GENERADA. El vertex color por corner
+        // lo interpolan los modificadores (genColor), asi que aca no hay nada que mapear.
+        const bool genCol = genValido && genVertex && genFaces && genFacesSize >= 3 && genColor;
+        gfx::ColorPointer4ub(genCol ? genColor : vertexColor);
+        gfx::VertexPointer3f(0, genCol ? genVertex : posBuf);
+        gfx::DrawTriangles(genCol ? genFacesSize : facesSize, genCol ? genFaces : faces);
         gfx::DisableArray(gfx::ColorArray);
+        if (genCol) gfx::VertexPointer3f(0, posBuf);
         gfx::Invalidate();
         return;
     }

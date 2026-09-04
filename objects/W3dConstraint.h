@@ -14,8 +14,8 @@
 //  camara metida adentro del archivo. Y con dos viewports abiertos ganaba el ultimo
 //  que dibujo.
 //
-//  Ahora el constraint VIVE EN el objeto que modifica y el puntero es la FUENTE (la
-//  semantica de Blender, y la inversa de la del nodo viejo). No escribe nada: se
+//  Ahora el constraint VIVE EN el objeto que modifica y el puntero es la FUENTE. 
+//  No escribe nada: se
 //  evalua al vuelo dentro de Object::GetMatrix, o sea POR VISTA, y los campos
 //  pos/rot/rotEuler/scale del objeto quedan siempre como el usuario los dejo. Lo que
 //  hornea geometria o escribe a disco usa la variante *Base, que ni mira esta lista.

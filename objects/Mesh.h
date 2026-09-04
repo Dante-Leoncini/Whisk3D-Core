@@ -569,6 +569,11 @@ class Mesh : public Object {
         std::vector<GLfloat> genBordesBuf; // aristas de POLIGONO de la malla generada (sin diagonales de tri) para el
                                            // CONTORNO de seleccion (subdiv/screw): sino el objeto seleccionado no muestra borde
         bool genValido; // true = hay malla generada por modificadores -> usarla en el render
+        // VERSION DE LA GEOMETRIA EDITABLE: sube cada vez que algo cambia vertex[]/faces3d por las dos
+        // puertas al render (RefrescarRender / GenerarRender, en el editor). El Core no la usa: es para
+        // que OTRA malla que depende de esta (un Boolean cuyo target es esta) sepa, comparando UN entero,
+        // si tiene que regenerarse -- sin hashear vertices por frame.
+        unsigned geoVersion;
         void GenerarMallaModificada(); // EDITOR: rehace las gen buffers aplicando el stack (genValido=false si vacio)
         void LiberarMallaModificada(); // libera las gen buffers
         void AplicarModificadorActivo(); // "Apply Modifier": hornea la malla generada en la editable + saca el modificador
@@ -1136,7 +1141,9 @@ class Mesh : public Object {
         // LOOP CUT (Ctrl+R): corta un loop de quads desde la arista startEditEdge (en la
         // malla de edicion) con numCuts cortes; factor in [-1,1] desliza (0=parejo). Crea
         // los verts/caras nuevos. Solo quads. false si no se puede.
-        bool LoopCutEdit(int startEditEdge, int numCuts, float factor);
+        // correctUV: los corners nuevos interpolan uv/color a lo largo de la arista (true, lo normal);
+        // false = copian los del extremo mas cercano (sin interpolar).
+        bool LoopCutEdit(int startEditEdge, int numCuts, float factor, bool correctUV = true);
 
         // recorre el loop de quads desde startEditEdge (helper de LoopCut: corte + preview)
         bool LoopCutRecorrido(int startEditEdge, std::vector<int>& rungEg, std::vector<int>& rungA,

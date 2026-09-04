@@ -7,7 +7,7 @@
 // el motor las declara y define; el editor las ESCRIBE segun el input, el Core las LEE
 // (seleccion, gizmos). Dialecto C++03 (compila con RVCT en Symbian).
 
-// modos del viewport (selector estilo Blender; solo con una MALLA activa). Edit y los Paint
+// modos del viewport (solo con una MALLA activa). Edit y los Paint
 // todavia no estan implementados: por ahora el selector solo cambia InteractionMode.
 enum { ObjectMode, EditMode, VertexPaint, WeightPaint, TexturePaint, PoseMode };
 // sub-estado del viewport: navegando, o en medio de un transform (G/R/S/extrude...).

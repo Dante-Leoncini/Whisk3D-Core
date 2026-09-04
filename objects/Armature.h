@@ -51,7 +51,7 @@ struct W3dBone {
     Matrix4 skinMatrix;  // resultado por-frame (identidad en rest)
     bool    hasSkin;   // true si bind/skinA/skinInvBind estan listos
     bool    select;    // seleccionado en Pose Mode (click en viewport o en la lista de huesos)
-    // EDIT MODE (editor): seleccion POR PUNTA estilo Blender. El hueso ENTERO seleccionado = select
+    // EDIT MODE (editor): seleccion POR PUNTA. El hueso ENTERO seleccionado = select
     // (con ambas puntas prendidas); una punta sola = solo su flag. Una punta COMPARTIDA (head del
     // hijo conectado == tail del padre) se selecciona/mueve como UNA sola (lo sincroniza BoneEdit).
     bool    selHead;   // punta head seleccionada (Edit Mode)

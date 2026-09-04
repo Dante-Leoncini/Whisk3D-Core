@@ -188,7 +188,7 @@ void PrepararSkin(Armature* a){
 //   local(rest) = T(head - head_padre)  (sin rotacion/escala de rest, preRot=0, orden XYZ)
 //   world(rest) = T(head)  ->  bind = T(head), skinInvBind = skinA = T(-head)
 //   skinMatrix(pose) = world(pose) * T(-head): en rest es IDENTIDAD (la malla queda en bind) y al posar
-//   el hueso los vertices con peso rotan/trasladan/escalan alrededor de su HEAD (como Blender).
+//   el hueso los vertices con peso rotan/trasladan/escalan alrededor de su HEAD.
 // Se reusa el camino skinGltf de EvaluarPoseEsqueleto (FK Y-up sin NodeToYup) -> cero rama nueva en el hot path.
 void PrepararSkinAutorado(Armature* a){
     if (!a || a->bones.empty()) return;
@@ -858,8 +858,8 @@ void InsertarKeyframeEsqueleto(Armature* a, int canales){
     // keyframe (EvalProp devuelve rest) se RESETEABAN -> se perdia la pose que el usuario hizo a mano en los demas
     // huesos al keyar uno solo. En cambio: dejar el frame como "ya evaluado" (lastPoseFrame=CurrentFrame,
     // frameChanged=false) + poseDirty=true -> EvaluarPoseEsqueleto re-corre el FK con la pose ACTUAL sin refrescar
-    // desde la curva -> se conserva la pose visible de todos los huesos (los sin key vuelven a rest recien al scrollear,
-    // igual que Blender). El hueso keyado ya coincide con su key.
+    // desde la curva -> se conserva la pose visible de todos los huesos (los sin key vuelven a rest recien al scrollear)
+    // El hueso keyado ya coincide con su key.
     int animPlay = (ActiveAnimKind == 1 && ActiveAnimArm == a && a->animActiva >= 0 && a->animActiva < (int)a->animations.size()) ? a->animActiva : -1;
     a->lastPoseFrame = CurrentFrame; a->lastPoseAnim = animPlay; a->poseDirty = true;
 }

@@ -42,8 +42,7 @@
 //     de ahi ya es canonico y sigue por ".001.002".
 //  4) Se busca el primer numero libre desde num+1. Formato: <1000 con tres
 //     digitos y ceros a la izquierda (001..999), >=1000 los digitos que hagan
-//     falta (1000, 1001...). NO hay tope: Blender frena en .999, aca no (la
-//     regla del dueno es "hasta que el nombre no se repita").
+//     falta (1000, 1001...). NO hay tope.
 //  5) La funcion NUNCA devuelve un nombre ocupado. Si el callback 'existe'
 //     estuviera roto y no encontrara hueco en un millon de intentos, cae a un
 //     contador estatico monotono. (Ese era justo el bug de Bone2DNombreUnico,
@@ -51,7 +50,7 @@
 //     nombre YA ocupado.)
 //  6) COMPARACION: EXACTA byte a byte, SENSIBLE A MAYUSCULAS, UTF-8 tal cual.
 //     "Cubo" y "cubo" son DOS nombres distintos y ambos son legales a la vez.
-//     Es lo que ya hacia todo el editor (y lo que hace Blender). OJO para el
+//     Es lo que ya hacia todo el editor. OJO para el
 //     .w3d-zip que viene: un zip extraido en Windows/macOS SI pisa "Cubo.glb"
 //     con "cubo.glb" -> la ruta de la entrada se tiene que uniquificar aparte,
 //     con su propio callback sobre las rutas ya emitidas.
