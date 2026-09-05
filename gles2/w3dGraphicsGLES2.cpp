@@ -628,6 +628,21 @@ void DrawLinesClientIdx(int count,const MeshIndex* indices){
 // ---------------------------------------------------------------------------
 int g_statMeshes = 0;
 void StatCategoria(StatCat){}
+// ---- estadisticas / auditoria / bench: en este backend NO se miden (quedan en 0), pero el editor las
+//      declara en w3dGraphics.h y las lee (panel Stats, harness 'glaudit', bench). Definidas para linkear. ----
+int g_statDrawTris = 0, g_statDrawVBO = 0, g_statIndices = 0, g_statTexBinds = 0, g_statStateChanges = 0;
+int g_statUploadBytes = 0, g_statTrisOpacos = 0, g_statTrisBlend = 0;
+int g_statDcCat[StatCatCount_] = { 0, 0, 0 };
+void StatsReset() {
+    g_statDrawTris = 0; g_statDrawVBO = 0; g_statIndices = 0; g_statTexBinds = 0; g_statMeshes = 0;
+    g_statStateChanges = 0; g_statUploadBytes = 0; g_statTrisOpacos = 0; g_statTrisBlend = 0;
+    for (int i = 0; i < StatCatCount_; i++) g_statDcCat[i] = 0;
+}
+void Finish() { glFinish(); }
+bool g_auditarEscena = false;
+int  g_auditDesyncs  = 0;
+int  AuditarEstado() { return 0; }      // en dispositivo no se audita (glGet = flush del tiler)
+void TexBaseLevel(int nivel) { (void)nivel; }   // ES2 no tiene GL_TEXTURE_BASE_LEVEL (PC solamente)
 // BUFFER OBJECTS: por ahora STUBS -> VBOSoportado()=false, asi Mesh cae al camino client-side de este backend (que
 // ya sube sus arrays a un VBO dinamico por draw). Los VBOs PERSISTENTES en el pipeline de atributos (glVertexAttrib
 // desde un VBO por-malla) son una optimizacion futura de este backend; la abstraccion ya esta lista.
