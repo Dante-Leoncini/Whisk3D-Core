@@ -399,16 +399,17 @@ static void w3dPngChunkMem(unsigned char* out, int& p, const char* tipo, const u
 }
 
 // arma el PNG en un buffer del heap (new[]). El que llama libera con delete[] (o FreeImage).
-unsigned char* EncodePNG(const unsigned char* rgba, int w, int h, bool flipY, int* outLen){
+static unsigned char* w3dEncodePNGImpl(const unsigned char* rgba, int w, int h, bool flipY, int* outLen, bool conAlpha){
     if (outLen) *outLen = 0;
     if (!rgba || w <= 0 || h <= 0) return 0;
+    const int bpp = conAlpha ? 4 : 3;   // conAlpha: PNG RGBA (texturas generadas con canal alpha)
 
     // El render se exporta como RGB (sin alpha): un material con alpha (pelo, hojas) ya queda
     // compuesto sobre el fondo en el COLOR; guardar el alpha del framebuffer hace "huecos" en el
     // visor donde deberia ser solido. Entrada = RGBA (glReadPixels), salida = RGB (se descarta
     // el 4to byte de cada pixel). scanlines: 1 byte de filtro (0 = None) + RGB de la fila.
-    const int srcRow   = w * 4; // fila de la entrada (RGBA)
-    const int rowbytes = w * 3; // fila del PNG (RGB)
+    const int srcRow   = w * 4;   // fila de la entrada (RGBA)
+    const int rowbytes = w * bpp; // fila del PNG (RGB, o RGBA si conAlpha)
     const int rawlen = h * (1 + rowbytes);
     unsigned char* raw = new unsigned char[rawlen];
     for (int y = 0; y < h; y++){
@@ -418,8 +419,9 @@ unsigned char* EncodePNG(const unsigned char* rgba, int w, int h, bool flipY, in
         dst[0] = 0; // filtro None
         unsigned char* d = dst + 1;
         for (int x = 0; x < w; x++){
-            d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; // RGB (se saltea s[3] = alpha)
-            d += 3; s += 4;
+            d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; // RGB (se saltea s[3] = alpha)...
+            if (conAlpha) d[3] = s[3];             // ...salvo que se pida el alpha
+            d += bpp; s += 4;
         }
     }
 
@@ -447,7 +449,7 @@ unsigned char* EncodePNG(const unsigned char* rgba, int w, int h, bool flipY, in
     unsigned char ihdr[13];
     ihdr[0]=(w>>24)&255; ihdr[1]=(w>>16)&255; ihdr[2]=(w>>8)&255; ihdr[3]=w&255;
     ihdr[4]=(h>>24)&255; ihdr[5]=(h>>16)&255; ihdr[6]=(h>>8)&255; ihdr[7]=h&255;
-    ihdr[8]=8; ihdr[9]=2; ihdr[10]=0; ihdr[11]=0; ihdr[12]=0; // 8bit, RGB, sin interlace
+    ihdr[8]=8; ihdr[9]=(unsigned char)(conAlpha ? 6 : 2); ihdr[10]=0; ihdr[11]=0; ihdr[12]=0; // 8bit, RGB (6 = RGBA), sin interlace
     int total = 8 + (12 + 13) + (12 + idatlen) + 12;
     unsigned char* png = new unsigned char[total];
     int p = 0;
@@ -461,6 +463,24 @@ unsigned char* EncodePNG(const unsigned char* rgba, int w, int h, bool flipY, in
     if (outLen) *outLen = p; // = total
     return png;
 }
+// actualiza un RECTANGULO de una textura ya subida (pintura en vivo): 'rgbaRect' = w*h pixeles del rect
+bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect) {
+    if (!id || !rgbaRect || w <= 0 || h <= 0) return false;
+    w3dEngine::BindTexture(id);
+    const bool mips = TexTieneMips(id);
+#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+    glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgbaRect);
+    if (mips) glGenerateMipmap(GL_TEXTURE_2D);
+#else
+    if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_TRUE);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgbaRect);
+    if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_FALSE);
+#endif
+    w3dEngine::BindTexture(0);
+    return true;
+}
+unsigned char* EncodePNG(const unsigned char* rgba, int w, int h, bool flipY, int* outLen){ return w3dEncodePNGImpl(rgba, w, h, flipY, outLen, false); }
+unsigned char* EncodePNGRGBA(const unsigned char* rgba, int w, int h, bool flipY, int* outLen){ return w3dEncodePNGImpl(rgba, w, h, flipY, outLen, true); }
 
 #ifndef W3D_SYMBIAN
 // PC/Web: encode + escritura con stdio. En Symbian SavePNG lo implementa

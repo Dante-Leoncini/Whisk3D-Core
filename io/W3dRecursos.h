@@ -139,6 +139,8 @@ W3dRecurso* W3dRecursoRegistrarFallo(int tipo, const std::string& id);
 // registra un dato cargado POR AFUERA como "la copia viva de este id" (pisa la
 // anterior si habia: el mapa recuerda la ULTIMA, igual que el cache de antes).
 // Deja refTotal=1. No cuenta stats (eso es ContarCargaExterna).
+// cambia la CLAVE de un recurso registrado (misma ficha). false si 'viejo' no existe o 'nuevo' ya esta.
+bool W3dRecursoRenombrar(int tipo, const std::string& viejo, const std::string& nuevo);
 W3dRecurso* W3dRecursoRegistrarExterno(int tipo, const std::string& id,
                                        void* dato, long bytes);
 // volcado: punteros a TODOS los descriptores del tipo (para listar/asertar)

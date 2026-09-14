@@ -318,6 +318,19 @@ W3dRecurso* W3dRecursoRegistrarFallo(int tipo, const std::string& id) {
     if (r->estado == W3DREC_NO_CARGADO) r->estado = W3DREC_FALLO;
     return r;
 }
+// cambia el ID de un recurso ya registrado (una textura que pasa de interna a externa o al reves):
+// la misma ficha, otra clave. false si no existe el viejo o ya existe el nuevo.
+bool W3dRecursoRenombrar(int tipo, const std::string& viejo, const std::string& nuevo) {
+    if (!TipoValido(tipo) || viejo.empty() || nuevo.empty() || viejo == nuevo) return false;
+    MapaRec& m = gPorId[tipo];
+    MapaRec::iterator it = m.find(viejo);
+    if (it == m.end() || m.find(nuevo) != m.end()) return false;
+    W3dRecurso* rr = it->second;
+    m.erase(it);
+    rr->id = nuevo;
+    m[nuevo] = rr;
+    return true;
+}
 W3dRecurso* W3dRecursoRegistrarExterno(int tipo, const std::string& id,
                                        void* dato, long bytes) {
     if (!TipoValido(tipo) || id.empty() || !dato) return 0;

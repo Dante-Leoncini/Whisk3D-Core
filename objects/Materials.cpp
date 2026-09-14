@@ -40,6 +40,7 @@ Material::Material(const std::string& nombre, bool MaterialDefectoFlag, bool Tie
     : textureOn(true), filtrado(true), transparent(false), vertexColor(false), lighting(true), repeat(true),
       uv8bit(false), culling(true), depth_test(true), fondo(false),
       depth_write(true), depth_bias(0.0f), orden_pasada(0), mezcla(0),
+      rtRugosidad(0.5f), rtMetalico(0.0f),
       chrome(false), reflectMode(0),
       normalMap(false), normalTexture(NULL),
       lineas(false), grosorLinea(1.0f),

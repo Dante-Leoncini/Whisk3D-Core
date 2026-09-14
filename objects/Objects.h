@@ -537,9 +537,14 @@ class SaveState {
                           // cancelar un transform te devolvia la orientacion pero te comia los giros
         Vector3 scale;
         Vector3 worldPos; // posicion en MUNDO al empezar el transform (pivot rotar/escalar)
+        // PROPORTIONAL EDITING (editor): los NO seleccionados tambien entran en el snapshot, con el peso
+        // que les toca por distancia a lo seleccionado. peso 1 = seleccionado (transform completo).
+        // distProp = esa distancia (-1 = es de la seleccion, no proporcional).
+        float peso;
+        float distProp;
         // sin esto, olvidarse de llenar un campo dejaba BASURA de la pila: el auto key comparaba contra ella y
         // se inventaba keyframes. Con el constructor el olvido da un valor determinista y se ve enseguida.
-        SaveState() : obj(0), scale(1,1,1) {}
+        SaveState() : obj(0), scale(1,1,1), peso(1.0f), distProp(-1.0f) {}
 };
 extern std::vector<SaveState> estadoObjetos;
 

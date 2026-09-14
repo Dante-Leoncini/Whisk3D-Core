@@ -168,6 +168,33 @@ Texture* TexturaTomar(const std::string& pathCrudo) {
     return t;
 }
 
+// registra una textura YA SUBIDA (creada en memoria por el editor: "Nueva textura") bajo 'pathCrudo',
+// como si se hubiera cargado de ahi. Entra al vector global y al registro con 1 ref.
+Texture* TexturaRegistrar(const std::string& pathCrudo, Texture* t) {
+    if (!t || pathCrudo.empty()) return NULL;
+    std::string path = TexClave(pathCrudo);
+    AsegurarOps();
+    t->path = path; t->refs = 1;
+    bool esta = false;
+    for (size_t i = 0; i < Textures.size(); i++) if (Textures[i] == t) esta = true;
+    if (!esta) Textures.push_back(t);
+    const long b = (long)t->ancho * (long)t->alto * 4L;
+    W3dRecursoRegistrarExterno(W3DREC_TEXTURA, path, t, b);
+    return t;
+}
+// la textura cambia de ruta (interna <-> externa): misma ficha del registro, otra clave; los materiales
+// que apuntan al Texture* no se enteran (y el guardado escribe la ruta nueva)
+void TexturaRenombrar(Texture* t, const std::string& nuevoCrudo) {
+    if (!t || nuevoCrudo.empty()) return;
+    std::string nuevo = TexClave(nuevoCrudo);
+    if (nuevo == t->path) return;
+    if (!W3dRecursoRenombrar(W3DREC_TEXTURA, t->path, nuevo)) {
+        // no estaba registrada por su ruta (copia con refcount local): se registra con la nueva
+        const long b = (long)t->ancho * (long)t->alto * 4L;
+        W3dRecursoRegistrarExterno(W3DREC_TEXTURA, nuevo, t, b);
+    }
+    t->path = nuevo;
+}
 void TexturaRetener(Texture* t) {
     if (!t) return;
     W3dRecurso* r = W3dRecursoBuscar(W3DREC_TEXTURA, t->path);

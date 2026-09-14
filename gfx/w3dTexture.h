@@ -30,6 +30,8 @@ namespace w3dEngine {
     unsigned int UploadRGBA(const unsigned char* rgba, int w, int h,
                             bool filtrado = true, bool conMips = true);
 
+    // actualiza un RECTANGULO (x,y,w,h) de una textura ya subida con w*h pixeles RGBA (pintura en vivo)
+    bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect);
     // dimensiones con que se subio una textura (para el aspect ratio). false si no se conoce.
     bool TextureSize(unsigned int id, int& w, int& h);
 
@@ -60,6 +62,8 @@ namespace w3dEngine {
     // el PNG top-left). Portable (deflate stored, sin comprimir): lo usan SavePNG (PC/Web con stdio) y
     // el sink de Symbian (RFile). Devuelve 0 si falla.
     unsigned char* EncodePNG(const unsigned char* rgba, int w, int h, bool flipY, int* outLen);
+    // idem pero el PNG sale RGBA (conserva el alpha): las texturas generadas con canal alpha
+    unsigned char* EncodePNGRGBA(const unsigned char* rgba, int w, int h, bool flipY, int* outLen);
 
     // Guarda pixeles RGBA 8888 como PNG RGB en 'path' (= EncodePNG + escribir a disco; el alpha se
     // descarta). Devuelve true si escribio. En PC/Web usa stdio; en Symbian usa RFile (w3dtexload.cpp).

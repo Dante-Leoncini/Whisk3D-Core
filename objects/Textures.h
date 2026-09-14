@@ -78,6 +78,10 @@ extern std::vector<Texture*> Textures;
 Texture* TexturaTomar(const std::string& path);
 // la que ya este cargada con esa ruta, SIN cargar ni contar (NULL si no hay)
 Texture* TexturaBuscar(const std::string& path);
+// registra una textura YA SUBIDA (creada en memoria) bajo 'path' (vector global + registro, 1 ref)
+Texture* TexturaRegistrar(const std::string& path, Texture* t);
+// cambia la ruta de una textura registrada (interna <-> externa) sin tocar a quien la usa
+void     TexturaRenombrar(Texture* t, const std::string& nuevo);
 // +1 ref sobre un puntero que ya se tiene (copiar un material, por ejemplo)
 void     TexturaRetener(Texture* t);
 // -1 ref. Al llegar a 0 la libera de verdad (GL + objeto + vector global).

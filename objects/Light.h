@@ -32,6 +32,12 @@ class Light : public Object {
         float attQuadratic;
         float spotCutoff;     // angulo del cono en grados: 180 = sin cono (punto); 1..90 = spotlight
         float spotExponent;   // concentracion del haz del spot (0 = parejo .. 128 = muy focalizado)
+        // TRAZADO DE RAYOS (editor, render/RayTracer): el TAMANO de la lampara y cuantos rayos de sombra manda.
+        //   rtRadio: 0 = puntual (sombra dura); >0 = esfera de ese radio (puntual) o cono de esos GRADOS (solar)
+        //            -> penumbra, mas suave cuanto mas grande.
+        //   rtRayos: rayos de sombra por impacto hacia esta lampara; 0 = usar el global de la pestania Render.
+        float rtRadio;
+        float rtRayos;
 
         static Light* Create(Object* parent = NULL, float x = 0, float y = 0, float z = 0);
 

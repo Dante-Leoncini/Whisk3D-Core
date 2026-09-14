@@ -88,6 +88,10 @@ class Material {
         int  mezcla;       // modo de mezcla cuando transparent = true. 0 = alpha (default, compatible
                            // con todo lo guardado hasta hoy); el resto son los codigos de gfx::Mezcla
                            // (2 = MezclaAdd = ADITIVO: GL_ONE/GL_ONE, aclara y el negro es invisible).
+        // TRAZADO DE RAYOS (editor, render/RayTracer): rugosidad 0..1 (0 = espejo, 1 = mate) y metalico 0..1
+        // (0 = difuso; 1 = metal: refleja la escena teñido por su color). Metalico 1 + rugosidad 0 = espejo.
+        float rtRugosidad;
+        float rtMetalico;
         bool chrome;      // "Reflection": reflejo de entorno (env-map). On/off; el MODO lo elige reflectMode.
         int  reflectMode; // 0 = Matcap (normal-del-ojo, matriz de textura, HARDWARE en PC y N95; rapido)
                           // 1 = Sphere Map exacto (GL_SPHERE_MAP: HARDWARE en PC via texgen, SOFTWARE en N95)

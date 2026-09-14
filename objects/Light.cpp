@@ -24,6 +24,7 @@ Light::Light(Object* parent, float x, float y, float z)
     attConstant = 0.5f; attLinear = 0.1f; attQuadratic = 0.0f;
     spotCutoff = 180.0f;                       // 180 = sin cono (punto). <90 -> spotlight
     spotExponent = 0.0f;
+    rtRadio = 0.0f; rtRayos = 0.0f;            // trazado de rayos: puntual (sombra dura), rayos = el global
 }
 
 // Método Create
