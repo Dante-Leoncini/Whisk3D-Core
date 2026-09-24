@@ -5,13 +5,7 @@
     #define NOMINMAX
 #ifndef W3D_SYMBIAN
     #include <windows.h>
-// PRE-PASE DE LUCES (Light.cpp): encender TODAS las luces visibles antes de dibujar la geometria del pase
-void W3dLucesPrepase(Object* raiz);
-void W3dLucesPrepaseFin();
 #endif
-// PRE-PASE DE LUCES (Light.cpp): encender TODAS las luces visibles antes de dibujar la geometria del pase
-void W3dLucesPrepase(Object* raiz);
-void W3dLucesPrepaseFin();
 #endif
 
 #include <vector>
@@ -21,9 +15,6 @@ void W3dLucesPrepaseFin();
     #include <GLES/gl.h>
 #else
     #include <GL/gl.h>
-// PRE-PASE DE LUCES (Light.cpp): encender TODAS las luces visibles antes de dibujar la geometria del pase
-void W3dLucesPrepase(Object* raiz);
-void W3dLucesPrepaseFin();
 #endif
 
 class Light : public Object {
