@@ -3,6 +3,7 @@
 
 #include <string>
 #include "math/Vector3.h"
+#include "math/Matrix4.h"
 
 // ============================================================================
 //  UN CONSTRAINT ES UNA PROPIEDAD DEL OBJETO, NO UN OBJETO
@@ -26,7 +27,7 @@
 
 class Object;   // solo forward: la fuente es un Object*
 
-struct W3dConstraintTipo { enum Enum { CopyLocation = 0, CopyRotation = 1, Billboard = 2 }; };
+struct W3dConstraintTipo { enum Enum { CopyLocation = 0, CopyRotation = 1, Billboard = 2, ChildOf = 3 }; };
 struct W3dConstraintFuente { enum Enum { Objeto = 0, Vista = 1 }; };
 
 // ============================================================================
@@ -50,7 +51,7 @@ struct W3dConSerial {
     W3dConSerial& operator=(const W3dConSerial&) { return *this; } // idem: no se pisa
 };
 
-// "Copy Location" / "Copy Rotation" / "Billboard"
+// "Copy Location" / "Copy Rotation" / "Billboard" / "Child Of"
 // (gemelo de NombreTipoModificador, main/edit/Modifier.h:105). Se define en
 // libs/Whisk3DCore/objects/Objects.cpp: este header no tiene .cpp propio a proposito
 // (un .cpp nuevo hay que agregarlo a las 9 listas de fuentes del proyecto).
@@ -123,6 +124,21 @@ class W3dConstraint {
         // que gira; suavizarlo pide acumular vueltas, o sea estado POR VISTA, que es
         // justo lo que este diseno elimina.
 
+        // ---- CHILD OF ----
+        // El objeto se comporta como HIJO de la fuente (o de UN HUESO de ella, si la fuente es un
+        // armature) en vez de su padre real: mundo = fuente * inversa * local. Con influencia 0 manda
+        // el padre real y con 100 la fuente, asi que un arma hija del armature (padre real, mueve al
+        // personaje entero) que ademas tiene Child Of a la mano la sigue sin transformarse dos veces.
+        // Es la forma BARATA de pegar un objeto RIGIDO a un hueso: una matriz por frame y no un
+        // skinning vertice por vertice (lo que importa en el N95).
+        std::string  hueso;         // nombre del hueso de la fuente armature ("" = el objeto entero)
+        int          huesoCache;    // indice resuelto de 'hueso' (runtime; se revalida por nombre)
+        bool         coLoc, coRot, coEsc;   // que componentes de la fuente se heredan
+        // "Set Inverse": inversa del mundo de la fuente (y del padre) al momento de fijarla, para que
+        // el objeto quede donde estaba. Identidad = "Clear Inverse" (el local se lee en el espacio
+        // del hueso). Se guarda en el .w3d.
+        Matrix4      inversa;
+
         // aviso de ciclo (A copia de B y B de A): se prende al avisar para no inundar la
         // pantalla con una notificacion POR FRAME. Runtime puro, no se guarda. Significa
         // "ya avise para ESTA fuente": el panel lo vuelve a poner en false cada vez que se
@@ -142,7 +158,8 @@ class W3dConstraint {
               fuenteNombre(),
               ejeX(true), ejeY(true), ejeZ(true),
               bbYaw(true), bbPitch(false),
-              avisoCiclo(false) {}
+              huesoCache(-1), coLoc(true), coRot(true), coEsc(true),
+              avisoCiclo(false) { inversa.Identity(); }
 
         // deja los campos en un estado que el evaluador y la UI puedan representar. La
         // llama el lector del .w3d, que es el unico que trae valores de afuera (un archivo

@@ -84,10 +84,42 @@ void Light::SetLightID(GLenum ID) {
     LightID = ID;
 }
 
+// ============================================================================
+//  PRE-PASE DE LUCES. En GL fijo una luz solo ilumina lo que se dibuja DESPUES de encenderla, y las luces se
+//  encendian en el orden del arbol: una luz colgada al final (el fogonazo de un arma, hijo del personaje)
+//  no iluminaba nada de lo que estaba antes. El pase de escena (W3dEscena3DPasada y el del viewport) llama
+//  a W3dLucesPrepase ANTES de dibujar la geometria: cada luz visible se enciende con su matriz de MUNDO
+//  (constraints incluidos) y durante el recorrido normal Light::RenderObject ya no la re-aplica: solo
+//  dibuja su gizmo.
+// ============================================================================
+bool g_lucesPrepase = false;         // true = este pase ya encendio las luces (el recorrido no las toca)
+static bool gAplicandoPrepase = false;
+static void W3dLucesPrepaseRec(Object* o){
+    if (!o || !o->visible) return;
+    if (o->getType() == ObjectType::light){
+        Matrix4 W; o->GetWorldMatrix(W);
+        w3dEngine::PushMatrix();
+        w3dEngine::MultMatrix(W.m);
+        gAplicandoPrepase = true;
+        o->RenderObject();
+        gAplicandoPrepase = false;
+        w3dEngine::PopMatrix();
+    }
+    for (size_t i = 0; i < o->Childrens.size(); i++) W3dLucesPrepaseRec(o->Childrens[i]);
+}
+void W3dLucesPrepase(Object* raiz){
+    g_lucesPrepase = false;
+    if (!raiz || !w3dRenderLuces) return;
+    W3dLucesPrepaseRec(raiz);
+    g_lucesPrepase = true;
+}
+void W3dLucesPrepaseFin(){ g_lucesPrepase = false; }
+
 // RenderObject
 void Light::RenderObject() {
     // Las luces de la ESCENA se aplican SOLO en RENDER preview (esto es algo mas del editor 3d puede quitarse en el futuro)
-    bool aplicar = w3dRenderLuces;
+    // Con el PRE-PASE hecho, el recorrido normal no las re-aplica (solo el gizmo); el pre-pase no dibuja gizmo.
+    bool aplicar = w3dRenderLuces && (!g_lucesPrepase || gAplicandoPrepase);
 #ifdef W3D_SYMBIAN
     // misma logica de luz que PC: la luz de ESCENA se enciende aca (bajo la matriz del objeto: position local =
     // origen del objeto). El icono lo dibuja render.cpp (RenderIcons3D).
@@ -128,7 +160,7 @@ void Light::RenderObject() {
         w3dEngine::Light0f(w3dEngine::LightQuadraticAtt, attQuadratic);
     }
     // GIZMO de la luz (overlay del editor): igual que en desktop
-    if (g_lightOverlayHook) g_lightOverlayHook(this);
+    if (g_lightOverlayHook && !gAplicandoPrepase) g_lightOverlayHook(this);
     return;
 #else
 
@@ -158,6 +190,6 @@ void Light::RenderObject() {
 
     // GIZMO de la luz (linea + color de seleccion): overlay del EDITOR, lo dibuja el hook (render.cpp),
     // NO el Core. En Symbian el path de arriba retorna sin llamarlo (el icono lo hace RenderIcons3D).
-    if (g_lightOverlayHook) g_lightOverlayHook(this);
+    if (g_lightOverlayHook && !gAplicandoPrepase) g_lightOverlayHook(this);
 #endif // !W3D_SYMBIAN
 }

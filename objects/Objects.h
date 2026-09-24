@@ -584,6 +584,9 @@ void W3dConSetObjEditando(Object* o);
 // el evaluador, incluido el filtro de Edit Mode). Existe para que los caminos del editor que
 // preguntan "hace falta la transform efectiva?" no reimplementen el predicado y se vayan separando.
 bool W3dObjTieneConstraintEfectivo(const Object* o);
+// CHILD OF "Set Inverse": fija c->inversa para que el objeto quede donde esta ahora (fuente^-1 * padre).
+// false = sin fuente / no es un Child Of / la fuente no se puede invertir. ("Clear Inverse" = inversa.Identity()).
+bool W3dChildOfSetInverse(Object* o, W3dConstraint* c);
 
 // cuantas veces corrio el CUERPO del evaluador desde que arranco el proceso (las que pasaron el
 // pre-pase; las que salen por lista vacia / todo apagado no cuentan). Es DIAGNOSTICO puro: el

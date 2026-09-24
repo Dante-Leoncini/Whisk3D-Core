@@ -4,6 +4,7 @@
 #include "objects/Objects.h"
 #include "crossplatform.h"   // W3D_OVERRIDE (antes llegaba de rebote por Objects.h)
 #include "math/Matrix4.h"
+#include "math/Quaternion.h"
 #include <vector>
 #include <string>
 
@@ -49,7 +50,11 @@ struct W3dBone {
     Matrix4 skinA;     // = bind * inversa(restWorldNode)  (precomputada)
     Matrix4 skinInvBind; // = inversa(bind)                (precomputada)
     Matrix4 skinMatrix;  // resultado por-frame (identidad en rest)
-    bool    hasSkin;   // true si bind/skinA/skinInvBind estan listos
+    // MUNDO del hueso en la pose actual, en el espacio del OBJETO armature (el mismo en que se dibujan
+    // poseHead/poseTail: Y-up de escena, ya con NodeToYup en los rigs FBX). Lo llena EvaluarPoseEsqueleto
+    // por frame; lo lee el constraint Child Of para colgar un objeto rigido (arma, cuchillo) de un hueso.
+    Matrix4 poseWorld;
+    bool    hasSkin;  // true si bind/skinA/skinInvBind estan listos
     bool    select;    // seleccionado en Pose Mode (click en viewport o en la lista de huesos)
     // EDIT MODE (editor): seleccion POR PUNTA. El hueso ENTERO seleccionado = select
     // (con ambas puntas prendidas); una punta sola = solo su flag. Una punta COMPARTIDA (head del
@@ -64,10 +69,13 @@ struct W3dBone {
     bool    conectado;
     W3dBone() : parent(-1), restS(1,1,1), poseS(1,1,1), rotOrder(0), hasRest(false), hasSkin(false), select(false), selHead(false), selTail(false), conectado(true) {
         bind.Identity(); clusterTransform.Identity(); skinA.Identity(); skinInvBind.Identity(); skinMatrix.Identity();
+        poseWorld.Identity();
     }
 };
 
 class SkeletalAnimation; // animation/SkeletalAnimation.h (clips de animacion)
+
+#include "animation/W3dCapaAnim.h"  // una capa del MIX de animaciones (Armature::capas)
 
 class Armature : public Object {
     public:
@@ -96,8 +104,27 @@ class Armature : public Object {
                            // a mano). La malla re-skinnea y re-sube su VBO cuando cambia -> se ve al toque aunque el FRAME
                            // no cambie (antes: cache por # de frame -> posar/elegir clip en el mismo frame no refrescaba).
 
+        // ---- REPRODUCCION EN EL JUEGO (ActiveAnimKind 2): cada armature tiene SU cabezal ----
+        // En el editor manda el timeline global (un solo armature activo). Jugando, cada esqueleto reproduce
+        // su clip 'animActiva' con su propio reloj: lo avanza W3dArmaturesJuegoTick y lo manejan los scripts
+        // (animClip / animFrame / animTermino). Runtime puro: no se guarda en el .w3d.
+        // CAPAS DEL MIX (ver W3dCapaAnim). Vacio = el armature reproduce su clip activo como siempre.
+        std::vector<W3dCapaAnim> capas;
+        int capaActiva;        // la capa elegida en la lista del Mix (-1 = ninguna)
+        unsigned mixFirma;     // cache: firma del estado de las capas de la ultima pose calculada
+        // TRANSICION (el "hokan" de los juegos de consola): al cambiar de animacion la pose NUEVA se funde desde la
+        // pose CONGELADA del momento del cambio durante transTotal segundos (animTransicion de lua). Runtime.
+        float transRestante, transTotal;
+        std::vector<Vector3> transT, transS;
+        std::vector<Quaternion> transQ;
+        float juegoFrame;  // frames transcurridos desde el inicio del clip (0 = startFrame)
+        float juegoVel;    // multiplicador de velocidad (1 = el FrameRate del clip)
+        bool  juegoLoop;   // true = vuelve a empezar al terminar; false = se queda en el ultimo frame
+        bool  juegoTermino;// el clip sin loop llego al final (lo lee animTermino)
+
         Armature(Object* parent = NULL, Vector3 pos = Vector3(0, 0, 0))
-            : Object(parent, "Armature", pos), animActiva(-1), skinUsaBind(false), skinReconstruirFK(false), skinGltf(false), skinAutorado(false), poseDirty(false), boneActivo(-1), lastPoseFrame(-999999), lastPoseAnim(-999), figureScale(1.0f), poseSerial(1) {}
+            : Object(parent, "Armature", pos), animActiva(-1), skinUsaBind(false), skinReconstruirFK(false), skinGltf(false), skinAutorado(false), poseDirty(false), boneActivo(-1), lastPoseFrame(-999999), lastPoseAnim(-999), figureScale(1.0f), poseSerial(1),
+              capaActiva(-1), mixFirma(0), transRestante(0.0f), transTotal(0.0f), juegoFrame(0.0f), juegoVel(1.0f), juegoLoop(true), juegoTermino(false) {}
         ~Armature() W3D_OVERRIDE; // libera los clips (animations)
 
         ObjectType getType() W3D_OVERRIDE { return ObjectType::armature; }

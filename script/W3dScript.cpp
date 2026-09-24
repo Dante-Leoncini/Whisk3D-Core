@@ -7,6 +7,8 @@
 #include "animation/Animation.h"         // w3dGetTicks(): reloj self-contained del Core (sembrar el random)
 #include "objects/Mesh.h"
 #include "objects/Light.h"   // binds de LUZ: color()/setColor()/energia()/setEnergia()
+#include "objects/Armature.h"            // binds de ESQUELETO: animClip()/animFrame()/huesoPunto()...
+#include "animation/SkeletalAnimation.h" // W3dArmaturePlayClip / EvaluarPoseEsqueleto
 #include "math/Quaternion.h"
 #include "w3dFilesystem.h"   // leer el .lua para ORDENAR las propiedades como estan declaradas
 #include "base/W3dConfig.h"  // config()/setConfig()/silenciar(): persistencia + mute para los juegos lua
@@ -1000,6 +1002,221 @@ static int LSetVisible(lua_State* L) {
     return 0;
 }
 
+// ---- ESQUELETOS (animacion de huesos en el juego) --------------------------
+// Jugando, cada armature reproduce su clip activo con su propio cabezal (Armature::juegoFrame, lo
+// avanza W3dArmaturesJuegoTick con el FrameRate del clip). El frame global del timeline no participa.
+static Armature* ArmArg(lua_State* L, int i) {
+    Object* o = W3dScriptParamObjeto(L, i);
+    return (o && o->getType() == ObjectType::armature) ? (Armature*)o : NULL;
+}
+static int ClipArg(lua_State* L, Armature* a, int i) {
+    if (lua_type(L, i) == LUA_TNUMBER) return (int)lua_tonumber(L, i) - 1;   // indices de lua: base 1
+    const char* n = lua_tostring(L, i);
+    return n ? W3dArmatureClipPorNombre(a, n) : -1;
+}
+// animClip(arm, "nombre"|indice [, loop=true [, reiniciar=false]]) -> true si el clip existe.
+// Elegir el MISMO clip que ya suena no lo reinicia (salvo reiniciar=true): se puede llamar todos los frames.
+static int LAnimClip(lua_State* L) {
+    Armature* a = ArmArg(L, 1);
+    int c = a ? ClipArg(L, a, 2) : -1;
+    bool loop = lua_isnoneornil(L, 3) ? true : (lua_toboolean(L, 3) != 0);
+    bool reiniciar = lua_toboolean(L, 4) != 0;
+    lua_pushboolean(L, W3dArmaturePlayClip(a, c, loop, reiniciar) ? 1 : 0);
+    return 1;
+}
+// animActual(arm) -> nombre del clip que suena (nil si ninguno)
+static int LAnimActual(lua_State* L) {
+    Armature* a = ArmArg(L, 1);
+    if (!a || a->animActiva < 0 || a->animActiva >= (int)a->animations.size()) { lua_pushnil(L); return 1; }
+    lua_pushstring(L, a->animations[a->animActiva]->name.c_str());
+    return 1;
+}
+// animFrame(arm) -> frames desde el inicio del clip (con decimales) ; animFrame(arm, f) lo fija
+static int LAnimFrame(lua_State* L) {
+    Armature* a = ArmArg(L, 1);
+    if (!a) { lua_pushnumber(L, 0); return 1; }
+    if (!lua_isnoneornil(L, 2)) { a->juegoFrame = (float)lua_tonumber(L, 2); a->juegoTermino = false; }
+    lua_pushnumber(L, a->juegoFrame);
+    return 1;
+}
+// animLargo(arm [, clip]) -> cantidad de frames del clip (activo por defecto)
+static int LAnimLargo(lua_State* L) {
+    Armature* a = ArmArg(L, 1);
+    int c = !a ? -1 : (lua_isnoneornil(L, 2) ? a->animActiva : ClipArg(L, a, 2));
+    if (!a || c < 0 || c >= (int)a->animations.size()) { lua_pushnumber(L, 0); return 1; }
+    lua_pushnumber(L, a->animations[c]->endFrame - a->animations[c]->startFrame + 1);
+    return 1;
+}
+// animTermino(arm) -> true cuando un clip SIN loop llego a su ultimo frame
+static int LAnimTermino(lua_State* L) {
+    Armature* a = ArmArg(L, 1);
+    lua_pushboolean(L, (a && a->juegoTermino) ? 1 : 0);
+    return 1;
+}
+// animVelocidad(arm, v): multiplicador del FrameRate del clip (1 = normal, 0 = pausa, -1 no soportado)
+static int LAnimVelocidad(lua_State* L) {
+    Armature* a = ArmArg(L, 1);
+    if (a && !lua_isnoneornil(L, 2)) { float v = (float)lua_tonumber(L, 2); a->juegoVel = v < 0.0f ? 0.0f : v; }
+    lua_pushnumber(L, a ? a->juegoVel : 0.0f);
+    return 1;
+}
+// ---- CAPAS (el MIX de animaciones en el juego; ver W3dCapaAnim) ----
+// Con al menos una capa el armature muestra la MEZCLA de sus capas (animClip deja de mandar). Indices base 1.
+static W3dCapaAnim* CapaArg(lua_State* L, Armature* a, int i, bool crear) {
+    if (!a) return NULL;
+    int n = (int)luaL_checkinteger(L, i);
+    if (n < 1 || n > 16) return NULL;
+    if ((int)a->capas.size() < n) { if (!crear) return NULL; a->capas.resize(n); }
+    return &a->capas[n - 1];
+}
+// animCapa(arm, n, "clip" [, influencia 0..1 = 1 [, "mezclar"|"sumar"|"restar" [, loop = true [, reiniciar = false]]]])
+// Crea las capas que falten. Cambiar de clip arranca la capa de 0 (el mismo clip sigue donde iba).
+static int LAnimCapa(lua_State* L) {
+    Armature* a = ArmArg(L, 1);
+    W3dCapaAnim* c = CapaArg(L, a, 2, true);
+    const char* clip = lua_tostring(L, 3);
+    if (!c || !clip) { lua_pushboolean(L, 0); return 1; }
+    bool reiniciar = lua_toboolean(L, 7) != 0;
+    if (c->anim != clip || reiniciar) { c->anim = clip; c->clipCache = -1; c->juegoFrame = 0.0f; c->juegoTermino = false; }
+    if (!lua_isnoneornil(L, 4)) c->influencia = (float)lua_tonumber(L, 4) * 100.0f;
+    if (!lua_isnoneornil(L, 5)) { const char* m = lua_tostring(L, 5);
+        c->modo = (m && !strcmp(m, "sumar")) ? 1 : (m && !strcmp(m, "restar")) ? 2 : 0; }
+    c->loop = lua_isnoneornil(L, 6) ? true : (lua_toboolean(L, 6) != 0);
+    if (c->loop) c->juegoTermino = false;
+    c->visible = true;
+    lua_pushboolean(L, W3dCapaClip(a, *c) >= 0 ? 1 : 0);
+    return 1;
+}
+// animCapaPeso(arm, n [, influencia 0..1]) -> influencia
+static int LAnimCapaPeso(lua_State* L) {
+    W3dCapaAnim* c = CapaArg(L, ArmArg(L, 1), 2, false);
+    if (c && !lua_isnoneornil(L, 3)) c->influencia = (float)lua_tonumber(L, 3) * 100.0f;
+    lua_pushnumber(L, c ? c->influencia * 0.01f : 0.0f);
+    return 1;
+}
+// animCapaFrame(arm, n [, f]) -> frame de la capa (desde el inicio de su clip)
+static int LAnimCapaFrame(lua_State* L) {
+    W3dCapaAnim* c = CapaArg(L, ArmArg(L, 1), 2, false);
+    if (c && !lua_isnoneornil(L, 3)) { c->juegoFrame = (float)lua_tonumber(L, 3); c->juegoTermino = false; }
+    lua_pushnumber(L, c ? c->juegoFrame : 0.0f);
+    return 1;
+}
+// animCapaTermino(arm, n) -> true si su clip sin loop llego al final
+static int LAnimCapaTermino(lua_State* L) {
+    W3dCapaAnim* c = CapaArg(L, ArmArg(L, 1), 2, false);
+    lua_pushboolean(L, (c && c->juegoTermino) ? 1 : 0);
+    return 1;
+}
+// animCapaHueso(arm, n, "hueso"|nil): la capa solo afecta a ese hueso y sus hijos (nil = todo)
+static int LAnimCapaHueso(lua_State* L) {
+    W3dCapaAnim* c = CapaArg(L, ArmArg(L, 1), 2, false);
+    if (c) { const char* h = lua_tostring(L, 3); c->hueso = h ? h : ""; }
+    return 0;
+}
+// animCapaVel(arm, n, v): velocidad de la capa (1 = normal)
+static int LAnimCapaVel(lua_State* L) {
+    W3dCapaAnim* c = CapaArg(L, ArmArg(L, 1), 2, false);
+    if (c && !lua_isnoneornil(L, 3)) { float v = (float)lua_tonumber(L, 3); c->vel = v < 0.0f ? 0.0f : v; }
+    lua_pushnumber(L, c ? c->vel : 0.0f);
+    return 1;
+}
+// animCapas(arm [, n]) -> cantidad de capas; con n recorta a n (0 = vuelve al clip unico de animClip)
+static int LAnimCapas(lua_State* L) {
+    Armature* a = ArmArg(L, 1);
+    if (a && !lua_isnoneornil(L, 2)) { int n = (int)lua_tointeger(L, 2); if (n < 0) n = 0; if (n < (int)a->capas.size()) a->capas.resize(n); }
+    lua_pushinteger(L, a ? (lua_Integer)a->capas.size() : 0);
+    return 1;
+}
+
+// ---- CAPAS DE ESCENA (el mix de animaciones de ESCENA en el juego: personajes hechos de objetos sueltos) ----
+static W3dCapaAnim* EscCapaArg(lua_State* L, int i, bool crear) {
+    int n = (int)luaL_checkinteger(L, i);
+    if (n < 1 || n > 16) return NULL;
+    if ((int)g_mixEscenas.size() < n) { if (!crear) return NULL; g_mixEscenas.resize(n); }
+    return &g_mixEscenas[n - 1];
+}
+// escenaCapa(n, "escena" [, influencia 0..1 [, "mezclar"|"sumar"|"restar" [, loop = true [, reiniciar]]]])
+static int LEscenaCapa(lua_State* L) {
+    W3dCapaAnim* c = EscCapaArg(L, 1, true);
+    const char* nom = lua_tostring(L, 2);
+    if (!c || !nom) { lua_pushboolean(L, 0); return 1; }
+    bool reiniciar = lua_toboolean(L, 6) != 0;
+    if (c->anim != nom || reiniciar) { c->anim = nom; c->juegoFrame = 0.0f; c->juegoTermino = false; }
+    if (!lua_isnoneornil(L, 3)) c->influencia = (float)lua_tonumber(L, 3) * 100.0f;
+    if (!lua_isnoneornil(L, 4)) { const char* m = lua_tostring(L, 4);
+        c->modo = (m && !strcmp(m, "sumar")) ? 1 : (m && !strcmp(m, "restar")) ? 2 : 0; }
+    c->loop = lua_isnoneornil(L, 5) ? true : (lua_toboolean(L, 5) != 0);
+    if (c->loop) c->juegoTermino = false;
+    c->visible = true;
+    lua_pushboolean(L, W3dAnimEscenaIdx(nom) >= 0 ? 1 : 0);
+    return 1;
+}
+static int LEscenaCapaPeso(lua_State* L) {
+    W3dCapaAnim* c = EscCapaArg(L, 1, false);
+    if (c && !lua_isnoneornil(L, 2)) c->influencia = (float)lua_tonumber(L, 2) * 100.0f;
+    lua_pushnumber(L, c ? c->influencia * 0.01f : 0.0f); return 1;
+}
+static int LEscenaCapaFrame(lua_State* L) {
+    W3dCapaAnim* c = EscCapaArg(L, 1, false);
+    if (c && !lua_isnoneornil(L, 2)) { c->juegoFrame = (float)lua_tonumber(L, 2); c->juegoTermino = false; }
+    lua_pushnumber(L, c ? c->juegoFrame : 0.0f); return 1;
+}
+static int LEscenaCapaTermino(lua_State* L) {
+    W3dCapaAnim* c = EscCapaArg(L, 1, false);
+    lua_pushboolean(L, (c && c->juegoTermino) ? 1 : 0); return 1;
+}
+static int LEscenaCapas(lua_State* L) {
+    if (!lua_isnoneornil(L, 1)) { int n = (int)lua_tointeger(L, 1); if (n < 0) n = 0;
+        if (n < (int)g_mixEscenas.size()) { g_mixEscenas.resize(n); if (n == 0) W3dMixEscenasSoltar(); } }
+    lua_pushinteger(L, (lua_Integer)g_mixEscenas.size()); return 1;
+}
+
+// animTransicion(arm, frames [, fps = 30]): congela la pose de AHORA y la funde hacia lo que suene despues durante
+// 'frames' (el "hokan" de RE4 / el crossfade de cualquier juego). Llamarla ANTES de cambiar el clip de la capa.
+static int LAnimTransicion(lua_State* L) {
+    Armature* a = ArmArg(L, 1);
+    float fr = (float)luaL_optnumber(L, 2, 8), fps = (float)luaL_optnumber(L, 3, 30);
+    if (a && fps > 0.0f) W3dArmatureTransicion(a, fr / fps);
+    return 0;
+}
+// mirarA(o, x, y, z): orienta el objeto para que su -Z (el frente de una camara) apunte al punto de mundo, sin
+// rolido (el "arriba" queda hacia +Y). Pensado para objetos sin padre (camaras de juego).
+static int LMirarA(lua_State* L) {
+    Object* o = W3dScriptParamObjeto(L, 1);
+    if (!o) return 0;
+    Vector3 p = o->GetGlobalPosition();
+    Vector3 f((float)luaL_checknumber(L, 2) - p.x, (float)luaL_checknumber(L, 3) - p.y, (float)luaL_checknumber(L, 4) - p.z);
+    float l = sqrtf(f.x*f.x + f.y*f.y + f.z*f.z); if (l < 1e-6f) return 0;
+    f = f * (1.0f / l);
+    Vector3 z(-f.x, -f.y, -f.z);                       // el eje +Z local mira para ATRAS
+    Vector3 x(z.z, 0.0f, -z.x);                          // up (0,1,0) x z
+    float lx = sqrtf(x.x*x.x + x.z*x.z); if (lx < 1e-6f) return 0;   // mirando derecho arriba/abajo: indefinido
+    x = x * (1.0f / lx);
+    Vector3 y(z.y*x.z - z.z*x.y, z.z*x.x - z.x*x.z, z.x*x.y - z.y*x.x);
+    Matrix4 R; R.Identity();
+    R.m[0] = x.x; R.m[1] = x.y; R.m[2] = x.z; R.m[4] = y.x; R.m[5] = y.y; R.m[6] = y.z; R.m[8] = z.x; R.m[9] = z.y; R.m[10] = z.z;
+    o->SetRot(Quaternion::FromMatrix(R));
+    Redibujar();
+    return 0;
+}
+
+// huesoPunto(arm, "hueso" [, x, y, z]) -> x, y, z en MUNDO del punto (x,y,z) dado en el espacio del hueso,
+// en la pose de ESTE frame (la boca de un arma, el origen de un laser...). nil si el hueso no esta.
+static int LHuesoPunto(lua_State* L) {
+    Armature* a = ArmArg(L, 1);
+    const char* hn = lua_tostring(L, 2);
+    if (!a || !hn) { lua_pushnil(L); return 1; }
+    int h = -1;
+    for (size_t i = 0; i < a->bones.size(); i++) if (a->bones[i].name == hn) { h = (int)i; break; }
+    if (h < 0) { lua_pushnil(L); return 1; }
+    EvaluarPoseEsqueleto(a, CurrentFrame);
+    Matrix4 W; a->GetWorldMatrix(W);
+    Vector3 p((float)luaL_optnumber(L, 3, 0), (float)luaL_optnumber(L, 4, 0), (float)luaL_optnumber(L, 5, 0));
+    Vector3 w = (W * a->bones[h].poseWorld) * p;
+    lua_pushnumber(L, w.x); lua_pushnumber(L, w.y); lua_pushnumber(L, w.z);
+    return 3;
+}
+
 // ---- LUZ ------------------------------------------------------------------
 // La luz del motor es OpenGL fixed-function: no tiene un campo "energia", tiene el color difuso
 // (rgb). Aca se parte en las dos cosas que uno quiere manejar desde un juego:
@@ -1200,6 +1417,27 @@ static void RegistrarAPI(lua_State* L) {
     // visibilidad (mostrar() de BindsJuego es el alias historico de setVisible)
     lua_pushcfunction(L, LVisible);     lua_setglobal(L, "visible");
     lua_pushcfunction(L, LSetVisible);  lua_setglobal(L, "setVisible");
+    lua_pushcfunction(L, LAnimClip);      lua_setglobal(L, "animClip");
+    lua_pushcfunction(L, LAnimActual);    lua_setglobal(L, "animActual");
+    lua_pushcfunction(L, LAnimFrame);     lua_setglobal(L, "animFrame");
+    lua_pushcfunction(L, LAnimLargo);     lua_setglobal(L, "animLargo");
+    lua_pushcfunction(L, LAnimTermino);   lua_setglobal(L, "animTermino");
+    lua_pushcfunction(L, LAnimVelocidad); lua_setglobal(L, "animVelocidad");
+    lua_pushcfunction(L, LHuesoPunto);    lua_setglobal(L, "huesoPunto");
+    lua_pushcfunction(L, LAnimCapa);        lua_setglobal(L, "animCapa");
+    lua_pushcfunction(L, LAnimCapaPeso);    lua_setglobal(L, "animCapaPeso");
+    lua_pushcfunction(L, LAnimCapaFrame);   lua_setglobal(L, "animCapaFrame");
+    lua_pushcfunction(L, LAnimCapaTermino); lua_setglobal(L, "animCapaTermino");
+    lua_pushcfunction(L, LAnimCapaHueso);   lua_setglobal(L, "animCapaHueso");
+    lua_pushcfunction(L, LAnimCapaVel);     lua_setglobal(L, "animCapaVel");
+    lua_pushcfunction(L, LAnimCapas);       lua_setglobal(L, "animCapas");
+    lua_pushcfunction(L, LAnimTransicion);  lua_setglobal(L, "animTransicion");
+    lua_pushcfunction(L, LEscenaCapa);        lua_setglobal(L, "escenaCapa");
+    lua_pushcfunction(L, LEscenaCapaPeso);    lua_setglobal(L, "escenaCapaPeso");
+    lua_pushcfunction(L, LEscenaCapaFrame);   lua_setglobal(L, "escenaCapaFrame");
+    lua_pushcfunction(L, LEscenaCapaTermino); lua_setglobal(L, "escenaCapaTermino");
+    lua_pushcfunction(L, LEscenaCapas);       lua_setglobal(L, "escenaCapas");
+    lua_pushcfunction(L, LMirarA);          lua_setglobal(L, "mirarA");
     // luz
     lua_pushcfunction(L, LColor);       lua_setglobal(L, "color");
     lua_pushcfunction(L, LSetColor);    lua_setglobal(L, "setColor");

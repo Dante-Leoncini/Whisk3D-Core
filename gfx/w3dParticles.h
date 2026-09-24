@@ -19,9 +19,22 @@
 
 namespace w3dEngine {
 
+enum { ParticulaMaxEstela = 8 };   // puntos de historia de la forma LINEA (estela)
+
+// FORMA con que se dibuja cada particula
+enum ParticulaForma {
+    FormaBillboard = 0,   // quad mirando a la camara (el de siempre)
+    FormaEstirada  = 1,   // quad a lo largo de la VELOCIDAD (chispas, lluvia, balas trazadoras)
+    FormaLinea     = 2    // tira de LINEAS por las ultimas posiciones (estela; las chispas de GX)
+};
+
 struct Particle {
     float x, y, z;        // posicion
     float vx, vy, vz;     // velocidad
+    float ax, ay, az;     // aceleracion PROPIA (la del emisor llevada a mundo al nacer), ademas de grav/viento
+    float hist[ParticulaMaxEstela * 3]; // estela: posiciones anteriores (la [0] es la mas nueva)
+    int   nHist;          // cuantas hay
+    float histT;          // tiempo desde la ultima muestra de la estela
     float life, lifeMax;  // vida restante / total (s)
     float size, sizeEnd;  // tamanio inicial y final (interpola por vida)
     float rot, spin;      // rotacion (rad) y velocidad angular (rad/s)
@@ -71,6 +84,25 @@ struct ParticleSystem {
     // solo bind de textura (los draws solo se parten por mezcla).
     float uvU0, uvV0, uvU1, uvV1;
 
+    // ---------- CURVAS POR EDAD (t = segundos desde que nacio). Defaults = apagadas ----------
+    // Pensadas para reproducir los efectos de juegos de consola (RE4 GC: esp), que integran por frame
+    // "size += plus; plus *= freno", "alpha *= k", "v *= drag". Aca van en formas CERRADAS por segundo:
+    // no dependen del framerate (30 o 60 fps dan lo mismo).
+    float crece;         // CRECIMIENTO: el tamanio gana crece*(tamanio inicial) por segundo al nacer...
+    float frenoCrece;    // ...y esa tasa se multiplica por frenoCrece cada segundo (0..1; 1 = sin freno)
+    float alphaDecae;    // el alpha se multiplica por esto cada segundo (0..1; 1 = apagado)
+    float alphaMuerte;   // la particula MUERE cuando su alpha baja de esto (0 = nunca por alpha)
+    float arrastre;      // la velocidad se multiplica por esto cada segundo (0..1; 1 = sin arrastre)
+    bool  usarColorFinal;             // el color va de tint a colorFinal a lo largo de la vida
+    float colorFinR, colorFinG, colorFinB, alphaFinMul; // color al morir + alpha al morir (x a0)
+    float flipFps;       // FLIPBOOK a cuadros por segundo (0 = repartido en la vida, el de siempre)
+    bool  flipUnaVez;    // con flipFps: la particula muere al terminar el ultimo cuadro (sino hace loop)
+    int   forma;         // ParticulaForma
+    float estiramiento;  // FormaEstirada: largo = segundos de velocidad (la cola es pos - v*estiramiento)
+    int   estelaPuntos;  // FormaLinea: puntos de la estela (2..ParticulaMaxEstela)
+    float estelaPaso;    // FormaLinea: segundos entre muestras de la estela
+    float grosorLinea;   // FormaLinea: ancho en pixeles
+
     // ---------- RUNTIME ----------
     std::vector<Particle> parts;
     float acc;    // acumulador de emision
@@ -91,19 +123,77 @@ struct ParticleSystem {
         blend=MezclaAdd; colorPlano=false; maxParts=200; nTex=0; acc=0; phase=0; rng=2463534242u;
         flipCols=1; flipFilas=1; flipCuadros=0;
         uvU0=0; uvV0=0; uvU1=1; uvV1=1;
+        crece=0; frenoCrece=1; alphaDecae=1; alphaMuerte=0; arrastre=1;
+        usarColorFinal=false; colorFinR=1; colorFinG=1; colorFinB=1; alphaFinMul=1;
+        flipFps=0; flipUnaVez=false;
+        forma=FormaBillboard; estiramiento=0.05f; estelaPuntos=4; estelaPaso=1.0f/30.0f; grosorLinea=1.0f;
+    }
+
+    // ---- las curvas por EDAD (formas cerradas) ----
+    static float Edad(const Particle& p) { return p.lifeMax - p.life; }
+    // multiplicador del tamanio por el crecimiento con freno: 1 + crece * integral(freno^t)
+    float MulTamanio(const Particle& p) const {
+        if (crece == 0.0f) return 1.0f;
+        float t = Edad(p);
+        if (frenoCrece >= 0.9999f || frenoCrece <= 0.0f) {
+            if (frenoCrece <= 0.0f) return 1.0f;           // freno 0 = no crece nunca
+            return 1.0f + crece * t;
+        }
+        float lk = logf(frenoCrece);
+        return 1.0f + crece * (powf(frenoCrece, t) - 1.0f) / lk;
+    }
+    float MulAlpha(const Particle& p) const {
+        if (alphaDecae >= 0.9999f) return 1.0f;
+        if (alphaDecae <= 0.0f) return 0.0f;
+        return powf(alphaDecae, Edad(p));
+    }
+    // indice de cuadro del flipbook (-1 = sin flipbook)
+    int Cuadro(const Particle& p) const {
+        if (flipCuadros <= 0) return -1;
+        int cel;
+        if (flipFps > 0.0f) {
+            cel = (int)(Edad(p) * flipFps);
+            if (flipUnaVez) { if (cel >= flipCuadros) cel = flipCuadros - 1; }
+            else cel = cel % flipCuadros;
+        } else {
+            float lt = 1.0f - p.life/p.lifeMax;
+            cel = (int)(lt * flipCuadros);
+        }
+        if (cel < 0) cel = 0; if (cel >= flipCuadros) cel = flipCuadros - 1;
+        return cel;
+    }
+    // el tamanio (MEDIO lado) de la particula hoy
+    float TamanioDe(const Particle& p) const {
+        float lt = 1.0f - p.life/p.lifeMax;
+        return (p.size + (p.sizeEnd - p.size)*lt) * MulTamanio(p);
+    }
+    // color y alpha de la particula hoy (sin tinte de mezcla): r,g,b y la opacidad 0..1
+    void ColorDe(const Particle& p, float& r, float& g, float& b, float& a) const {
+        float lt = 1.0f - p.life/p.lifeMax;
+        a = p.a0 * BrilloPorVida(p) * MulAlpha(p);
+        r = tintR; g = tintG; b = tintB;
+        if (usarColorFinal) {
+            r += (colorFinR - r)*lt; g += (colorFinG - g)*lt; b += (colorFinB - b)*lt;
+            a *= 1.0f + (alphaFinMul - 1.0f)*lt;
+        }
     }
 
     // UV (12 floats = 2 triangulos) del CUADRO del flipbook para una edad lt (0..1). Sin flipbook
     // (flipCuadros<=0) devuelve el quad entero. Celda entera por edad: constante, sin curvas ni CPU.
     // Todo REMAPEADO al sub-rect uv* (0,0,1,1 = identico a antes).
     void CeldaUV(float lt, float* out) const {
+        int cel = (flipCuadros <= 0) ? -1 : (int)(lt * flipCuadros);
+        CeldaUVIdx(cel, out);
+    }
+    // idem con el cuadro ya elegido (-1 = el quad entero)
+    void CeldaUVIdx(int cel, float* out) const {
         float ru = uvU1 - uvU0, rv = uvV1 - uvV0;
-        if (flipCuadros <= 0) {
+        if (flipCuadros <= 0 || cel < 0) {
             out[0]=uvU0; out[1]=uvV0;  out[2]=uvU1; out[3]=uvV0;  out[4]=uvU1;  out[5]=uvV1;
             out[6]=uvU0; out[7]=uvV0;  out[8]=uvU1; out[9]=uvV1;  out[10]=uvU0; out[11]=uvV1;
             return;
         }
-        int cel = (int)(lt * flipCuadros); if (cel < 0) cel = 0; if (cel >= flipCuadros) cel = flipCuadros - 1;
+        if (cel >= flipCuadros) cel = flipCuadros - 1;
         int cols = flipCols > 0 ? flipCols : 1, filas = flipFilas > 0 ? flipFilas : 1;
         int col = cel % cols, fila = (cel / cols) % filas;
         float du = ru / (float)cols, dv = rv / (float)filas;
@@ -129,6 +219,7 @@ struct ParticleSystem {
         p.rot=rnd(0.0f,6.2831853f); p.spin=rnd(spinMin,spinMax);
         p.a0=rnd(alphaMin,alphaMax); p.swayPh=rnd(0.0f,6.2831853f);
         p.tex = nTex>0 ? (int)(frnd()*nTex) : 0; if(nTex>0 && p.tex>=nTex) p.tex=nTex-1;
+        p.ax=0; p.ay=0; p.az=0; p.nHist=0; p.histT=0;
         parts.push_back(p);
         return &parts.back(); // ojo: si emitis mas, el vector puede realojar; usalo al toque
     }
@@ -176,11 +267,28 @@ struct ParticleSystem {
         phase += dt;
         if (rate>0) { acc += rate*dt; while(acc>=1.0f){ acc-=1.0f; if(!Emit()){ acc=0; break; } } }
         float damp = damping>0 ? (1.0f - damping*dt) : 1.0f; if(damp<0)damp=0;
+        if (arrastre < 0.9999f) damp *= (arrastre > 0.0f) ? powf(arrastre, dt) : 0.0f;  // arrastre por segundo
+        int nEst = estelaPuntos; if (nEst < 2) nEst = 2; if (nEst > ParticulaMaxEstela) nEst = ParticulaMaxEstela;
         for (size_t i=0; i<parts.size(); ) {
             Particle& p = parts[i];
             p.life -= dt;
             if (p.life<=0) { parts[i]=parts.back(); parts.pop_back(); continue; } // swap-remove
-            p.vx += (gravX+windX)*dt; p.vy += (gravY+windY)*dt; p.vz += (gravZ+windZ)*dt;
+            // muere por ALPHA (el "alpha < 4" de los efectos de consola) o al terminar un flipbook de una vez
+            if (alphaMuerte > 0.0f && p.a0 * BrilloPorVida(p) * MulAlpha(p) < alphaMuerte) { parts[i]=parts.back(); parts.pop_back(); continue; }
+            if (flipUnaVez && flipFps > 0.0f && flipCuadros > 0 && Edad(p) * flipFps >= (float)flipCuadros) { parts[i]=parts.back(); parts.pop_back(); continue; }
+            // ESTELA: guardar la posicion de ANTES de moverse cada estelaPaso segundos
+            if (forma == FormaLinea) {
+                p.histT += dt;
+                float paso = estelaPaso > 0.001f ? estelaPaso : 0.001f;
+                if (p.histT >= paso || p.nHist == 0) {
+                    p.histT = 0;
+                    int n = p.nHist < nEst - 1 ? p.nHist + 1 : nEst - 1;
+                    for (int k = n - 1; k > 0; k--) { p.hist[k*3] = p.hist[(k-1)*3]; p.hist[k*3+1] = p.hist[(k-1)*3+1]; p.hist[k*3+2] = p.hist[(k-1)*3+2]; }
+                    p.hist[0] = p.x; p.hist[1] = p.y; p.hist[2] = p.z;
+                    p.nHist = n;
+                }
+            }
+            p.vx += (gravX+windX+p.ax)*dt; p.vy += (gravY+windY+p.ay)*dt; p.vz += (gravZ+windZ+p.az)*dt;
             if (turbAmp > 0.0f) {
                 // wander SUAVE por particula: aceleracion que rota de a poco, con fases
                 // personales (swayPh) -> cada particula deriva distinto, sin vibrar.
@@ -254,21 +362,37 @@ struct ParticleSystem {
                          float rx, float ry, float rz, float ux, float uy, float uz,
                          std::vector<float>& pos, std::vector<float>& uvs,
                          std::vector<unsigned char>& col) const {
-        float b = p.a0 * BrilloPorVida(p); if (b <= 0.0f) return false;
-        float lt = 1.0f - p.life/p.lifeMax;
-        float UV[12]; CeldaUV(lt, UV);   // flipbook por edad (o quad entero si no hay flipbook)
-        float s = p.size + (p.sizeEnd - p.size)*lt;
+        float r, g, bl, b;
+        ColorDe(p, r, g, bl, b); if (b <= 0.0f) return false;
+        float UV[12]; CeldaUVIdx(Cuadro(p), UV);   // flipbook (por edad o por fps) o el quad entero
+        float s = TamanioDe(p);
         float px = p.x+offsetX, py = p.y+offsetY, pz = p.z+offsetZ;
-        float c = cosf(p.rot)*s, sn = sinf(p.rot)*s;
-        float exx = rx*c + ux*sn, exy = ry*c + uy*sn, exz = rz*c + uz*sn;
-        float eyx = ux*c - rx*sn, eyy = uy*c - ry*sn, eyz = uz*c - rz*sn;
-        const float V[18] = {
-            px-exx-eyx, py-exy-eyy, pz-exz-eyz,   px+exx-eyx, py+exy-eyy, pz+exz-eyz,
-            px+exx+eyx, py+exy+eyy, pz+exz+eyz,   px-exx-eyx, py-exy-eyy, pz-exz-eyz,
-            px+exx+eyx, py+exy+eyy, pz+exz+eyz,   px-exx+eyx, py-exy+eyy, pz-exz+eyz };
-        float r, g, bl, a;
-        if (colorPlano) { r = tintR;   g = tintG;   bl = tintB;   a = b; }
-        else            { r = tintR*b; g = tintG*b; bl = tintB*b; a = b; }
+        float V[18];
+        if (forma == FormaEstirada) {
+            // quad de la COLA (pos - v*estiramiento) a la CABEZA (pos), de ancho 2*s, girado sobre la velocidad
+            // para que su cara mire a la camara: ancho = normalize(vel x adelante-de-camara)
+            float tx = px - p.vx*estiramiento, ty = py - p.vy*estiramiento, tz = pz - p.vz*estiramiento;
+            float fx = ry*uz - rz*uy, fy = rz*ux - rx*uz, fz = rx*uy - ry*ux;   // adelante = right x up
+            float wx = p.vy*fz - p.vz*fy, wy = p.vz*fx - p.vx*fz, wz = p.vx*fy - p.vy*fx;
+            float wl = sqrtf(wx*wx + wy*wy + wz*wz);
+            if (wl < 1e-6f) { wx = rx; wy = ry; wz = rz; } else { wx /= wl; wy /= wl; wz /= wl; }
+            wx *= s; wy *= s; wz *= s;
+            const float Q[18] = {
+                tx-wx, ty-wy, tz-wz,   px-wx, py-wy, pz-wz,   px+wx, py+wy, pz+wz,
+                tx-wx, ty-wy, tz-wz,   px+wx, py+wy, pz+wz,   tx+wx, ty+wy, tz+wz };
+            for (int i = 0; i < 18; i++) V[i] = Q[i];
+        } else {
+            float c = cosf(p.rot)*s, sn = sinf(p.rot)*s;
+            float exx = rx*c + ux*sn, exy = ry*c + uy*sn, exz = rz*c + uz*sn;
+            float eyx = ux*c - rx*sn, eyy = uy*c - ry*sn, eyz = uz*c - rz*sn;
+            const float Q[18] = {
+                px-exx-eyx, py-exy-eyy, pz-exz-eyz,   px+exx-eyx, py+exy-eyy, pz+exz-eyz,
+                px+exx+eyx, py+exy+eyy, pz+exz+eyz,   px-exx-eyx, py-exy-eyy, pz-exz-eyz,
+                px+exx+eyx, py+exy+eyy, pz+exz+eyz,   px-exx+eyx, py-exy+eyy, pz-exz+eyz };
+            for (int i = 0; i < 18; i++) V[i] = Q[i];
+        }
+        float a = b;
+        if (!colorPlano) { r *= b; g *= b; bl *= b; }
         if (r < 0) r = 0; if (r > 1) r = 1; if (g < 0) g = 0; if (g > 1) g = 1;
         if (bl < 0) bl = 0; if (bl > 1) bl = 1; if (a < 0) a = 0; if (a > 1) a = 1;
         unsigned char cr = (unsigned char)(r*255.0f + 0.5f), cg = (unsigned char)(g*255.0f + 0.5f);
@@ -276,6 +400,31 @@ struct ParticleSystem {
         for (int i = 0; i < 18; i++) pos.push_back(V[i]);
         for (int i = 0; i < 12; i++) uvs.push_back(UV[i]);
         for (int i = 0; i < 6; i++) { col.push_back(cr); col.push_back(cg); col.push_back(cb); col.push_back(ca); }
+        return true;
+    }
+
+    // FormaLinea: appendea los SEGMENTOS de la estela (GL_LINES: 2 vertices por segmento) de la posicion
+    // actual hacia atras, con el alpha bajando hacia la cola. Sin textura (color por vertice).
+    // false = no aporta (sin historia o alpha 0).
+    bool AppendEstela(const Particle& p, std::vector<float>& pos, std::vector<unsigned char>& col) const {
+        if (p.nHist < 1) return false;
+        float r, g, bl, a; ColorDe(p, r, g, bl, a); if (a <= 0.0f) return false;
+        if (!colorPlano) { r *= a; g *= a; bl *= a; }
+        float px = p.x+offsetX, py = p.y+offsetY, pz = p.z+offsetZ;
+        int n = p.nHist;
+        for (int k = 0; k < n; k++) {
+            float x0 = (k == 0) ? px : p.hist[(k-1)*3] + offsetX, y0 = (k == 0) ? py : p.hist[(k-1)*3+1] + offsetY, z0 = (k == 0) ? pz : p.hist[(k-1)*3+2] + offsetZ;
+            float x1 = p.hist[k*3] + offsetX, y1 = p.hist[k*3+1] + offsetY, z1 = p.hist[k*3+2] + offsetZ;
+            pos.push_back(x0); pos.push_back(y0); pos.push_back(z0);
+            pos.push_back(x1); pos.push_back(y1); pos.push_back(z1);
+            for (int e = 0; e < 2; e++) {
+                float f = 1.0f - (float)(k + e) / (float)(n + 1);   // cabeza 1 -> cola ~0
+                float fr = colorPlano ? r : r*f, fg = colorPlano ? g : g*f, fb = colorPlano ? bl : bl*f, fa = a*f;
+                if (fr > 1) fr = 1; if (fg > 1) fg = 1; if (fb > 1) fb = 1; if (fa > 1) fa = 1;
+                col.push_back((unsigned char)(fr*255.0f + 0.5f)); col.push_back((unsigned char)(fg*255.0f + 0.5f));
+                col.push_back((unsigned char)(fb*255.0f + 0.5f)); col.push_back((unsigned char)(fa*255.0f + 0.5f));
+            }
+        }
         return true;
     }
 

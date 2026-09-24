@@ -155,12 +155,16 @@ static bool AnimKind4SinClip(){
     w3dLogfW("Animation: kind 4 (clip de armature 2D) sin clip activo -> el rango no se escribe en ningun lado");
     return true;
 }
-void AnimSetStart(int v){ if (AnimKind4SinClip()) return;
+// MIX (g_animMix, SkeletalAnimation.cpp): el rango del timeline es el del MIX, no el del clip de la capa elegida
+extern bool g_animMix; extern float g_mixInicio, g_mixFin;
+void AnimSetStart(int v){ if (g_animMix) { g_mixInicio = (float)v; StartFrame = v; return; }
+    if (AnimKind4SinClip()) return;
     Armature2DAnimation* c2 = AnimClip2DActivo(); if (c2) c2->startFrame = v;
     else { VertexAnimation* oa = AnimObjPropiaActiva(); if (oa) oa->startFrame = v;
     else { SkeletalAnimation* c = AnimClipActivo(); if (c) c->startFrame = v;
     else { InitSceneAnimations(); SceneAnimations[SceneAnimActiva]->startFrame = v; } } } StartFrame = v; }
-void AnimSetEnd(int v){ if (AnimKind4SinClip()) return;
+void AnimSetEnd(int v){ if (g_animMix) { g_mixFin = (float)v; EndFrame = v; return; }
+    if (AnimKind4SinClip()) return;
     Armature2DAnimation* c2 = AnimClip2DActivo(); if (c2) c2->endFrame = v;
     else { VertexAnimation* oa = AnimObjPropiaActiva(); if (oa) oa->endFrame = v;
     else { SkeletalAnimation* c = AnimClipActivo(); if (c) c->endFrame = v;
@@ -535,4 +539,73 @@ void W3dAnimEscenaTick(float dt) {
         AnimationObject& ao = (*objs)[i];
         if (ao.obj) AplicarCurvasJuego(ao.obj, ao.Propertys, f);
     }
+}
+
+
+// ============================================================================
+//  MIX DE ESCENAS (capas de animaciones de ESCENA, W3dCapaAnim / g_mixEscenas): cada objeto que tocan las
+//  capas visibles recibe la MEZCLA (mezclar = lerp, sumar/restar = lo que la capa se aparta de la BASE). Sirve
+//  para personajes hechos de OBJETOS sueltos (GTA3: cada parte es un objeto; correr + disparar + ...).
+//  La BASE es la transform que el objeto tenia la primera vez que el mix lo toco; W3dMixEscenasSoltar lo
+//  devuelve ahi (al salir del Mix en el editor). En el juego cada capa avanza con su cabezal (juegoFrame).
+// ============================================================================
+#include "animation/SkeletalAnimation.h"   // g_mixEscenas, W3dCapaFrameEditor
+#include <map>
+struct W3dMixBase { Vector3 p, r, s; };
+static std::map<Object*, W3dMixBase> gMixBase;
+void W3dMixEscenasSoltar(){
+    for (std::map<Object*, W3dMixBase>::iterator it = gMixBase.begin(); it != gMixBase.end(); ++it){
+        Object* o = it->first; if (!o) continue;
+        o->pos = it->second.p; o->SetRotEuler(it->second.r); o->scale = it->second.s; }
+    gMixBase.clear();
+}
+bool W3dMixEscenasAplicar(int frameMix, bool juego){
+    if (g_mixEscenas.empty()) return false;
+    InitSceneAnimations();
+    std::map<Object*, W3dMixBase> acc;
+    for (size_t k = 0; k < g_mixEscenas.size(); k++){
+        W3dCapaAnim& c = g_mixEscenas[k];
+        if (!c.visible || c.influencia <= 0.0f) continue;
+        int idx = W3dAnimEscenaIdx(c.anim.c_str()); if (idx < 0) continue;
+        SceneAnimation* sa = SceneAnimations[idx];
+        std::vector<AnimationObject>& objs = (idx == SceneAnimActiva) ? AnimationObjects : sa->objetos;
+        int f = juego ? sa->startFrame + (int)c.juegoFrame : (int)W3dCapaFrameEditor(c, frameMix, sa->startFrame, sa->endFrame);
+        float w = c.influencia * 0.01f; if (c.modo == 0 && w > 1.0f) w = 1.0f; if (w > 2.0f) w = 2.0f;
+        float sg = (c.modo == 2) ? -1.0f : 1.0f;
+        for (size_t i = 0; i < objs.size(); i++){
+            Object* o = objs[i].obj; if (!o) continue;
+            if (gMixBase.find(o) == gMixBase.end()){ W3dMixBase b; b.p = o->pos; b.r = o->rotEuler; b.s = o->scale; gMixBase[o] = b; }
+            const W3dMixBase& base = gMixBase[o];
+            if (acc.find(o) == acc.end()) acc[o] = base;
+            W3dMixBase& A = acc[o];
+            std::vector<AnimProperty>& pr = objs[i].Propertys;
+            Vector3 P = EvalPropVec(pr, AnimPosition, f, base.p);
+            Vector3 R = EvalPropVec(pr, AnimRotation, f, base.r);
+            Vector3 S = EvalPropVec(pr, AnimScale,    f, base.s);
+            if (c.modo == 0){ A.p = A.p + (P - A.p) * w; A.r = A.r + (R - A.r) * w; A.s = A.s + (S - A.s) * w; }
+            else { A.p = A.p + (P - base.p) * (w * sg); A.r = A.r + (R - base.r) * (w * sg); A.s = A.s + (S - base.s) * (w * sg); }
+        }
+    }
+    for (std::map<Object*, W3dMixBase>::iterator it = acc.begin(); it != acc.end(); ++it){
+        Object* o = it->first;
+        o->pos = it->second.p; o->SetRotEuler(it->second.r); o->scale = it->second.s;
+        o->posadoPorCurvas = true;
+    }
+    return true;
+}
+// JUEGO: avanza el cabezal de cada capa de escena (fps de SU escena) y aplica la mezcla
+void W3dMixEscenasTick(float dt){
+    if (g_mixEscenas.empty()) return;
+    InitSceneAnimations();
+    for (size_t k = 0; k < g_mixEscenas.size(); k++){
+        W3dCapaAnim& c = g_mixEscenas[k];
+        int idx = W3dAnimEscenaIdx(c.anim.c_str()); if (idx < 0) continue;
+        SceneAnimation* sa = SceneAnimations[idx];
+        const float largo = (float)(sa->endFrame - sa->startFrame);
+        if (!c.juegoTermino) c.juegoFrame += dt * (float)(sa->fps > 0 ? sa->fps : 30) * c.vel;
+        if (largo <= 0.0f) c.juegoFrame = 0.0f;
+        else if (c.loop) { while (c.juegoFrame >= largo + 1.0f) c.juegoFrame -= largo + 1.0f; }
+        else if (c.juegoFrame >= largo) { c.juegoFrame = largo; c.juegoTermino = true; }
+    }
+    W3dMixEscenasAplicar(0, true);
 }

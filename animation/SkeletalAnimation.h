@@ -5,6 +5,7 @@
 #include "math/Matrix4.h"
 #include "math/Vector3.h"
 #include <string>
+#include "animation/W3dCapaAnim.h" // capas del MIX
 #include "animation/Animation.h"   // AnimProperty, keyFrame, enum AnimPosition/AnimRotation/AnimScale
 
 // ============================================================================
@@ -50,6 +51,28 @@ class Armature; // objects/Armature.h
 // evalua la POSE del esqueleto en 'frame' con el clip ACTIVO (FK): llena bone.poseHead/poseTail.
 // Si no hay clip activo (o el hueso no esta animado) la pose = rest. Lo llama el render del armature.
 void EvaluarPoseEsqueleto(Armature* a, int frame);
+// JUEGO (ActiveAnimKind 2): cada armature reproduce su clip activo con su propio cabezal (Armature::juegoFrame).
+void W3dArmaturesJuegoTick(float dt);   // avanza todos los de la escena (lo llaman el Play del editor y el runtime)
+bool W3dArmaturePlayClip(Armature* a, int clip, bool loop, bool reiniciar); // elige clip (reinicia si cambia)
+int  W3dArmatureClipPorNombre(const Armature* a, const std::string& nombre); // -1 = no esta
+
+// ===== MIX de animaciones (capas; ver W3dCapaAnim en objects/Armature.h) =====
+// g_animMix: el editor esta en modo Mix (el selector del timeline dice "Mix"). Los armatures con capas muestran
+// la mezcla; el timeline/dope sheet siguen editando la capa ELEGIDA (ActiveAnimArm + su animActiva).
+extern bool  g_animMix;
+extern float g_mixInicio, g_mixFin;                  // el rango del timeline en el modo Mix
+extern std::vector<W3dCapaAnim> g_mixEscenas;        // capas de ANIMACIONES DE ESCENA (curvas de objetos)
+extern int   g_mixEscenaActiva;                      // la capa de escena elegida en la lista (-1 = ninguna)
+// indice del clip de una capa (resuelve el nombre; -1 = no esta)
+int   W3dCapaClip(const Armature* a, W3dCapaAnim& c);
+// frame (del clip) en que suena una capa: jugando el cabezal de la capa; en el editor el del mix
+float W3dCapaFrameEditor(const W3dCapaAnim& c, int frameMix, int clipIni, int clipFin);
+// TRANSICION: congela la pose actual y la funde hacia la nueva durante 'segundos' (el hokan del juego)
+void  W3dArmatureTransicion(Armature* a, float segundos);
+// MIX DE ESCENAS (Animation.cpp): aplica las capas de escena (editor: el frame del mix; juego: su cabezal)
+bool  W3dMixEscenasAplicar(int frameMix, bool juego);
+void  W3dMixEscenasTick(float dt);        // juego: avanza las capas de escena y aplica la mezcla
+void  W3dMixEscenasSoltar();              // devuelve los objetos a su base (al salir del Mix)
 // precomputa las matrices de skinning de cada hueso (skinA/skinInvBind). Llamar UNA vez tras importar el esqueleto.
 void PrepararSkin(Armature* a);
 // RIG AUTORADO en el editor (huesos creados a mano, sin datos de FBX): arma el rest y las matrices de skin

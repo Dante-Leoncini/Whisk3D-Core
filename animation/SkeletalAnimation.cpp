@@ -306,6 +306,166 @@ void HornearTransformEnHuesos(Armature* a, const Matrix4& B){
     a->lastPoseFrame = -999999; a->lastPoseAnim = -999; a->poseDirty = false; a->poseSerial++; // re-evaluar FK + re-skinnear
 }
 
+// ============================================================================
+//  EL MIX DE ANIMACIONES (capas). Estado global del modo Mix del editor + la evaluacion por hueso.
+// ============================================================================
+bool  g_animMix = false;
+float g_mixInicio = 1.0f, g_mixFin = 250.0f;
+std::vector<W3dCapaAnim> g_mixEscenas;
+int   g_mixEscenaActiva = -1;
+
+int W3dCapaClip(const Armature* a, W3dCapaAnim& c){
+    if (!a) return -1;
+    const int n = (int)a->animations.size();
+    if (c.clipCache >= 0 && c.clipCache < n && a->animations[c.clipCache] && a->animations[c.clipCache]->name == c.anim) return c.clipCache;
+    c.clipCache = W3dArmatureClipPorNombre(a, c.anim);
+    return c.clipCache;
+}
+float W3dCapaFrameEditor(const W3dCapaAnim& c, int frameMix, int clipIni, int clipFin){
+    float largo = (float)(clipFin - clipIni + 1); if (largo < 1.0f) largo = 1.0f;
+    float t = ((float)frameMix - g_mixInicio - c.desde) * c.vel;
+    if (c.loop) { t = fmodf(t, largo); if (t < 0.0f) t += largo; }
+    else { if (t < 0.0f) t = 0.0f; if (t > largo - 1.0f) t = largo - 1.0f; }
+    return (float)clipIni + t;
+}
+static Quaternion QuatDeEuler(const Vector3& e, int orden){ return Quaternion::FromMatrix(SkelMatRotEuler(e, orden)); }
+static Vector3 EulerDeQuat(const Quaternion& q, int orden){ Matrix4 M; q.ToMatrix(M.m); return SkelMatrizAEulerFBX(M, orden); }
+// la pose de TODAS las capas visibles, mezcladas en orden, en poseT/R/S de cada hueso
+static void MezclarCapas(Armature* a, int frameMix){
+    const size_t N = a->bones.size();
+    static std::vector<Vector3> T, S; static std::vector<Quaternion> Q, Qrest; static std::vector<int> trk; static std::vector<char> mask;
+    T.resize(N); S.resize(N); Q.resize(N); Qrest.resize(N); trk.resize(N); mask.resize(N);
+    for (size_t i = 0; i < N; i++){ const W3dBone& b = a->bones[i];
+        T[i] = b.restT; S[i] = b.restS; Qrest[i] = QuatDeEuler(b.restR, b.rotOrder); Q[i] = Qrest[i]; }
+    for (size_t k = 0; k < a->capas.size(); k++){
+        W3dCapaAnim& c = a->capas[k];
+        if (!c.visible || c.influencia <= 0.0f) continue;
+        int ci = W3dCapaClip(a, c); if (ci < 0) continue;
+        SkeletalAnimation* clip = a->animations[ci]; if (!clip) continue;
+        float w = c.influencia * 0.01f; if (c.modo == 0 && w > 1.0f) w = 1.0f; if (w > 2.0f) w = 2.0f;
+        int f = (ActiveAnimKind == 2) ? clip->startFrame + (int)c.juegoFrame
+                                      : (int)W3dCapaFrameEditor(c, frameMix, clip->startFrame, clip->endFrame);
+        // mascara por hueso: el hueso raiz y sus descendientes
+        int raiz = -1;
+        if (!c.hueso.empty()) for (size_t i = 0; i < N; i++) if (a->bones[i].name == c.hueso) { raiz = (int)i; break; }
+        for (size_t i = 0; i < N; i++){
+            if (raiz < 0) { mask[i] = 1; continue; }
+            int p = (int)i; mask[i] = 0;
+            while (p >= 0) { if (p == raiz) { mask[i] = 1; break; } p = a->bones[p].parent; }
+        }
+        for (size_t i = 0; i < N; i++) trk[i] = -1;
+        for (size_t t = 0; t < clip->tracks.size(); t++){ int bo = clip->tracks[t].bone; if (bo >= 0 && bo < (int)N) trk[bo] = (int)t; }
+        for (size_t i = 0; i < N; i++){
+            if (!mask[i]) continue;
+            const W3dBone& b = a->bones[i];
+            Vector3 Tl = b.restT, Rl = b.restR, Sl = b.restS;
+            if (trk[i] >= 0){ BoneTrack& tr = clip->tracks[trk[i]];
+                Tl = EvalPropVec(tr.Propertys, AnimPosition, f, b.restT);
+                Rl = EvalPropVec(tr.Propertys, AnimRotation, f, b.restR);
+                Sl = EvalPropVec(tr.Propertys, AnimScale,    f, b.restS); }
+            Quaternion Ql = (trk[i] >= 0) ? QuatDeEuler(Rl, b.rotOrder) : Qrest[i];
+            if (c.modo == 0){
+                T[i] = T[i] + (Tl - T[i]) * w;
+                S[i] = S[i] + (Sl - S[i]) * w;
+                Q[i] = (w >= 1.0f) ? Ql : Quaternion::Slerp(Q[i], Ql, w);
+            } else {
+                float sg = (c.modo == 2) ? -1.0f : 1.0f;
+                T[i] = T[i] + (Tl - b.restT) * (w * sg);
+                Quaternion d = Qrest[i].Inverted() * Ql;        // cuanto se aparta del reposo
+                if (sg < 0.0f) d = d.Inverted();
+                Q[i] = Q[i] * Quaternion::Slerp(Quaternion(), d, w);
+                for (int e = 0; e < 3; e++){
+                    float r0 = (e==0 ? b.restS.x : e==1 ? b.restS.y : b.restS.z), rl = (e==0 ? Sl.x : e==1 ? Sl.y : Sl.z);
+                    float m = (r0 != 0.0f) ? rl / r0 : 1.0f; m = 1.0f + (m - 1.0f) * w * sg;
+                    if (e==0) S[i].x *= m; else if (e==1) S[i].y *= m; else S[i].z *= m;
+                }
+            }
+        }
+    }
+    // TRANSICION: fundir desde la pose congelada (w = lo que falta / el total; 1 al cambiar, 0 al terminar)
+    if (a->transRestante > 0.0f && a->transTotal > 0.0f && a->transT.size() == N){
+        float w = a->transRestante / a->transTotal; if (w > 1.0f) w = 1.0f;
+        for (size_t i = 0; i < N; i++){
+            T[i] = T[i] + (a->transT[i] - T[i]) * w;
+            S[i] = S[i] + (a->transS[i] - S[i]) * w;
+            Q[i] = Quaternion::Slerp(Q[i], a->transQ[i], w);
+        }
+    }
+    for (size_t i = 0; i < N; i++){ W3dBone& b = a->bones[i];
+        b.poseT = T[i]; b.poseS = S[i]; b.poseR = EulerDeQuat(Q[i], b.rotOrder); }
+}
+
+// congela la pose ACTUAL (la ultima calculada) para fundir desde ella durante 'segundos'
+void W3dArmatureTransicion(Armature* a, float segundos){
+    if (!a) return;
+    const size_t N = a->bones.size();
+    a->transT.resize(N); a->transS.resize(N); a->transQ.resize(N);
+    for (size_t i = 0; i < N; i++){ const W3dBone& b = a->bones[i];
+        a->transT[i] = b.poseT; a->transS[i] = b.poseS; a->transQ[i] = QuatDeEuler(b.poseR, b.rotOrder); }
+    a->transTotal = segundos > 0.0f ? segundos : 0.0f;
+    a->transRestante = a->transTotal;
+}
+// firma del estado de las capas (para no recalcular la pose si nada cambio)
+static unsigned FirmaCapas(Armature* a, int frameMix){
+    unsigned h = 2166136261u;
+    for (size_t k = 0; k < a->capas.size(); k++){ const W3dCapaAnim& c = a->capas[k];
+        int ci = W3dCapaClip(a, a->capas[k]);
+        int f = (ActiveAnimKind == 2) ? (int)c.juegoFrame : (ci >= 0 ? (int)W3dCapaFrameEditor(c, frameMix, a->animations[ci]->startFrame, a->animations[ci]->endFrame) : 0);
+        unsigned v[6] = { (unsigned)(ci + 7), (unsigned)f, (unsigned)(c.influencia * 100.0f), (unsigned)c.modo, (unsigned)c.visible, (unsigned)c.hueso.size() };
+        for (int q = 0; q < 6; q++){ h ^= v[q]; h *= 16777619u; } }
+    h ^= (unsigned)(a->transRestante * 10000.0f); h *= 16777619u;   // la transicion cambia la pose aunque no las capas
+    return h;
+}
+static bool UsaCapas(const Armature* a){ return !a->capas.empty() && (g_animMix || ActiveAnimKind == 2); }
+
+// ============================================================================
+//  EL RELOJ DE LOS ESQUELETOS EN EL JUEGO: avanza el cabezal de cada armature por su clip activo
+//  (FrameRate del clip * juegoVel), con loop o parando en el ultimo frame (juegoTermino).
+// ============================================================================
+static void W3dArmJuegoTickRec(Object* o, float dt){
+    if (!o) return;
+    if (o->getType() == ObjectType::armature) {
+        Armature* a = (Armature*)o;
+        if (a->transRestante > 0.0f) { a->transRestante -= dt; if (a->transRestante < 0.0f) a->transRestante = 0.0f; }
+        // CAPAS: cada una avanza con su propio cabezal
+        for (size_t k = 0; k < a->capas.size(); k++) {
+            W3dCapaAnim& cp = a->capas[k];
+            int ci = W3dCapaClip(a, cp); if (ci < 0) continue;
+            SkeletalAnimation* c = a->animations[ci];
+            const float largo = (float)(c->endFrame - c->startFrame);
+            if (!cp.juegoTermino) cp.juegoFrame += dt * (float)c->FrameRate * cp.vel;
+            if (largo <= 0.0f) cp.juegoFrame = 0.0f;
+            else if (cp.loop) { while (cp.juegoFrame >= largo + 1.0f) cp.juegoFrame -= largo + 1.0f; }
+            else if (cp.juegoFrame >= largo) { cp.juegoFrame = largo; cp.juegoTermino = true; }
+        }
+        if (a->animActiva >= 0 && a->animActiva < (int)a->animations.size()) {
+            SkeletalAnimation* c = a->animations[a->animActiva];
+            const float largo = (float)(c->endFrame - c->startFrame);   // el ultimo frame es startFrame + largo
+            if (!a->juegoTermino) a->juegoFrame += dt * (float)c->FrameRate * a->juegoVel;
+            if (largo <= 0.0f) a->juegoFrame = 0.0f;
+            else if (a->juegoLoop) { while (a->juegoFrame >= largo + 1.0f) a->juegoFrame -= largo + 1.0f; }
+            else if (a->juegoFrame >= largo) { a->juegoFrame = largo; a->juegoTermino = true; }
+        }
+    }
+    for (size_t i = 0; i < o->Childrens.size(); i++) W3dArmJuegoTickRec(o->Childrens[i], dt);
+}
+void W3dArmaturesJuegoTick(float dt){ W3dArmJuegoTickRec(SceneCollection, dt); W3dMixEscenasTick(dt); }
+
+// clip por nombre (o "#N" / indice) desde el juego: reinicia el cabezal salvo que ya sea el mismo clip
+bool W3dArmaturePlayClip(Armature* a, int clip, bool loop, bool reiniciar){
+    if (!a || clip < 0 || clip >= (int)a->animations.size()) return false;
+    if (clip != a->animActiva || reiniciar) { a->juegoFrame = 0.0f; a->juegoTermino = false; }
+    a->animActiva = clip;
+    a->juegoLoop = loop;
+    if (loop) a->juegoTermino = false;
+    return true;
+}
+int W3dArmatureClipPorNombre(const Armature* a, const std::string& nombre){
+    if (!a) return -1;
+    for (size_t i = 0; i < a->animations.size(); i++) if (a->animations[i] && a->animations[i]->name == nombre) return (int)i;
+    return -1;
+}
+
 void EvaluarPoseEsqueleto(Armature* a, int frame){
     if (!a) return;
     // GATING de playback: este armature reproduce su clip SOLO si es la animacion ACTIVA (ActiveAnimKind 1 + este
@@ -313,15 +473,31 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
     // seleccionado", no todos a la vez. (Posar a mano igual anda: poseDirty corta antes de leer la curva.)
     int animPlay = (ActiveAnimKind == 1 && ActiveAnimArm == a &&
                     a->animActiva >= 0 && a->animActiva < (int)a->animations.size()) ? a->animActiva : -1;
+    // JUGANDO (kind 2): TODOS los esqueletos reproducen su clip activo, cada uno con SU cabezal (juegoFrame, lo
+    // avanza W3dArmaturesJuegoTick) -- no el frame global, que no sabe de clips ni de loops.
+    if (ActiveAnimKind == 2 && a->animActiva >= 0 && a->animActiva < (int)a->animations.size()) {
+        animPlay = a->animActiva;
+        frame = a->animations[animPlay]->startFrame + (int)a->juegoFrame;
+    }
     // CACHE: si el frame y el clip efectivo no cambiaron Y la pose no fue editada a mano, ya esta calculada (no
     // recalcular a 60fps). poseDirty (posando) fuerza re-FK sin refrescar poseT/R/S desde la curva.
     bool frameChanged = (a->lastPoseFrame != frame || a->lastPoseAnim != animPlay);
+    // MIX: la pose sale de las capas; el cache es la FIRMA del estado de todas (frames, influencias, ojos...)
+    const bool mix = UsaCapas(a);
+    const int frameMix = frame;
+    if (mix) {
+        unsigned firma = FirmaCapas(a, frameMix);
+        frameChanged = (firma != a->mixFirma) || a->lastPoseAnim != -777;
+        a->mixFirma = firma;
+        animPlay = -777;
+    }
     if (!frameChanged && !a->poseDirty) return;
     a->lastPoseFrame = frame; a->lastPoseAnim = animPlay;
     a->poseDirty = false;
     a->poseSerial++; // la pose se RECALCULA -> las mallas skinneadas re-deforman/re-suben el VBO aunque el frame no cambie
     // por defecto: rest (poseHead/poseTail = head/tail bind)
-    for (size_t i = 0; i < a->bones.size(); i++){ a->bones[i].poseHead = a->bones[i].head; a->bones[i].poseTail = a->bones[i].tail; }
+    for (size_t i = 0; i < a->bones.size(); i++){ a->bones[i].poseHead = a->bones[i].head; a->bones[i].poseTail = a->bones[i].tail;
+                                                  a->bones[i].poseWorld = a->bones[i].bind; } // Child Of: el bind (rest global)
     // FK solo para rigs FBX (con transforms de rest). Los armatures MANUALES (hasRest=false) se muestran en bind.
     bool fbxRig = !a->bones.empty() && a->bones[0].hasRest;
     if (!g_skelAnimPreview || !fbxRig) return;
@@ -334,7 +510,8 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
     local.resize(N); world.resize(N);
     // Al CAMBIAR de frame se refresca la POSE (poseT/R/S) de cada hueso desde la curva (o rest). Posando NO se
     // refresca (poseDirty): se respeta lo que el usuario esta editando hasta que cambie el frame o inserte keyframe.
-    if (frameChanged) for (size_t i = 0; i < N; i++){
+    if (frameChanged && mix) MezclarCapas(a, frameMix);
+    else if (frameChanged) for (size_t i = 0; i < N; i++){
         W3dBone& b = a->bones[i];
         Vector3 T = b.restT, R = b.restR, S = b.restS;
         if (clip) for (size_t t = 0; t < clip->tracks.size(); t++) if (clip->tracks[t].bone == (int)i){
@@ -388,6 +565,8 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
     for (size_t i = 0; i < N; i++){
         world[i] = WorldMat(a->bones, local, (int)i); // FK NORMAL: el MOVIMIENTO correcto del hueso
         headNode[i] = world[i] * Vector3(0,0,0);      // display = FK normal (el hueso rota/se mueve bien)
+        // Child Of: el mundo del hueso en el MISMO espacio que el display (glTF ya es Y-up; FBX es nodo Z-up)
+        a->bones[i].poseWorld = a->skinGltf ? world[i] : (MatrizNodeToYup() * world[i]);
         // SKINNING: skinMatrix = world_FK * inv(bind). El bind es el TransformLink REAL del FBX (skinInvBind ya
         // apunta a inv(tlNode) cuando skinUsaBind; ver PrepararSkin) -> la malla, authored a ese bind, queda PEGADA
         // al hueso a la vez que este se mueve con el FK correcto. LISA (sin TransformLink) usa el FK-rest/segmentado.

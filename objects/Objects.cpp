@@ -5,6 +5,9 @@
 #include "W3dNombres.h"  // LA regla de nombres unicos (una sola, compartida por todo el editor)
 #include "CameraBase.h"  // la vista BINDEADA (g_renderCam*): es lo que leen los constraints
 #include "w3dlog.h"      // avisos (ciclo, vista sin bindear, base espejada): el Core no notifica
+#include "objects/Armature.h"            // Child Of: el hueso de la fuente (W3dBone::poseWorld)
+#include "animation/SkeletalAnimation.h" // Child Of: EvaluarPoseEsqueleto (pose al frame actual)
+#include "animation/Animation.h"         // CurrentFrame
 
 // RAIZ de la escena. La DEFINE el Core (antes solo la declaraba y la definia el editor, asi que
 // nadie podia enlazar contra el motor sin traerse el editor entero). El editor la llena con su
@@ -214,6 +217,7 @@ const char* W3dNombreTipoConstraint(int tipo){
         case W3dConstraintTipo::CopyLocation: return "Copy Location";
         case W3dConstraintTipo::CopyRotation: return "Copy Rotation";
         case W3dConstraintTipo::Billboard:    return "Billboard";
+        case W3dConstraintTipo::ChildOf:      return "Child Of";
     }
     return "Constraint";
 }
@@ -675,6 +679,9 @@ static bool W3dConEfectivo(const W3dConstraint* c, const Object* dueno){
     if (!c->activo) return false;
     if (c->Peso() <= 0.0f) return false;
     if (c->tipo == W3dConstraintTipo::Billboard) return (c->bbYaw || c->bbPitch);
+    // Child Of: sin fuente (objeto) o sin ningun componente heredado no hace nada
+    if (c->tipo == W3dConstraintTipo::ChildOf)
+        return c->fuenteTipo == W3dConstraintFuente::Objeto && c->fuenteObj != NULL && (c->coLoc || c->coRot || c->coEsc);
     // Copy Location / Copy Rotation: sin ejes no copia nada, y sin fuente tampoco
     if (!c->ejeX && !c->ejeY && !c->ejeZ) return false;
     return (c->fuenteTipo == W3dConstraintFuente::Vista || c->fuenteObj != NULL);
@@ -687,6 +694,51 @@ bool W3dObjTieneConstraintEfectivo(const Object* o){
     for (size_t i = 0; i < o->constraints.size(); i++)
         if (o->constraints[i] && W3dConEfectivo(o->constraints[i], o)) return true;
     return false;
+}
+
+// ============================================================================
+//  CHILD OF: la matriz de la FUENTE (objeto, o hueso de un armature) en MUNDO
+// ============================================================================
+static float W3dLargoCol(const Matrix4& m, int c){
+    return sqrtf(m.m[c*4]*m.m[c*4] + m.m[c*4+1]*m.m[c*4+1] + m.m[c*4+2]*m.m[c*4+2]);
+}
+// el hueso por NOMBRE, con el indice cacheado (se revalida por nombre: renombrar/borrar huesos no
+// deja un indice colgado). -1 = no esta.
+static int W3dChildOfHueso(W3dConstraint* c, const Armature* a){
+    const int n = (int)a->bones.size();
+    if (c->huesoCache >= 0 && c->huesoCache < n && a->bones[c->huesoCache].name == c->hueso) return c->huesoCache;
+    c->huesoCache = -1;
+    for (int i = 0; i < n; i++) if (a->bones[i].name == c->hueso) { c->huesoCache = i; break; }
+    return c->huesoCache;
+}
+// Mt = mundo de la fuente (con el hueso si hay), con los componentes NO heredados sacados (Loc/Rot/Scale
+// como en Blender). 'Wf' = el mundo de la fuente si el que llama ya lo tiene (la fuente es el padre).
+static void W3dChildOfMatriz(W3dConstraint* c, const Matrix4* Wf, Matrix4& Mt){
+    Object* f = c->fuenteObj;
+    if (Wf) Mt = *Wf; else f->GetWorldMatrix(Mt);
+    if (!c->hueso.empty() && f->getType() == ObjectType::armature) {
+        Armature* a = (Armature*)f;
+        EvaluarPoseEsqueleto(a, CurrentFrame);          // cacheado por frame: gratis si ya se dibujo
+        const int h = W3dChildOfHueso(c, a);
+        if (h >= 0) Mt = Mt * a->bones[h].poseWorld;
+    }
+    if (c->coLoc && c->coRot && c->coEsc) return;       // lo normal: la matriz tal cual, sin cuentas
+    Vector3 t(Mt.m[12], Mt.m[13], Mt.m[14]);
+    Vector3 e(W3dLargoCol(Mt, 0), W3dLargoCol(Mt, 1), W3dLargoCol(Mt, 2));
+    Quaternion q;
+    if (!W3dQuatDeMatriz(Mt, q)) q = Quaternion();
+    Mt = W3dLocalTRS(c->coLoc ? t : Vector3(0, 0, 0), c->coRot ? q : Quaternion(), c->coEsc ? e : Vector3(1, 1, 1));
+}
+
+bool W3dChildOfSetInverse(Object* o, W3dConstraint* c){
+    if (!o || !c || c->tipo != W3dConstraintTipo::ChildOf || !c->fuenteObj) return false;
+    // que el objeto quede donde esta: fuente * inversa * local = padre * local -> inversa = fuente^-1 * padre
+    Matrix4 Mt, Wp, iMt;
+    W3dChildOfMatriz(c, NULL, Mt);
+    if (o->Parent) o->Parent->GetWorldMatrix(Wp); else Wp.Identity();
+    if (!Matrix4::InvertirAfin(Mt, iMt)) return false;
+    c->inversa = iMt * Wp;
+    return true;
 }
 
 // contador de DIAGNOSTICO: cuantas veces corrio el CUERPO del evaluador (o sea, las que pasaron
@@ -706,7 +758,7 @@ unsigned long g_consEvalCorridas = 0;
 //  Es lo unico que separa esta evaluacion de una EXPONENCIAL: ver el comentario grande de
 //  Object::GetWorldMatrix.
 // ============================================================================
-static bool W3dEvalCons(const Object* o, const Matrix4* WpIn, Vector3& posOut, Quaternion& rotOut){
+static bool W3dEvalCons(const Object* o, const Matrix4* WpIn, Vector3& posOut, Quaternion& rotOut, Vector3* escOut = NULL){
     if (!o) return false;
 
     // ---- 1. GUARDIA DE CICLOS ----
@@ -751,6 +803,10 @@ static bool W3dEvalCons(const Object* o, const Matrix4* WpIn, Vector3& posOut, Q
     // ---- 5. la transform del objeto, llevada a MUNDO ----
     Vector3    pw = tienePadre ? (Wp * o->pos)      : o->pos;
     Quaternion qw = tienePadre ? (qWp * o->Rot())   : o->Rot();
+    // ESCALA en mundo: solo la toca el Child Of. Mientras no la toque se devuelve o->scale BIT A BIT.
+    const Vector3 ep = tienePadre ? Vector3(W3dLargoCol(Wp, 0), W3dLargoCol(Wp, 1), W3dLargoCol(Wp, 2)) : Vector3(1, 1, 1);
+    Vector3    sw(o->scale.x * ep.x, o->scale.y * ep.y, o->scale.z * ep.z);
+    bool       tocoEscala = false;
 
     // ---- 6. EL STACK, en orden (como los modificadores de la malla) ----
     for (size_t i = 0; i < o->constraints.size(); i++) {
@@ -812,6 +868,26 @@ static bool W3dEvalCons(const Object* o, const Matrix4* WpIn, Vector3& posOut, Q
             // no 175, porque un quaternion codifica una ORIENTACION, no vueltas.
             qw = Quaternion::Slerp(qw, qObj, t);
         }
+        else if (c->tipo == W3dConstraintTipo::ChildOf) {
+            // ---- CHILD OF: mundo = fuente * inversa * LOCAL (la fuente REEMPLAZA al padre) ----
+            // el local es el del objeto con lo que los constraints de arriba ya le hicieron
+            Matrix4 Mt;
+            W3dChildOfMatriz(c, (tienePadre && c->fuenteObj == o->Parent) ? &Wp : NULL, Mt);
+            Matrix4 L = W3dLocalTRS(pw, qw, sw);                 // en MUNDO...
+            if (tienePadre) { Matrix4 iWp; Matrix4::InvertirAfin(Wp, iWp); L = iWp * L; } // ...al espacio del padre
+            const Matrix4 W = Mt * c->inversa * L;
+            Quaternion qn;
+            if (!W3dQuatDeMatriz(W, qn)) continue;               // fuente espejada / escala cero
+            const Vector3 pn(W.m[12], W.m[13], W.m[14]);
+            const Vector3 sn(W3dLargoCol(W, 0), W3dLargoCol(W, 1), W3dLargoCol(W, 2));
+            if (t >= 1.0f) { pw = pn; qw = qn; sw = sn; }        // con t=1 ASIGNA, no interpola
+            else {
+                pw = pw + (pn - pw) * t;
+                qw = Quaternion::Slerp(qw, qn, t);
+                sw = sw + (sn - sw) * t;
+            }
+            tocoEscala = true;
+        }
         else if (c->tipo == W3dConstraintTipo::Billboard) {
             if (!baseOk) continue;                      // padre espejado: ya se aviso arriba
             // el billboard se alinea con el PLANO de la camara (NO apunta a su posicion): es
@@ -870,6 +946,8 @@ static bool W3dEvalCons(const Object* o, const Matrix4* WpIn, Vector3& posOut, Q
         posOut = pw;
         rotOut = qw;
     }
+    if (escOut) *escOut = !tocoEscala ? o->scale
+        : Vector3(ep.x > 1e-8f ? sw.x / ep.x : sw.x, ep.y > 1e-8f ? sw.y / ep.y : sw.y, ep.z > 1e-8f ? sw.z / ep.z : sw.z);
 
     o->consEval = false;
     return true;
@@ -886,10 +964,10 @@ bool W3dEvaluarConstraints(const Object* o, Vector3& posOut, Quaternion& rotOut)
 // entre por donde se entre.
 static void W3dLocalEfectiva(const Object* o, const Matrix4* Wp, Matrix4& out){
     if (o->constraints.empty()) { o->GetMatrixBase(out); return; }
-    Vector3 p;
+    Vector3 p, e;
     Quaternion q;
-    if (!W3dEvalCons(o, Wp, p, q)) { o->GetMatrixBase(out); return; }
-    out = W3dLocalTRS(p, q, o->scale);   // la ESCALA nunca la toca un constraint
+    if (!W3dEvalCons(o, Wp, p, q, &e)) { o->GetMatrixBase(out); return; }
+    out = W3dLocalTRS(p, q, e);          // la ESCALA solo la toca el Child Of (sino es o->scale tal cual)
 }
 
 // ============================================================================
