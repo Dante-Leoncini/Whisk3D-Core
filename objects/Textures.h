@@ -86,13 +86,41 @@ void     TexturaRenombrar(Texture* t, const std::string& nuevo);
 void     TexturaRetener(Texture* t);
 // -1 ref. Al llegar a 0 la libera de verdad (GL + objeto + vector global).
 void     TexturaSoltar(Texture* t);
+// EL MATERIAL RETIENE SUS TEXTURAS (refcount real): cada RANURA de un material (la textura base, el normal map, la
+// textura de cada capa) es duena de UNA referencia a lo que apunta. Poner otra textura en la ranura retiene la nueva
+// y suelta la anterior (que se libera de verdad si nadie mas la tenia). Asi, cuando el streaming descarga lo ultimo
+// que dibujaba un material y el material DUERME sus texturas (importers/import_obj.h: TexturasAdormecer), la textura
+// sale de la GPU si ningun otro material la retiene. Todo lo que cambia la textura de un material pasa por aca (o
+// por TexturaTomar + soltar la anterior, que es lo mismo).
+void     TexturaPonerEn(Texture*& ranura, Texture* t);
+// PEDIR una textura al almacen por su ruta (+1 ref, la clave normalizada como TexturaTomar) sin asignarla a nadie:
+// 'modo' W3DREC_ASYNC la deja EN_VUELO para la bomba (el streaming la trae antes de despertar el material que la usa).
+// Devuelve el descriptor con la referencia sumada (el que llama la suelta con W3dRecursoSoltar), o NULL si la ruta
+// esta vacia o la carga ya fallo (sin referencia).
+struct W3dRecurso;
+W3dRecurso* TexturaPedir(const std::string& path, int modo);
+
+// ---- PURGAR EN CALIENTE (el outliner por recursos: borrar una textura HUERFANA que esta cargada) ----
+// La textura sale de la GPU, del vector global y del almacen (deja de ocupar memoria y de aparecer
+// en los selectores), pero el OBJETO no se libera: queda en un CEMENTERIO hasta el cierre del
+// proyecto (TexturasLiberarEscena). El editor no lleva la cuenta de quien guarda un Texture* (un
+// material del cementerio de materiales, un paso de undo que lo vuelve a poner, la pintura), y asi
+// NINGUNO queda colgado: a lo sumo ve una textura vacia (iID 0). Si algo la vuelve a usar,
+// TexturaRevivir la recarga de su ruta en el MISMO objeto.
+// false = es de la UI (fijada) o no esta en el vector global.
+bool TexturaPurgar(Texture* t);
+// vuelve del cementerio: la recarga de t->path (mismo objeto: los punteros siguen valiendo). false =
+// no estaba purgada, la ruta ya tiene OTRA textura viva (el que llama repunta a esa) o la imagen ya
+// no se puede leer (queda en el cementerio, vacia).
+bool TexturaRevivir(Texture* t);
+const std::vector<Texture*>& TexturasPurgadas();
 
 // congela las texturas YA cargadas como "de la UI": no se liberan ni se reordenan
 void TexturasFijarBase();
 int  TexturasBase();               // cuantas quedaron fijadas
-// cierre de proyecto: libera todo lo NO fijado y limpia los Texture* de los
-// materiales (texture / normalTexture / capas / frames animados). Devuelve
-// cuantas libero.
+// cierre de proyecto: libera todo lo NO fijado (y el cementerio de las purgadas) y
+// limpia los Texture* de los materiales (texture / normalTexture / capas / frames
+// animados). Devuelve cuantas libero.
 int  TexturasLiberarEscena();
 
 // ---- A/B DEL CACHE (comando 'texcache off|on' del harness) ----

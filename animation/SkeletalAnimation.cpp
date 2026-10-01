@@ -2,6 +2,7 @@
 #include "W3dNombres.h"   // LA regla de nombres unicos (compartida)
 #include <algorithm>   // sort (frames del motion trail)
 #include "objects/Armature.h"
+#include "animation/W3dAnimSet.h"   // clips COMPARTIDOS: copy-on-write antes de editar (W3dArmatureAnimsPropias)
 #include "objects/Mesh.h"
 #include "math/Matrix4.h"
 #include <cstdio>
@@ -61,6 +62,114 @@ static Matrix4 WorldMat(const std::vector<W3dBone>& bones, const std::vector<Mat
 }
 static Matrix4 LocalDe(const W3dBone& b){
     return b.hasRest ? LocalMat(b.restT, b.restR, b.restS, b.preRot, b.rotOrder) : MatTrans(b.head);
+}
+
+// ============================================================================
+//  RETARGET POR TAMANO (ver SkeletalAnimation.h). El TAMANO de un esqueleto es la diagonal de
+//  la caja de las cabezas de sus huesos (FK): no depende de que eje es "arriba" (los rigs FBX
+//  trabajan en espacio nodo Z-up, los glTF en Y-up) ni de la orientacion del personaje.
+// ============================================================================
+static float TamDeLocales(const std::vector<W3dBone>& bones, const std::vector<Matrix4>& local){
+    const size_t N = bones.size();
+    if (!N || local.size() != N) return 0.0f;
+    Vector3 mn(0, 0, 0), mx(0, 0, 0);
+    for (size_t i = 0; i < N; i++){
+        const Vector3 h = WorldMat(bones, local, (int)i) * Vector3(0, 0, 0);
+        if (i == 0) { mn = h; mx = h; continue; }
+        if (h.x < mn.x) mn.x = h.x;
+        if (h.y < mn.y) mn.y = h.y;
+        if (h.z < mn.z) mn.z = h.z;
+        if (h.x > mx.x) mx.x = h.x;
+        if (h.y > mx.y) mx.y = h.y;
+        if (h.z > mx.z) mx.z = h.z;
+    }
+    const Vector3 d = mx - mn;
+    return sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
+}
+float W3dArmatureTamReposo(const Armature* a){
+    if (!a || a->bones.empty() || !a->bones[0].hasRest) return 0.0f;
+    // FK RECONSTRUIDO (biped): las traslaciones de rest del Lcl vienen DEGENERADAS (el FK de rest colapsa); el
+    // esqueleto real es el de los TransformLink (tlNode, ya a la escala del FK reconstruido, ver PrepararSkin).
+    // Es la misma escala en la que viaja su root motion (poseT - restT de la raiz), asi que se mide ahi.
+    if (a->skinReconstruirFK){
+        Vector3 mn(0, 0, 0), mx(0, 0, 0);
+        for (size_t i = 0; i < a->bones.size(); i++){
+            const Matrix4& t = a->bones[i].tlNode;
+            const Vector3 h(t.m[12], t.m[13], t.m[14]);
+            if (i == 0) { mn = h; mx = h; continue; }
+            if (h.x < mn.x) mn.x = h.x;
+            if (h.y < mn.y) mn.y = h.y;
+            if (h.z < mn.z) mn.z = h.z;
+            if (h.x > mx.x) mx.x = h.x;
+            if (h.y > mx.y) mx.y = h.y;
+            if (h.z > mx.z) mx.z = h.z;
+        }
+        const Vector3 d = mx - mn;
+        return sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
+    }
+    std::vector<Matrix4> local(a->bones.size());
+    for (size_t i = 0; i < a->bones.size(); i++) local[i] = LocalDe(a->bones[i]);
+    return TamDeLocales(a->bones, local);
+}
+// el tamano del esqueleto que GRABO el clip: el que trae (alturaReposo) o, si no se sabe, el de sus
+// propias traslaciones en su primer frame sobre la jerarquia del destino (una pista sin traslacion
+// usa la de reposo del destino: en un clip horneado, que tiene todas, es el esqueleto de origen).
+// Un biped no se puede deducir asi (sus traslaciones del Lcl son degeneradas): sin alturaReposo, 0.
+static float TamOrigenClip(const Armature* a, const SkeletalAnimation* c){
+    if (c->alturaReposo > 0.0f) return c->alturaReposo;
+    if (!a->bones[0].hasRest || a->skinReconstruirFK) return 0.0f;
+    const size_t N = a->bones.size();
+    std::vector<Matrix4> local(N);
+    for (size_t i = 0; i < N; i++){
+        const W3dBone& b = a->bones[i];
+        Vector3 T = b.restT, R = b.restR, S = b.restS;
+        for (size_t t = 0; t < c->tracks.size(); t++) if (c->tracks[t].bone == (int)i){
+            const BoneTrack& tr = c->tracks[t];
+            T = EvalPropVec(tr.Propertys, AnimPosition, c->startFrame, b.restT);
+            R = EvalPropVec(tr.Propertys, AnimRotation, c->startFrame, b.restR);
+            S = EvalPropVec(tr.Propertys, AnimScale,    c->startFrame, b.restS);
+            break;
+        }
+        local[i] = LocalMat(T, R, S, b.preRot, b.rotOrder);
+    }
+    return TamDeLocales(a->bones, local);
+}
+// la escala del movimiento de las raices para 'c' en 'a'
+static float EscalaDe(const Armature* a, const SkeletalAnimation* c){
+    const float o = TamOrigenClip(a, c), d = W3dArmatureTamReposo(a);
+    return (o > 1e-6f && d > 1e-6f) ? d / o : 1.0f;
+}
+// idem cacheada por clip (se recalcula al cambiarlo): la del clip activo en el armature, la de cada capa en la capa
+static float EscalaRetarget(Armature* a, const SkeletalAnimation* c){
+    if (a->retargetClip == (const void*)c) return a->retargetEscala;
+    a->retargetEscala = EscalaDe(a, c);
+    a->retargetClip = (const void*)c;
+    return a->retargetEscala;
+}
+static float EscalaRetargetCapa(const Armature* a, W3dCapaAnim& cp, const SkeletalAnimation* c){
+    if (cp.retClip == (const void*)c) return cp.retEscala;
+    cp.retEscala = EscalaDe(a, c);
+    cp.retClip = (const void*)c;
+    return cp.retEscala;
+}
+void W3dArmatureRetarget(Armature* a, int modo){
+    if (!a) return;
+    a->retarget = (modo == W3D_RETARGET_ROTACIONES) ? W3D_RETARGET_ROTACIONES : W3D_RETARGET_COMPLETO;
+    a->retargetClip = NULL;                          // (la escala se recalcula con el proximo clip)
+    for (size_t k = 0; k < a->capas.size(); k++) a->capas[k].retClip = NULL;   // (idem la de cada capa)
+    a->lastPoseFrame = -999999; a->lastPoseAnim = -999;   // re-evaluar la pose desde las curvas
+    a->mixFirma = 0;                                 // (con capas, la firma del Mix no ve el cambio de modo)
+}
+// el componente 'comp' de la traslacion de una pista, SI tiene keyframes (una raiz sin curva en ese eje no
+// se mueve: su reposo no se escala)
+static bool TraslacionCanal(const BoneTrack& tr, int comp, float fr, bool continuo, int frame, float& out){
+    for (size_t p = 0; p < tr.Propertys.size(); p++){
+        const AnimProperty& ap = tr.Propertys[p];
+        if (ap.Property != AnimPosition || ap.component != comp || ap.keyframes.empty()) continue;
+        out = continuo ? ap.EvalF(fr, 0.0f) : ap.Eval(frame, 0.0f);
+        return true;
+    }
+    return false;
 }
 
 // precomputa lo del skinning. Verificado con metricas headless (skincheck) sobre 2 rigs reales:
@@ -355,6 +464,10 @@ static void MezclarCapas(Armature* a, int frameMix){
         }
         for (size_t i = 0; i < N; i++) trk[i] = -1;
         for (size_t t = 0; t < clip->tracks.size(); t++){ int bo = clip->tracks[t].bone; if (bo >= 0 && bo < (int)N) trk[bo] = (int)t; }
+        // RETARGET "rotaciones" (el del armature, W3dArmatureRetarget): la capa aporta solo las rotaciones de su
+        // clip; cada hueso con la traslacion y la escala de su reposo, salvo las raices (su movimiento escalado)
+        const bool soloRot = (a->retarget == W3D_RETARGET_ROTACIONES);
+        const float escalaRaiz = soloRot ? EscalaRetargetCapa(a, c, clip) : 1.0f;
         for (size_t i = 0; i < N; i++){
             if (!mask[i]) continue;
             const W3dBone& b = a->bones[i];
@@ -362,7 +475,16 @@ static void MezclarCapas(Armature* a, int frameMix){
             if (trk[i] >= 0){ BoneTrack& tr = clip->tracks[trk[i]];
                 Tl = EvalPropVec(tr.Propertys, AnimPosition, f, b.restT);
                 Rl = EvalPropVec(tr.Propertys, AnimRotation, f, b.restR);
-                Sl = EvalPropVec(tr.Propertys, AnimScale,    f, b.restS); }
+                Sl = EvalPropVec(tr.Propertys, AnimScale,    f, b.restS);
+                if (soloRot){
+                    Tl = b.restT; Sl = b.restS;
+                    float v = 0.0f;
+                    if (b.parent < 0 || b.parent >= (int)N){
+                        if (TraslacionCanal(tr, AnimX, (float)f, false, f, v)) Tl.x = v * escalaRaiz;
+                        if (TraslacionCanal(tr, AnimY, (float)f, false, f, v)) Tl.y = v * escalaRaiz;
+                        if (TraslacionCanal(tr, AnimZ, (float)f, false, f, v)) Tl.z = v * escalaRaiz;
+                    }
+                } }
             Quaternion Ql = (trk[i] >= 0) ? QuatDeEuler(Rl, b.rotOrder) : Qrest[i];
             if (c.modo == 0){
                 T[i] = T[i] + (Tl - T[i]) * w;
@@ -434,16 +556,16 @@ static void W3dArmJuegoTickRec(Object* o, float dt){
             SkeletalAnimation* c = a->animations[ci];
             const float largo = (float)(c->endFrame - c->startFrame);
             if (!cp.juegoTermino) cp.juegoFrame += dt * (float)c->FrameRate * cp.vel;
-            if (largo <= 0.0f) cp.juegoFrame = 0.0f;
-            else if (cp.loop) { while (cp.juegoFrame >= largo + 1.0f) cp.juegoFrame -= largo + 1.0f; }
+            if (largo <= 0.0f || cp.juegoFrame != cp.juegoFrame) cp.juegoFrame = 0.0f;
+            else if (cp.loop) cp.juegoFrame = W3dCicloEnvolver(cp.juegoFrame, largo + 1.0f);   // (sin colgarse: ver Animation.h)
             else if (cp.juegoFrame >= largo) { cp.juegoFrame = largo; cp.juegoTermino = true; }
         }
         if (a->animActiva >= 0 && a->animActiva < (int)a->animations.size()) {
             SkeletalAnimation* c = a->animations[a->animActiva];
             const float largo = (float)(c->endFrame - c->startFrame);   // el ultimo frame es startFrame + largo
             if (!a->juegoTermino) a->juegoFrame += dt * (float)c->FrameRate * a->juegoVel;
-            if (largo <= 0.0f) a->juegoFrame = 0.0f;
-            else if (a->juegoLoop) { while (a->juegoFrame >= largo + 1.0f) a->juegoFrame -= largo + 1.0f; }
+            if (largo <= 0.0f || a->juegoFrame != a->juegoFrame) a->juegoFrame = 0.0f;
+            else if (a->juegoLoop) a->juegoFrame = W3dCicloEnvolver(a->juegoFrame, largo + 1.0f);
             else if (a->juegoFrame >= largo) { a->juegoFrame = largo; a->juegoTermino = true; }
         }
     }
@@ -475,13 +597,20 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
                     a->animActiva >= 0 && a->animActiva < (int)a->animations.size()) ? a->animActiva : -1;
     // JUGANDO (kind 2): TODOS los esqueletos reproducen su clip activo, cada uno con SU cabezal (juegoFrame, lo
     // avanza W3dArmaturesJuegoTick) -- no el frame global, que no sabe de clips ni de loops.
+    // frameF: jugando, el frame CONTINUO del cabezal. La pose se INTERPOLA entre dos frames del clip: con el frame
+    // truncado un clip de 30 fps dibujado a 45-55 fps avanzaba 1,1,0,1,0... (micro saltos en las cinematicas).
+    float frameF = (float)frame;
+    bool continuo = false;
     if (ActiveAnimKind == 2 && a->animActiva >= 0 && a->animActiva < (int)a->animations.size()) {
         animPlay = a->animActiva;
         frame = a->animations[animPlay]->startFrame + (int)a->juegoFrame;
+        frameF = (float)a->animations[animPlay]->startFrame + a->juegoFrame;
+        continuo = true;
     }
     // CACHE: si el frame y el clip efectivo no cambiaron Y la pose no fue editada a mano, ya esta calculada (no
     // recalcular a 60fps). poseDirty (posando) fuerza re-FK sin refrescar poseT/R/S desde la curva.
-    bool frameChanged = (a->lastPoseFrame != frame || a->lastPoseAnim != animPlay);
+    bool frameChanged = (a->lastPoseFrame != frame || a->lastPoseAnim != animPlay ||
+                         (continuo && a->lastPoseFrameF != frameF));
     // MIX: la pose sale de las capas; el cache es la FIRMA del estado de todas (frames, influencias, ojos...)
     const bool mix = UsaCapas(a);
     const int frameMix = frame;
@@ -492,7 +621,7 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
         animPlay = -777;
     }
     if (!frameChanged && !a->poseDirty) return;
-    a->lastPoseFrame = frame; a->lastPoseAnim = animPlay;
+    a->lastPoseFrame = frame; a->lastPoseAnim = animPlay; a->lastPoseFrameF = frameF;
     a->poseDirty = false;
     a->poseSerial++; // la pose se RECALCULA -> las mallas skinneadas re-deforman/re-suben el VBO aunque el frame no cambie
     // por defecto: rest (poseHead/poseTail = head/tail bind)
@@ -510,6 +639,13 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
     local.resize(N); world.resize(N);
     // Al CAMBIAR de frame se refresca la POSE (poseT/R/S) de cada hueso desde la curva (o rest). Posando NO se
     // refresca (poseDirty): se respeta lo que el usuario esta editando hasta que cambie el frame o inserte keyframe.
+    // RETARGET "rotaciones" (W3dArmatureRetarget): solo las rotaciones del clip; cada hueso con su traslacion
+    // y su escala de REPOSO (las proporciones del destino) salvo las raices, cuyo movimiento se escala por
+    // tamano. Las capas del Mix lo aplican capa por capa (MezclarCapas). En el FK RECONSTRUIDO (biped) la
+    // traslacion de un hueso entra como DELTA contra su rest (el root motion): con T = restT los hijos no se
+    // corren y la raiz avanza su delta escalado; la escala del biped ya no se usaba (solo rotacion + delta).
+    const bool soloRot = clip && a->retarget == W3D_RETARGET_ROTACIONES;
+    const float escalaRaiz = soloRot ? EscalaRetarget(a, clip) : 1.0f;
     if (frameChanged && mix) MezclarCapas(a, frameMix);
     else if (frameChanged) for (size_t i = 0; i < N; i++){
         W3dBone& b = a->bones[i];
@@ -518,9 +654,25 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
             BoneTrack& tr = clip->tracks[t];
             // cada componente (X/Y/Z) tiene SU curva -> se evaluan por separado; el que no tenga keyframes
             // propios queda en su valor de rest.
-            T = EvalPropVec(tr.Propertys, AnimPosition, frame, b.restT);
-            R = EvalPropVec(tr.Propertys, AnimRotation, frame, b.restR);
-            S = EvalPropVec(tr.Propertys, AnimScale,    frame, b.restS);
+            if (continuo) {
+                T = EvalPropVecF(tr.Propertys, AnimPosition, frameF, b.restT);
+                R = EvalPropVecF(tr.Propertys, AnimRotation, frameF, b.restR);
+                S = EvalPropVecF(tr.Propertys, AnimScale,    frameF, b.restS);
+            } else {
+                T = EvalPropVec(tr.Propertys, AnimPosition, frame, b.restT);
+                R = EvalPropVec(tr.Propertys, AnimRotation, frame, b.restR);
+                S = EvalPropVec(tr.Propertys, AnimScale,    frame, b.restS);
+            }
+            if (soloRot) {
+                const bool raiz = (b.parent < 0 || b.parent >= (int)N);
+                S = b.restS;
+                T = b.restT;
+                // la RAIZ: su movimiento (los ejes que el clip anima) escalado por tamano
+                float v = 0.0f;
+                if (raiz && TraslacionCanal(tr, AnimX, frameF, continuo, frame, v)) T.x = v * escalaRaiz;
+                if (raiz && TraslacionCanal(tr, AnimY, frameF, continuo, frame, v)) T.y = v * escalaRaiz;
+                if (raiz && TraslacionCanal(tr, AnimZ, frameF, continuo, frame, v)) T.z = v * escalaRaiz;
+            }
             break;
         }
         b.poseT = T; b.poseR = R; b.poseS = S;
@@ -692,18 +844,27 @@ void SkinearMesh(Mesh* m){
     EvaluarPoseEsqueleto(a, CurrentFrame); // asegura skinMatrix de cada hueso al frame actual (cacheado)
     // ya skinneado para ESTA pose? cache por (frame, poseSerial): si la pose se recalculo (posar/elegir clip en el mismo
     // frame) el serial cambio -> re-skinnea aunque el frame sea el mismo (antes solo miraba el frame -> quedaba stale).
-    if (m->lastSkinFrame == CurrentFrame && m->skinPoseSerial == a->poseSerial && m->skinVertex) return;
+    if (m->lastSkinFrame == CurrentFrame && m->skinPoseSerial == a->poseSerial && m->skinVertex &&
+        m->skinShapeSerial == m->shapeSerial) return;
     m->skinPoseSerial = a->poseSerial;
+    m->skinShapeSerial = m->shapeSerial;
+    // SHAPE KEYS: con alguna forma prendida la base del skinning es vertex + suma(peso * forma), por punto de control.
+    // El cache de snapshots por frame no sabe de pesos: con formas activas se saltea (se skinnea cada frame).
+    const bool formas = m->HayFormasActivas() && !m->vertCtrlPoint.empty();
     // ---- CACHE de vertex-animation: reproducir el snapshot si esta bakeado; si no, skinnear y guardarlo (lazy) ----
     int slotAGuardar = -1;
-    if (m->skinCacheOn){
+    // JUGANDO (kind 2) el cache NO sirve: sus slots se indexan por CurrentFrame (el frame del TIMELINE) pero la pose
+    // sale del cabezal de cada armature (juegoFrame, continuo) y de sus capas -> reproducia poses de otro frame/clip.
+    extern int ActiveAnimKind;
+    const bool cacheValido = (ActiveAnimKind != 2);
+    if (m->skinCacheOn && !formas && cacheValido){
         if (SkinCacheValidar(m)){
             if (SkinCacheReproducir(m)){ m->lastSkinFrame = CurrentFrame; return; } // HIT -> sin recomputar skinning
             int idx = CurrentFrame - m->skinCacheStart, stride = m->skinCacheSkip + 1; if (stride < 1) stride = 1;
             if (idx >= 0 && CurrentFrame <= m->skinCacheEnd && (idx % stride) == 0) slotAGuardar = idx / stride; // keyframe slot -> guardar tras skinnear
         }
-    } else if (!m->skinCache.empty()) {
-        m->LiberarSkinCache(); // el cache se apago -> liberar la memoria
+    } else if (!m->skinCache.empty() && cacheValido) {
+        m->LiberarSkinCache(); // el cache se apago -> liberar la memoria (jugando se conserva para el editor)
     }
     m->lastSkinFrame = CurrentFrame;
     // OJO: vertexSize = cantidad de VERTICES (no de floats). Los arrays vertex/normals/skin* son vertexSize*3.
@@ -715,7 +876,29 @@ void SkinearMesh(Mesh* m){
     // PADDING: el driver GL (mesa) sube los client arrays con copias vectorizadas (AVX, 32 bytes/vez) y SOBRE-LEE el
     // final del array; +16 floats / +32 bytes de holgura para que el over-read no se salga del heap (cazado con ASan).
     if (!m->skinVertex) { m->skinVertex = new GLfloat[fc + 16]; m->skinVertexCap = fc; }
+    // SHAPE KEYS: suma de las formas por punto de control (esparso -> denso temp) + helper de base por render-vert
+    const float* cpd = NULL;
+    if (formas) {
+        int nCp = 0;
+        for (int ri = 0; ri < nv && ri < (int)m->vertCtrlPoint.size(); ri++) { int c = m->vertCtrlPoint[ri]; if (c + 1 > nCp) nCp = c + 1; }
+        m->shapeCpDelta.assign((size_t)nCp * 3, 0.0f);
+        for (size_t k = 0; k < m->shapeKeys.size() && k < m->shapePesos.size(); k++) {
+            const float w = m->shapePesos[k]; if (w == 0.0f) continue;
+            const W3dShapeKey& sk = m->shapeKeys[k];
+            for (size_t j = 0; j < sk.idx.size() && j * 3 + 2 < sk.d.size(); j++) {
+                const int c = sk.idx[j]; if (c < 0 || c >= nCp) continue;
+                m->shapeCpDelta[(size_t)c*3]   += w * sk.d[j*3];
+                m->shapeCpDelta[(size_t)c*3+1] += w * sk.d[j*3+1];
+                m->shapeCpDelta[(size_t)c*3+2] += w * sk.d[j*3+2];
+            }
+        }
+        cpd = m->shapeCpDelta.empty() ? NULL : &m->shapeCpDelta[0];
+    }
     for (int i = 0; i < fc; i++) m->skinVertex[i] = m->vertex[i]; // default = bind (verts sin peso quedan)
+    if (cpd) for (int ri = 0; ri < nv && ri < (int)m->vertCtrlPoint.size(); ri++) {   // la forma, tambien sin peso
+        const int c = m->vertCtrlPoint[ri]; if (c < 0) continue;
+        m->skinVertex[ri*3] += cpd[c*3]; m->skinVertex[ri*3+1] += cpd[c*3+1]; m->skinVertex[ri*3+2] += cpd[c*3+2];
+    }
     // NORMALES: rotarlas por los huesos (iluminacion correcta al doblar). Solo si hay luz (skinConLuz) y normales de bind.
     bool doN = m->skinConLuz && m->normals != NULL;
     if (doN){ if (!m->skinNormals) m->skinNormals = new GLbyte[fc + 32];
@@ -823,6 +1006,7 @@ void SkinearMesh(Mesh* m){
         if (cpOff[c] == cpOff[c+1]) continue;       // CP sin peso -> queda en bind
         const float* M = &cpMat[c*12];
         float vx=m->vertex[ri*3], vy=m->vertex[ri*3+1], vz=m->vertex[ri*3+2];
+        if (cpd) { vx += cpd[c*3]; vy += cpd[c*3+1]; vz += cpd[c*3+2]; }   // la base con las formas de la cara
         float px = M[0]*vx + M[3]*vy + M[6]*vz + M[9];
         float py = M[1]*vx + M[4]*vy + M[7]*vz + M[10];
         float pz = M[2]*vx + M[5]*vy + M[8]*vz + M[11];
@@ -861,8 +1045,11 @@ std::string AnimNombreLibre(Armature* a, const std::string& base, int excepto){
 
 void CrearAnimacion(Armature* a){
     if (!a) return;
+    W3dArmatureAnimsPropias(a);   // la lista pasa a ser del armature (clips de un animset compartido: se copian)
     a->animations.push_back(new SkeletalAnimation(AnimNombreLibre(a, "Animation", -1)));
     a->animActiva = (int)a->animations.size() - 1;
+    // el TAMANO del esqueleto que lo graba (retarget: otro personaje con la misma jerarquia lo escala)
+    a->animations.back()->alturaReposo = W3dArmatureTamReposo(a);
     // arrancar la animacion NUEVA desde la pose RESET del esqueleto (sin esto quedaba la pose del clip anterior).
     for (size_t i = 0; i < a->bones.size(); i++){ a->bones[i].poseT = a->bones[i].restT; a->bones[i].poseR = a->bones[i].restR; a->bones[i].poseS = a->bones[i].restS; }
     a->poseDirty = false; a->lastPoseFrame = -999999; a->lastPoseAnim = -999; // forzar re-eval -> clip vacio = rest
@@ -875,10 +1062,12 @@ void (*OnSeleccionarAnimClip)(Armature* a, int clipIdx) = NULL;
 
 void DuplicarAnimacionActiva(Armature* a){
     if (!a || a->animActiva < 0 || a->animActiva >= (int)a->animations.size()) return;
+    W3dArmatureAnimsPropias(a);   // la copia nueva es PROPIA: la lista entera pasa a ser del armature
     SkeletalAnimation* src = a->animations[a->animActiva]; if (!src) return;
     // el " copy" era OTRA convencion de sufijo: se unifica a la regla .NNN comun
     SkeletalAnimation* dup = new SkeletalAnimation(AnimNombreLibre(a, src->name, -1));
     dup->FrameRate = src->FrameRate; dup->startFrame = src->startFrame; dup->endFrame = src->endFrame;
+    dup->alturaReposo = src->alturaReposo;
     dup->tracks = src->tracks; // copia profunda (BoneTrack/AnimProperty/keyFrame son por valor)
     a->animations.push_back(dup);
     a->animActiva = (int)a->animations.size() - 1;
@@ -967,6 +1156,7 @@ bool MotionTrailHuesoNodo(Armature* a, int bone, std::vector<Vector3>& pts, std:
 // El clip lo asegura el llamador (AutoKeyEsqueletoPrep). Devuelve cuantos canales guardo.
 int AutoKeyHueso(Armature* a, int i, const Vector3& T0, const Vector3& R0, const Vector3& S0){
     if (!a || i < 0 || i >= (int)a->bones.size()) return 0;
+    W3dArmatureAnimsPropias(a);   // escribe en el clip: nunca en uno compartido
     if (a->animActiva < 0 || a->animActiva >= (int)a->animations.size()) return 0;
     SkeletalAnimation* clip = a->animations[a->animActiva];
     W3dBone& b = a->bones[i];
@@ -995,6 +1185,7 @@ int AutoKeyHueso(Armature* a, int i, const Vector3& T0, const Vector3& R0, const
 // Prepara el clip para auto-keyear (lo crea si no hay) y devuelve si se puede. Va antes de AutoKeyHueso.
 bool AutoKeyEsqueletoPrep(Armature* a){
     if (!a || a->bones.empty()) return false;
+    W3dArmatureAnimsPropias(a);   // el auto key va a escribir en el clip activo
     if (a->animActiva < 0 || a->animActiva >= (int)a->animations.size()) CrearAnimacion(a);
     return (a->animActiva >= 0 && a->animActiva < (int)a->animations.size());
 }
@@ -1002,6 +1193,7 @@ bool AutoKeyEsqueletoPrep(Armature* a){
 // criterio que InsertarKeyframeEsqueleto: refrescar reseteaba a rest los huesos sin keyframe).
 void AutoKeyEsqueletoFin(Armature* a){
     if (!a || a->animActiva < 0 || a->animActiva >= (int)a->animations.size()) return;
+    W3dArmatureAnimsPropias(a);   // extiende el rango del clip
     SkeletalAnimation* clip = a->animations[a->animActiva];
     if (CurrentFrame > clip->endFrame) clip->endFrame = CurrentFrame;
     if (CurrentFrame < clip->startFrame || clip->startFrame < 1) clip->startFrame = CurrentFrame < 1 ? 1 : CurrentFrame;
@@ -1014,6 +1206,7 @@ void AutoKeyEsqueletoFin(Armature* a){
 void InsertarKeyframeEsqueleto(Armature* a, int canales){
     if (!a || a->bones.empty()) return;
     if (canales == 0) canales = KfCanalTodos;   // menu desplegable: Todos / Loc / Rot / Escala
+    W3dArmatureAnimsPropias(a);   // keyear escribe en el clip: nunca en uno compartido
     if (a->animActiva < 0 || a->animActiva >= (int)a->animations.size()) CrearAnimacion(a); // asegurar clip activo
     if (a->animActiva < 0 || a->animActiva >= (int)a->animations.size()) return;
     SkeletalAnimation* clip = a->animations[a->animActiva];
@@ -1050,8 +1243,9 @@ void BorrarAnimacionActiva(Armature* a){
     if (!a) return;
     int i = a->animActiva;
     if (i < 0 || i >= (int)a->animations.size()) return;
-    delete a->animations[i];
-    a->animations.erase(a->animations.begin() + i);
+    // borrar no escribe en ningun clip: con clips de un animset compartido solo se suelta el
+    // puntero (el clip sigue siendo del animset) y NO se copian los demas (W3dAnimSet.h)
+    W3dArmatureAnimsQuitar(a, i);
     if (a->animActiva >= (int)a->animations.size()) a->animActiva = (int)a->animations.size() - 1;
     // el cache de pose se saltea el trabajo comparando (frame, INDICE de clip) -lastPoseFrame /
     // lastPoseAnim, ver EvaluarPoseEsqueleto-. Borrar CORRE los indices: el mismo numero de

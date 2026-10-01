@@ -191,11 +191,26 @@ namespace {
         }
     };
 }
+// Se puede llamar muchas veces (AbrirW3D la llama en CADA apertura, por el caso Symbian de un arranque
+// que no la instalo), pero solo toma el stream si sigue en su buffer ORIGINAL (la consola). Si
+// alguien le puso OTRO a proposito (el harness que captura lo que se loguea durante una apertura, una app
+// que embebe el motor) se respeta: antes cada apertura se lo robaba y esa captura quedaba siempre vacia.
 void w3dRedirigirCoutAlLog() {
     static LogCoutBuf sOut(false);
     static LogCoutBuf sErr(true);
-    std::cout.rdbuf(&sOut);
-    std::cerr.rdbuf(&sErr);
+    static std::streambuf* sOrigOut = 0;   // los buffers de la consola, vistos en la PRIMERA llamada
+    static std::streambuf* sOrigErr = 0;
+    static bool primera = true;
+    if (primera) {
+        primera = false;
+        sOrigOut = std::cout.rdbuf();
+        sOrigErr = std::cerr.rdbuf();
+        std::cout.rdbuf(&sOut);
+        std::cerr.rdbuf(&sErr);
+        return;
+    }
+    if (std::cout.rdbuf() == sOrigOut) std::cout.rdbuf(&sOut);
+    if (std::cerr.rdbuf() == sOrigErr) std::cerr.rdbuf(&sErr);
 }
 
 // ---- reloj de ms para instrumentar (ver w3dlog.h) --------------------------------------------------------

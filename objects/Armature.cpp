@@ -1,5 +1,6 @@
 #include "objects/Armature.h"
 #include "animation/SkeletalAnimation.h" // tipo completo para liberar los clips en el destructor
+#include "animation/W3dAnimSet.h"        // clips de un animset COMPARTIDO: se sueltan, no se borran
 
 // El Armature en el CORE es SOLO datos (huesos + jerarquia). El dibujo del esqueleto (lineas azules por encima de
 // todo) es un EXTRA del editor: se hace en una pasada aparte DESPUES de renderizar la escena, para que las lineas
@@ -11,6 +12,8 @@ Armature::~Armature() {
     // si este armature era la animacion activa a nivel app, volver a "Scene" (evita puntero colgante)
     extern int ActiveAnimKind; extern Armature* ActiveAnimArm;
     if (ActiveAnimArm == this) { ActiveAnimArm = NULL; ActiveAnimKind = 0; }
+    // clips de un ANIMSET compartido: son del recurso (los usan otros armatures) -> solo se suelta la referencia
+    if (animsRec) { W3dArmatureAnimsSoltar(this); return; }
     for (size_t i = 0; i < animations.size(); i++) delete animations[i];
 }
 

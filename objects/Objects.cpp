@@ -1,6 +1,9 @@
 #include "Objects.h"
+#include "animation/W3dAnimSet.h"   // ~Object suelta la biblioteca de clips de jerarquia
 #include "script/W3dScript.h" // W3dScriptDatos completo (el destructor lo libera)
 #include "physics/W3dRigido.h" // W3dRigidoDef completo (idem) + W3dRigidosOlvidar
+#include "physics/W3dColMalla.h" // W3dColOlvidar: la colision leida de una malla que se va
+#include "physics/W3dHitbox.h"   // W3dHitboxOlvidar: los pares de hitbox que lo nombran
 #include "w3dGraphics.h" // flags de estado de render (w3dRenderLuces) — PC y Symbian
 #include "W3dNombres.h"  // LA regla de nombres unicos (una sola, compartida por todo el editor)
 #include "CameraBase.h"  // la vista BINDEADA (g_renderCam*): es lo que leen los constraints
@@ -35,11 +38,34 @@ const std::set<Object*>* g_localViewVisibles = 0;
 // (static: no lo declara ningun header, o sea que nadie de afuera lo puede leer ni
 //  -peor- escribir; sin esto tenia enlace externo "de casualidad")
 static unsigned int W3dSerialProx = 1;
+unsigned int W3dObjetosNacidos() { return W3dSerialProx; }   // (lectura: ver Objects.h)
+unsigned int W3dSeleccionSerial = 0;                          // (ver Objects.h)
+
+// LOS OBJETOS VIVOS (ver Objects.h). Un static LOCAL con puntero y no un std::set global: la raiz del
+// editor nace en un constructor ESTATICO de otra unidad (Scene.cpp) y un set global podria no estar
+// construido todavia (un vector en cero "anda"; un set en cero no). Nunca se libera (vive todo el proceso).
+static std::set<const Object*>& ObjetosVivos() {
+    static std::set<const Object*>* s = 0;
+    if (!s) s = new std::set<const Object*>();
+    return *s;
+}
+bool W3dObjetoVivo(const Object* o) {
+    if (!o) return false;
+    const std::set<const Object*>& v = ObjetosVivos();
+    return v.find(o) != v.end();
+}
+bool W3dObjetoVivoSerial(const Object* o, unsigned int serial) {
+    return W3dObjetoVivo(o) && o->serial == serial;
+}
+void W3dObjetoVivoMarcar(const Object* o, bool vivo) {
+    if (!o) return;
+    if (vivo) ObjetosVivos().insert(o); else ObjetosVivos().erase(o);
+}
 
 // ganchos para desvincular tambien lo que NO cuelga del arbol vivo (ver Objects.h).
 // Todo NULL = nadie engancho (el motor sin editor). Inicializacion ESTATICA (constante):
 // vale desde antes del primer constructor global, asi que registrarse desde uno es seguro.
-W3dDesvincularFn W3dDesvincularGanchos[W3dDesvincularMaxGanchos] = {0,0,0,0,0,0,0,0};
+W3dDesvincularFn W3dDesvincularGanchos[W3dDesvincularMaxGanchos] = {0,0,0,0,0,0,0,0,0,0,0,0};
 bool W3dDesvincularRegistrar(W3dDesvincularFn f){
     if (!f) return false;
     for (int i = 0; i < (int)W3dDesvincularMaxGanchos; i++){
@@ -47,6 +73,53 @@ bool W3dDesvincularRegistrar(W3dDesvincularFn f){
         if (!W3dDesvincularGanchos[i]) { W3dDesvincularGanchos[i] = f; return true; }
     }
     return false;   // sin lugar: agrandar W3dDesvincularMaxGanchos
+}
+
+// ---- RAICES EDITABLES (ver Objects.h): el registro de las escenas/prefabs cargados ----
+// Un vector chico (un proyecto tiene pocas raices): recorrerlo es gratis al lado del arbol.
+bool W3dRaizCreando = false;
+static std::vector<Object*> gRaicesReg;
+void W3dRaizRegistrar(Object* raiz) {
+    if (!raiz) return;
+    for (size_t i = 0; i < gRaicesReg.size(); i++) if (gRaicesReg[i] == raiz) return;
+    gRaicesReg.push_back(raiz);
+}
+void W3dRaizOlvidar(Object* raiz) {
+    for (size_t i = 0; i < gRaicesReg.size(); i++)
+        if (gRaicesReg[i] == raiz) { gRaicesReg.erase(gRaicesReg.begin() + (long)i); return; }
+}
+int W3dRaicesRegistradas() { return (int)gRaicesReg.size(); }
+Object* W3dRaizRegistradaEn(int i) {
+    return (i >= 0 && i < (int)gRaicesReg.size()) ? gRaicesReg[(size_t)i] : NULL;
+}
+bool W3dEsRaizRegistrada(const Object* o) {
+    if (!o) return false;
+    for (size_t i = 0; i < gRaicesReg.size(); i++) if (gRaicesReg[i] == o) return true;
+    return false;
+}
+void W3dRaicesVivas(std::vector<Object*>& out) {
+    out.clear();
+    if (SceneCollection) out.push_back(SceneCollection);
+    for (size_t i = 0; i < gRaicesReg.size(); i++)
+        if (gRaicesReg[i] && gRaicesReg[i] != SceneCollection) out.push_back(gRaicesReg[i]);
+}
+Object* W3dRaizDe(Object* o) {
+    if (!o) return NULL;
+    Object* tope = o;
+    while (tope->Parent) tope = tope->Parent;
+    if (tope == SceneCollection || W3dEsRaizRegistrada(tope)) return tope;
+    return NULL;
+}
+Object* W3dRaizDeColgado(Object* o) {
+    if (!o) return NULL;
+    Object* n = o;
+    while (n->Parent) {
+        const std::vector<Object*>& h = n->Parent->Childrens;
+        if (std::find(h.begin(), h.end(), n) == h.end()) return NULL;   // (detachado: su padre ya no lo tiene)
+        n = n->Parent;
+    }
+    if (n == SceneCollection || W3dEsRaizRegistrada(n)) return n;
+    return NULL;
 }
 
 // Variables globales
@@ -91,20 +164,30 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
     rot = qY * qX * qZ; // Aplicación: (Z) * (X) * (Y)
 
     serial = W3dSerialProx++;    // identidad estable: se asigna al NACER y no se reusa jamas
+    ObjetosVivos().insert(this); // (ver W3dObjetoVivo: lo que lua trae de vuelta se valida contra esto)
     constraintActivo = -1;       // stack de constraints vacio: no hay ninguno seleccionado
     consEval = false;            // guardia de reentrada de la evaluacion (ver Objects.h)
     rotMode = RotEulerXYZ;       // default: XYZ Euler
     rotAngle = 0.0f;
     rotAxis = Vector3(0, 0, 1);
     scriptDatos = NULL;          // script lua opcional (ver script/W3dScript.h)
+    clipsJer = NULL;             // biblioteca de clips de jerarquia opcional (ver animation/W3dAnimSet.h)
     fisica = NULL;               // cuerpo rigido opcional (ver physics/W3dRigido.h)
     ActualizarDisplayRot();
 
+    // PADRE NORMALIZADO: un objeto de primer nivel tiene Parent = la raiz (antes quedaba en NULL
+    // aunque viviera en SceneCollection->Childrens, mientras los loaders y el reparent si ponian
+    // la raiz). Con varias raices (escenas, prefabs) un Parent NULL no diria de cual es, y todos
+    // los 'Parent ? Parent : SceneCollection' lo mandarian a la ACTIVA. Una raiz que nace
+    // (W3dRaizCreando) no se cuelga de nadie.
     if (Parent) {
         Parent->Childrens.push_back(this);
-    } else if (SceneCollection && this != SceneCollection) {
+    } else if (SceneCollection && this != SceneCollection && !W3dRaizCreando) {
+        Parent = SceneCollection;
         SceneCollection->Childrens.push_back(this);
     }
+
+    if (W3dRaizCreando) return;   // una raiz nueva: ni nombre libre ni seleccion (vive afuera)
 
     // NOMBRE UNICO desde el nacimiento: ya esta en el arbol, asi que su scope
     // (la escena a la que pertenece) es el definitivo. Con esto los ~15 ctores
@@ -258,7 +341,9 @@ static void W3dConsResolverRec(Object* nodo, Object* raiz, int& rotos){
         W3dConstraint* c = nodo->constraints[i];
         if (!c || c->fuenteTipo != W3dConstraintFuente::Objeto) continue;
         if (c->fuenteNombre.empty()) { c->fuenteObj = NULL; continue; }
-        c->fuenteObj = FindObjectByName(raiz, c->fuenteNombre);
+        // POR SCOPE: el constraint de un objeto generado por una instancia de prefab mira primero
+        // adentro de SU instancia (su propia "Guia", no la de la primera instancia); afuera, igual que siempre
+        c->fuenteObj = W3dBuscarNombreDesde(nodo, c->fuenteNombre, raiz);
         if (!c->fuenteObj) {
             // el NOMBRE se conserva a proposito: es el dato del modelo, y si el objeto
             // vuelve (undo del borrado, o el usuario lo crea) el vinculo se recupera solo.
@@ -272,12 +357,14 @@ static void W3dConsResolverRec(Object* nodo, Object* raiz, int& rotos){
         W3dConsResolverRec(nodo->Childrens[i], raiz, rotos);
 }
 
-// 'raiz' es a la vez lo que se RECORRE y donde se BUSCA (en la carga es SceneCollection):
-// asi la busqueda de la fuente cubre exactamente los objetos que se estan resolviendo.
+// 'raiz' es lo que se RECORRE (en la carga es SceneCollection; al generar una instancia de prefab, la
+// instancia). Se BUSCA por scope (W3dBuscarNombreDesde) y, afuera de toda instancia, en el arbol entero
+// del que cuelga 'raiz' (la escena), como siempre.
 void W3dConstraintsResolverNombres(Object* raiz){
     if (!raiz) return;
     int rotos = 0;
-    W3dConsResolverRec(raiz, raiz, rotos);
+    Object* arbol = W3dRaizDe(raiz);
+    W3dConsResolverRec(raiz, arbol ? arbol : raiz, rotos);
     if (rotos) w3dLogfW("[W3D] %d constraint(s) quedaron sin fuente", rotos);
 }
 
@@ -343,13 +430,28 @@ static void DesvincularDelArbol(Object* nodo, Object* borrado){
 }
 
 Object::~Object() {
+    ObjetosVivos().erase(this);               // deja de ser un objeto VIVO (ver W3dObjetoVivo)
     delete scriptDatos; scriptDatos = NULL;   // datos del script lua (si tenia)
     W3dRigidosOlvidar(this);                  // su cuerpo rigido runtime (si tenia)
+    // ...y su colision de mallas (colSuelo/colPared) si alguna consulta la leyo: la cache es por
+    // Object* + el buffer de vertices, y los dos se RECICLAN (~Mesh ya libera su geometria):
+    // un objeto nuevo en la misma direccion usaria la grilla vieja, en otro lugar del mundo.
+    W3dColOlvidar(this);
+    W3dHitboxOlvidar(this);                   // ...y los pares de hitbox que lo nombran (sin evento)
     delete fisica; fisica = NULL;             // y la definicion de fisica
+    // su biblioteca de clips de jerarquia (suelta la referencia al animset compartido)
+    if (clipsJer) { W3dJerSoltar(this); delete clipsJer; clipsJer = NULL; }
     // antes de irse: soltar cualquier puntero que apunte a este objeto (las
     // instancias linkeadas a el) para evitar punteros colgados al renderizar
     if (SceneCollection && SceneCollection != this)
         DesvincularDelArbol(SceneCollection, this);
+    // ...y las OTRAS raices cargadas (escenas/prefabs que no son la activa): una referencia
+    // de alla (una instancia, un riel, la fuente de un constraint) no puede quedar colgando.
+    // Sin raices registradas (el caso normal) no cuesta nada.
+    for (size_t r = 0; r < gRaicesReg.size(); r++) {
+        Object* raiz = gRaicesReg[r];
+        if (raiz && raiz != SceneCollection && raiz != this) DesvincularDelArbol(raiz, this);
+    }
     // ...y lo que NO esta en el arbol: los subarboles DETACHADOS que tienen los comandos del
     // undo son inalcanzables desde SceneCollection, asi que el recorrido de arriba nunca les
     // llega y se quedaban apuntando a esta direccion despues del free. Lo mismo los punteros
@@ -404,12 +506,55 @@ void W3dLiberarSubarbol(Object* raiz){
 // evita el O(n^2) de uniquificar objeto por objeto durante la carga.
 bool W3dNombresCargando = false;
 
+// ---- LAS FRONTERAS DE SCOPE (ver Objects.h): UN solo predicado para todo el motor ----
+bool W3dEsFronteraScope(const Object* o) {
+    if (!o) return false;
+    const ObjectType t = const_cast<Object*>(o)->getType();
+    return t == ObjectType::ui || W3dEsTipoInstancia(t);   // (una instancia de prefab o un proxy de libreria)
+}
+Object* W3dInstanciaDe(const Object* o) {
+    if (!o) return NULL;
+    for (Object* p = o->Parent; p; p = p->Parent)
+        if (W3dEsTipoInstancia(p->getType())) return p;
+    return NULL;
+}
+// preorden por el SCOPE de 'inst' (sus hijos generados): no entra a las instancias anidadas (su contenido es
+// de ellas) pero si ve su nombre (una instancia anidada es un objeto de este scope)
+static Object* BuscarEnScopeInstancia(Object* nodo, const std::string& nombre) {
+    for (size_t i = 0; i < nodo->Childrens.size(); i++) {
+        Object* h = nodo->Childrens[i];
+        if (!h) continue;
+        if (h->name == nombre) return h;
+        if (W3dEsFronteraScope(h)) continue;
+        Object* r = BuscarEnScopeInstancia(h, nombre);
+        if (r) return r;
+    }
+    return NULL;
+}
+Object* W3dBuscarNombreDesde(Object* desde, const std::string& nombre, Object* raiz) {
+    if (nombre.empty()) return NULL;
+    for (Object* inst = W3dInstanciaDe(desde); inst; inst = W3dInstanciaDe(inst)) {
+        Object* r = BuscarEnScopeInstancia(inst, nombre);
+        if (r) return r;
+    }
+    if (!raiz) raiz = desde ? W3dRaizDe(desde) : NULL;
+    if (!raiz) raiz = SceneCollection;
+    return FindObjectByName(raiz, nombre);
+}
+
 Object* W3dNombreScopeDe(Object* o) {
     if (!o) return SceneCollection;
-    // una raiz UI (escena) NO se mide contra si misma: va contra TODO el arbol
-    if (o->getType() != ObjectType::ui)
-        for (Object* p = o->Parent; p; p = p->Parent)
-            if (p->getType() == ObjectType::ui) return p;
+    // una raiz UI (escena) NO se mide contra si misma: va contra TODO el arbol. Cualquier otro objeto
+    // es del scope de la FRONTERA mas cercana que lo contiene (una UI o una instancia de prefab)
+    const bool esUI = (o->getType() == ObjectType::ui);
+    Object* tope = o;
+    for (Object* p = o->Parent; p; p = p->Parent) {
+        if (!esUI && W3dEsFronteraScope(p)) return p;
+        tope = p;
+    }
+    // el scope global de un objeto de OTRA raiz cargada (una escena o un prefab que no es el
+    // activo) es esa raiz, no la activa. Para los de la activa (el caso de siempre) no cambia nada.
+    if (tope != o && tope != SceneCollection && W3dEsRaizRegistrada(tope)) return tope;
     return SceneCollection;
 }
 
@@ -427,13 +572,15 @@ Object* W3dNombreScopeDe(Object* o) {
 //     ninguna UI, MAS todas las raices UI (hay que seguir bajando para encontrarlas).
 //   - scope de una UI: cuenta sus descendientes que no cruzan otra UI; al toparse con
 //     una UI anidada se corta (esa UI y todo lo suyo viven en otros scopes).
+//   - con INSTANCIAS DE PREFAB (la otra frontera, W3dEsFronteraScope): la instancia es un objeto
+//     del scope de afuera, y lo que genera es de ella (se corta ahi, igual que con una UI).
 static void IndexarScopeGlobal(Object* obj, const Object* me, W3dNombreIndice& ix, bool dentroDeUI) {
     if (!obj) return;
     for (size_t i = 0; i < obj->Childrens.size(); i++) {
         Object* h = obj->Childrens[i];
         const bool esUI = (h->getType() == ObjectType::ui);
         if ((esUI || !dentroDeUI) && h != me) ix.Ver(h->name);
-        IndexarScopeGlobal(h, me, ix, dentroDeUI || esUI);
+        IndexarScopeGlobal(h, me, ix, dentroDeUI || W3dEsFronteraScope(h));
     }
 }
 static void IndexarScopeUI(Object* obj, const Object* me, W3dNombreIndice& ix) {
@@ -442,6 +589,7 @@ static void IndexarScopeUI(Object* obj, const Object* me, W3dNombreIndice& ix) {
         Object* h = obj->Childrens[i];
         if (h->getType() == ObjectType::ui) continue;   // otro scope (el suyo y el global)
         if (h != me) ix.Ver(h->name);
+        if (W3dEsFronteraScope(h)) continue;             // una instancia anidada: su nombre es de aca, su contenido no
         IndexarScopeUI(h, me, ix);
     }
 }
@@ -459,10 +607,12 @@ std::string Object::NombreLibre(const std::string& base) {
     W3dNombreIndice ix;
     ix.Empezar(base, "Objeto");
     // la raiz del scope tambien ocupa su nombre (la busqueda por nombre arranca EN ella;
-    // es la misma semilla que usa RepararRec)
-    if (raiz != this) ix.Ver(raiz->name);
-    if (raiz->getType() == ObjectType::ui) IndexarScopeUI(raiz, this, ix);
-    else                                   IndexarScopeGlobal(raiz, this, ix, false);
+    // es la misma semilla que usa RepararRec). Una INSTANCIA DE PREFAB no: su nombre es del scope de
+    // afuera y la busqueda adentro de ella arranca en sus hijos (W3dBuscarNombreDesde)
+    const bool esInst = W3dEsTipoInstancia(raiz->getType());
+    if (raiz != this && !esInst) ix.Ver(raiz->name);
+    if (raiz->getType() == ObjectType::ui || esInst) IndexarScopeUI(raiz, this, ix);
+    else                                             IndexarScopeGlobal(raiz, this, ix, false);
     return ix.Resolver();
 }
 
@@ -500,6 +650,7 @@ std::string Object::SetName(const std::string& baseName) {
 }
 
 void Object::Seleccionar(){
+    W3dSeleccionSerial++;   // la escena eligio algo (ver Objects.h)
     ObjActivo = this;
     if (!select){
         select = true;
@@ -1161,6 +1312,12 @@ const char* W3dNombreTipo(ObjectType t){
         case ObjectType::lod:        return "lod";
         case ObjectType::culling:    return "culling";
         case ObjectType::particulas: return "particulas";
+        case ObjectType::niebla:     return "niebla";
+        case ObjectType::limpiarz:   return "limpiarz";
+        case ObjectType::recorte:    return "recorte";
+        case ObjectType::hitbox:     return "hitbox";
+        case ObjectType::prefab:     return "prefab";
+        case ObjectType::proxy:      return "proxy";
     }
     return "objeto";
 }

@@ -126,7 +126,11 @@ class VertexAnimation {
         VertexAnimation()
             : frameCount(0), proximaAnimacion(-1), speed(1.0f), padding(0),
               repeat(true), target(NULL), UseNormals(false), UseUV(false), vcount(0),
-              noCargo(false), startFrame(1), endFrame(250), fps(30) {}
+              noCargo(false), startFrame(1), endFrame(250), fps(30) {
+            // frames PROPIOS (como el otro constructor): sin esto datosRec quedaba con
+            // basura y ~VertexAnimation -> LiberarFrames "soltaba" un recurso inexistente
+            datosRec = 0;
+        }
         VertexAnimation(Mesh* tgt, const std::string& animName, bool useNormals = false, float Speed = 1, bool Repeat = true, int ProximaAnimacion = -1);
     
         ~VertexAnimation();          // libera los frames (posiciones/normales new[])
@@ -325,6 +329,20 @@ VertexAnimationActive* FindTargetAnim(Mesh* target);
 // animada. Los VertexFrame son duenios de sus buffers -> una copia plana daria doble free.
 // Analoga a Arm2DClonar (armature 2D). 'nuevoTarget' es la malla de la copia.
 VertexAnimation* VertexAnimClonar(const VertexAnimation* src, Mesh* nuevoTarget);
+
+// ---- FRAMES COMPARTIDOS ENTRE COPIAS (las instancias de un prefab) ----
+// Como los de LoadFrames: el juego de frames vive en el almacen (tipo ANIM), cada anim que lo usa
+// tiene una ref, y cualquier edicion de keyframes pasa antes por DesinstanciarFrames (COW). Asi 50
+// instancias de un prefab con una vertex anim tienen UN solo juego de frames en memoria.
+// POR CLAVE: N mallas que leen el MISMO blob de frames. La primera lo deserializa y lo REGISTRA bajo
+// 'clave' (la arma el lector: la entrada del blob + su medida + su CRC); las demas lo ADOPTAN sin
+// deserializar (true), siempre que los frames esten armados para 'vcountMalla' vertices.
+bool VertexAnimAdoptarClave(VertexAnimation& anim, const std::string& clave, int vcountMalla);
+void VertexAnimRegistrarClave(VertexAnimation& anim, const std::string& clave);
+// CON OTRA ANIM: una copia de 'src' para 'nuevoTarget' (como VertexAnimClonar) que COMPARTE sus frames.
+// Si los de 'src' eran propios (una anim sin guardar) pasan antes al almacen con un id de memoria y
+// 'src' queda compartiendolos tambien. Sin frames (o con el cache apagado) es una copia profunda.
+VertexAnimation* VertexAnimCompartir(VertexAnimation* src, Mesh* nuevoTarget);
 
 // PUNTO UNICO de coherencia vertex-anim vs TOPOLOGIA: remapea los frames de vertices de
 // TODAS las anims de 'mesh' tras un cambio de topologia (borrar/subdividir/loop cut/

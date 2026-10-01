@@ -22,6 +22,9 @@
 //    * la simulacion ESCRIBE pos/rot del objeto (cuerpos dinamicos). Por eso
 //      los cuerpos se asumen objetos de PRIMER NIVEL (colgados de la escena,
 //      sin padre con transform): un cuerpo emparentado se salta con un aviso.
+//      Excepcion: lo GENERADO por una instancia de prefab (a cualquier
+//      profundidad): simula en mundo con la escala de mundo y escribe en el
+//      espacio de su padre (ver EspacioDe en el .cpp).
 //
 //  TIPOS de cuerpo:
 //    0 ESTATICO   no se mueve nunca (piso, paredes). Sin masa.
@@ -105,6 +108,15 @@ float W3dRigidosRayo(const Vector3& origen, const Vector3& dir, float maxDist,
                      Object* ignorar, Vector3* normalOut, Object** tocadoOut);
 void  W3dRigidosGravedad(float g);
 float W3dRigidosGravedadActual(void);
+
+// ---- las CAJAS en mundo, por indice (las lee el motor de HITBOX, physics/W3dHitbox.h) --
+// cuantos cuerpos runtime hay, y la caja del i-esimo DESPUES del ultimo paso: su objeto, el
+// centro en mundo, los ejes (columnas de la rotacion) y los semiejes (escala ya horneada).
+// 'activo' = fisicaActiva; 'quieto' = estatico o dormido (la fisica NO evalua los pares
+// entre dos quietos: sus contactos no se reportan mientras sigan asi). false = fuera de rango.
+int  W3dRigidosCantidad(void);
+bool W3dRigidoCaja(int i, Object** o, Vector3* centro, Vector3 ejes[3], Vector3* semi,
+                   bool* activo, bool* quieto);
 
 // ---- binds lua (recibe el lua_State como void*, igual que W3dFisica) -------
 void W3dRigidosRegistrarBinds(void* L);

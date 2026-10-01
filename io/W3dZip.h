@@ -1,6 +1,7 @@
 #ifndef W3DZIP_H
 #define W3DZIP_H
 
+#include <stddef.h>   // size_t (W3dZipCrc32)
 #include <string>
 #include <vector>
 #include <map>
@@ -41,6 +42,10 @@ struct W3dZipEntrada {
 // backslash, sin caracteres de control. Lo comparten el zip y el backend de
 // carpeta del almacen (los dos resuelven el MISMO layout de nombres).
 bool W3dZipNombreSeguro(const std::string& n);
+
+// el CRC32 del zip (polinomio 0xEDB88320, el mismo de zlib/PNG) de n bytes. Es el que
+// escribe y verifica este modulo; publico para probarlo contra los vectores conocidos.
+unsigned W3dZipCrc32(const unsigned char* d, size_t n);
 
 // ============================================================================
 //  LECTOR POR INDICE (el .w3d MONTADO: no levanta el archivo entero a RAM)

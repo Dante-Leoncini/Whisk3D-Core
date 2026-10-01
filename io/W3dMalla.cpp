@@ -1,5 +1,6 @@
 #include "W3dMalla.h"
 #include "W3dTexto.h"
+#include "W3dMallaBin.h"   // W3dMallaBinBloqueConocido: el freno "requiere" del binario
 #include "objects/Mesh.h"
 
 #include <algorithm>
@@ -53,7 +54,7 @@ static int W3dmDomDe(const std::string& s) {
 // bloques que ESTA version entiende (registro: Whisk3D/formato/bloques.tsv)
 static const char* kBloques[] = {
     "V", "F", "FPART", "FSHADE", "NRM", "UV", "COL", "UVREST",
-    "SHARP", "SEAM", "EDGE", "POINT", "PARTS", "PARTMAT", "VG", "UVG", "RVMAP", 0
+    "SHARP", "SEAM", "EDGE", "POINT", "PARTS", "PARTMAT", "VG", "UVG", "RVMAP", "SHAPE", 0
 };
 bool W3dMallaBloqueConocido(const std::string& nombre) {
     for (int i = 0; kBloques[i]; i++) if (nombre == kBloques[i]) return true;
@@ -173,6 +174,9 @@ static std::string W3dmNombreSano(const std::string& n, std::vector<std::string>
     }
     return s;
 }
+std::string W3dMallaNombreSano(const std::string& n, std::vector<std::string>* avisos, const char* que) {
+    return W3dmNombreSano(n, avisos, que);
+}
 
 // ===========================================================================
 // ===========================================================================
@@ -198,23 +202,25 @@ std::string W3dMallaBloqueQueFalta(const Mesh* m) {
     if (!m) return std::string();
     for (size_t i = 0; i < m->w3dmAjenos.requiere.size(); i++)
         if (!W3dMallaBloqueConocido(m->w3dmAjenos.requiere[i])) return m->w3dmAjenos.requiere[i];
+    // el MISMO freno para la malla binaria: su bloque REQ nombro un fourcc que esta version
+    // no entiende (ver W3dAjenos::requiereBin y io/W3dMallaBin.h)
+    for (size_t i = 0; i < m->w3dmAjenos.requiereBin.size(); i++)
+        if (!W3dMallaBinBloqueConocido(m->w3dmAjenos.requiereBin[i])) return m->w3dmAjenos.requiereBin[i];
     return std::string();
 }
 
-bool W3dMallaEscribir(const Mesh* m, std::string& out, std::vector<std::string>* avisos) {
-    out.clear();
-    if (!m) return false;
-    // NO SE GUARDA ENCIMA DE UNA MALLA QUE NO ENTENDEMOS. El que llama ya deberia
-    // haber avisado con el nombre del bloque (W3dMallaBloqueQueFalta); esto es el
-    // cierre, para que ningun camino nuevo se saltee el freno por olvido.
-    if (!W3dMallaBloqueQueFalta(m).empty()) {
-        if (avisos)
-            avisos->push_back("no guardo esta malla: el archivo REQUIERE el bloque '" +
-                              W3dMallaBloqueQueFalta(m) + "' y esta version no lo entiende");
-        return false;
-    }
+// ===========================================================================
+//  PIEZAS COMPARTIDAS CON EL .w3db (ver el bloque grande del final de W3dMalla.h).
+//  Son pedazos de W3dMallaEscribir sacados afuera TAL CUAL, en el mismo orden de
+//  avisos: el escritor de texto los llama en el mismo lugar donde estaban.
+// ===========================================================================
 
+void W3dMallaCalcularPuntos(const Mesh* m, W3dMallaPuntos& out) {
+    out.rvAPunto.clear(); out.pts.clear(); out.porPos.clear();
+    out.nV = 0; out.nP = 0;
+    if (!m) return;
     const int nV = (m->vertex ? m->vertexSize : 0);
+    out.nV = nV;
 
     // ---- PUNTOS DE CONTROL: posiciones UNICAS por BYTES, en orden de aparicion
     //      del array de render. Un cubo se lee "8 vertices", no 24.
@@ -229,7 +235,8 @@ bool W3dMallaEscribir(const Mesh* m, std::string& out, std::vector<std::string>*
     //  extremos de looseEdges que no usa ninguna cara) se llevan un punto PROPIO;
     //  render-verts sueltos que SI son el mismo (dos aristas sueltas encadenadas)
     //  comparten punto, porque comparten indice de render.
-    std::vector<int>   rvAPunto((size_t)(nV > 0 ? nV : 1), -1);
+    std::vector<int>&  rvAPunto = out.rvAPunto;
+    rvAPunto.assign((size_t)(nV > 0 ? nV : 1), -1);
     std::vector<char>  rvDeCara((size_t)(nV > 0 ? nV : 1), 0);
     std::vector<char>  rvSuelto((size_t)(nV > 0 ? nV : 1), 0);
     for (size_t f = 0; f < m->faces3d.size(); f++)
@@ -245,73 +252,80 @@ bool W3dMallaEscribir(const Mesh* m, std::string& out, std::vector<std::string>*
         int gv = m->looseVerts[i];
         if (gv >= 0 && gv < nV && !rvDeCara[(size_t)gv]) rvSuelto[(size_t)gv] = 1;
     }
-    std::vector<float> pts;
-    std::map<std::string, int> mapaP;
+    // ---- LOS DATOS DEL PUNTO tambien lo identifican. Dos render-verts en la MISMA
+    //      posicion son el mismo punto solo si ademas tienen los MISMOS datos de punto
+    //      (pesos de cada vertex group, deltas de cada shape key). Una costura de UV o de
+    //      color los tiene iguales (es el mismo vertice partido) y se une como siempre;
+    //      pero dos vertices DISTINTOS que solo coinciden en el lugar (el borde de una
+    //      puerta pegado a la carroceria, cada uno de su hueso) NO son el mismo: soldarlos
+    //      al guardar mezclaba sus pesos y la malla se estiraba al animar. Guardar nunca
+    //      suelda lo que la malla no tiene soldado.
+    std::vector<std::string> firmaRv((size_t)(nV > 0 ? nV : 1));
+    if (nV > 0 && (!m->vertexGroups.empty() || !m->shapeKeys.empty())) {
+        const bool conCp = ((int)m->vertCtrlPoint.size() == nV);
+        std::map<int, std::string> firmaCp;   // control-point -> sus datos (bytes)
+        for (size_t g = 0; g < m->vertexGroups.size(); g++) {
+            const VertexGroup* vg = m->vertexGroups[g];
+            if (!vg) continue;
+            for (size_t k = 0; k < vg->verts.size() && k < vg->pesos.size(); k++) {
+                if (vg->pesos[k] == 0.0f) continue;          // peso 0 = no estar en el grupo
+                char b[8]; int gi = (int)g; float w = vg->pesos[k];
+                memcpy(b, &gi, 4); memcpy(b + 4, &w, 4);
+                firmaCp[vg->verts[k]].append(b, 8);
+            }
+        }
+        for (size_t g = 0; g < m->shapeKeys.size(); g++) {
+            const W3dShapeKey& sk = m->shapeKeys[g];
+            for (size_t j = 0; j < sk.idx.size() && j * 3 + 2 < sk.d.size(); j++) {
+                char b[17]; int gi = (int)g; b[0] = 'S';
+                memcpy(b + 1, &gi, 4); memcpy(b + 5, &sk.d[j * 3], 12);
+                firmaCp[sk.idx[j]].append(b, 17);
+            }
+        }
+        for (int i = 0; i < nV; i++) {
+            int cp = conCp ? m->vertCtrlPoint[(size_t)i] : i;
+            std::map<int, std::string>::iterator it = firmaCp.find(cp);
+            if (it != firmaCp.end()) firmaRv[(size_t)i] = it->second;
+        }
+    }
+    std::vector<float>& pts = out.pts;
+    // posicion -> TODOS los puntos parados ahi, de menor a mayor (sharp/seam se indexan por
+    // posicion). Casi siempre es uno solo; son varios cuando la malla tiene vertices distintos
+    // en el mismo lugar (los de arriba, con otros pesos) o un punto suelto encima de una cara.
+    std::map<std::string, std::vector<int> >& mapaP = out.porPos;
+    std::map<std::string, int> mapaPD;     // posicion + datos del punto -> punto
     pts.reserve((size_t)nV * 3);
     for (int i = 0; i < nV; i++) {
         std::string k = W3dmPosKey(&m->vertex[i * 3]);
+        std::string kd = k + firmaRv[(size_t)i];
         if (!rvSuelto[(size_t)i]) {
-            std::map<std::string, int>::iterator it = mapaP.find(k);
-            if (it != mapaP.end()) { rvAPunto[(size_t)i] = it->second; continue; }
+            std::map<std::string, int>::iterator it = mapaPD.find(kd);
+            if (it != mapaPD.end()) { rvAPunto[(size_t)i] = it->second; continue; }
         }
         int pi = (int)(pts.size() / 3);
         pts.push_back(m->vertex[i * 3]);
         pts.push_back(m->vertex[i * 3 + 1]);
         pts.push_back(m->vertex[i * 3 + 2]);
-        // el punto suelto igual entra al mapa de POSICION si esa posicion no estaba:
-        // sharp/seam se indexan por posicion y tienen que poder resolverla.
-        if (mapaP.find(k) == mapaP.end()) mapaP[k] = pi;
+        // TODO punto nuevo entra al mapa de POSICION (tambien el suelto): sharp/seam se
+        // indexan por posicion y tienen que poder resolverla contra el punto de SU arista.
+        mapaP[k].push_back(pi);
+        if (mapaPD.find(kd) == mapaPD.end()) mapaPD[kd] = pi;
         rvAPunto[(size_t)i] = pi;
     }
-    const int nP = (int)(pts.size() / 3);
+    out.nP = (int)(pts.size() / 3);
+}
 
-    // ---- esquinas (indice de TODAS las capas por esquina)
-    int nC = 0;
-    for (size_t f = 0; f < m->faces3d.size(); f++) nC += (int)m->faces3d[f].idx.size();
-    const int nF = (int)m->faces3d.size();
-
-    // ---- CABECERA + DIRECTIVAS ------------------------------------------
-    out += "W3DMESH 1\n";
-    out += "# malla de Whisk3D. texto por lineas, indices base 0.\n";
-    out += "# MAYUSCULA abre bloque (cierra END) | minuscula = directiva | espacio = dato\n";
-    // FRENO DE MANO: sin ENTENDER estos bloques el archivo no se puede interpretar.
-    // Un lector que vea aca un nombre que no conoce abre en SOLO LECTURA. Tiene que
-    // existir desde la version 1: agregarla despues NO sirve (los lectores viejos la
-    // ignorarian como cualquier directiva desconocida).
-    //
-    // SE RE-EMITE TAL CUAL VINO. Antes esta linea se escribia a mano siempre igual
-    // ("requiere V F") y por eso la directiva se AUTO-BORRABA: un archivo con
-    // "requiere V F CREASE" abierto y guardado por un Whisk3D que no conoce CREASE
-    // salia con la valvula de menos, el bloque CREASE preservado pero YA SIN NADIE
-    // QUE LO PROTEJA, y el guardado siguiente lo tiraba en silencio. Justo el
-    // degradado que 'requiere' existe para evitar. Ahora la lista viaja con la
-    // malla (W3dAjenos::requiere) y solo se pone el default cuando no salio de un
-    // archivo (malla nueva del editor).
-    if (!m->w3dmAjenos.requiere.empty()) {
-        out += "requiere";
-        for (size_t i = 0; i < m->w3dmAjenos.requiere.size(); i++) {
-            out += ' ';
-            out += W3dmNombreSano(m->w3dmAjenos.requiere[i], avisos, "de un bloque de 'requiere'");
-        }
-        out += "\n";
-    } else {
-        out += "requiere V F\n";
-    }
-    out += "nombre "; out += W3dmNombreSano(m->name, avisos, "de la malla"); out += "\n";
-    out += "puntos ";   W3dEscribirInt(out, nP); out += "\n";
-    out += "esquinas "; W3dEscribirInt(out, nC); out += "\n";
-    out += "caras ";    W3dEscribirInt(out, nF); out += "\n";
-    // rverts: solo tiene sentido cuando hay que ANCLAR indices de render (vertex anims)
-    const bool conAnim = !m->animations.empty();
-    if (conAnim) { out += "rverts "; W3dEscribirInt(out, nV); out += "\n"; }
-    out += "suave ";    W3dEscribirInt(out, m->meshSmooth ? 1 : 0); out += "\n";
+void W3dMallaElegirCapas(const Mesh* m, int nC, W3dMallaCapasSalen& out, std::vector<std::string>* avisos) {
+    out.uv.clear(); out.col.clear();
+    out.uvActiva = -1; out.colActiva = -1; out.uvDerivada = false; out.colDerivada = false;
+    if (!m) return;
+    const int nV = (m->vertex ? m->vertexSize : 0);
     // CAPAS LAZY (ver el comentario grande del bloque NRM): si la malla todavia no
     // materializo sus capas, el archivo lleva igual la version derivada del render y la
     // capa 0 es la activa.
-    const bool uvDerivada  = (m->uvMaps.empty() && m->uv && nC > 0 && nV > 0);
-    bool colDerivada = false;
+    out.uvDerivada = (m->uvMaps.empty() && m->uv && nC > 0 && nV > 0);
     if (m->colorLayers.empty() && m->vertexColor && nC > 0 && nV > 0)
-        for (int i = 0; i < nV * 4 && !colDerivada; i++) if (m->vertexColor[i] != 255) colDerivada = true;
+        for (int i = 0; i < nV * 4 && !out.colDerivada; i++) if (m->vertexColor[i] != 255) out.colDerivada = true;
 
     // ---- QUE CAPAS SALEN, DECIDIDO ANTES DE ESCRIBIR NADA ------------------
     //  Una capa que no mide lo que la topologia dice NO se puede escribir (el
@@ -321,7 +335,8 @@ bool W3dMallaEscribir(const Mesh* m, std::string& out, std::vector<std::string>*
     //  COMPLETA, asi que saltear una capa ANTERIOR a la activa dejaba el indice
     //  apuntando a OTRA capa y la malla volvia con otro uv/color en el render.
     //  Por eso el indice que se escribe es el de la lista REALMENTE escrita.
-    std::vector<size_t> uvSalen, colSalen;
+    std::vector<size_t>& uvSalen = out.uv;
+    std::vector<size_t>& colSalen = out.col;
     for (size_t l = 0; l < m->uvMaps.size(); l++) {
         const UVMap* u = m->uvMaps[l];
         if (!u || (int)u->uv.size() != nC * 2) {
@@ -362,6 +377,276 @@ bool W3dMallaEscribir(const Mesh* m, std::string& out, std::vector<std::string>*
         avisos->push_back("la capa UV ACTIVA no se pudo guardar: el archivo queda sin capa UV activa");
     if (avisos && m->colorActivo >= 0 && m->colorActivo < (int)m->colorLayers.size() && colActivaSale < 0)
         avisos->push_back("la capa de color ACTIVA no se pudo guardar: el archivo queda sin capa de color activa");
+    out.uvActiva = uvActivaSale;
+    out.colActiva = colActivaSale;
+}
+
+void W3dMallaAristasReales(const Mesh* m, const W3dMallaPuntos& P, std::set<std::pair<int, int> >& out) {
+    out.clear();
+    if (!m) return;
+    const int nV = P.nV;
+    const std::vector<int>& rvAPunto = P.rvAPunto;
+    for (size_t f = 0; f < m->faces3d.size(); f++) {
+        const MeshFace& F = m->faces3d[f];
+        for (size_t c = 0; c < F.idx.size(); c++) {
+            int ga = F.idx[c], gb = F.idx[(c + 1) % F.idx.size()];
+            if (ga < 0 || ga >= nV || gb < 0 || gb >= nV) continue;
+            int a = rvAPunto[(size_t)ga], b = rvAPunto[(size_t)gb];
+            if (a == b) continue;
+            out.insert(a < b ? std::make_pair(a, b) : std::make_pair(b, a));
+        }
+    }
+    for (size_t i = 0; i + 1 < m->looseEdges.size(); i += 2) {
+        int ga = m->looseEdges[i], gb = m->looseEdges[i + 1];
+        if (ga < 0 || ga >= nV || gb < 0 || gb >= nV) continue;
+        int a = rvAPunto[(size_t)ga], b = rvAPunto[(size_t)gb];
+        if (a == b) continue;
+        out.insert(a < b ? std::make_pair(a, b) : std::make_pair(b, a));
+    }
+}
+
+void W3dMallaMarcasValidas(const Mesh* m, const W3dMallaPuntos& P, const std::set<std::pair<int, int> >& aristasReales,
+                           bool seam, std::vector<std::pair<int, int> >& pares, std::vector<std::string>* avisos) {
+    pares.clear();
+    if (!m) return;
+    const std::set<std::string>& src = seam ? m->seamEdges : m->sharpEdges;
+    if (src.empty()) return;
+    const int nV = P.nV;
+    // INVARIANTE DE POSE (el tercero de la clase; el mismo que respeta la poda,
+    // ver Mesh::PodarMarcasSinArista y Mesh::PosicionesReposo): las claves de
+    // sharp/seam viven en el espacio de REPOSO. Con la malla POSADA por una vertex
+    // anim, 'mapaP' se armo con las posiciones DE LA POSE y NINGUNA clave resuelve
+    // -> el escritor las daba TODAS por perdidas y el archivo salia sin UNA SOLA
+    // marca. Ese es, literal, el sintoma que reporto el dueno: marcar, mover el
+    // playhead, guardar. Aca el mapa de busqueda se rearma con las posiciones del
+    // KEYFRAME BASE; rvAPunto (render-vert -> punto) NO depende de la pose, asi que
+    // los indices que se escriben son exactamente los mismos.
+    // (El guardado del proyecto ademas deja la malla en reposo antes de llamar
+    //  -W3dReposoVertexAnim-, que es lo que evita ademas hornear la pose como
+    //  geometria; esto cierra el camino directo al escritor.)
+    std::map<std::string, std::vector<int> > mapaReposo;
+    if (m->PosadaPorVertexAnim()) {
+        const GLfloat* R = m->PosicionesReposo();
+        if (R && R != m->vertex)
+            for (int i = 0; i < nV; i++) {
+                const int p = P.rvAPunto[(size_t)i];
+                if (p < 0) continue;
+                std::vector<int>& lista = mapaReposo[W3dmPosKey(&R[i * 3])];
+                if (std::find(lista.begin(), lista.end(), p) == lista.end()) lista.push_back(p);
+            }
+    }
+    const std::map<std::string, std::vector<int> >& mapaClave = mapaReposo.empty() ? P.porPos : mapaReposo;
+    pares.reserve(src.size());
+    int perdidas = 0;
+    for (std::set<std::string>::const_iterator it = src.begin(); it != src.end(); ++it) {
+        if (it->size() != 24) { perdidas++; continue; }
+        std::map<std::string, std::vector<int> >::const_iterator a = mapaClave.find(it->substr(0, 12));
+        std::map<std::string, std::vector<int> >::const_iterator b = mapaClave.find(it->substr(12, 12));
+        // (1) la clave de POSICION ya no cae en ningun punto de la malla: el vertice
+        //     se MOVIO o se BORRO. SILENCIOSO JAMAS: perderla esta bien, perderla sin
+        //     decirlo no (y el aviso no puede afirmar CUAL de las dos fue).
+        if (a == mapaClave.end() || b == mapaClave.end()) { perdidas++; continue; }
+        // (2) los puntos existen PERO no hay una arista entre ellos: es la variante
+        //     FANTASMA (borrar caras deja los puntos vivos, o un corte parte la arista
+        //     en dos). Validar solo las POSICIONES no alcanzaba y la marca se escribia
+        //     sobre una arista que no esta.
+        //     Con VARIOS puntos en una posicion (vertices distintos en el mismo lugar)
+        //     la marca es de TODA arista real entre esas dos posiciones, igual que en
+        //     memoria (la clave es de posicion): tomar solo el primer punto perdia la
+        //     costura de la arista que usa al otro, y el archivo salia sin ella.
+        bool alguna = false;
+        for (size_t ia = 0; ia < a->second.size(); ia++)
+            for (size_t ib = 0; ib < b->second.size(); ib++) {
+                int x = a->second[ia], y = b->second[ib];
+                if (x == y) continue;
+                if (x > y) { int t = x; x = y; y = t; }
+                if (!aristasReales.count(std::make_pair(x, y))) continue;
+                pares.push_back(std::make_pair(x, y));
+                alguna = true;
+            }
+        if (!alguna) perdidas++;
+    }
+    if (perdidas > 0 && avisos) {
+        std::string s = "no pude guardar "; W3dEscribirInt(s, perdidas);
+        s += (seam ? " costura(s) SEAM" : " borde(s) SHARP");
+        s += ": esa arista ya no existe en la malla (se borro o se movio la geometria despues de marcarla)";
+        avisos->push_back(s);
+    }
+    // orden numerico estable (el set viene ordenado por BYTES de float, que
+    // no es un orden util para un humano ni estable ante un re-merge).
+    // std::sort y no el doble for de antes: era O(n^2) y con 80.000 aristas
+    // marcadas se comia varios segundos EN CADA GUARDADO.
+    std::sort(pares.begin(), pares.end());
+    // la misma arista no se escribe dos veces (una clave (A,B) y otra (B,A) del set
+    // llegarian al mismo par): el lector la volveria a juntar y re-guardar cambiaria bytes
+    pares.erase(std::unique(pares.begin(), pares.end()), pares.end());
+}
+
+void W3dMallaRepDeCp(const Mesh* m, std::map<int, int>& repDeCp) {
+    repDeCp.clear();
+    if (!m) return;
+    const int nV = (m->vertex ? m->vertexSize : 0);
+    if ((int)m->vertCtrlPoint.size() == nV)
+        for (int i = 0; i < nV; i++) {
+            int cp = m->vertCtrlPoint[(size_t)i];
+            if (cp >= 0 && repDeCp.find(cp) == repDeCp.end()) repDeCp[cp] = i;
+        }
+}
+
+bool W3dMallaGrupoPorPunto(const Mesh* m, const W3dMallaPuntos& P, const std::map<int, int>& repDeCp,
+                           size_t g, std::vector<int>& pi, std::vector<float>& pw, std::vector<std::string>* avisos) {
+    pi.clear(); pw.clear();
+    if (!m || g >= m->vertexGroups.size() || !m->vertexGroups[g]) return false;
+    const VertexGroup* vg = m->vertexGroups[g];
+    const int nV = P.nV;
+    // control-point -> punto: el control-point es un indice de render-vert
+    // representante (vertCtrlPoint), asi que se traduce por su posicion.
+    std::set<int> vistos;
+    int choques = 0;
+    for (size_t k = 0; k < vg->verts.size() && k < vg->pesos.size(); k++) {
+        int cp = vg->verts[k];
+        int rv = -1;
+        if (!repDeCp.empty()) {
+            std::map<int, int>::const_iterator it = repDeCp.find(cp);
+            if (it != repDeCp.end()) rv = it->second;
+        } else if (cp >= 0 && cp < nV) rv = cp;
+        if (rv < 0) continue;
+        int p = P.rvAPunto[(size_t)rv];
+        if (p < 0) continue;
+        // DOS CONTROL-POINTS EN LA MISMA POSICION: en el archivo son UN punto.
+        // Es el caso NORMAL de una costura de UV o de color (el vertice se parte
+        // pero la posicion es una sola) y ahi los dos pesos son el MISMO valor:
+        // no se pierde nada, el punto ya lo representa. Solo hay perdida real
+        // cuando los pesos DIFIEREN -- eso pasa con una malla importada de
+        // glTF/FBX, donde el control-point lo trae el importador. Gana el
+        // primero; perderlo esta bien, perderlo EN SILENCIO no.
+        if (!vistos.insert(p).second) {
+            float ya = 0.0f;
+            for (size_t q = 0; q < pi.size(); q++) if (pi[q] == p) { ya = pw[q]; break; }
+            const float d = ya - vg->pesos[k];
+            if (d > 1e-6f || d < -1e-6f) choques++;
+            continue;
+        }
+        pi.push_back(p); pw.push_back(vg->pesos[k]);
+    }
+    if (choques > 0 && avisos) {
+        std::string s = "el vertex group '"; s += vg->nombre;
+        s += "' perdio "; W3dEscribirInt(s, choques);
+        s += " peso(s): son control-points distintos parados en la MISMA posicion y en el archivo son un solo punto";
+        avisos->push_back(s);
+    }
+    return true;
+}
+
+void W3dMallaFormaPorPunto(const Mesh* m, const W3dMallaPuntos& P, const std::map<int, int>& repDeCp,
+                           size_t k, std::vector<int>& pi, std::vector<float>& pd) {
+    pi.clear(); pd.clear();
+    if (!m || k >= m->shapeKeys.size()) return;
+    const W3dShapeKey& sk = m->shapeKeys[k];
+    const int nV = P.nV;
+    std::set<int> vistos;
+    for (size_t j = 0; j < sk.idx.size() && j * 3 + 2 < sk.d.size(); j++) {
+        int cp = sk.idx[j], rv = -1;
+        if (!repDeCp.empty()) { std::map<int, int>::const_iterator it = repDeCp.find(cp); if (it != repDeCp.end()) rv = it->second; }
+        else if (cp >= 0 && cp < nV) rv = cp;
+        if (rv < 0) continue;
+        int pt = P.rvAPunto[(size_t)rv];
+        if (pt < 0 || !vistos.insert(pt).second) continue;   // mismo punto (costura): el delta es el mismo
+        pi.push_back(pt); pd.push_back(sk.d[j*3]); pd.push_back(sk.d[j*3+1]); pd.push_back(sk.d[j*3+2]);
+    }
+}
+
+bool W3dMallaUVGrupoPorEsquina(const Mesh* m, size_t g, std::vector<int>& ci, std::vector<float>& cw) {
+    ci.clear(); cw.clear();
+    if (!m || g >= m->uvGroups.size() || !m->uvGroups[g]) return false;
+    const UVGroup* ug = m->uvGroups[g];
+    const int nV = (m->vertex ? m->vertexSize : 0);
+    std::vector<float> w((size_t)(nV > 0 ? nV : 1), 0.0f);
+    for (size_t k = 0; k < ug->verts.size() && k < ug->pesos.size(); k++) {
+        int rv = ug->verts[k];
+        if (rv >= 0 && rv < nV) w[(size_t)rv] = ug->pesos[k];
+    }
+    int L = 0;
+    for (size_t f = 0; f < m->faces3d.size(); f++)
+        for (size_t c = 0; c < m->faces3d[f].idx.size(); c++, L++) {
+            int gv = m->faces3d[f].idx[c];
+            if (gv < 0 || gv >= nV) continue;
+            if (w[(size_t)gv] > 0.0f) { ci.push_back(L); cw.push_back(w[(size_t)gv]); }
+        }
+    return true;
+}
+
+bool W3dMallaEscribir(const Mesh* m, std::string& out, std::vector<std::string>* avisos, int anclarRender) {
+    out.clear();
+    if (!m) return false;
+    // NO SE GUARDA ENCIMA DE UNA MALLA QUE NO ENTENDEMOS. El que llama ya deberia
+    // haber avisado con el nombre del bloque (W3dMallaBloqueQueFalta); esto es el
+    // cierre, para que ningun camino nuevo se saltee el freno por olvido.
+    if (!W3dMallaBloqueQueFalta(m).empty()) {
+        if (avisos)
+            avisos->push_back("no guardo esta malla: el archivo REQUIERE el bloque '" +
+                              W3dMallaBloqueQueFalta(m) + "' y esta version no lo entiende");
+        return false;
+    }
+
+    // ---- PUNTOS DE CONTROL: la IDENTIDAD de los vertices (ver W3dMallaCalcularPuntos, que
+    //      comparte con el .w3db): posicion + datos de punto; la geometria suelta no se suelda.
+    W3dMallaPuntos P;
+    W3dMallaCalcularPuntos(m, P);
+    const int nV = P.nV;
+    const std::vector<int>& rvAPunto = P.rvAPunto;
+    const std::vector<float>& pts = P.pts;
+    const int nP = P.nP;
+
+    // ---- esquinas (indice de TODAS las capas por esquina)
+    int nC = 0;
+    for (size_t f = 0; f < m->faces3d.size(); f++) nC += (int)m->faces3d[f].idx.size();
+    const int nF = (int)m->faces3d.size();
+
+    // ---- CABECERA + DIRECTIVAS ------------------------------------------
+    out += "W3DMESH 1\n";
+    out += "# malla de Whisk3D. texto por lineas, indices base 0.\n";
+    out += "# MAYUSCULA abre bloque (cierra END) | minuscula = directiva | espacio = dato\n";
+    // FRENO DE MANO: sin ENTENDER estos bloques el archivo no se puede interpretar.
+    // Un lector que vea aca un nombre que no conoce abre en SOLO LECTURA. Tiene que
+    // existir desde la version 1: agregarla despues NO sirve (los lectores viejos la
+    // ignorarian como cualquier directiva desconocida).
+    //
+    // SE RE-EMITE TAL CUAL VINO. Antes esta linea se escribia a mano siempre igual
+    // ("requiere V F") y por eso la directiva se AUTO-BORRABA: un archivo con
+    // "requiere V F CREASE" abierto y guardado por un Whisk3D que no conoce CREASE
+    // salia con la valvula de menos, el bloque CREASE preservado pero YA SIN NADIE
+    // QUE LO PROTEJA, y el guardado siguiente lo tiraba en silencio. Justo el
+    // degradado que 'requiere' existe para evitar. Ahora la lista viaja con la
+    // malla (W3dAjenos::requiere) y solo se pone el default cuando no salio de un
+    // archivo (malla nueva del editor).
+    if (!m->w3dmAjenos.requiere.empty()) {
+        out += "requiere";
+        for (size_t i = 0; i < m->w3dmAjenos.requiere.size(); i++) {
+            out += ' ';
+            out += W3dmNombreSano(m->w3dmAjenos.requiere[i], avisos, "de un bloque de 'requiere'");
+        }
+        out += "\n";
+    } else {
+        out += "requiere V F\n";
+    }
+    out += "nombre "; out += W3dmNombreSano(m->name, avisos, "de la malla"); out += "\n";
+    out += "puntos ";   W3dEscribirInt(out, nP); out += "\n";
+    out += "esquinas "; W3dEscribirInt(out, nC); out += "\n";
+    out += "caras ";    W3dEscribirInt(out, nF); out += "\n";
+    // rverts: solo tiene sentido cuando hay que ANCLAR indices de render (vertex anims)
+    // (anclarRender: -1 = si la malla tiene vertex anims; 0/1 = lo decide el que llama, ver el .h)
+    const bool conAnim = (anclarRender < 0) ? !m->animations.empty() : (anclarRender != 0);
+    if (conAnim) { out += "rverts "; W3dEscribirInt(out, nV); out += "\n"; }
+    out += "suave ";    W3dEscribirInt(out, m->meshSmooth ? 1 : 0); out += "\n";
+    // QUE CAPAS SALEN (y las LAZY: la derivada del render), decidido ANTES de escribir nada.
+    // Ver W3dMallaElegirCapas: el mismo criterio (y los mismos avisos) que usa el .w3db.
+    W3dMallaCapasSalen capas;
+    W3dMallaElegirCapas(m, nC, capas, avisos);
+    const bool uvDerivada = capas.uvDerivada, colDerivada = capas.colDerivada;
+    const std::vector<size_t>& uvSalen = capas.uv;
+    const std::vector<size_t>& colSalen = capas.col;
+    const int uvActivaSale = capas.uvActiva, colActivaSale = capas.colActiva;
 
     if (!m->uvMaps.empty())       { out += "uvactiva ";   W3dEscribirInt(out, uvActivaSale);  out += "\n"; }
     else if (uvDerivada)          { out += "uvactiva 0\n"; }
@@ -555,95 +840,22 @@ bool W3dMallaEscribir(const Mesh* m, std::string& out, std::vector<std::string>*
     //      solo si alguna de las dos la necesita.
     std::set<std::pair<int, int> > aristasReales;
     const bool hayMarcas = (!m->sharpEdges.empty() || !m->seamEdges.empty());
-    if (hayMarcas || !m->w3dmAjenos.bloques.empty()) {
-        for (size_t f = 0; f < m->faces3d.size(); f++) {
-            const MeshFace& F = m->faces3d[f];
-            for (size_t c = 0; c < F.idx.size(); c++) {
-                int ga = F.idx[c], gb = F.idx[(c + 1) % F.idx.size()];
-                if (ga < 0 || ga >= nV || gb < 0 || gb >= nV) continue;
-                int a = rvAPunto[(size_t)ga], b = rvAPunto[(size_t)gb];
-                if (a == b) continue;
-                aristasReales.insert(a < b ? std::make_pair(a, b) : std::make_pair(b, a));
-            }
-        }
-        for (size_t i = 0; i + 1 < m->looseEdges.size(); i += 2) {
-            int ga = m->looseEdges[i], gb = m->looseEdges[i + 1];
-            if (ga < 0 || ga >= nV || gb < 0 || gb >= nV) continue;
-            int a = rvAPunto[(size_t)ga], b = rvAPunto[(size_t)gb];
-            if (a == b) continue;
-            aristasReales.insert(a < b ? std::make_pair(a, b) : std::make_pair(b, a));
-        }
-    }
+    if (hayMarcas || !m->w3dmAjenos.bloques.empty()) W3dMallaAristasReales(m, P, aristasReales);
 
     // ---- SHARP / SEAM: en memoria son sets con clave de POSICION (no hay
     //      indice de arista en ningun lado); en el archivo van como PAR DE
     //      PUNTOS y al cargar se rearma la clave desde las posiciones leidas.
-    {
-        // INVARIANTE DE POSE (el tercero de la clase; el mismo que respeta la poda,
-        // ver Mesh::PodarMarcasSinArista y Mesh::PosicionesReposo): las claves de
-        // sharp/seam viven en el espacio de REPOSO. Con la malla POSADA por una vertex
-        // anim, 'mapaP' se armo con las posiciones DE LA POSE y NINGUNA clave resuelve
-        // -> el escritor las daba TODAS por perdidas y el archivo salia sin UNA SOLA
-        // marca. Ese es, literal, el sintoma que reporto el dueno: marcar, mover el
-        // playhead, guardar. Aca el mapa de busqueda se rearma con las posiciones del
-        // KEYFRAME BASE; rvAPunto (render-vert -> punto) NO depende de la pose, asi que
-        // los indices que se escriben son exactamente los mismos.
-        // (El guardado del proyecto ademas deja la malla en reposo antes de llamar
-        //  -W3dReposoVertexAnim-, que es lo que evita ademas hornear la pose como
-        //  geometria; esto cierra el camino directo al escritor.)
-        std::map<std::string, int> mapaReposo;
-        if (hayMarcas && m->PosadaPorVertexAnim()) {
-            const GLfloat* R = m->PosicionesReposo();
-            if (R && R != m->vertex)
-                for (int i = 0; i < nV; i++) {
-                    if (rvAPunto[(size_t)i] < 0) continue;
-                    mapaReposo.insert(std::make_pair(W3dmPosKey(&R[i * 3]), rvAPunto[(size_t)i]));
-                }
+    //      La validacion (y el invariante de POSE) vive en W3dMallaMarcasValidas.
+    for (int pasada = 0; pasada < 2; pasada++) {
+        std::vector<std::pair<int, int> > pares;
+        W3dMallaMarcasValidas(m, P, aristasReales, pasada != 0, pares, avisos);
+        if (pares.empty()) continue;
+        out += "\n"; CabBloque(out, pasada ? "SEAM" : "SHARP", (int)pares.size(), W3DM_ARISTA); out += "\n";
+        for (size_t i = 0; i < pares.size(); i++) {
+            out += ' '; W3dEscribirInt(out, pares[i].first);
+            out += ' '; W3dEscribirInt(out, pares[i].second); out += "\n";
         }
-        const std::map<std::string, int>& mapaClave = mapaReposo.empty() ? mapaP : mapaReposo;
-        for (int pasada = 0; pasada < 2; pasada++) {
-            const std::set<std::string>& src = pasada ? m->seamEdges : m->sharpEdges;
-            if (src.empty()) continue;
-            std::vector<std::pair<int, int> > pares;
-            pares.reserve(src.size());
-            int perdidas = 0;
-            for (std::set<std::string>::const_iterator it = src.begin(); it != src.end(); ++it) {
-                if (it->size() != 24) { perdidas++; continue; }
-                std::map<std::string, int>::const_iterator a = mapaClave.find(it->substr(0, 12));
-                std::map<std::string, int>::const_iterator b = mapaClave.find(it->substr(12, 12));
-                // (1) la clave de POSICION ya no cae en ningun punto de la malla: el vertice
-                //     se MOVIO o se BORRO. SILENCIOSO JAMAS: perderla esta bien, perderla sin
-                //     decirlo no (y el aviso no puede afirmar CUAL de las dos fue).
-                if (a == mapaClave.end() || b == mapaClave.end()) { perdidas++; continue; }
-                int x = a->second, y = b->second;
-                if (x == y) { perdidas++; continue; }
-                if (x > y) { int t = x; x = y; y = t; }
-                // (2) los dos puntos existen PERO ya no hay una arista entre ellos: es la
-                //     variante FANTASMA (borrar caras deja los puntos vivos, o un corte parte
-                //     la arista en dos). Validar solo las POSICIONES no alcanzaba y la marca
-                //     se escribia sobre una arista que no esta.
-                if (!aristasReales.count(std::make_pair(x, y))) { perdidas++; continue; }
-                pares.push_back(std::make_pair(x, y));
-            }
-            if (perdidas > 0 && avisos) {
-                std::string s = "no pude guardar "; W3dEscribirInt(s, perdidas);
-                s += (pasada ? " costura(s) SEAM" : " borde(s) SHARP");
-                s += ": esa arista ya no existe en la malla (se borro o se movio la geometria despues de marcarla)";
-                avisos->push_back(s);
-            }
-            // orden numerico estable (el set viene ordenado por BYTES de float, que
-            // no es un orden util para un humano ni estable ante un re-merge).
-            // std::sort y no el doble for de antes: era O(n^2) y con 80.000 aristas
-            // marcadas se comia varios segundos EN CADA GUARDADO.
-            std::sort(pares.begin(), pares.end());
-            if (pares.empty()) continue;
-            out += "\n"; CabBloque(out, pasada ? "SEAM" : "SHARP", (int)pares.size(), W3DM_ARISTA); out += "\n";
-            for (size_t i = 0; i < pares.size(); i++) {
-                out += ' '; W3dEscribirInt(out, pares[i].first);
-                out += ' '; W3dEscribirInt(out, pares[i].second); out += "\n";
-            }
-            out += "END\n";
-        }
+        out += "END\n";
     }
 
     // ---- EDGE / POINT: geometria SUELTA (hoy se pierde entera).
@@ -701,52 +913,14 @@ bool W3dMallaEscribir(const Mesh* m, std::string& out, std::vector<std::string>*
     //      indices no sobreviven; aca los INDICES SON el dato.
     // control-point -> PRIMER render-vert que lo usa (se arma UNA vez, no por grupo)
     std::map<int, int> repDeCp;
-    if ((int)m->vertCtrlPoint.size() == nV)
-        for (int i = 0; i < nV; i++) {
-            int cp = m->vertCtrlPoint[(size_t)i];
-            if (cp >= 0 && repDeCp.find(cp) == repDeCp.end()) repDeCp[cp] = i;
-        }
+    W3dMallaRepDeCp(m, repDeCp);
     for (size_t g = 0; g < m->vertexGroups.size(); g++) {
-        const VertexGroup* vg = m->vertexGroups[g];
-        if (!vg) continue;
-        // control-point -> punto: el control-point es un indice de render-vert
-        // representante (vertCtrlPoint), asi que se traduce por su posicion.
+        // el pasaje control-point -> punto (y el aviso de los pesos que chocan) es
+        // W3dMallaGrupoPorPunto, el mismo que usa el .w3db
         std::vector<int> pi;
         std::vector<float> pw;
-        std::set<int> vistos;
-        int choques = 0;
-        for (size_t k = 0; k < vg->verts.size() && k < vg->pesos.size(); k++) {
-            int cp = vg->verts[k];
-            int rv = -1;
-            if (!repDeCp.empty()) {
-                std::map<int, int>::iterator it = repDeCp.find(cp);
-                if (it != repDeCp.end()) rv = it->second;
-            } else if (cp >= 0 && cp < nV) rv = cp;
-            if (rv < 0) continue;
-            int p = rvAPunto[(size_t)rv];
-            if (p < 0) continue;
-            // DOS CONTROL-POINTS EN LA MISMA POSICION: en el archivo son UN punto.
-            // Es el caso NORMAL de una costura de UV o de color (el vertice se parte
-            // pero la posicion es una sola) y ahi los dos pesos son el MISMO valor:
-            // no se pierde nada, el punto ya lo representa. Solo hay perdida real
-            // cuando los pesos DIFIEREN -- eso pasa con una malla importada de
-            // glTF/FBX, donde el control-point lo trae el importador. Gana el
-            // primero; perderlo esta bien, perderlo EN SILENCIO no.
-            if (!vistos.insert(p).second) {
-                float ya = 0.0f;
-                for (size_t q = 0; q < pi.size(); q++) if (pi[q] == p) { ya = pw[q]; break; }
-                const float d = ya - vg->pesos[k];
-                if (d > 1e-6f || d < -1e-6f) choques++;
-                continue;
-            }
-            pi.push_back(p); pw.push_back(vg->pesos[k]);
-        }
-        if (choques > 0 && avisos) {
-            std::string s = "el vertex group '"; s += vg->nombre;
-            s += "' perdio "; W3dEscribirInt(s, choques);
-            s += " peso(s): son control-points distintos parados en la MISMA posicion y en el archivo son un solo punto";
-            avisos->push_back(s);
-        }
+        if (!W3dMallaGrupoPorPunto(m, P, repDeCp, g, pi, pw, avisos)) continue;
+        const VertexGroup* vg = m->vertexGroups[g];
         out += "\n"; CabBloque(out, "VG", (int)pi.size(), W3DM_PUNTO);
         out += " nombre="; out += W3dmNombreSano(vg->nombre, avisos, "de un vertex group"); out += "\n";
         for (size_t k = 0; k < pi.size(); k++) {
@@ -756,25 +930,31 @@ bool W3dMallaEscribir(const Mesh* m, std::string& out, std::vector<std::string>*
         out += "END\n";
     }
 
+    // ---- SHAPE: shape keys (formas de la malla: la cara que habla). Esparsas POR PUNTO, con el MISMO pasaje
+    //      control-point -> punto que los vertex groups (repDeCp + rvAPunto): "p dx dy dz" por linea. Los pesos NO
+    //      se guardan aca (los anima la escena, canal AnimShape).
+    for (size_t k = 0; k < m->shapeKeys.size(); k++) {
+        const W3dShapeKey& sk = m->shapeKeys[k];
+        std::vector<int> pi; std::vector<float> pd;
+        W3dMallaFormaPorPunto(m, P, repDeCp, k, pi, pd);
+        out += "\n"; CabBloque(out, "SHAPE", (int)pi.size(), W3DM_PUNTO);
+        out += " nombre="; out += W3dmNombreSano(sk.nombre, avisos, "de una shape key"); out += "\n";
+        for (size_t q = 0; q < pi.size(); q++) {
+            out += ' '; W3dEscribirInt(out, pi[q]);
+            out += ' '; W3dEscribirFloat(out, pd[q*3]);
+            out += ' '; W3dEscribirFloat(out, pd[q*3+1]);
+            out += ' '; W3dEscribirFloat(out, pd[q*3+2]); out += "\n";
+        }
+        out += "END\n";
+    }
+
     // ---- UVG: UV groups. En memoria son por RENDER-VERT; en el archivo van
     //      POR ESQUINA y se colapsan al leer (lossless: todas las esquinas de un
     //      render-vert comparten el peso por construccion).
     for (size_t g = 0; g < m->uvGroups.size(); g++) {
-        const UVGroup* ug = m->uvGroups[g];
-        if (!ug) continue;
-        std::vector<float> w((size_t)(nV > 0 ? nV : 1), 0.0f);
-        for (size_t k = 0; k < ug->verts.size() && k < ug->pesos.size(); k++) {
-            int rv = ug->verts[k];
-            if (rv >= 0 && rv < nV) w[(size_t)rv] = ug->pesos[k];
-        }
         std::vector<int> ci; std::vector<float> cw;
-        int L = 0;
-        for (size_t f = 0; f < m->faces3d.size(); f++)
-            for (size_t c = 0; c < m->faces3d[f].idx.size(); c++, L++) {
-                int gv = m->faces3d[f].idx[c];
-                if (gv < 0 || gv >= nV) continue;
-                if (w[(size_t)gv] > 0.0f) { ci.push_back(L); cw.push_back(w[(size_t)gv]); }
-            }
+        if (!W3dMallaUVGrupoPorEsquina(m, g, ci, cw)) continue;
+        const UVGroup* ug = m->uvGroups[g];
         out += "\n"; CabBloque(out, "UVG", (int)ci.size(), W3DM_ESQUINA);
         out += " nombre="; out += W3dmNombreSano(ug->nombre, avisos, "de un UV group"); out += "\n";
         for (size_t k = 0; k < ci.size(); k++) {
@@ -808,6 +988,19 @@ bool W3dMallaEscribir(const Mesh* m, std::string& out, std::vector<std::string>*
     //  dominio global -> se reescribe siempre; dominio indexado -> solo si la
     //  cantidad de ese dominio NO cambio. Si cambio se DESCARTA con aviso,
     //  porque re-escribir indices corridos seria PEOR que perderlos.
+    // los bloques BINARIOS de una version mas nueva (vinieron de un .w3db) no tienen
+    // representacion en texto: se pierden, pero NO en silencio.
+    if (!m->w3dmAjenos.bloquesBin.empty() && avisos) {
+        std::string s2 = "no pude conservar ";
+        W3dEscribirInt(s2, (int)m->w3dmAjenos.bloquesBin.size());
+        s2 += " bloque(s) binario(s) de una version mas nueva de Whisk3D (";
+        for (size_t i = 0; i < m->w3dmAjenos.bloquesBin.size(); i++) {
+            if (i) s2 += " ";
+            s2 += m->w3dmAjenos.bloquesBin[i].nombre;
+        }
+        s2 += "): el formato de texto no los puede llevar; guarda en binario para conservarlos";
+        avisos->push_back(s2);
+    }
     if (!m->w3dmAjenos.bloques.empty()) {
         // cantidad de aristas UNICAS (pares de puntos sin repetir) de F + EDGE:
         // es el MISMO set que valida SHARP/SEAM, armado una sola vez mas arriba.
@@ -864,6 +1057,7 @@ struct GrupoLeido {
     std::string nombre;
     std::vector<int>   idx;
     std::vector<float> peso;
+    std::vector<float> d;      // SHAPE: 3 por idx (dx, dy, dz)
 };
 
 // cabecera de bloque ya parseada
@@ -950,7 +1144,7 @@ bool W3dMallaLeer(const char* datos, size_t n, Mesh* m, W3dMallaInfo* info) {
     std::vector<int>   sharp, seam, edgeSuelta, puntoSuelto;
     std::vector<std::string> parts;
     std::vector<int> partmatI; std::vector<std::string> partmatN;
-    std::vector<GrupoLeido> vgs, uvgs;
+    std::vector<GrupoLeido> vgs, uvgs, formas;
     std::vector<int> rvmap; int rvmapRverts = -1;
     std::vector<W3dBloqueAjeno> ajenos;
     std::vector<std::string> requiere;
@@ -1135,6 +1329,11 @@ bool W3dMallaLeer(const char* datos, size_t n, Mesh* m, W3dMallaInfo* info) {
                 if (!W3dLeerEntero(p, lf, a)) continue;
                 W3dLeerFloat(p, lf, w);
                 grupo.idx.push_back(a); grupo.peso.push_back(w);
+            } else if (cab.nombre == "SHAPE") {
+                int a = 0; float dx = 0, dy = 0, dz = 0;
+                if (!W3dLeerEntero(p, lf, a)) continue;
+                W3dLeerFloat(p, lf, dx); W3dLeerFloat(p, lf, dy); W3dLeerFloat(p, lf, dz);
+                grupo.idx.push_back(a); grupo.d.push_back(dx); grupo.d.push_back(dy); grupo.d.push_back(dz);
             } else if (cab.nombre == "RVMAP") {
                 int a = 0;
                 while (W3dLeerEntero(p, lf, a)) rvmap.push_back(a);
@@ -1153,6 +1352,7 @@ bool W3dMallaLeer(const char* datos, size_t n, Mesh* m, W3dMallaInfo* info) {
         if (cab.nombre == "COL") capasCol.push_back(capa);
         if (cab.nombre == "VG")  vgs.push_back(grupo);
         if (cab.nombre == "UVG") uvgs.push_back(grupo);
+        if (cab.nombre == "SHAPE") formas.push_back(grupo);
     }
 
     // ---- "requiere": si nombra un bloque que no conocemos, el archivo se abre
@@ -1421,7 +1621,11 @@ bool W3dMallaLeer(const char* datos, size_t n, Mesh* m, W3dMallaInfo* info) {
                 float v0 = uvAct ? uvAct->uv[(size_t)L * 2 + 1] : 0.0f;
                 unsigned char r = 255, g = 255, b = 255, a = 255;
                 if (colAct) { r = colAct->col[(size_t)L * 4]; g = colAct->col[(size_t)L * 4 + 1]; b = colAct->col[(size_t)L * 4 + 2]; a = colAct->col[(size_t)L * 4 + 3]; }
-                char buf[40]; int q = 0;
+                // el PUNTO es parte de la clave: dos puntos distintos en la misma posicion (con otros
+                // pesos) nunca se funden en un render-vert; las esquinas del MISMO punto con la misma
+                // UV / normal / color si (eso es lo que une las caras)
+                char buf[44]; int q = 0;
+                memcpy(buf + q, &pi, 4); q += 4;
                 memcpy(buf + q, &px, 4); q += 4; memcpy(buf + q, &py, 4); q += 4; memcpy(buf + q, &pz, 4); q += 4;
                 memcpy(buf + q, &u0, 4); q += 4; memcpy(buf + q, &v0, 4); q += 4;
                 buf[q++] = (char)nbx; buf[q++] = (char)nby; buf[q++] = (char)nbz;
@@ -1590,7 +1794,7 @@ bool W3dMallaLeer(const char* datos, size_t n, Mesh* m, W3dMallaInfo* info) {
     //  quedaba incompleto (una animacion por grupos partia la malla en dos por la
     //  costura). Ahora el peso de una posicion va a TODOS sus render-verts.
     std::vector<std::vector<int> > rvsDePunto;
-    if (!vgs.empty() && nP > 0) {
+    if ((!vgs.empty() || !formas.empty()) && nP > 0) {
         rvsDePunto.resize((size_t)nP);
         for (int gi = 0; gi < nRV && gi < (int)renderAPunto.size(); gi++) {
             int p = renderAPunto[(size_t)gi];
@@ -1619,6 +1823,27 @@ bool W3dMallaLeer(const char* datos, size_t n, Mesh* m, W3dMallaInfo* info) {
         (void)repartidos;   // el reparto es la conducta correcta: no se avisa
         m->vertexGroups.push_back(vg);
     }
+    // SHAPE KEYS: de PUNTO a TODOS sus render-verts (el mismo espacio que los vertex groups de arriba, que es el
+    // que usa el skinning por control-point)
+    for (size_t g = 0; g < formas.size(); g++) {
+        W3dShapeKey sk; sk.nombre = formas[g].nombre;
+        for (size_t k = 0; k < formas[g].idx.size() && k * 3 + 2 < formas[g].d.size(); k++) {
+            int p = formas[g].idx[k];
+            if (p < 0 || p >= nP || puntoARender[(size_t)p] < 0) continue;
+            const std::vector<int>* rvs = rvsDePunto.empty() ? NULL : &rvsDePunto[(size_t)p];
+            if (rvs && !rvs->empty()) {
+                for (size_t i = 0; i < rvs->size(); i++) {
+                    sk.idx.push_back((*rvs)[i]);
+                    sk.d.push_back(formas[g].d[k*3]); sk.d.push_back(formas[g].d[k*3+1]); sk.d.push_back(formas[g].d[k*3+2]);
+                }
+            } else {
+                sk.idx.push_back(puntoARender[(size_t)p]);
+                sk.d.push_back(formas[g].d[k*3]); sk.d.push_back(formas[g].d[k*3+1]); sk.d.push_back(formas[g].d[k*3+2]);
+            }
+        }
+        m->shapeKeys.push_back(sk);
+    }
+    m->shapePesos.assign(m->shapeKeys.size(), 0.0f);
     // -1 ("ninguno activo") ES UN VALOR VALIDO y hay que respetarlo: normalizarlo a 0 hacia que
     // guardar -> abrir -> guardar diera bytes distintos por un dato que nadie cambio.
     m->grupoActivo = (vgActiva >= -1 && vgActiva < (int)m->vertexGroups.size()) ? vgActiva : (m->vertexGroups.empty() ? -1 : 0);
@@ -1709,8 +1934,20 @@ bool W3dMallaLeer(const char* datos, size_t n, Mesh* m, W3dMallaInfo* info) {
         m->w3dmAjenos.nAristas = (int)ar.size();
     }
 
-    // el vertCtrlPoint viejo no vale nada con la geometria nueva
-    m->vertCtrlPoint.clear();
+    // LOS PUNTOS DEL ARCHIVO SON LA IDENTIDAD DE LOS VERTICES: render-vert -> el primer render-vert de SU
+    // punto, en el mapa del skinning (vertCtrlPoint) y en el agrupamiento del editor (posRep). Antes el mapa
+    // se rehacia POR POSICION al cargar y dos puntos distintos parados en el mismo lugar (cada uno con su
+    // hueso) terminaban usando los pesos del primero: la malla se estiraba al animar. El que carga tiene que
+    // conservar este posRep (CalcularBordes(..., reagruparPosRep = false)).
+    m->vertCtrlPoint.assign((size_t)nRV, 0);
+    m->posRep.assign((size_t)nRV, 0);
+    for (int gi = 0; gi < nRV; gi++) {
+        int p = (gi < (int)renderAPunto.size()) ? renderAPunto[(size_t)gi] : -1;
+        int r = (p >= 0 && p < nP && puntoARender[(size_t)p] >= 0) ? puntoARender[(size_t)p] : gi;
+        if (r > gi) r = gi;          // el representante es el MENOR indice (contrato de posRep)
+        m->vertCtrlPoint[(size_t)gi] = r;
+        m->posRep[(size_t)gi] = r;
+    }
     m->uvSelVert.clear();
     // el techo de avisos no puede esconder que hay mas (ver W3dMallaInfo::avisos)
     if (info && info->avisosDeMas > 0) {

@@ -93,6 +93,10 @@ namespace w3dEngine {
     // --- viewport y recorte (coordenadas ya en el sistema del backend) ---
     void Viewport(int x, int y, int w, int h);
     void Scissor(int x, int y, int w, int h);
+    // lectura del estado actual (para guardar y reponer: un objeto que dibuja en un sub-rectangulo)
+    void GetViewport(int xywh[4]);
+    void GetScissor(int xywh[4]);
+    bool ScissorActivo();
 
     // --- matrices del pipeline fijo ---
     enum Matrix { Projection, ModelView, TextureMatrix };
@@ -165,6 +169,10 @@ namespace w3dEngine {
     void FogStart(float z);
     void FogEnd(float z);
     void FogColor(const float* rgba);
+    // modo completo (el objeto Niebla): 0 = LINEAL (start/end), 1 = EXP, 2 = EXP2 (densidad). GL fijo lo
+    // calcula por vertice (barato en el N95); el backend GLES2 lo replica en el shader.
+    void FogModo(int modo);
+    void FogDensidad(float d);
 
     // --- luz 0 del pipeline fijo ---
     enum LightFv { LightAmbient, LightDiffuse, LightSpecular, LightPosition };
@@ -181,7 +189,8 @@ namespace w3dEngine {
 
     // mezcla alfa estandar: SRC_ALPHA, ONE_MINUS_SRC_ALPHA (para Blend)
     void BlendAlpha();
-    void BlendMode(int modo); // capa multi-pass: 0=Mix(alpha encima), 1=Multiply, 2=Add
+    void BlendMode(int modo); // capa multi-pass (W3dCapaMezcla): 0=Mix(alpha encima), 1=Multiply, 2=Add,
+                              // 3=Multiply 2x (dst*src*2, lightmaps con overbright), 4=Subtract, 5=Screen
 
     // --- MODOS DE MEZCLA (blend) ---
     // Todos con glBlendFunc estandar -> andan en GL ES 1.1 (N95), PC y WebGL. El unico que

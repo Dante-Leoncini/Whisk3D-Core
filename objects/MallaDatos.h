@@ -42,9 +42,13 @@ struct MallaDatos {
     GLbyte*    normals;      // 3 por vert (NULL si no trae normales)
     GLfloat*   uv;           // 2 por vert (NULL si no trae uv)
     MeshIndex* faces;        // index buffer
+    // true = es un MallaRecurso (la malla 3D con nombre del proyecto, MallaRecurso.h): el almacen
+    // la DESCARGA al soltar la ultima referencia (el recurso sigue en el registro); false = la
+    // geometria compartida de un .obj, que se borra entera.
+    bool       esRecurso;
 
     MallaDatos() : vertexSize(0), facesSize(0), vertex(0), vertexColor(0),
-                   normals(0), uv(0), faces(0) {}
+                   normals(0), uv(0), faces(0), esRecurso(false) {}
     ~MallaDatos();           // libera todos los arrays
     long Bytes() const;      // medida para meminfo
 };

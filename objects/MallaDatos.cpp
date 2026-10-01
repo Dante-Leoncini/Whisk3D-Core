@@ -11,6 +11,7 @@
 //  nadie registra, el hook queda NULL y Mesh no depende del almacen.
 // ============================================================================
 #include "MallaDatos.h"
+#include "MallaRecurso.h"   // W3dMallasAsegurarOps: el alta del tipo en el almacen
 #include "io/W3dRecursos.h"
 #include <stdio.h>
 
@@ -33,24 +34,10 @@ static bool gMallaCacheOn = true;
 void MallasCacheActivo(bool on) { gMallaCacheOn = on; }
 bool MallasCacheEstaActivo()    { return gMallaCacheOn; }
 
-// el hook que Mesh.cpp usa para soltar la referencia sin conocer el almacen
-extern void (*W3dMallaDatosSoltarHook)(void*);   // definido en Mesh.cpp
-
-static bool OpLiberarMalla(void* dato) { delete (MallaDatos*)dato; return true; }
-
-static void SoltarRecMalla(void* rec) {
-    W3dRecursoSoltar((W3dRecurso*)rec, W3DREC_PERMANENTE);
-}
-
-static void AsegurarOpsMalla() {
-    static bool listo = false;
-    if (listo) return;
-    W3dRecursoOps ops;             // Cargar queda NULL: las mallas compartidas
-    ops.Liberar = OpLiberarMalla;  // las PRODUCE el importador, no el almacen
-    W3dRecursosRegistrarTipo(W3DREC_MALLA, ops);
-    W3dMallaDatosSoltarHook = SoltarRecMalla;
-    listo = true;
-}
+// los ops del tipo W3DREC_MALLA (Cargar/Liberar) y el gancho con el que Mesh suelta la
+// referencia se registran en UN solo lugar, junto con las mallas del proyecto: el tipo es
+// el mismo para la geometria de un .obj y para una malla con nombre (MallaRecurso.cpp).
+static void AsegurarOpsMalla() { W3dMallasAsegurarOps(); }
 
 void W3dMallaCompartirTrasImport(Mesh* m, const std::string& id) {
     if (!gMallaCacheOn || !m || !m->vertex || m->vertexSize <= 0 || id.empty()) return;

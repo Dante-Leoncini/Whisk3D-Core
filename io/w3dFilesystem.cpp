@@ -46,6 +46,40 @@ W3dAlmacen* W3dAlmacenMontado()      { return gAlmacenMontado; }
 
 #include <string>
 #include <vector>
+#include <map>
+
+// ---------------------------------------------------------------------------
+//  LOS ALMACENES CON NOMBRE (las librerias, ver W3dAlmacen.h): "lib:<nombre>/..."
+//  Pocos y consultados por nombre: un mapa alcanza (no hay recorrido por frame).
+// ---------------------------------------------------------------------------
+static std::map<std::string, W3dAlmacen*> gAlmacenesNombrados;
+void W3dAlmacenRegistrar(const std::string& nombre, W3dAlmacen* a) {
+    if (nombre.empty()) return;
+    if (a) gAlmacenesNombrados[nombre] = a;
+    else gAlmacenesNombrados.erase(nombre);
+}
+W3dAlmacen* W3dAlmacenPorNombre(const std::string& nombre) {
+    std::map<std::string, W3dAlmacen*>::const_iterator it = gAlmacenesNombrados.find(nombre);
+    return it == gAlmacenesNombrados.end() ? 0 : it->second;
+}
+bool (*W3dAlmacenPedirHook)(const std::string& nombre) = 0;
+// el almacen de la libreria 'nombre': el registrado o, si no hay, el que el editor monte ahora (W3dAlmacenPedirHook)
+static W3dAlmacen* AlmacenDeLibreria(const std::string& nombre) {
+    W3dAlmacen* a = W3dAlmacenPorNombre(nombre);
+    if (!a && W3dAlmacenPedirHook && W3dAlmacenPedirHook(nombre)) a = W3dAlmacenPorNombre(nombre);
+    return a;
+}
+bool W3dRutaDeLibreria(const std::string& ruta, std::string* nombre, std::string* entrada) {
+    if (ruta.size() < 7 || ruta.compare(0, 4, "lib:") != 0) return false;
+    const size_t barra = ruta.find('/', 4);
+    if (barra == std::string::npos || barra == 4 || barra + 1 >= ruta.size()) return false;
+    if (nombre) *nombre = ruta.substr(4, barra - 4);
+    if (entrada) *entrada = ruta.substr(barra + 1);
+    return true;
+}
+std::string W3dRutaLibreriaEmpaquetada(const std::string& nombre, const std::string& entrada) {
+    return "librerias/" + nombre + "/" + entrada;
+}
 #include <cstdlib>      // getenv
 #include <cstdio>       // fopen (RutaExiste de archivos en Symbian)
 
@@ -386,6 +420,20 @@ namespace w3dFileSystem {
 
     bool ReadFileBytes(const std::string& path, std::vector<unsigned char>& out) {
         out.clear();
+        // UNA ENTRADA DE LIBRERIA ("lib:<nombre>/texturas/x.png", ver W3dAlmacen.h): la lee el
+        // almacen de ESA libreria; sin almacen (el juego compilado), su copia empaquetada
+        {
+            std::string lib, ent;
+            if (W3dRutaDeLibreria(path, &lib, &ent)) {
+                W3dAlmacen* a = AlmacenDeLibreria(lib);
+                if (a) {
+                    if (a->Leer(Normaliza(ent), out)) return true;
+                    out.clear();
+                    return false;
+                }
+                return ReadFileBytes(W3dRutaLibreriaEmpaquetada(lib, Normaliza(ent)), out);
+            }
+        }
         // LA RUTA NORMALIZADA (sin "." ni ".."). El pak y el AAssetManager buscan por
         // NOMBRE EXACTO: no existe un "directorio actual" que resuelva los ".." como
         // hace fopen. Un .mtl escribe sus texturas relativas al .obj
@@ -574,6 +622,15 @@ namespace w3dFileSystem {
     // preguntar antes de sobrescribir (render/export).
     bool FileExists(const std::string& path) {
         if (path.empty()) return false;
+        // UNA ENTRADA DE LIBRERIA: la mira el almacen de esa libreria (o su copia empaquetada)
+        {
+            std::string lib, ent;
+            if (W3dRutaDeLibreria(path, &lib, &ent)) {
+                W3dAlmacen* a = AlmacenDeLibreria(lib);
+                if (a) return a->Existe(Normaliza(ent));
+                return FileExists(W3dRutaLibreriaEmpaquetada(lib, Normaliza(ent)));
+            }
+        }
         // el CONTENEDOR montado cuenta como "existe": en el formato v4 la ruta de
         // un asset interno ES su nombre de entrada, y media docena de call sites
         // (la escena UI que se va a cargar, el icono del proyecto, el fallback de

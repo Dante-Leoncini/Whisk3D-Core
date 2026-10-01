@@ -83,10 +83,19 @@
 //  Android/web/Symbian), asi que NO puede llamar a nada que viva en main/ (el
 //  editor): el lector deja la malla con sus DATOS y el que llama cierra con
 //  ReagruparMeshParts() + CalcularBordes() + AplicarCapasAlRender().
+//
+//  EL MISMO DATO EN BINARIO: el guardado escribe por defecto la malla en .w3db
+//  (W3dMallaBin.h), que trae ese cierre YA HECHO y abre con un memcpy. Este texto
+//  queda para quien quiera diffs legibles (opcion del proyecto "formatoMallas":
+//  "texto") y para los .w3d de antes. Los dos escritores comparten las piezas del
+//  final de este archivo: la misma malla vuelve igual de cualquiera de los dos.
 // ============================================================================
 
 #include <string>
 #include <vector>
+#include <map>
+#include <set>
+#include <utility>
 #include <cstddef>
 
 class Mesh;
@@ -138,7 +147,13 @@ enum { kW3dmMaxAvisos = 200 };
 //
 // DEVUELVE false (y NO escribe nada) si la malla esta bajo el freno de mano
 // "requiere": ver W3dMallaBloqueQueFalta.
-bool W3dMallaEscribir(const Mesh* m, std::string& out, std::vector<std::string>* avisos = 0);
+//
+// 'anclarRender': si el archivo lleva el ancla de los render-verts (directiva rverts + bloque
+// RVMAP, el orden de memoria que indexan las vertex anims). -1 (default) = solo si ESTA malla
+// tiene vertex anims; 1 = siempre (una malla 3D COMPARTIDA, MallaRecurso.h, cuyo recurso usa
+// otro objeto con vertex anims: el orden es de todos sus usuarios); 0 = nunca.
+bool W3dMallaEscribir(const Mesh* m, std::string& out, std::vector<std::string>* avisos = 0,
+                      int anclarRender = -1);
 
 // EL FRENO DE MANO. "" = la malla se puede guardar. Si no, devuelve el NOMBRE del
 // bloque que el archivo declaro obligatorio con "requiere" y esta version NO
@@ -161,5 +176,71 @@ bool W3dMallaLeerTexto(const std::string& txt, Mesh* m, W3dMallaInfo* info);
 
 // true si el nombre es un bloque que ESTA version entiende (lo usa "requiere").
 bool W3dMallaBloqueConocido(const std::string& nombre);
+
+// ============================================================================
+//  PIEZAS DEL ESCRITOR QUE COMPARTE EL .w3db (io/W3dMallaBin.h, la malla BINARIA)
+//
+//  El .w3dm (texto) y el .w3db (binario) guardan LA MISMA malla: que es un PUNTO,
+//  que capas salen, que marcas siguen siendo una arista y como viajan los pesos se
+//  decide UNA sola vez, aca, con el mismo codigo. Asi una malla guardada en texto y
+//  la misma guardada en binario vuelven IDENTICAS al abrirlas (lo asserta el
+//  harness con mallafoto / mallafotoigual). Los avisos son los mismos tambien.
+// ============================================================================
+
+// LOS PUNTOS de la malla (el vertice que el usuario cuenta: un cubo tiene 8). Dos
+// render-verts son el mismo punto si tienen la misma POSICION (bytes) y los mismos
+// DATOS DE PUNTO (pesos de cada vertex group, deltas de cada shape key); la geometria
+// SUELTA lleva siempre su punto propio. Guardar nunca suelda lo que la malla no tiene
+// soldado: esta es la identidad que el lector devuelve en vertCtrlPoint/posRep.
+struct W3dMallaPuntos {
+    int nV;                            // render-verts (0 si la malla no tiene vertex[])
+    int nP;                            // puntos
+    std::vector<int>   rvAPunto;       // render-vert -> punto
+    std::vector<float> pts;            // xyz de cada punto (3 por punto)
+    // posicion (12 bytes) -> TODOS los puntos parados ahi, de menor a mayor (sharp/seam
+    // se indexan por posicion)
+    std::map<std::string, std::vector<int> > porPos;
+    W3dMallaPuntos() : nV(0), nP(0) {}
+};
+void W3dMallaCalcularPuntos(const Mesh* m, W3dMallaPuntos& out);
+
+// QUE CAPAS SALEN al archivo. Una capa UV/color que no mide lo que la topologia dice
+// (nC esquinas) no sale y se avisa; el indice de la ACTIVA es el de la lista ESCRITA.
+// Capas LAZY (la malla todavia no las materializo): sale la version derivada del
+// render, con los nombres que les pondria PoblarCapas ("UVMap" / "Col").
+struct W3dMallaCapasSalen {
+    std::vector<size_t> uv, col;   // indices en uvMaps / colorLayers, en su orden
+    int  uvActiva, colActiva;      // la ACTIVA dentro de la lista escrita (-1 = ninguna)
+    bool uvDerivada, colDerivada;  // no hay capas: sale la derivada del render
+    W3dMallaCapasSalen() : uvActiva(-1), colActiva(-1), uvDerivada(false), colDerivada(false) {}
+};
+void W3dMallaElegirCapas(const Mesh* m, int nC, W3dMallaCapasSalen& out, std::vector<std::string>* avisos);
+
+// las ARISTAS REALES de la malla: pares de PUNTOS (a < b), sin repetir, de las caras + la
+// geometria suelta. Validan SHARP/SEAM y cuentan el dominio 'arista' de los bloques ajenos.
+void W3dMallaAristasReales(const Mesh* m, const W3dMallaPuntos& P, std::set<std::pair<int, int> >& out);
+
+// las marcas SHARP (seam=false) o SEAM (seam=true) que siguen siendo una arista real, como
+// PARES DE PUNTOS ordenados y sin repetir. Lo que se perdio (la posicion ya no cae en ningun
+// punto, o no hay arista entre esos puntos) se avisa. Respeta el invariante de POSE.
+void W3dMallaMarcasValidas(const Mesh* m, const W3dMallaPuntos& P, const std::set<std::pair<int, int> >& aristas,
+                           bool seam, std::vector<std::pair<int, int> >& pares, std::vector<std::string>* avisos);
+
+// control-point -> PRIMER render-vert que lo usa (vacio si vertCtrlPoint no cubre la malla)
+void W3dMallaRepDeCp(const Mesh* m, std::map<int, int>& out);
+// los pesos del vertex group g POR PUNTO, en orden de aparicion y sin repetir punto (el
+// primero gana; dos control-points distintos en el mismo punto con OTRO peso se avisan).
+// false = el grupo es NULL (no sale).
+bool W3dMallaGrupoPorPunto(const Mesh* m, const W3dMallaPuntos& P, const std::map<int, int>& repDeCp,
+                           size_t g, std::vector<int>& pi, std::vector<float>& pw, std::vector<std::string>* avisos);
+// los deltas de la shape key k POR PUNTO (3 floats por punto), mismo pasaje que los grupos
+void W3dMallaFormaPorPunto(const Mesh* m, const W3dMallaPuntos& P, const std::map<int, int>& repDeCp,
+                           size_t k, std::vector<int>& pi, std::vector<float>& pd);
+// el UV group g POR ESQUINA: (esquina, peso) de las esquinas con peso > 0. false = NULL.
+bool W3dMallaUVGrupoPorEsquina(const Mesh* m, size_t g, std::vector<int>& ci, std::vector<float>& cw);
+
+// un NOMBRE listo para el archivo: el unico caracter que el formato no puede representar
+// es el SALTO DE LINEA; se cambia por un espacio y se avisa ('que' dice de quien es).
+std::string W3dMallaNombreSano(const std::string& n, std::vector<std::string>* avisos, const char* que);
 
 #endif

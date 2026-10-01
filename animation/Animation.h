@@ -26,6 +26,8 @@ unsigned int w3dGetTicks();
 
 #include "objects/Objects.h"
 
+class W3dClipJer;   // animation/W3dAnimSet.h: un clip de jerarquia (la vista de edicion lo nombra)
+
 // Variables globales
 extern bool PlayAnimation;   // true = reproduciendo (avanza CurrentFrame en cada tick)
 extern int AnimPlayDir;      // direccion del play: +1 adelante, -1 en reversa
@@ -62,8 +64,12 @@ extern unsigned int lastRenderTime;
 //   AnimAtten:     LUZ, atenuacion: constante=AnimX, lineal=AnimY, cuadratica=AnimZ
 //   AnimSpot:      LUZ, spot: cutoff(grados)=AnimX, exponent=AnimY
 //   AnimLightMisc: LUZ, GL light index=AnimX, direccional(0/1)=AnimY (interpolacion CONSTANTE)
+//   AnimCamActiva: la pista "CAMARA ACTIVA" de una animacion de ESCENA (SceneAnimation::camPista). El valor de
+//                  cada keyframe es un INDICE en SceneAnimation::camNombres; interpolacion CONSTANTE (un corte).
 enum { AnimPosition, AnimRotation, AnimScale, AnimVisible, AnimRender, AnimVertex, AnimFov, AnimColor,
-       AnimClip, AnimAmbient, AnimSpecular, AnimAtten, AnimSpot, AnimLightMisc };
+       AnimClip, AnimAmbient, AnimSpecular, AnimAtten, AnimSpot, AnimLightMisc, AnimCamActiva, AnimShape };
+//   AnimShape: PESO de una SHAPE KEY de una malla (Mesh::shapeKeys); el COMPONENTE es el indice de la forma (0..n-1,
+//              no solo X/Y/Z). Ej: la cara que habla en una cinematica.
 // AnimVertex: NO es una curva de canal (no vive en AnimProperty). Es el id que usa el
 // dope sheet para la fila de KEYFRAMES DE VERTICES (los frames de la vertex anim). El
 // dope lo trata como un canal seleccionable, pero las operaciones (mover/borrar/interp)
@@ -141,6 +147,9 @@ class Vector3; // math/Vector3.h (lo incluye el .cpp)
 // evalua las 3 curvas (X/Y/Z) de una propiedad en 'frame'. Cada componente se evalua POR SEPARADO: si Y no
 // tiene keyframes propios, ese componente queda en su 'def'.
 Vector3 EvalPropVec(const std::vector<AnimProperty>& props, int property, int frame, const Vector3& def);
+// igual en frame CONTINUO (EvalF): el juego interpola entre dos frames del clip (sin tirones si el render no va
+// a multiplo de los fps de la animacion)
+Vector3 EvalPropVecF(const std::vector<AnimProperty>& props, int property, float frame, const Vector3& def);
 // devuelve (creando si falta) la curva (property, component) de una lista de propiedades
 AnimProperty& PropertyDeLista(std::vector<AnimProperty>& props, int property, int component);
 // pone/actualiza un keyframe en 'frame' con 'value', manteniendo la lista ordenada por frame
@@ -175,8 +184,49 @@ public:
     int endFrame;
     int fps;
     std::vector<AnimationObject> objetos; // curvas guardadas (vacio mientras esta es la escena activa)
-    SceneAnimation(const std::string& n) : name(n), startFrame(1), endFrame(250), fps(30) {}
+    // PISTA "CAMARA ACTIVA" (los cortes de una cinematica): 0 o 1 curva (Property AnimCamActiva, componente X) cuyos
+    // keyframes valen un INDICE en camNombres. Va en un vector (y no suelta) para que el dope sheet y el undo la
+    // traten como cualquier curva (mover / borrar / escalar / Ctrl+Z). A DIFERENCIA de 'objetos' NO se hace swap
+    // con un global al activar la escena: vive siempre aca. Las camaras van por NOMBRE (sobreviven al guardado).
+    std::vector<AnimProperty> camPista;
+    std::vector<std::string>  camNombres;
+    // VISTA DE EDICION de un CLIP DE JERARQUIA (animation/W3dAnimSet.h: los clips que un objeto raiz usa
+    // para animarse a si mismo y a sus hijos por ruta de nombres; viven COMPARTIDOS en una biblioteca). El
+    // editor los edita como una animacion de escena mas -keyframes, dope sheet, curvas, Auto Key, undo- sobre
+    // SU raiz: la vista es una COPIA de las curvas del clip atada a los objetos de esa raiz, que se escribe de
+    // vuelta en el clip (W3dClipVistaEscribir) al dejar de editarla, al guardar, al dar Play... No se guarda
+    // (el clip vive en su biblioteca) y animEscena() / escenaCapa() / la cinematica de una escena no la ven.
+    //   - su nombre es el del clip (unico entre los de su biblioteca);
+    //   - la pista de la RAIZ es relativa (ver W3dAnimSet.h): al atarla se le suma lo que hace falta para que
+    //     el primer frame caiga donde esta la raiz (raizOff*), y al escribirla se le resta.
+    bool esClip;             // true = vista de un clip de jerarquia
+    Object* duenio;          // su raiz (NULL con esClip = la raiz se borro: la vista queda huerfana)
+    W3dClipJer* clipJer;     // el clip que edita (se valida con su serie: W3dClipVistaViva)
+    unsigned serieJer;       // la serie del clip al atarla
+    unsigned versionVista;   // la version del clip que tiene copiada (distinta = la vista quedo vieja)
+    Vector3 raizOffPos, raizOffRot, raizOffEsc;   // lo que se sumo a las curvas de la raiz al atarla
+    SceneAnimation(const std::string& n) : name(n), startFrame(1), endFrame(250), fps(30), esClip(false), duenio(0),
+                                           clipJer(0), serieJer(0), versionVista(0),
+                                           raizOffPos(0, 0, 0), raizOffRot(0, 0, 0), raizOffEsc(0, 0, 0) {}
 };
+
+// ---- PISTA "CAMARA ACTIVA" de una animacion de escena ----
+// la curva de la escena 'escena' (NULL si no tiene y !crear)
+AnimProperty* W3dCamPista(int escena, bool crear);
+// indice del nombre en camNombres (lo agrega si falta)
+int  W3dCamNombreIdx(int escena, const std::string& nombre);
+// pone (o reemplaza) el corte en 'frame' -> esa camara pasa a ser la activa desde ese frame (interpolacion constante)
+void W3dCamKey(int escena, int frame, const std::string& nombre);
+// la camara que manda en 'frame' (NULL = la escena no tiene pista). Antes del primer corte manda el primero.
+const char* W3dCamEnFrame(int escena, int frame);
+// aplica la pista en 'frame': llama g_camaraActivaHook con el nombre (si hay pista). Lo llaman el editor (al mover
+// el playhead de una animacion de escena) y el juego (W3dAnimEscenaTick, animEscena de lua).
+void W3dCamActivaAplicar(int escena, int frame);
+// los registra main/: el Core no conoce la clase Camera ni CameraActive
+extern void (*g_camaraActivaHook)(const char* nombre);
+extern void (*g_animFovHook)(Object* camara, float fov);   // curva AnimFov en el JUEGO (cinematicas)
+// aplica las curvas AnimShape de una lista a la malla (los pesos de sus shape keys). Lo usan el juego y el editor.
+void W3dAplicarFormas(Object* o, std::vector<AnimProperty>& props, int frame);
 extern std::vector<SceneAnimation*> SceneAnimations; // lista global de animaciones de escena
 extern int SceneAnimActiva;                          // indice de la escena activa (sus curvas estan en AnimationObjects)
 
@@ -211,6 +261,17 @@ std::string RenombrarEscenaActiva(const std::string& nombre);
 // nombre libre en el espacio GLOBAL de animaciones de escena ('excepto' = indice que conserva el suyo)
 std::string SceneAnimNombreLibre(const std::string& base, int excepto);
 void BorrarEscenaActiva();         // borra la escena activa (siempre queda al menos "Scene")
+// el BORRADO DESHACIBLE del editor (main/undo: UndoBorrarEscenaActiva) en dos mitades:
+//  - SACA la animacion ACTIVA de la lista SIN liberarla: sus curvas pasan a su ->objetos y queda activa la de
+//    al lado (la misma regla que BorrarEscenaActiva). 'pos' = donde estaba. NULL = no se saca: es la UNICA
+//    animacion de escena (esa no se borra, se vacia). La VISTA de un clip de jerarquia sale igual (su CLIP lo
+//    saca de su biblioteca quien la borra, ANTES: la vista ya no se escribe).
+SceneAnimation* W3dEscenaActivaSacar(int* pos);
+//  - la DEVUELVE en 'pos' (acotada) y la deja ACTIVA (con sus curvas)
+void W3dEscenaDevolver(SceneAnimation* e, int pos);
+// si lo que se edita es la VISTA HUERFANA de un clip de jerarquia (su clip salio de la biblioteca, la raiz cambio
+// de biblioteca...), pasa a la animacion de escena mas cercana: una vista muerta no se edita. true = cambio.
+bool W3dClipsVistaActivaRevisar();
 
 // ---- REPRODUCTOR de animaciones de ESCENA para el MODO JUEGO (kind 2) ----
 // El editor evalua las curvas de escena SOLO con kind 0 (AplicarAnimacionObjetos,
@@ -224,6 +285,91 @@ float W3dAnimEscenaDur(int idx);              // duracion en segundos (0 si inva
 bool  W3dAnimEscenaPlay(int idx, bool loop);  // arranca desde su startFrame
 void  W3dAnimEscenaTick(float dt);            // avanzar + aplicar (1 vez por tick de sim)
 void  W3dAnimEscenaReset();                   // al STOP del juego: nada sonando
+int   W3dAnimEscenaFrame();                   // frame (entero) de la que suena; -1 = ninguna
+// fija el frame de la que suena y APAGA su reloj propio: el script manda (animEscenaFrame de lua). Para sincronizar
+// una cinematica con UN solo reloj: camaras, caras y clips de los personajes en el MISMO frame (sin micro saltos).
+void  W3dAnimEscenaFijar(float frame);
+int   W3dAnimEscenaSonando();                 // indice de la que suena; -1 = ninguna
+// el estado del reproductor, para dejarlo en pausa y retomarlo tal cual (una CINEMATICA que se juega en otra
+// raiz: al volver, la animacion de escena que sonaba en el juego sigue donde iba, ver main/W3dRaices.h)
+struct W3dAnimEscenaEstado {
+    int idx; float frame; bool loop, manual;
+    W3dAnimEscenaEstado() : idx(-1), frame(0.0f), loop(true), manual(false) {}
+};
+void  W3dAnimEscenaGuardarEstado(W3dAnimEscenaEstado* e);
+void  W3dAnimEscenaReponerEstado(const W3dAnimEscenaEstado& e);
+// true si la que suena es de UNA pasada y ya llego a su ultimo frame (una cinematica que termino)
+bool  W3dAnimEscenaTermino();
+
+// un cabezal en LOOP (en [0, periodo), periodo > 0) que se paso: vuelve adentro de UNA vez. El "while (f >=
+// periodo) f -= periodo" de siempre colgaba el tick con una velocidad o un frame ENORMES desde lua
+// (animObjetoVelocidad, objetoCapaFrame, animClipVelocidad...): en float, restarle una vuelta a un numero muy
+// grande no lo cambia. Las pocas vueltas de siempre dan lo mismo que antes; un negativo queda igual (como
+// antes); infinito o NaN vuelve a 0.
+float W3dCicloEnvolver(float f, float periodo);
+
+// ---- VISTAS DE EDICION DE LOS CLIPS DE JERARQUIA (SceneAnimation::esClip, ver arriba) ----
+bool  W3dAnimEsClip(int idx);                 // SceneAnimations[idx] es la vista de un clip (viva o huerfana)
+// la vista de 'c' (un clip de la biblioteca de 'raiz') en la lista de animaciones de la raiz ACTIVA: la que
+// ya habia o una nueva (atada ya: sus curvas son las del clip). NO la activa. -1 = no se pudo.
+int   W3dClipVista(Object* raiz, W3dClipJer* c);
+// la vista sigue editando un clip que existe (su raiz vive colgada de un arbol -no detachada por un borrado con
+// undo-, sigue con esa biblioteca y el clip sigue en ella)
+bool  W3dClipVistaViva(int idx);
+// clip -> vista (la re-ata: sus curvas vuelven a ser las del clip) / vista -> clip (true = el clip cambio)
+void  W3dClipVistaLeer(int idx);
+bool  W3dClipVistaEscribir(int idx);
+// escribe en su clip la vista que se esta editando (si lo que esta activo es una). Lo llaman quienes van a
+// LEER los clips: el guardado, el Play, el cambio de raiz, el harness.
+void  W3dClipsVistasSincronizar();
+// saca de la lista las vistas HUERFANAS (su clip ya no existe o su raiz se borro) que no son la activa
+void  W3dClipsVistasPurgar();
+// el clip 'c' cambio POR FUERA de su vista (renombrado desde el outliner, un undo): si lo que se edita es una
+// vista de 'c', se re-ata (toma su nombre y sus curvas). Las demas vistas lo notan solas por su version.
+void  W3dClipVistaActivaReleer(const W3dClipJer* c);
+// la biblioteca de 'duenio' se cambio por OTRA con los MISMOS clips en el mismo orden (el guardado junta dos
+// bibliotecas iguales en una: main/io/GuardarAnimSets.cpp): sus vistas en 'lista' pasan a editar el clip
+// equivalente de la nueva, sin re-atarse (el contenido es el mismo: sus curvas siguen valiendo). Sin esto la
+// vista que se editaba quedaba HUERFANA y lo que se le keyeaba no llegaba a ningun clip.
+void  W3dClipsVistasRecambiar(std::vector<SceneAnimation*>& lista, const Object* duenio,
+                              const std::vector<W3dClipJer*>& viejos, const std::vector<W3dClipJer*>& nuevos);
+// la etiqueta de una animacion de escena para la UI ("Puerta: abrir" si es la vista de un clip; su nombre si no)
+std::string W3dAnimEscenaEtiqueta(int idx);
+// EDITOR: se le pueden insertar keyframes a 'o' en la animacion activa? (en la vista de un clip de jerarquia,
+// solo a su raiz y a sus descendientes: el clip no puede nombrar lo que no es de su jerarquia)
+bool  W3dAnimObjetoPermitido(const Object* o);
+
+// ---- REPRODUCTOR DE CLIPS DE JERARQUIA (el juego: animObjeto de lua) ----
+// Un cabezal POR RAIZ, independiente del de animEscena(), de los clips de los armatures y de las demas raices:
+// varias animaciones a la vez (la puerta que se abre, el ascensor que sube, el auto hecho de objetos...). El
+// clip se busca en la biblioteca de la raiz y, si no esta, por nombre calificado "Biblioteca/clip" (o suelto,
+// si es el unico con ese nombre): cualquier jerarquia con los mismos nombres lo puede reproducir. Lo avanza
+// W3dAnimObjetosTick una vez por tick del juego (Play del editor y runtime, junto a W3dAnimEscenaTick).
+// arranca el clip en 'o' desde su inicio. Devuelve su duracion en segundos (< 0 = no hay un clip con ese nombre)
+float W3dAnimObjetoPlay(Object* o, const std::string& clip, bool loop);
+void  W3dAnimObjetosTick(float dt);
+float W3dAnimObjetoFrame(const Object* o);          // frame del clip que suena en 'o' (-1 = ninguno)
+void  W3dAnimObjetoFijarFrame(Object* o, float f);  // mueve su cabezal (el clip sigue sonando desde ahi)
+bool  W3dAnimObjetoTermino(const Object* o);        // true: nada suena en 'o' o su clip de una pasada termino
+std::string W3dAnimObjetoClip(const Object* o);     // el nombre del clip que suena ("" = ninguno)
+void  W3dAnimObjetoParar(Object* o);                // lo deja quieto donde esta
+// velocidad del clip que suena (1 = sus fps; 2 = el doble; negativa = hacia atras). false = no suena nada
+bool  W3dAnimObjetoVelocidad(Object* o, float v);
+// el RETARGET de la raiz 'o' (W3D_RETARGET_*, SkeletalAnimation.h; -1 = el de cada clip). Lo recuerda para
+// los clips que arranque despues y lo aplica al que suena.
+void  W3dAnimObjetoRetarget(Object* o, int modo);
+void  W3dAnimObjetosReset();                        // al STOP del juego: nada suena
+int   W3dAnimObjetosSonando();                      // cuantas raices tienen un clip sonando
+
+// las curvas de UN objeto en el JUEGO, en el frame continuo 'fr': transformacion, visible/render, formas,
+// fov de camara y colores/atenuacion/spot de una luz. Lo usan animEscena, los clips de jerarquia y las capas
+// de escena (el editor usa W3dAplicarCurvasEnFrame, que ademas marca lo posado para el guardado)
+void  W3dAplicarCurvasJuego(Object* o, std::vector<AnimProperty>& props, float fr);
+
+// las curvas de objeto CAMBIARON por fuera del cabezal (otra raiz, otro clip, el estado base de un juego):
+// el editor tiene que volver a posar aunque el frame sea el mismo (AplicarAnimacionObjetos compara esto)
+extern unsigned int g_animCurvasGen;
+inline void W3dAnimCurvasInvalidar() { g_animCurvasGen++; }
 
 // Start/End/FPS PROPIOS de la animacion activa (escena o clip de armature). La comparten la tarjeta y el timeline.
 void AnimCargarRangoActivo();      // StartFrame/EndFrame/AnimFPS <- animacion activa (al seleccionarla)

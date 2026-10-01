@@ -25,7 +25,11 @@ class W3dSound {
 public:
     short* pcm;   // interleaved L,R,L,R...
     int    frames;
-    W3dSound() : pcm(0), frames(0) {}
+    // PUNTOS DE LOOP del WAV (chunk 'smpl', el estandar de los editores de audio y de los streams de consola):
+    // con loop, al pasar loopFin la voz vuelve a loopIni (la INTRO de una musica suena una sola vez). En frames
+    // del mixer; loopFin <= 0 = sin puntos (el loop es el archivo entero, como siempre).
+    int    loopIni, loopFin;
+    W3dSound() : pcm(0), frames(0), loopIni(0), loopFin(0) {}
     ~W3dSound() { delete[] pcm; }
 };
 
@@ -74,6 +78,7 @@ static W3dSound* decodeWav(const unsigned char* b, size_t len) {
     if (len < 44 || memcmp(b, "RIFF", 4) != 0 || memcmp(b + 8, "WAVE", 4) != 0) return 0;
     int channels = 0, srcRate = 0, bits = 0;
     const unsigned char* data = 0; size_t dataLen = 0;
+    long smplIni = -1, smplFin = -1;
     size_t off = 12;
     while (off + 8 <= len) {
         const unsigned char* id = b + off;
@@ -84,6 +89,10 @@ static W3dSound* decodeWav(const unsigned char* b, size_t len) {
             channels = (int)rdU16(body + 2);
             srcRate  = (int)rdU32(body + 4);
             bits     = (int)rdU16(body + 14);
+        } else if (memcmp(id, "smpl", 4) == 0 && csz >= 60 && off + 8 + 60 <= len && rdU32(body + 28) >= 1) {
+            // el primer loop: [36] cue id, [40] tipo, [44] inicio, [48] fin (INCLUSIVE), en muestras del archivo
+            smplIni = (long)rdU32(body + 44);
+            smplFin = (long)rdU32(body + 48);
         } else if (memcmp(id, "data", 4) == 0) {
             data = body; dataLen = csz;
             if (off + 8 + dataLen > len) dataLen = len - (off + 8); // tolerar tamano pasado
@@ -110,6 +119,12 @@ static W3dSound* decodeWav(const unsigned char* b, size_t len) {
     }
     W3dSound* s = new W3dSound();
     s->pcm = out; s->frames = (int)outFrames;
+    if (smplIni >= 0 && smplFin > smplIni && smplFin < srcFrames) {
+        s->loopIni = (int)((double)smplIni * s_rate / srcRate);
+        s->loopFin = (int)((double)(smplFin + 1) * s_rate / srcRate);   // exclusivo
+        if (s->loopFin > s->frames) s->loopFin = s->frames;
+        if (s->loopIni >= s->loopFin) { s->loopIni = 0; s->loopFin = 0; }
+    }
     return s;
 }
 
@@ -277,11 +292,18 @@ void W3dAudioMix(short* out, int frames) {
         float g = v.vol * s_master * s_juego;
         const short* p = v.s->pcm;
         int fr = v.s->frames;
+        // con puntos de loop (smpl): la voz en loop termina su vuelta en loopFin y vuelve a loopIni
+        const bool conPuntos = v.loop && v.s->loopFin > 0;
+        const int finVuelta = conPuntos ? v.s->loopFin : fr;
+        const int iniVuelta = conPuntos ? v.s->loopIni : 0;
         float fpos = v.pos;
         for (int i = 0; i < frames; i++) {
             int pos = (int)fpos;
-            if (pos >= fr) {
-                if (v.loop && fr > 0) { fpos -= (float)fr; pos = (int)fpos; if (pos < 0 || pos >= fr) { fpos = 0.0f; pos = 0; } }
+            if (pos >= finVuelta) {
+                if (v.loop && fr > 0) {
+                    fpos -= (float)(finVuelta - iniVuelta); pos = (int)fpos;
+                    if (pos < 0 || pos >= fr) { fpos = (float)iniVuelta; pos = iniVuelta; }
+                }
                 else                  { v.active = false; break; }
             }
             // ganancia = volumen * master * la RAMPA de salida (W3dSoundStopFade). La rampa

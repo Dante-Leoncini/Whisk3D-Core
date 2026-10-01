@@ -17,6 +17,34 @@ void MaterialesFijarBase() {
 }
 int MaterialesBase() { return (int)gMatBase; }
 
+// el CEMENTERIO de los materiales purgados (ver MaterialPurgar en el .h)
+static std::vector<Material*> gMatPurgados;
+
+bool MaterialPurgar(Material* m) {
+    if (!m || m == MaterialDefecto) return false;
+    for (size_t i = gMatBase; i < Materials.size(); i++) {
+        if (Materials[i] != m) continue;
+        Materials.erase(Materials.begin() + (long)i);
+        gMatPurgados.push_back(m);
+        return true;
+    }
+    return false;   // de la UI (debajo de la marca) o ya purgado
+}
+
+bool MaterialRevivir(Material* m) {
+    for (size_t i = 0; i < gMatPurgados.size(); i++) {
+        if (gMatPurgados[i] != m) continue;
+        gMatPurgados.erase(gMatPurgados.begin() + (long)i);
+        // mientras estuvo afuera alguien pudo tomar su nombre: vuelve con uno libre
+        m->name = MaterialNombreLibre(m->name, NULL);
+        Materials.push_back(m);
+        return true;
+    }
+    return false;
+}
+
+const std::vector<Material*>& MaterialesPurgados() { return gMatPurgados; }
+
 int MaterialesLiberarEscena() {
     int n = 0;
     while (Materials.size() > gMatBase) {
@@ -26,6 +54,10 @@ int MaterialesLiberarEscena() {
         // liberarlo dejaria colgado al fallback de TODAS las mallas sin material.
         if (m && m != MaterialDefecto) { delete m; n++; }
     }
+    // los PURGADOS tambien son del proyecto (el undo que los podia nombrar ya se limpio)
+    for (size_t i = 0; i < gMatPurgados.size(); i++)
+        if (gMatPurgados[i] && gMatPurgados[i] != MaterialDefecto) { delete gMatPurgados[i]; n++; }
+    gMatPurgados.clear();
     // los materiales ANIMADOS apuntan a materiales del proyecto (targets): si
     // quedaran, su Update() escribiria sobre memoria liberada en el proyecto nuevo.
     for (size_t i = 0; i < AnimatedMaterials.size(); i++) delete AnimatedMaterials[i];
@@ -39,7 +71,7 @@ int MaterialesLiberarEscena() {
 Material::Material(const std::string& nombre, bool MaterialDefectoFlag, bool TieneVertexColor)
     : textureOn(true), filtrado(true), transparent(false), vertexColor(false), lighting(true), repeat(true),
       uv8bit(false), culling(true), depth_test(true), fondo(false),
-      depth_write(true), depth_bias(0.0f), orden_pasada(0), mezcla(0),
+      depth_write(true), depth_bias(0.0f), orden_pasada(0), mezcla(0), alphaTest(0.0f),
       rtRugosidad(0.5f), rtMetalico(0.0f),
       chrome(false), reflectMode(0),
       normalMap(false), normalTexture(NULL),
@@ -66,6 +98,17 @@ Material::Material(const std::string& nombre, bool MaterialDefectoFlag, bool Tie
 }
 
 Material::~Material() {}
+
+const char* W3dCapaMezclaNombre(int m) {
+    switch (m) {
+        case W3D_CAPA_MULTIPLY:   return "Multiply";
+        case W3D_CAPA_ADD:        return "Add";
+        case W3D_CAPA_MULTIPLY2X: return "Multiply 2x";
+        case W3D_CAPA_SUBTRACT:   return "Subtract";
+        case W3D_CAPA_SCREEN:     return "Screen";
+        default:                  return "Mix";
+    }
+}
 
 // ===================================================
 // Funciones auxiliares
@@ -151,9 +194,12 @@ void AnimatedMaterial::Update(float dtSeg) {
     if (tickCounter >= frameDurations[frameIndex]) {
         tickCounter = 0;
         frameIndex = (frameIndex + 1) % frameTextures.size();
+        // la RANURA base del material es duena de su referencia (Textures.h: TexturaPonerEn), tambien la del cuadro
+        // que muestra: retiene el nuevo y suelta el anterior. Asi un undo o un desplegable que la cambian, o el
+        // streaming que la duerme, sueltan algo suyo y nunca el cuadro del material animado
         for (size_t t = 0; t < targets.size(); t++) {
             if (targets[t])
-                targets[t]->texture = frameTextures[frameIndex];
+                TexturaPonerEn(targets[t]->texture, frameTextures[frameIndex]);
         }
     }
 }

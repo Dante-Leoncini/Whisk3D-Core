@@ -6,6 +6,7 @@
 #include "W3dNombres.h"     // LA regla de nombres unicos (compartida por todo el editor)
 #include "CameraBase.h"     // g_renderCamPos (camara del render, para el chrome equirect)
 #include "RenderColors.h"   // paleta de render del CORE (sin depender de la UI)
+#include "MallaRecurso.h"   // la malla 3D como recurso: vinculo, VBO compartidos
 #include <math.h> // C puro: compila en RVCT y PC por igual
 #include <algorithm> // sort/unique: dedup de aristas del material con `lineas`
 #include <map>    // Armature2DAplicar: peso por control-point de cada hueso 2D
@@ -28,6 +29,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     //ejemplo: "edit" o "modificadorActivo" etc... eso es del Editor de Whisk3D
 
     skinArmature = NULL; skinVertex = NULL; skinNormals = NULL; skinVertexCap = 0; skinConLuz = true; lastSkinFrame = -999999; skinPoseSerial = 0; lastSkinBordesFrame = -999999; skinBordesPoseSerial = 0; skinFlatSig = 0; skinNCtrl = 0; skinGeomVersion = 1; bordesGeomVersion = 0; vtxAnimRecipeBase = 0; // skinning apagado por defecto
+    shapeSerial = 0; skinShapeSerial = 0xFFFFFFFFu;   // shape keys: ninguna forma, nada calculado
     skinCacheOn = false; skinCacheSkip = 0; skinCacheStart = 0; skinCacheEnd = -1; skinCacheConLuz = false; skinCacheSig = 0; // cache de vertex-animation (lazy, off)
     meshTipo = -1;       // no es una primitiva regenerable por defecto
     meshSize = 2.0f;
@@ -62,6 +64,8 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     enLoteEstatico = 0; // (P4) sin sello: la malla se dibuja sola
     noEditable = false; tintaNoEditable = false; // malla editable (el import con noEditable / el boton de la card Mesh lo prenden)
     datosRec = NULL; datosComp = 0; // geometria propia hasta que el importador la comparta (MallaDatos.h)
+    malla = NULL; vboCompartidas = 0; vboUVEnUso = 0; // sin recurso (MallaRecurso.h) hasta que el lector la vincule
+    dedupPorContenido = false; // una malla NUEVA no se junta con las iguales al guardar (ver Mesh.h)
 }
 
 // libera el override de indices del PVS (vuelve a dibujar la malla completa).
@@ -79,7 +83,6 @@ void Mesh::PvsLimpiar() {
 // Destructor
 // ===================================================
 Mesh::~Mesh() {
-    //LiberarMemoria();
     // GEOMETRIA COMPARTIDA (MallaDatos.h): soltar la referencia ANTES que nada.
     // Deja en NULL las capas que no eran nuestras; el dato compartido muere
     // solo cuando su refcount llega a 0 (almacen de recursos).
@@ -110,6 +113,22 @@ Mesh::~Mesh() {
     // VBOs de render (buffer objects en GPU)
     namespace gfx = w3dEngine;
     gfx::DeleteBuffer(vboPos); gfx::DeleteBuffer(vboNor); gfx::DeleteBuffer(vboCol); gfx::DeleteBuffer(vboUV); gfx::DeleteBuffer(vboIdx);
+    // LA GEOMETRIA DE RENDER (y sus caches perezosas). El LiberarMemoria de arriba estaba
+    // comentado y nada mas la liberaba: cada malla borrada fugaba vertex/normals/uv/color/
+    // faces enteros. Cerrar y reabrir el mismo proyecto sumaba toda su geometria al heap
+    // cada vez (1000 arboles iguales: +27 MB por apertura, medido con cargabench fugaKB).
+    // Va AL FINAL: lo de arriba (anims, capas, edit, modificadores) todavia puede mirarla.
+    // Lo COMPARTIDO ya no esta: SoltarDatosCompartidos (primera linea) dejo en NULL las
+    // capas del almacen, asi que lo que queda aca es todo propio.
+    delete[] vertex;      vertex = NULL;
+    delete[] normals;     normals = NULL;
+    delete[] uv;          uv = NULL;
+    delete[] vertexColor; vertexColor = NULL;
+    delete[] faces;       faces = NULL;
+    delete[] chromeExpPos; chromeExpPos = NULL;   // reflejo por corner (si se calculo)
+    delete[] chromeExpUV;  chromeExpUV = NULL;
+    delete[] tangents;     tangents = NULL;       // normal mapping (si se calculo)
+    delete[] nmColors;     nmColors = NULL;
 }
 
 // ===================================================
@@ -230,11 +249,15 @@ bool HayUVAnims() {
 // contorno estatico quedaria en la pose vieja). Marca bordesGeomVersion = skinGeomVersion.
 void Mesh::RefrescarBordesDesdeVertex() {
     bordesGeomVersion = skinGeomVersion;
-    if (!vertex || edges.empty()) return;
+    // las aristas de la malla, o las COMPARTIDAS de su recurso si su edicion sigue pendiente
+    // (una malla de un recurso posada por su vertex anim: su contorno es suyo, las aristas no)
+    const std::vector<int>* E = W3dMallaAristasVista(this);
+    if (!vertex || !E || E->empty()) return;
+    const std::vector<int>& ed = *E;
     const int nv = vertexSize;
-    bordesBuf.clear(); bordesBuf.reserve(edges.size()*3);
-    for (size_t e = 0; e + 1 < edges.size(); e += 2) {
-        int a = edges[e], b = edges[e+1];
+    bordesBuf.clear(); bordesBuf.reserve(ed.size()*3);
+    for (size_t e = 0; e + 1 < ed.size(); e += 2) {
+        int a = ed[e], b = ed[e+1];
         if (a<0||a>=nv||b<0||b>=nv) continue;
         bordesBuf.push_back(vertex[a*3]); bordesBuf.push_back(vertex[a*3+1]); bordesBuf.push_back(vertex[a*3+2]);
         bordesBuf.push_back(vertex[b*3]); bordesBuf.push_back(vertex[b*3+1]); bordesBuf.push_back(vertex[b*3+2]);
@@ -276,7 +299,7 @@ void (*W3dMallaDatosSoltarHook)(void*) = 0;   // lo apunta MallaDatos.cpp
 int W3dMallaDesinstanciados = 0;              // contador COW (lo muestra meminfo)
 
 void Mesh::SoltarDatosCompartidos() {
-    if (!datosRec) return;
+    if (!datosRec && !malla) return;
     // los punteros compartidos no son nuestros: NULLearlos para que ningun
     // delete[] posterior (LiberarMemoria, editor) toque memoria ajena
     if (datosComp & W3DMD_POS)   vertex = NULL;
@@ -285,12 +308,25 @@ void Mesh::SoltarDatosCompartidos() {
     if (datosComp & W3DMD_COL)   vertexColor = NULL;
     if (datosComp & W3DMD_FACES) faces = NULL;
     datosComp = 0;
-    if (W3dMallaDatosSoltarHook) W3dMallaDatosSoltarHook(datosRec);
-    datosRec = NULL;
+    if (datosRec) {
+        if (W3dMallaDatosSoltarHook) W3dMallaDatosSoltarHook(datosRec);
+        datosRec = NULL;
+    }
+    // la malla con nombre (MallaRecurso.h): sale de sus usuarios y suelta la referencia
+    if (malla) W3dMallaDesvincular(this);
+}
+
+const GLfloat* Mesh::UVDeCapa(int i) const {
+    if (i <= 0 && uvMapActivo <= 0) return uv;
+    const int activa = (uvMapActivo >= 0) ? uvMapActivo : 0;
+    if (i == activa) return uv;
+    if (i >= 0 && i < (int)uvExtra.size() && vertexSize > 0 && uvExtra[(size_t)i].size() >= (size_t)vertexSize * 2)
+        return &uvExtra[(size_t)i][0];
+    return 0;
 }
 
 void Mesh::DesinstanciarDatos(unsigned mask, bool copiar) {
-    if (!datosRec) return;
+    if (!datosRec && !malla) return;
     unsigned afectadas = (unsigned)datosComp & mask;
     if (!afectadas) return;
     if (copiar) {
@@ -331,7 +367,9 @@ void Mesh::DesinstanciarDatos(unsigned mask, bool copiar) {
     }
     datosComp = (unsigned char)(datosComp & ~mask);
     W3dMallaDesinstanciados++;
-    if (!datosComp) {
+    // la geometria de un .obj se suelta cuando no queda nada compartido; la de un RECURSO no:
+    // el objeto sigue siendo su usuario (las capas propias son solo de esta instancia)
+    if (!datosComp && datosRec) {
         if (W3dMallaDatosSoltarHook) W3dMallaDatosSoltarHook(datosRec);
         datosRec = NULL;
     }
@@ -616,13 +654,13 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         if (matcap) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer3b(normals, vertexSize); } // normales -> texcoords
         else if (sw) { ActualizarChromeUV(eq); // build los arrays por-corner (equirect o sphere); bind/draw en el loop
                   gfx::EnableArray(gfx::TexCoordArray); if (eq) gfx::TexWrap(true); } // REPEAT solo equirect (costura)
-        else if (uv) { if (vboRenderActivo && vboUV) gfx::TexCoordVBO(vboUV); else gfx::TexCoordPointer2f(0, uv); } // UV del modelo (VBO o RAM)
+        else if (uv) { if (vboRenderActivo && vboUVEnUso) gfx::TexCoordVBO(vboUVEnUso); else gfx::TexCoordPointer2f(0, uv); } // UV del modelo (VBO o RAM)
     } else {
         gfx::Disable(gfx::Texture2D);
         gfx::TexMatrixMatcap(false);
         gfx::TexGenSphere(false);
         gfx::TexEnvReplace(false);
-        if (uv) { if (vboRenderActivo && vboUV) gfx::TexCoordVBO(vboUV); else gfx::TexCoordPointer2f(0, uv); }
+        if (uv) { if (vboRenderActivo && vboUVEnUso) gfx::TexCoordVBO(vboUVEnUso); else gfx::TexCoordPointer2f(0, uv); }
     }
 
     // normales: las sube la LUZ y el SPHERE-MAP por HARDWARE (texgen genera las UV de la normal). El MATCAP por
@@ -712,6 +750,7 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     // si misma y no se ve nada a traves.
     else if (g_xray) { gfx::Enable(gfx::Blend); gfx::BlendAlpha(); gfx::DepthMask(false); }
     else                    gfx::Disable(gfx::Blend);
+    gfx::AlphaTest(mat->alphaTest);   // recorte por alfa (rejas, alambrados): 0 = apagado
 }
 
 // hook de overlays del editor (lo registra el editor al arrancar; NULL en una app sin editor)
@@ -1016,9 +1055,15 @@ void Mesh::Armature2DAplicar() {
     if (armatures2d.empty() || !uv || vertexSize <= 0) return;
     if ((int)uv2dRest.size() != vertexSize * 2) return; // rest invalido (topologia cambio)
     if (Armature2DPoseIdentidad()) {
+        // COW: el uv[] de un recurso compartido se copia SOLO si de verdad cambia (con la pose
+        // en identidad lo normal es que ya sea el reposo y no haya nada que escribir)
+        if (memcmp(uv, &uv2dRest[0], (size_t)vertexSize * 2 * sizeof(GLfloat)) == 0) return;
+        DesinstanciarDatos(W3DMD_UV);
         for (int i = 0; i < vertexSize * 2; i++) uv[i] = uv2dRest[i];
         return;
     }
+    // la POSE 2D es de ESTA instancia: su uv[] deformado no puede ser el del recurso compartido
+    DesinstanciarDatos(W3DMD_UV);
     std::vector<const W3dBone2D*> huesos; // TODOS los armatures aplanados (cada uno con su FK)
     std::vector<float> M;
     Armature2DHuesosPlanos(huesos, M);
@@ -1123,20 +1168,25 @@ void Mesh::Armature2DRestDesdeUV() {
 void Mesh::SubirVBO(const GLfloat* posBuf, const GLbyte* norBuf, bool soloPose) {
     namespace gfx = w3dEngine;
     if (!posBuf || vertexSize <= 0) return;
-    if (!vboPos) vboPos = gfx::GenBuffer();
-    gfx::ArrayBufferData(vboPos, posBuf, vertexSize * 3 * (int)sizeof(GLfloat));
-    if (norBuf) { if (!vboNor) vboNor = gfx::GenBuffer(); gfx::ArrayBufferData(vboNor, norBuf, vertexSize * 3 * (int)sizeof(GLbyte)); }
+    // las capas que este dibujo toma del RECURSO (vboCompartidas) no se suben: ya estan en
+    // los VBO compartidos (una subida para todos los objetos que usan la malla)
+    const unsigned comp = vboCompartidas;
+    if (!(comp & W3DMD_POS)) {
+        if (!vboPos) vboPos = gfx::GenBuffer();
+        gfx::ArrayBufferData(vboPos, posBuf, vertexSize * 3 * (int)sizeof(GLfloat));
+    }
+    if (norBuf && !(comp & W3DMD_NOR)) { if (!vboNor) vboNor = gfx::GenBuffer(); gfx::ArrayBufferData(vboNor, norBuf, vertexSize * 3 * (int)sizeof(GLbyte)); }
     vboVertN = vertexSize;
     if (soloPose) return; // solo la pose de skinning cambio -> col/uv/idx (estaticos) no se re-suben
-    if (vertexColor) { if (!vboCol) vboCol = gfx::GenBuffer(); gfx::ArrayBufferData(vboCol, vertexColor, vertexSize * 4 * (int)sizeof(GLubyte)); }
-    if (uv)          { if (!vboUV)  vboUV  = gfx::GenBuffer(); gfx::ArrayBufferData(vboUV,  uv,          vertexSize * 2 * (int)sizeof(GLfloat)); }
+    if (vertexColor && !(comp & W3DMD_COL)) { if (!vboCol) vboCol = gfx::GenBuffer(); gfx::ArrayBufferData(vboCol, vertexColor, vertexSize * 4 * (int)sizeof(GLubyte)); }
+    if (uv && !(comp & W3DMD_UV))           { if (!vboUV)  vboUV  = gfx::GenBuffer(); gfx::ArrayBufferData(vboUV,  uv,          vertexSize * 2 * (int)sizeof(GLfloat)); }
     // el IBO es ESTATICO y guarda SIEMPRE la malla completa: se sube una vez con la
     // geometria y no se toca nunca mas. (P3) Con el override de visibilidad activo,
     // los indices del subconjunto van como INDICES DE CLIENTE en el draw
     // (DrawTrianglesClientIdx): cambiar de celda/sector no re-especifica ningun
     // buffer. Antes aca se subia el subconjunto del sector y el cambio de sector
     // re-subia el IBO entero (el anti-patron del stall del tiler MBX).
-    if (faces && facesSize > 0) { if (!vboIdx) vboIdx = gfx::GenBuffer(); gfx::IndexBufferData(vboIdx, faces, facesSize * (int)sizeof(MeshIndex)); vboIdxN = facesSize; }
+    if (faces && facesSize > 0 && !(comp & W3DMD_FACES)) { if (!vboIdx) vboIdx = gfx::GenBuffer(); gfx::IndexBufferData(vboIdx, faces, facesSize * (int)sizeof(MeshIndex)); vboIdxN = facesSize; }
 }
 
 // ===========================================================================
@@ -1576,7 +1626,9 @@ void Mesh::RenderObject() {
             gfx::Color4f(col[0], col[1], col[2], 1.0f);
             W3dDibujarLineasMat(pvsFaces, pvsFacesSize, select ? 2.0f : 1.0f);
             gfx::Invalidate();
-        } else if (!edges.empty()) {
+        } else if (!edges.empty() || W3dMallaAristasVista(this)) {
+            // (la malla de un RECURSO con la edicion pendiente dibuja las aristas COMPARTIDAS del
+            // recurso: el mismo alambre que editada, sin cargar su edicion)
             RenderBordes(col, select ? 2.0f : 1.0f, false);
         } else {
             gfx::Disable(gfx::Lighting); gfx::Disable(gfx::Texture2D);
@@ -1656,11 +1708,31 @@ void Mesh::RenderObject() {
         const bool usePvs = (!useGen && !editActiva && pvsFaces &&
                              pvsGroups.size() == materialsGroup.size());
         bool drawVBO = false;
+        unsigned int vboIdxEnUso = 0;   // el IBO del dibujo en curso (el propio o el del recurso)
+        vboUVEnUso = 0;
         if (gfx::VBOSoportado() && !useGen && !weightPaintOn && !vertexPaintOn && !editActiva && !anyFancy && faces && facesSize >= 3) {
+            // LA MALLA COMO RECURSO (MallaRecurso.h): las capas que siguen compartidas se dibujan
+            // desde los VBO del RECURSO (subidos UNA vez para todos sus objetos). Una pose de
+            // skinning (posBuf = skinVertex) es de ESTA instancia: esas capas van por los propios.
+            unsigned comp = 0;
+            if (malla && datosComp) {
+                comp = datosComp;
+                if (posBuf != vertex)  comp &= ~(unsigned)W3DMD_POS;
+                if (norBuf != normals) comp &= ~(unsigned)W3DMD_NOR;
+                if (comp && !W3dMallaRecursoAsegurarVBO(malla)) comp = 0;
+            }
+            vboCompartidas = (unsigned char)comp;
+            // un VBO propio de una capa que ahora viene del recurso es memoria de GPU muerta
+            if ((comp & W3DMD_POS) && vboPos)   { gfx::DeleteBuffer(vboPos); vboPos = 0; }
+            if ((comp & W3DMD_NOR) && vboNor)   { gfx::DeleteBuffer(vboNor); vboNor = 0; }
+            if ((comp & W3DMD_COL) && vboCol)   { gfx::DeleteBuffer(vboCol); vboCol = 0; }
+            if ((comp & W3DMD_UV) && vboUV)     { gfx::DeleteBuffer(vboUV);  vboUV = 0; }
+            if ((comp & W3DMD_FACES) && vboIdx) { gfx::DeleteBuffer(vboIdx); vboIdx = 0; }
             unsigned geomVer = skinGeomVersion;
             unsigned poseSer = skinArmature ? skinArmature->poseSerial : 0u; // pose ACTUAL del esqueleto (sube al posar/animar)
+            const bool posPropio = !(comp & W3DMD_POS);
             // atributos ESTATICOS (col/uv/idx + pos/nor base): re-subir solo al cambiar la geometria
-            if (vboGeomVer != geomVer || vboVertN != vertexSize || !vboPos) { SubirVBO(posBuf, norBuf, false); vboGeomVer = geomVer; vboSkinFrame = lastSkinFrame; vboPoseSerial = poseSer; vboPoseSkinneada = (skinArmature != NULL); }
+            if (vboGeomVer != geomVer || vboVertN != vertexSize || (posPropio && !vboPos)) { SubirVBO(posBuf, norBuf, false); vboGeomVer = geomVer; vboSkinFrame = lastSkinFrame; vboPoseSerial = poseSer; vboPoseSkinneada = (skinArmature != NULL); }
             // POSE skinneada: el VBO de pos/nor ya tiene la pose ACTUAL? Se compara por SERIAL, no por # de frame: posar
             // un hueso o elegir un clip en el MISMO frame cambia la pose sin cambiar el frame -> el chequeo por frame la
             // daba por "ya subida" y quedaba la malla STALL (el bug: el esqueleto se movia pero la malla no).
@@ -1678,15 +1750,23 @@ void Mesh::RenderObject() {
             }
             vboSkinFramePrev = lastSkinFrame;
             vboPoseSerialPrev = poseSer;
-            if (vboPos && vboIdx && poseEnVBO) {
-                gfx::VertexVBO(vboPos);
-                if (norBuf && vboNor)      gfx::NormalVBO(vboNor);
-                if (vertexColor && vboCol) gfx::ColorVBO(vboCol);
-                if (uv && vboUV)           gfx::TexCoordVBO(vboUV);
+            // los handles de ESTE dibujo: los del recurso para lo compartido, los propios para el resto
+            const unsigned hPos = (comp & W3DMD_POS)   ? malla->vboPos : vboPos;
+            const unsigned hNor = (comp & W3DMD_NOR)   ? malla->vboNor : vboNor;
+            const unsigned hCol = (comp & W3DMD_COL)   ? malla->vboCol : vboCol;
+            const unsigned hUV  = (comp & W3DMD_UV)    ? malla->vboUV  : vboUV;
+            const unsigned hIdx = (comp & W3DMD_FACES) ? malla->vboIdx : vboIdx;
+            if (hPos && hIdx && poseEnVBO) {
+                gfx::VertexVBO(hPos);
+                if (norBuf && hNor)      gfx::NormalVBO(hNor);
+                if (vertexColor && hCol) gfx::ColorVBO(hCol);
+                if (uv && hUV)           gfx::TexCoordVBO(hUV);
                 // (P3) con visibilidad activa el IBO estatico NO se bindea: los
                 // indices del subconjunto van de CLIENTE (DrawTrianglesClientIdx)
-                if (!usePvs) gfx::BindIndexVBO(vboIdx);
+                if (!usePvs) gfx::BindIndexVBO(hIdx);
                 drawVBO = true;
+                vboUVEnUso = hUV;
+                vboIdxEnUso = hIdx;
             }
             // si !poseEnVBO (malla skinneada animando): drawVBO=false -> cae al path CLIENT-ARRAY (pos/nor/col/uv/idx de
             // RAM, ya seteados arriba con VertexPointer3f(posBuf) etc). Sin re-spec del VBO -> sin stall del tiler.
@@ -1796,7 +1876,7 @@ void Mesh::RenderObject() {
                 W3dDibujarLineasMat(&idxDraw[dgrp.startDrawn], dgrp.indicesDrawnCount, mat->grosorLinea);
                 // DrawLinesClientIdx desbindea el ELEMENT_ARRAY: si el resto de la
                 // malla dibuja desde el IBO estatico, volver a bindearlo
-                if (drawVBO && !usePvs && vboIdx) gfx::BindIndexVBO(vboIdx);
+                if (drawVBO && !usePvs && vboIdxEnUso) gfx::BindIndexVBO(vboIdxEnUso);
                 ultimo = NULL; // el trazo toco el z-func: re-aplicar el proximo material
             }
 
@@ -1826,22 +1906,33 @@ void Mesh::RenderObject() {
                 }
             }
 
-            // CAPAS EXTRA (multi-pass, eficiente: 1 draw por capa sobre la MISMA superficie con su blend).
-            // Comparten el UV del modelo. GL 1.1 -> anda igual en PC y N95 (sin multitextura/extensiones).
+            // CAPAS EXTRA (multi-pass: 1 draw por capa sobre la MISMA superficie con su blend). Cada capa elige su
+            // UV (TexLayer::uvMapa -> UVDeCapa: la base o una capa extra del render, ej. el unwrap de un lightmap) y
+            // se dibuja PURA: sin luz ni color de vertice (eso ya lo aplico la base). GL 1.1 -> PC y N95 igual.
+            // Con capas la malla dibuja de client arrays (anyFancy): el TexCoordPointer se puede re-apuntar.
             if (!solido && !mat->capas.empty() && uv) {
                 gfx::Enable(gfx::Blend);
                 gfx::DepthFunc(gfx::DepthEqual); gfx::DepthMask(false); // misma superficie, NO re-escribe z
+                gfx::Disable(gfx::Lighting); gfx::DisableArray(gfx::NormalArray);
+                gfx::Disable(gfx::ColorMaterial); gfx::DisableArray(gfx::ColorArray);
+                gfx::Color4f(1.0f, 1.0f, 1.0f, 1.0f);
+                gfx::TexEnvReplace(false);
+                bool uvAjeno = false;
                 for (size_t c = 0; c < mat->capas.size(); c++) {
                     const TexLayer& cap = mat->capas[c];
                     if (!cap.on || !cap.tex) continue;
                     gfx::Enable(gfx::Texture2D);
                     gfx::BindTexture(cap.tex->iID);
-                    gfx::BlendMode(cap.blend); // Mix / Multiply / Add
+                    gfx::TexFilter(!gfx::PixeladoGlobal() && mat->filtrado); gfx::TexWrap(mat->repeat);
+                    const GLfloat* cuv = UVDeCapa(cap.uvMapa);
+                    gfx::TexCoordPointer2f(0, cuv ? cuv : uv); uvAjeno = true;
+                    gfx::BlendMode(cap.blend);
                     gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxDraw[dgrp.startDrawn]);
                 }
+                if (uvAjeno) gfx::TexCoordPointer2f(0, uv);
                 gfx::DepthFunc(gfx::DepthLess); gfx::DepthMask(!gfx::w3dPaseEspejoSinZ); // idem: en el pase del espejo NO se escribe z
-                gfx::Disable(gfx::Blend); gfx::BlendAlpha(); // restaura el blend func default
-                ultimo = NULL; // la textura/blend cambio -> re-AplicarMaterial el proximo grupo
+                gfx::Disable(gfx::Blend); gfx::BlendAlpha(); // restaura el blend func default (y la ecuacion)
+                ultimo = NULL; // textura/blend/luz cambiaron -> re-AplicarMaterial el proximo grupo
             }
         }
         // (E3) TRANSPARENTES EN ORDEN DE LISTA: con pvsOrdenado, los tris transparentes
@@ -1870,6 +1961,7 @@ void Mesh::RenderObject() {
 
         gfx::PolygonOffset(0.0f, 0.0f);
         gfx::Disable(gfx::PolygonOffsetFill);
+        gfx::AlphaTest(0.0f);   // el recorte por alfa de un material (rejas) no leakea a la UI ni a la proxima malla
         // el estado que puede haber dejado un material DECAL / ADITIVO: si no se restaura,
         // la proxima malla (o la UI) hereda "no escribas z" o "sumale al fondo".
         gfx::DepthMask(!gfx::w3dPaseEspejoSinZ);
@@ -1899,19 +1991,25 @@ void Mesh::RenderBordes(const float* color, float width, bool pushBack) {
     const bool usaGen = (genValido && !genBordesBuf.empty() && genVertex);
     const std::vector<GLfloat>* bufPtr = usaGen ? &genBordesBuf : &bordesBuf;
     GLfloat* restore = usaGen ? genVertex : vertex;
+    // LA MALLA DE UN RECURSO con la edicion PENDIENTE (MallaRecurso.h) no tiene aristas propias:
+    // mira con las COMPARTIDAS del recurso (y, si dibuja sus posiciones en reposo, con las lineas
+    // del recurso ya armadas: una sola copia para todos sus objetos)
+    const std::vector<int>* E = usaGen ? NULL : W3dMallaAristasVista(this);
+    if (!usaGen && bordesBuf.empty()) { const std::vector<GLfloat>* rb = W3dMallaBordesVista(this); if (rb) bufPtr = rb; }
     // SKINNING del CONTORNO/overlay: si la malla se deforma por esqueleto (skinArmature), el contorno tambien debe
     // seguir la pose (sino la silueta verde queda en bind mientras el render se deforma). Las condiciones que pidio
     // (Object Mode solo si seleccionado / Edit Mode solo si "Display in Edit Mode") YA estan codificadas: el
     // contorno solo se dibuja al seleccionar, y skinArmature es NULL cuando "Display in Edit Mode" esta OFF en edit.
-    if (!usaGen && skinArmature && skinVertex && !edges.empty()){
+    if (!usaGen && skinArmature && skinVertex && E && !E->empty()){
         extern int CurrentFrame;
+        const std::vector<int>& ed = *E;
         // gate por (frame, poseSerial): al elegir un clip o posar en el MISMO frame la pose cambia sin cambiar el frame
         // -> sin el serial el contorno se quedaba en la pose vieja (flotando) hasta el play.
-        if (lastSkinBordesFrame != CurrentFrame || skinBordesPoseSerial != skinArmature->poseSerial || (int)skinBordesBuf.size() != (int)edges.size()*3){
-            skinBordesBuf.resize(edges.size()*3);
+        if (lastSkinBordesFrame != CurrentFrame || skinBordesPoseSerial != skinArmature->poseSerial || (int)skinBordesBuf.size() != (int)ed.size()*3){
+            skinBordesBuf.resize(ed.size()*3);
             int nv = vertexSize; // cantidad de vertices
-            for (size_t e = 0; e + 1 < edges.size(); e += 2){
-                int a = edges[e], b = edges[e+1];
+            for (size_t e = 0; e + 1 < ed.size(); e += 2){
+                int a = ed[e], b = ed[e+1];
                 if (a<0||a>=nv||b<0||b>=nv){ // fuera de rango: colapsar al extremo valido (o degenerar) -> nunca dibujar al origen
                     int v = (a>=0&&a<nv)?a : ((b>=0&&b<nv)?b : -1);
                     float px = v>=0?skinVertex[v*3]:0, py = v>=0?skinVertex[v*3+1]:0, pz = v>=0?skinVertex[v*3+2]:0;
@@ -1943,7 +2041,9 @@ void Mesh::RenderBordes(const float* color, float width, bool pushBack) {
     // vertex[] cambio de version (EvalVertexAnim lo bumpea al deformar), re-armar el
     // contorno desde vertex[] -> la silueta sigue la pose en Modo Objeto (en Edit el
     // contorno sale del EditMesh, ya sincronizado). Editar no bumpea la version -> no dispara.
-    if (bufPtr == &bordesBuf && bordesGeomVersion != skinGeomVersion) RefrescarBordesDesdeVertex();
+    // (sin lineas propias pero con aristas -la malla de un recurso posada por su vertex anim- se arman)
+    if (bufPtr == &bordesBuf && (bordesGeomVersion != skinGeomVersion || (bordesBuf.empty() && E && !E->empty())))
+        RefrescarBordesDesdeVertex();
     const std::vector<GLfloat>& buf = *bufPtr;
     if (buf.empty() || !restore) return;
     gfx::Disable(gfx::Lighting);
@@ -2092,6 +2192,45 @@ const GLfloat* Mesh::PosicionesReposo() const {
     return base ? base : vertex;
 }
 
+// ----------------------------------------------------------------------------
+//  ESTADISTICAS DE LA GEOMETRIA -- ver Mesh.h. Es LITERALMENTE lo que hacian
+//  CalcularBordes (con rep) y CalcularAABBSolo (sin rep), movido aca para que el
+//  .w3db las hornee con los MISMOS bits: mismo orden de sumas, mismos floats.
+// ----------------------------------------------------------------------------
+void W3dCalcularGeomStats(const GLfloat* v, int nV, const int* rep, W3dGeomStats& out) {
+    out.agrupados = 0;
+    if (!v || nV <= 0) { out.ok = false; return; }
+    float cgx = 0, cgy = 0, cgz = 0;
+    if (rep) {
+        // centro = promedio de las posiciones UNICAS (los grupos de vertice)
+        for (int i = 0; i < nV; i++) if (rep[i] == i) {
+            out.agrupados++;
+            cgx += v[i*3]; cgy += v[i*3+1]; cgz += v[i*3+2];
+        }
+        if (out.agrupados > 0)
+            out.centro = Vector3(cgx / out.agrupados, cgy / out.agrupados, cgz / out.agrupados);
+        else
+            out.centro = Vector3(0, 0, 0);
+    } else {
+        // centro = promedio de TODOS los vertices (escenario cerrado: sin posRep)
+        for (int i = 0; i < nV; i++) { cgx += v[i*3]; cgy += v[i*3+1]; cgz += v[i*3+2]; }
+        out.centro = Vector3(cgx / nV, cgy / nV, cgz / nV);
+    }
+    float rg2 = 0.0f;
+    out.aabbMin = Vector3(v[0], v[1], v[2]);
+    out.aabbMax = out.aabbMin;
+    for (int i = 0; i < nV; i++) {
+        float vx = v[i*3], vy = v[i*3+1], vz = v[i*3+2];
+        float dx = vx - out.centro.x, dy = vy - out.centro.y, dz = vz - out.centro.z;
+        float d2 = dx*dx + dy*dy + dz*dz; if (d2 > rg2) rg2 = d2;
+        if (vx < out.aabbMin.x) out.aabbMin.x = vx; if (vx > out.aabbMax.x) out.aabbMax.x = vx;
+        if (vy < out.aabbMin.y) out.aabbMin.y = vy; if (vy > out.aabbMax.y) out.aabbMax.y = vy;
+        if (vz < out.aabbMin.z) out.aabbMin.z = vz; if (vz > out.aabbMax.z) out.aabbMax.z = vz;
+    }
+    out.radio = sqrtf(rg2);
+    out.ok = true;
+}
+
 int Mesh::PodarMarcasSinArista() {
     // GUARD DE MOVIMIENTO ABIERTO: vertex[] ya se movio pero las claves todavia no se
     // re-anclaron (eso pasa al CERRAR el guard). En ese estado intermedio toda marca
@@ -2128,6 +2267,10 @@ W3dMoverVerts::W3dMoverVerts(Mesh* m) : malla(m), cerrado(false) {
     // recalcula los bordes en el medio, la poda se saltea (ver PodarMarcasSinArista). El
     // contador sube SIEMPRE (cuesta un int), no solo cuando hay marcas que snapshotear.
     malla->moverVertsAbiertos++;
+    // LAS POSICIONES SE VAN A ESCRIBIR EN EL LUGAR: si son las de un RECURSO compartido (o de
+    // un .obj compartido), antes se copian (COW). Esta es LA puerta para mover posiciones: con
+    // la copia aca, ningun "mover" puede escribir la geometria de los otros usuarios.
+    malla->DesinstanciarDatos(W3DMD_POS);
     // GRATIS cuando no hay nada que re-anclar (el caso normal): ni copia el snapshot
     if (!malla->vertex || malla->vertexSize <= 0) return;
     if (malla->sharpEdges.empty() && malla->seamEdges.empty()) return;
@@ -2164,6 +2307,7 @@ void W3dPosVerts::Capturar(const Mesh* m) {
 
 void W3dPosVerts::EscribirEn(Mesh* m) const {
     if (!m) return;
+    m->DesinstanciarDatos(W3DMD_POS, false);   // compartidas: se abandonan (se reemplazan enteras)
     delete[] m->vertex;
     m->vertex = NULL;
     if (!pos.empty()) {
@@ -2178,6 +2322,7 @@ void W3dPosVerts::IntercambiarCon(Mesh* m) {
     // SIN CORRESPONDENCIA POR INDICE (la topologia cambio) no se toca NADA: mezclar
     // medio buffer con el estado del otro es peor que no hacer nada.
     if (!m || !m->vertex || (int)pos.size() != m->vertexSize * 3) return;
+    m->DesinstanciarDatos(W3DMD_POS);   // COW: se escribe en el lugar
     for (size_t i = 0; i < pos.size(); i++) { GLfloat c = m->vertex[i]; m->vertex[i] = pos[i]; pos[i] = c; }
     bool c = m->posadaPorAnim; m->posadaPorAnim = posada; posada = c;
 }

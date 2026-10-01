@@ -142,6 +142,8 @@ static float lightSpec[4] = {1,1,1,1};   // specular de la luz (GL_LIGHT0 defaul
 static float curColor[4]  = {1,1,1,1};   // color uniforme (Color4*) cuando NO hay array de color
 static float fogColor[4]  = {0,0,0,1};
 static float fogStart=0, fogEnd=1;
+static int   fogModo=0;       // 0 lineal / 1 exp / 2 exp2 (el objeto Niebla), igual que GL_FOG_MODE
+static float fogDens=1.0f;
 static bool  dot3On=false, replaceOn=false;
 static bool  pointSprite=false; // point sprite: samplear la textura con gl_PointCoord (iconos: cursor/origen/luz)
 static float pointSize=1.0f;
@@ -156,7 +158,7 @@ static GLint uClipN,uClip[5];   // planos de recorte (ver PlanosRecorte): equiva
 static float blurY = 0.0f;
 static float alphaRef = 0.0f;
 static int   alfaAbajo = 0;
-static GLint uLPos,uLDiff,uLAmb,uMDiff,uMAmb,uFogColor,uFogStart,uFogEnd;
+static GLint uLPos,uLDiff,uLAmb,uMDiff,uMAmb,uFogColor,uFogStart,uFogEnd,uFogModo,uFogDens;
 static GLint uMSpec,uMEmis,uShine,uLSpec; // specular + emissive del material/luz
 static GLint aLpos,aLnrm,aLuv,aLcol;
 static bool ready=false;
@@ -182,7 +184,7 @@ static const char* FS =
 "uniform sampler2D uTex;\n"
 "uniform vec4 uLPos; uniform vec4 uLDiff; uniform vec4 uLAmb; uniform vec4 uMDiff; uniform vec4 uMAmb;\n"
 "uniform vec4 uMSpec; uniform vec4 uMEmis; uniform vec4 uLSpec; uniform float uShine;\n"
-"uniform vec4 uFogColor; uniform float uFogStart; uniform float uFogEnd;\n"
+"uniform vec4 uFogColor; uniform float uFogStart; uniform float uFogEnd; uniform int uFogModo; uniform float uFogDens;\n"
 "uniform int uClipN; uniform vec4 uClip0,uClip1,uClip2,uClip3,uClip4;\n"   // planos de recorte, en OJO
 "varying vec3 vN; varying vec3 vP; varying vec2 vT; varying vec4 vC; varying float vFogZ;\n"
 "void main(){\n"
@@ -220,7 +222,11 @@ static const char* FS =
 "      col.rgb += uMSpec.rgb*uLSpec.rgb*pow(max(dot(N,H),0.0),uShine); }\n"
 "    col.rgb += uMEmis.rgb; }\n"                                                  // emissive (negro = no suma nada)
 "  else { col=vC*tex; }\n"
-"  if(uFogOn==1){ float f=clamp((uFogEnd-vFogZ)/(uFogEnd-uFogStart),0.0,1.0); col.rgb=mix(uFogColor.rgb,col.rgb,f); }\n"
+"  if(uFogOn==1){ float f;\n"
+"    if(uFogModo==1) f=exp(-uFogDens*vFogZ);\n"                                   // GL_EXP
+"    else if(uFogModo==2){ float e=uFogDens*vFogZ; f=exp(-e*e); }\n"            // GL_EXP2
+"    else f=(uFogEnd-vFogZ)/(uFogEnd-uFogStart);\n"                              // GL_LINEAR
+"    col.rgb=mix(uFogColor.rgb,col.rgb,clamp(f,0.0,1.0)); }\n"
 "  if(uAlphaRef > 0.0 && col.a < uAlphaRef) discard;\n"   // no pinta NI escribe z-buffer
 "  gl_FragColor=col;\n"
 "}\n";
@@ -293,6 +299,7 @@ static void buildProgram(){
     uMSpec=glGetUniformLocation(prog,"uMSpec"); uMEmis=glGetUniformLocation(prog,"uMEmis");
     uLSpec=glGetUniformLocation(prog,"uLSpec"); uShine=glGetUniformLocation(prog,"uShine");
     uFogColor=glGetUniformLocation(prog,"uFogColor"); uFogStart=glGetUniformLocation(prog,"uFogStart"); uFogEnd=glGetUniformLocation(prog,"uFogEnd");
+    uFogModo=glGetUniformLocation(prog,"uFogModo"); uFogDens=glGetUniformLocation(prog,"uFogDens");
     aLpos=glGetAttribLocation(prog,"aPos"); aLnrm=glGetAttribLocation(prog,"aNrm");
     aLuv=glGetAttribLocation(prog,"aUV"); aLcol=glGetAttribLocation(prog,"aCol");
     glGenBuffers(1,&vboP); glGenBuffers(1,&vboN); glGenBuffers(1,&vboT); glGenBuffers(1,&vboC); glGenBuffers(1,&ibo);
@@ -396,6 +403,9 @@ void Viewport(int x,int y,int w,int h){ if(w<0)w=0; if(h<0)h=0; glViewport(x,y,w
 // clamp de w/h a >=0: un ancho/alto negativo (viewport muy angosto - iconos/margenes en el outliner)
 // es GL_INVALID_VALUE en WebGL y deja el scissor en mal estado. Clampeando no rompe el clipping.
 void Scissor(int x,int y,int w,int h){ if(w<0)w=0; if(h<0)h=0; glScissor(x,y,w,h); }
+void GetViewport(int v[4]){ GLint g[4]; glGetIntegerv(GL_VIEWPORT,g); for(int i=0;i<4;i++) v[i]=(int)g[i]; }
+void GetScissor(int v[4]){ GLint g[4]; glGetIntegerv(GL_SCISSOR_BOX,g); for(int i=0;i<4;i++) v[i]=(int)g[i]; }
+bool ScissorActivo(){ return glIsEnabled(GL_SCISSOR_TEST)==GL_TRUE; }
 void DepthFunc(DepthCmp c){ glDepthFunc(c==DepthLEqual?GL_LEQUAL:(c==DepthEqual?GL_EQUAL:(c==DepthAlways?GL_ALWAYS:GL_LESS))); }
 void DepthMask(bool w){ glDepthMask(w?GL_TRUE:GL_FALSE); }
 void ColorMask(bool r,bool g,bool b,bool a){ glColorMask(r,g,b,a); }
@@ -491,7 +501,9 @@ void Color4ub(unsigned char r,unsigned char g,unsigned char b,unsigned char a){ 
 // ============================================================================
 //  Fog
 // ============================================================================
-void FogMode(bool){}           // solo LINEAR por ahora (el shader es lineal)
+void FogMode(bool lineal){ fogModo = lineal ? 0 : 1; }
+void FogModo(int m){ fogModo = (m < 0 || m > 2) ? 0 : m; }
+void FogDensidad(float d){ fogDens = d; }
 void FogStart(float z){ fogStart=z; }
 void FogEnd(float z){ fogEnd=z; }
 void FogColor(const float* rgba){ for(int i=0;i<4;i++) fogColor[i]=rgba[i]; }
@@ -557,6 +569,7 @@ static void setupState(int nV){
     glUniform4fv(uMDiff,1,matDiff); glUniform4fv(uMAmb,1,matAmb);
     glUniform4fv(uMSpec,1,matSpec); glUniform4fv(uMEmis,1,matEmis); glUniform4fv(uLSpec,1,lightSpec); glUniform1f(uShine,matShine);
     glUniform4fv(uFogColor,1,fogColor); glUniform1f(uFogStart,fogStart); glUniform1f(uFogEnd,fogEnd);
+    glUniform1i(uFogModo,fogModo); glUniform1f(uFogDens,fogDens);
     if(cap_tex){ glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,boundTex); }
     static const float defNrm[4]={0,0,1,0};
     bindAttr(aLpos,aPos,vboP,nV, defNrm,  false); // POSICION: NUNCA normalizar (short = coords enteras de pantalla/mundo)

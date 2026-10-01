@@ -27,6 +27,11 @@ class Light : public Object {
         // OpenGL fixed-function = UN tipo de luz, configurable: DIRECCIONAL (w=0, como el sol, sin posicion ni
         // atenuacion), PUNTUAL (w=1 + atenuacion) o SPOT (puntual + cono). Editables desde el panel de la luz.
         bool   direccional;     // true: w=0 (direccional); false: w=1 (puntual/spot, con atenuacion)
+        // IGNORAR EL ORDEN DEL ARBOL (default true): la luz se enciende en el PRE-PASE, antes de toda la geometria,
+        // y alumbra la escena entera sin importar donde este colgada. En false vuelve el comportamiento de GL fijo:
+        // solo alumbra lo que se dibuja DESPUES de ella en el arbol (sirve para iluminar ciertas cosas con ciertas
+        // luces, o para REUSAR uno de los 8 GL lights pisando una luz anterior mas abajo en el arbol).
+        bool   ignorarOrden;
         float attConstant;    // atenuacion: 1/(C + L*d + Q*d^2). Solo luz puntual/spot.
         float attLinear;
         float attQuadratic;

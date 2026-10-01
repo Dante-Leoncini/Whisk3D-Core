@@ -102,4 +102,36 @@ void W3dAlmacenMontar(W3dAlmacen* a);
 void W3dAlmacenDesmontar();
 W3dAlmacen* W3dAlmacenMontado();
 
+// ---------------------------------------------------------------------------
+//  VARIOS CONTENEDORES MONTADOS A LA VEZ: EL REGISTRO POR NOMBRE (las librerias)
+//
+//  El proyecto abierto es el almacen SIN nombre de arriba: sus entradas van peladas
+//  ("texturas/x.png"). Cada LIBRERIA externa (otro .w3d, de solo lectura, del que el
+//  proyecto usa prefabs, escenas o recursos) se monta ADEMAS con su nombre, y sus
+//  entradas se nombran con PREFIJO: "lib:<nombre>/texturas/x.png". ReadFileBytes y
+//  FileExists enrutan ese prefijo al almacen de esa libreria: dos librerias (y el
+//  proyecto) no chocan aunque tengan entradas con el mismo nombre, y todo lo que se
+//  carga tarde (texturas de la cola diferida, scripts, .w3db, .w3da) sigue
+//  encontrando lo suyo sin tocar sus call sites.
+//
+//  SIN un almacen con ese nombre (el JUEGO COMPILADO: las entradas de cada libreria
+//  viajan extraidas en "librerias/<nombre>/<entrada>", al lado del proyecto.json o en
+//  el pak) la ruta se traduce a W3dRutaLibreriaEmpaquetada y se busca como cualquier
+//  otro archivo del juego (pak, APK, carpeta del binario).
+//
+//  Igual que el montado: registrar NO transfiere la propiedad (el que registra
+//  destruye, y quita el registro antes). Implementado en w3dFilesystem.cpp (mismo
+//  motivo que las tres de arriba).
+// ---------------------------------------------------------------------------
+void W3dAlmacenRegistrar(const std::string& nombre, W3dAlmacen* a);   // a NULL = lo quita
+W3dAlmacen* W3dAlmacenPorNombre(const std::string& nombre);          // NULL = no hay
+// "lib:<nombre>/<entrada>" -> su nombre y su entrada. false = no es una ruta de libreria
+bool W3dRutaDeLibreria(const std::string& ruta, std::string* nombre, std::string* entrada);
+// donde vive una entrada de libreria en el JUEGO COMPILADO: "librerias/<nombre>/<entrada>"
+std::string W3dRutaLibreriaEmpaquetada(const std::string& nombre, const std::string& entrada);
+// se pidio "lib:<nombre>/..." y no hay almacen con ese nombre: el editor lo MONTA en ese momento (una libreria
+// vinculada que todavia nadie uso: la textura de un material del proyecto que nombra una de ella). true = quedo
+// registrado. NULL (el juego compilado, los builds sin librerias) = se va derecho a la copia empaquetada
+extern bool (*W3dAlmacenPedirHook)(const std::string& nombre);
+
 #endif // W3DALMACEN_H

@@ -66,9 +66,18 @@ static const unsigned kZipMaxTotal   = 512u * 1024u * 1024u;
 static const unsigned kZipFlagUtf8 = 0x800u;
 
 // ---------------------------------------------------------------------------
-//  CRC32 (polinomio estandar del zip), tabla armada una vez
+//  CRC32 (polinomio estandar del zip), tablas armadas una vez.
+//  "SLICING BY 8": 8 tablas de 256 (8 KB) y 8 bytes por vuelta en vez de 1.
+//  Es el mismo CRC (mismos bytes en el archivo), unas 5 veces mas rapido: con
+//  las mallas binarias (.w3db) abrir es leer la entrada + memcpy, y el CRC byte
+//  a byte era lo que mas pesaba de "leer la entrada" (verificar CADA entrada al
+//  leerla no se negocia: es lo que frena a un zip corrupto).
+//  Los 4 primeros bytes de cada vuelta se arman little-endian BYTE A BYTE: no
+//  depende del endian del host ni de la alineacion del puntero (C++03 puro).
+//  gCrcTabla[0] es la tabla clasica; gCrcTabla[t][i] = el CRC de i seguido de t
+//  bytes en cero (lo que avanza un byte que esta t posiciones antes del final).
 // ---------------------------------------------------------------------------
-static unsigned gCrcTabla[256];
+static unsigned gCrcTabla[8][256];
 static bool gCrcListo = false;
 static void CrcInit() {
     if (gCrcListo) return;
@@ -76,17 +85,36 @@ static void CrcInit() {
         unsigned c = i;
         for (int k = 0; k < 8; k++)
             c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-        gCrcTabla[i] = c;
+        gCrcTabla[0][i] = c;
+    }
+    for (unsigned i = 0; i < 256; i++) {
+        unsigned c = gCrcTabla[0][i];
+        for (int t = 1; t < 8; t++) {
+            c = gCrcTabla[0][c & 0xFFu] ^ (c >> 8);
+            gCrcTabla[t][i] = c;
+        }
     }
     gCrcListo = true;
 }
 static unsigned Crc32(const unsigned char* d, size_t n) {
     CrcInit();
     unsigned c = 0xFFFFFFFFu;
-    for (size_t i = 0; i < n; i++)
-        c = gCrcTabla[(c ^ d[i]) & 0xFF] ^ (c >> 8);
+    while (n >= 8) {
+        const unsigned a = c ^ ((unsigned)d[0] | ((unsigned)d[1] << 8) |
+                                ((unsigned)d[2] << 16) | ((unsigned)d[3] << 24));
+        c = gCrcTabla[7][a & 0xFFu] ^ gCrcTabla[6][(a >> 8) & 0xFFu] ^
+            gCrcTabla[5][(a >> 16) & 0xFFu] ^ gCrcTabla[4][(a >> 24) & 0xFFu] ^
+            gCrcTabla[3][d[4]] ^ gCrcTabla[2][d[5]] ^ gCrcTabla[1][d[6]] ^ gCrcTabla[0][d[7]];
+        d += 8; n -= 8;
+    }
+    // la cola (menos de 8 bytes): byte a byte, como siempre
+    while (n > 0) {
+        c = gCrcTabla[0][(c ^ *d) & 0xFFu] ^ (c >> 8);
+        d++; n--;
+    }
     return c ^ 0xFFFFFFFFu;
 }
+unsigned W3dZipCrc32(const unsigned char* d, size_t n) { return (d && n) ? Crc32(d, n) : 0u; }
 static unsigned Crc32De(const std::vector<unsigned char>& v) {
     return v.empty() ? 0u : Crc32(&v[0], v.size());
 }

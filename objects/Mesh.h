@@ -34,7 +34,8 @@ class FaceCorner {
 		int uv;
 		int normal;
 		int color; // indice de color POR ESQUINA (vc del .obj); -1 = usar el color por-vertice
-		FaceCorner() : vertex(-1), uv(-1), normal(-1), color(-1) {}
+		int uv2;   // esquina en la SEGUNDA capa UV (TEXCOORD_1 del glTF -> Mesh::uvExtra[1]); -1 = no hay
+		FaceCorner() : vertex(-1), uv(-1), normal(-1), color(-1), uv2(-1) {}
 };
 
 class Face { 
@@ -289,12 +290,43 @@ struct W3dAjenos {
     // el lector se va ANTES de setearlo y ademas la malla es otra, recien creada.
     // Con esto puesto EscribirMallaW3dm se NIEGA, igual que con el freno "requiere".
     bool noCargo;
-    W3dAjenos() : nPuntos(-1), nEsquinas(-1), nCaras(-1), nAristas(-1), truncado(false), noCargo(false) {}
+    // ---- lo mismo para el .w3db (io/W3dMallaBin.h): la geometria BINARIA ----
+    // bloques binarios que este Whisk3D no conoce: 'nombre' = el fourcc (4 letras),
+    // 'texto' = el payload CRUDO (bytes, no texto), 'dominio'/'cantidad' de su cabecera.
+    // Se reescriben tal cual con la misma regla del sello que los de texto.
+    std::vector<W3dBloqueAjeno> bloquesBin;
+    // el bloque REQ del .w3db TAL CUAL vino (fourcc que un lector DEBE entender). Si nombra
+    // uno desconocido, la malla abre pero no se puede guardar encima (el mismo freno).
+    std::vector<std::string> requiereBin;
+    // el sello de los dos dominios que solo tiene el binario (-1 = no se cargo de un .w3db)
+    int nRender, nTriangulos;
+    W3dAjenos() : nPuntos(-1), nEsquinas(-1), nCaras(-1), nAristas(-1), truncado(false), noCargo(false),
+                  nRender(-1), nTriangulos(-1) {}
     void Limpiar() {
-        bloques.clear(); requiere.clear();
+        bloques.clear(); requiere.clear(); bloquesBin.clear(); requiereBin.clear();
         nPuntos = -1; nEsquinas = -1; nCaras = -1; nAristas = -1; truncado = false; noCargo = false;
+        nRender = -1; nTriangulos = -1;
     }
 };
+
+// ===========================================================================
+//  ESTADISTICAS DE LA GEOMETRIA (AABB + centro + radio + posiciones unicas).
+//  UNA sola implementacion para todos los que las calculan: CalcularBordes y
+//  CalcularAABBSolo (editor), el escritor del .w3db (que las hornea al guardar) y
+//  su lector (cuando el proyecto pide el otro modo). Tienen que dar los MISMOS
+//  bits en los cuatro lados, asi que es el mismo codigo, no una copia.
+//   rep = representante de cada vertice (posRep); NULL = todos cuentan (el centro
+//   es el promedio de TODOS los vertices, como CalcularAABBSolo).
+//  Sin geometria (nV <= 0 o v NULL): ok=false y lo demas no se toca.
+// ===========================================================================
+struct W3dGeomStats {
+    Vector3 aabbMin, aabbMax, centro;
+    float radio;
+    int agrupados;   // posiciones unicas (solo con rep; 0 sin rep)
+    bool ok;
+    W3dGeomStats() : aabbMin(0, 0, 0), aabbMax(0, 0, 0), centro(0, 0, 0), radio(0.0f), agrupados(0), ok(false) {}
+};
+void W3dCalcularGeomStats(const GLfloat* v, int nV, const int* rep, W3dGeomStats& out);
 
 // ===========================================================================
 //  ANIMACION UV de la malla = un FLIPBOOK del Core (ver animation/Flipbook.h).
@@ -337,9 +369,39 @@ enum {
 // Clase Mesh
 // ===================================================
 class Armature; // objects/Armature.h — skinning (deform por esqueleto)
+struct MallaRecurso; // objects/MallaRecurso.h — la malla 3D con nombre, compartida por sus objetos
+
+// ---------------------------------------------------------------------------
+//  SHAPE KEY (blend shape / morph target): un desplazamiento POR PUNTO DE CONTROL (el mismo espacio que los vertex
+//  groups) de una forma de la malla, ej: las formas de la cara de un
+//  personaje que habla en una cinematica (boca, ojos, cejas). La malla que se DIBUJA = base + suma(peso_k * forma_k), y DESPUES el skinning (se mueve la boca y
+//  ademas la cabeza gira con su hueso). Esparso: solo los puntos que la forma mueve.
+// ---------------------------------------------------------------------------
+struct W3dShapeKey {
+    std::string nombre;
+    std::vector<int>   idx;   // puntos de control que mueve
+    std::vector<float> d;     // 3 floats (dx, dy, dz) por idx, en el espacio de la malla
+};
 
 class Mesh : public Object {
     public:
+        // SHAPE KEYS (ver W3dShapeKey): las formas y su peso actual. Los pesos los anima el canal AnimShape (componente
+        // = indice de la forma) de una animacion de escena (ej: la cara que habla en una cinematica). shapeSerial sube
+        // en cada cambio de peso: el skinning cacheado por frame se rehace aunque el frame no cambie.
+        std::vector<W3dShapeKey> shapeKeys;
+        std::vector<float>       shapePesos;
+        unsigned                 shapeSerial;
+        unsigned                 skinShapeSerial;   // shapeSerial con el que se calculo skinVertex
+        std::vector<float>       shapeCpDelta;      // temp por frame: suma de las formas por punto de control
+        void SetShapePeso(int k, float w) {
+            if (k < 0 || k >= (int)shapeKeys.size()) return;
+            if ((int)shapePesos.size() < (int)shapeKeys.size()) shapePesos.resize(shapeKeys.size(), 0.0f);
+            if (shapePesos[k] != w) { shapePesos[k] = w; shapeSerial++; }
+        }
+        bool HayFormasActivas() const {
+            for (size_t k = 0; k < shapePesos.size() && k < shapeKeys.size(); k++) if (shapePesos[k] != 0.0f) return true;
+            return false;
+        }
         // defaults en el constructor (Mesh.cpp), C++03
         int vertexSize;
         // POSICIONES de los render-verts (3 floats por vert).
@@ -425,11 +487,24 @@ class Mesh : public Object {
         bool         vboPoseSkinneada; // el VBO de posiciones tiene una pose DEFORMADA subida? -> al quitar el armature
                                        // (skinArmature=NULL) hay que re-subir el bind 1 vez (sino queda la ultima pose pegada)
         void SubirVBO(const GLfloat* posBuf, const GLbyte* norBuf, bool soloPose); // sube/actualiza los VBOs
+        // capas (W3DMD_*) que este dibujo toma de los VBO COMPARTIDOS del recurso (MallaRecurso.h):
+        // SubirVBO no las sube. Lo decide RenderObject en cada dibujo (una skinneada dibuja SU pose).
+        unsigned char vboCompartidas;
+        unsigned int  vboUVEnUso;  // el VBO de UV del dibujo en curso (el propio o el del recurso)
 
         // capas persistentes EXCLUSIVAS de la malla (lista de punteros + indice ACTIVO,
         // -1 = ninguna). El render usa la activa; el editor las crea/edita/borra.
         std::vector<UVMap*>       uvMaps;       int uvMapActivo;
         std::vector<ColorLayer*>  colorLayers;  int colorActivo;
+        // CAPAS UV EXTRA EN EL RENDER (por render-vert): uvExtra[i] es la capa uvMaps[i] llevada al render (2 floats
+        // por vert; VACIA para la activa, que ya es uv[]). Las usan las capas de textura del material que piden su
+        // propio UV (TexLayer::uvMapa: un lightmap con su unwrap). Las derivan AplicarCapasAlRender / GenerarRender;
+        // en el .w3db viajan en el bloque RUVX; el importador glTF las trae de TEXCOORD_1. Son de la malla (no un
+        // array compartido del recurso): una copia por usuario, que siempre es memoria propia (sin COW).
+        std::vector< std::vector<GLfloat> > uvExtra;
+        // el array de render de la capa UV 'i' (0 = la base): uv[] si es la activa (o no hay capas), sino
+        // uvExtra[i]; NULL si esa capa no esta en el render (el que dibuja cae a uv[]).
+        const GLfloat* UVDeCapa(int i) const;
         // los DOS grupos de pesos (ver el bloque VertexGroup/UVGroup arriba): por
         // CONTROL-POINT (3D, armature 3D) y por CORNER (editor UV, armature 2D).
         std::vector<VertexGroup*> vertexGroups; int grupoActivo;
@@ -725,6 +800,18 @@ class Mesh : public Object {
         //      escribir una capa exige DesinstanciarDatos() antes. ----
         void*         datosRec;   // W3dRecurso* (tipo MALLA); NULL = todo propio
         unsigned char datosComp;  // mascara W3DMD_* de capas compartidas
+        // LA MALLA 3D COMO RECURSO (MallaRecurso.h): el recurso con nombre que usa este objeto
+        // ("malla": "Arbol" en el proyecto). Sus capas compartidas apuntan ADENTRO del recurso
+        // (datosComp dice cuales; datosRec queda NULL) y el vinculo SIGUE aunque una capa se
+        // copie por COW (una vertex anim, el flipbook): el objeto es usuario del recurso hasta
+        // que se vincula a otro o muere. NULL = malla suelta (sin recurso: el guardado le da uno).
+        MallaRecurso* malla;
+        // la malla vino SUELTA de un ARCHIVO (una geometria por objeto: el formato anterior al
+        // registro de mallas). Solo esas se JUNTAN por contenido al guardar (mil arboles iguales
+        // de un archivo viejo -> una malla). Una malla nueva de la sesion (Add, Shift+D, un
+        // import) no: dos cubos iguales siguen siendo dos mallas (nadie pidio vincularlos).
+        // Lo prende el editor al abrir; una copia (W3dDuplicarUno) nace en false.
+        bool dedupPorContenido;
         // COW: garantiza que las capas de 'mask' sean PROPIAS. copiar=true las
         // duplica (para escrituras in-place); copiar=false las ABANDONA en NULL
         // (para quien va a regenerarlas de cero y las habria borrado con
@@ -1170,6 +1257,13 @@ class Mesh : public Object {
         // bloques del .w3dm que este Whisk3D no entiende (los trajo una version mas nueva) +
         // el sello de cantidades por dominio con el que se cargaron. Ver W3dAjenos arriba.
         W3dAjenos w3dmAjenos;
+
+        // ENTRADA .w3db cuyos bloques de EDICION (faces3d, capas, marcas, aristas) todavia NO
+        // se leyeron: el juego compilado carga solo los de RENDER y los materializa recien si
+        // alguien los pide (ConstruirPolyMesh: un modificador geometrico, el Boolean que usa
+        // esta malla de target). "" = estan en memoria (el editor siempre los lee).
+        // Ver W3dMallaBinMaterializarEdicion (io/W3dMallaBin.h).
+        std::string edicionPendiente;
 
         Mesh(Object* parent = NULL, Vector3 pos = Vector3(0,0,0));
 

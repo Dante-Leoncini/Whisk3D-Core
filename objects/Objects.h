@@ -67,12 +67,24 @@ struct ObjectType {
         culling,        // frustum culling de sus hijos por AABB (y orden adelante->atras)
         particulas,     // emisor de PARTICULAS (billboards del Core, gfx/w3dParticles.h)
         viszona,        // selector de CELDA de visibilidad (VisSet/.w3dvis): grilla/volumenes/curva/manual
-        gridcull        // culling ESPACIAL POR GRILLA (estilo GTA/RenderWare): celdas + frustum + distancia + LOD
+        gridcull,       // culling ESPACIAL POR GRILLA (estilo GTA/RenderWare): celdas + frustum + distancia + LOD
+        niebla,         // NIEBLA (glFog) puesta en el arbol: de ahi en adelante todo se dibuja con ella (solo Render)
+        limpiarz,       // LIMPIAR Z: borra la profundidad en ese punto del arbol (lo que sigue queda adelante)
+        recorte,        // RECORTE: sus hijos se dibujan solo en un rectangulo de la pantalla (opcional: con otra camara)
+        hitbox,         // HITBOX: caja de deteccion (entrar/quedarse/salir) con eventos lua (physics/W3dHitbox.h)
+        prefab,         // INSTANCIA DE PREFAB: sus hijos se GENERAN desde la definicion del prefab (no se guardan);
+                        // es FRONTERA del espacio de nombres (ver W3dEsFronteraScope y main/objects/InstanciaPrefab.h)
+        proxy           // PROXY W3D: una instancia de un prefab o de una escena de una LIBRERIA externa (otro .w3d de
+                        // solo lectura). Genera sus hijos como una instancia de prefab (misma maquinaria, misma frontera
+                        // de scope) pero nada de lo generado se edita ni se guarda (main/objects/ProxyW3d.h)
     };
     Enum v;
     ObjectType(Enum e) : v(e) {}
     operator Enum() const { return v; }
 };
+// los dos tipos que GENERAN sus hijos desde una definicion (una instancia de prefab del proyecto, o un proxy de
+// una libreria): lo que cuelga de ellos es generado, no se guarda y es de su scope
+inline bool W3dEsTipoInstancia(ObjectType t) { return t == ObjectType::prefab || t == ObjectType::proxy; }
 
 // Forward declarations
 class Object;
@@ -84,6 +96,40 @@ extern bool g_localViewActivo;
 extern const std::set<Object*>* g_localViewVisibles; // objetos a traversar/dibujar (NULL = no filtrar)
 extern Object* CollectionActive;
 extern Object* ObjActivo;
+
+// ============================================================================
+//  RAICES EDITABLES (escenas 3D y prefabs de un proyecto, ver main/W3dRaices.h).
+//  SceneCollection es SIEMPRE la raiz ACTIVA: la que se dibuja, se edita y se recorre.
+//  Un proyecto puede tener OTRAS raices cargadas que viven fuera del arbol activo (su
+//  contexto -seleccion, camara, luces, animaciones- lo guarda main/W3dRaices). Al Core
+//  solo le hace falta saber cuales son:
+//    - ~Object suelta los punteros al borrado tambien adentro de ellas (no solo en la
+//      activa), asi una referencia de una raiz inactiva no queda colgando;
+//    - los recorridos "de proyecto" (los usuarios de una malla compartida) las cuentan.
+//  El registro NO es dueno de nada: quien crea la raiz la registra y la olvida.
+//  Sin registrar nada (el runtime 2D, el editor con una sola escena) todo queda como antes.
+// ============================================================================
+void    W3dRaizRegistrar(Object* raiz);        // idempotente
+void    W3dRaizOlvidar(Object* raiz);
+int     W3dRaicesRegistradas();                 // cuantas (la activa puede o no estar)
+Object* W3dRaizRegistradaEn(int i);
+bool    W3dEsRaizRegistrada(const Object* o);
+// TODAS las raices vivas: la activa (SceneCollection) primero y despues las registradas
+// inactivas, sin repetir. Es lo que recorre lo que es "de todo el proyecto".
+void    W3dRaicesVivas(std::vector<Object*>& out);
+// la raiz de la que cuelga 'o' (subiendo por Parent): SceneCollection, una raiz registrada,
+// o NULL si 'o' no cuelga de ninguna (un objeto suelto). Solo sube por Parent: la raiz de un
+// subarbol que el undo DETACHO conserva su Parent (el Ctrl+Z la vuelve a colgar ahi), asi que
+// para ella y sus descendientes devuelve la raiz de donde se saco (ver W3dRaizDeColgado)
+Object* W3dRaizDe(Object* o);
+// lo mismo, pero solo si 'o' esta COLGADO de verdad: cada eslabon esta en la lista de hijos de su
+// padre. Un subarbol detachado del undo (un borrado con Ctrl+Z) da NULL. Recorre los hermanos de
+// cada eslabon: para lo que no se llama en cada cuadro (el editor)
+Object* W3dRaizDeColgado(Object* o);
+// true mientras se CONSTRUYE una raiz nueva (ver W3dSceneNuevaRaiz en main/objects/Scene.h):
+// el constructor de Object no la cuelga de la raiz activa, no le busca nombre libre y no
+// toca la seleccion
+extern bool W3dRaizCreando;
 
 // ===== EDIT MODE =====
 // la malla ACTIVA en Edit Mode (NULL = nadie esta en edit). La setea el viewport
@@ -247,6 +293,11 @@ class Object {
         // friccion, rebote). El cuerpo runtime lo maneja physics/W3dRigido
         // durante el play; sin definicion el objeto no paga nada.
         struct W3dRigidoDef* fisica;
+
+        // CLIPS DE JERARQUIA (opcional, puntero, NULL default; ver animation/W3dAnimSet.h): la
+        // BIBLIOTECA de clips que este objeto RAIZ usa para animarse a si mismo y a sus hijos por
+        // ruta de nombres (animObjeto de lua), y como los reproduce (retarget). La mayoria no tiene.
+        struct W3dJerRaiz* clipsJer;
 
         Object(
             Object* parent,
@@ -469,7 +520,7 @@ class Object {
 //  decidir que liberar: hay que llegar con esa cuenta ya hecha.
 // ============================================================================
 typedef void (*W3dDesvincularFn)(Object* borrado);
-enum { W3dDesvincularMaxGanchos = 8 };
+enum { W3dDesvincularMaxGanchos = 12 };   // (undo, UI, raices, clips de objeto, harness...)
 extern W3dDesvincularFn W3dDesvincularGanchos[W3dDesvincularMaxGanchos]; // NULL = slot libre
 // registra un gancho (idempotente: registrar dos veces el mismo no lo duplica). Devuelve
 // false si no quedaban slots. Pensado para llamarse desde un constructor global: el array
@@ -492,14 +543,65 @@ bool W3dDesvincularRegistrar(W3dDesvincularFn f);
 // ============================================================================
 void W3dLiberarSubarbol(Object* raiz);
 
+// cuantos objetos NACIERON en la sesion (el proximo serial, ver Object::serial): solo LECTURA. Si
+// cambio, se crearon objetos. Lo usan los que revisan la escena solo cuando hay algo nuevo (las
+// texturas dormidas de un material huerfano, que despiertan cuando una malla nueva lo usa).
+unsigned int W3dObjetosNacidos();
+// cuantas veces se ELIGIO un objeto en la sesion (sube con cada Object::Seleccionar): quien recuerda lo
+// que estaba elegido (el recurso activo de la biblioteca del editor) sabe si la escena tomo la seleccion
+// despues, aunque el objeto activo sea el mismo. Una malla de trabajo fuera de la escena lo deja como
+// estaba (W3dMallaTemporalNueva).
+extern unsigned int W3dSeleccionSerial;
+
 // Funciones auxiliares
 // NOMBRE LEGIBLE del tipo de objeto (en espanol, sin acentos): "mesh", "luz", "camara", "ui",
 // "texto", "imagen", "rect", "vacio", ... Es la UNICA fuente de verdad de esos nombres: la usa
 // tipo() de lua. Nunca devuelve NULL (un tipo desconocido cae en "objeto").
 const char* W3dNombreTipo(ObjectType t);
 Object* FindObjectByName(Object* node, const std::string& name);
-// raiz del ESPACIO DE NOMBRES de 'o': su escena UI, o SceneCollection. Ver Objects.cpp.
+// raiz del ESPACIO DE NOMBRES de 'o': su escena UI, su instancia de prefab, o SceneCollection. Ver Objects.cpp.
 Object* W3dNombreScopeDe(Object* o);
+
+// ============================================================================
+//  FRONTERAS DEL ESPACIO DE NOMBRES (un solo predicado para todo el motor)
+//
+//  Los nombres de objeto son unicos POR SCOPE. Hay dos clases de nodo que abren un scope propio:
+//    - una RAIZ UI (una escena 2D): sus widgets tienen su propio espacio; la raiz UI misma vive en
+//      el scope GLOBAL (su nombre es la clave de cambiarEscena), por anidada que este;
+//    - una INSTANCIA DE PREFAB (ObjectType::prefab): lo que genera (los hijos que salen de la
+//      definicion del prefab) vive en SU scope, con los nombres TAL CUAL los tiene el prefab. Asi N
+//      instancias del mismo prefab no se renumeran ("Cuerpo", "Cuerpo.001"...) y las rutas de sus clips
+//      de jerarquia, sus constraints, su modArmature y las refs de sus scripts siguen apuntando adentro.
+//      A diferencia de la UI, la instancia NO ocupa su propio scope (su nombre es del scope de afuera:
+//      la instancia "Enemigo" puede generar un objeto raiz "Enemigo").
+//  Todo lo que parte los nombres por scope (el nombre libre, la reparacion al abrir, la busqueda de las
+//  animaciones de escena, el guardado) pregunta ESTO; el que resuelve una referencia por nombre usa
+//  W3dBuscarNombreDesde (primero adentro de la instancia, despues afuera).
+// ============================================================================
+bool W3dEsFronteraScope(const Object* o);
+// la INSTANCIA DE PREFAB que genero a 'o' (la mas cercana subiendo por Parent, sin contar a 'o'). NULL = 'o'
+// no es un objeto generado (es de la escena, o es la instancia misma sin estar adentro de otra)
+Object* W3dInstanciaDe(const Object* o);
+inline bool W3dEsGenerado(const Object* o) { return W3dInstanciaDe(o) != NULL; }
+// busca 'nombre' COMO LO VE 'desde': primero en el scope de su instancia de prefab (sus hijos generados,
+// sin entrar a las instancias anidadas), despues en el de la instancia de afuera, ... y al final en TODO el
+// arbol de 'raiz' (el primero en preorden, la regla de siempre). 'raiz' NULL = la raiz de la que cuelga
+// 'desde' (o SceneCollection). Para un objeto que no esta adentro de ninguna instancia es exactamente
+// FindObjectByName(raiz, nombre).
+Object* W3dBuscarNombreDesde(Object* desde, const std::string& nombre, Object* raiz = NULL);
+
+// ============================================================================
+//  OBJETOS VIVOS: el conjunto de los Object que existen ahora (lo llenan el constructor y el destructor).
+//  Lo usa quien recibe un Object* de afuera y no puede confiar en el (lua guarda punteros crudos: un
+//  objeto destruido con destruir() no puede volver a entrar a un bind). El serial desempata una direccion
+//  RECICLADA (otro objeto que nacio en el mismo lugar).
+// ============================================================================
+bool W3dObjetoVivo(const Object* o);
+bool W3dObjetoVivoSerial(const Object* o, unsigned int serial);
+// el Play del editor NO libera lo del usuario que un script destruye: lo descuelga hasta el Stop. Mientras tanto,
+// para lua es un objeto que ya no existe (como en el juego compilado, donde si se libera): vivo=false lo saca del
+// conjunto y vivo=true lo devuelve (solo ese objeto; ~Object igual lo saca para siempre)
+void W3dObjetoVivoMarcar(const Object* o, bool vivo);
 // true mientras un loader esta armando la escena (los nombres entran crudos y
 // se reparan de una sola vez al final). Ver Objects.cpp / W3dNombresRepararEscena.
 extern bool W3dNombresCargando;

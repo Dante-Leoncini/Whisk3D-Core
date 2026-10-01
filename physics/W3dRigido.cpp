@@ -9,7 +9,8 @@
 //      acumulado, friccion de Coulomb en dos tangentes y un sesgo posicional
 //      (Baumgarte) para que nada quede hundido
 //    * integracion semi-implicita (primero velocidad, despues posicion), en
-//      DOS sub-pasos por frame para que 30 fps sea estable
+//      DOS sub-pasos por frame para que 30 fps sea estable (mas si el frame es
+//      lento: ningun sub-paso pasa de 1/60 s, ver SUBPASO_MAX)
 //    * cuerpos DORMIDOS: un auto estacionado cuesta cero hasta que algo lo toca
 // ============================================================================
 #include "physics/W3dRigido.h"
@@ -27,7 +28,8 @@ extern "C" {
 // ---------------------------------------------------------------------------
 //  constantes de la simulacion
 // ---------------------------------------------------------------------------
-static const int   SUBPASOS       = 2;      // sub-pasos por W3dRigidosPaso
+static const int   SUBPASOS       = 2;      // sub-pasos por W3dRigidosPaso (minimo)
+static const float SUBPASO_MAX    = 1.0f / 60.0f;   // sub-paso mas largo (s): un frame lento hace mas
 static const int   ITERACIONES    = 8;      // vueltas del solver por sub-paso
 static const float BAUMGARTE      = 0.2f;   // correccion posicional (0..1)
 static const float PENETRACION_OK = 0.01f;  // hundimiento tolerado (slop)
@@ -65,6 +67,10 @@ struct Rigido {
     // re-sincroniza el cuerpo (teletransporte sin pelearse con lua)
     Vector3    prevObjPos;
     Quaternion prevObjRot;
+    // idem con el ESPACIO DEL PADRE (lo generado por una instancia de prefab, ver EspacioDe): si la
+    // instancia (o cualquier eslabon de arriba) se movio, se roto o cambio de escala, el cuerpo la sigue
+    Vector3    prevPadreP, prevPadreS;
+    Quaternion prevPadreR;
 
     int  quietud;
     bool dormido;
@@ -103,33 +109,81 @@ static void Despertar(Rigido& c) {
 // ---------------------------------------------------------------------------
 //  ciclo de vida
 // ---------------------------------------------------------------------------
-static void CrearCuerpo(Object* o) {
-    const W3dRigidoDef* d = o->fisica;
-    if (!d || Buscar(o)) return;
-    // los cuerpos se asumen de primer nivel: la fisica escribe pos/rot del
-    // objeto EN MUNDO y un padre con transform los descuadraria
+// ---------------------------------------------------------------------------
+//  EL ESPACIO DEL PADRE de un cuerpo. Los cuerpos son de PRIMER NIVEL (la fisica trabaja en mundo y un padre
+//  cualquiera con transform los descuadraria), con UNA excepcion: lo GENERADO por una INSTANCIA DE PREFAB
+//  (ObjectType::prefab, main/objects/InstanciaPrefab.h), a cualquier profundidad adentro de ella y con la
+//  instancia colgada de donde sea. Para esos el espacio del padre es su transform de MUNDO (la cadena BASE
+//  entera: posicion, rotacion y ESCALA): la fisica simula en mundo, con la caja medida con la escala de
+//  mundo, y escribe en el espacio del padre. Asi el enemigo con fisica que genera instanciar("Enemigo", ...)
+//  cae, choca y se empuja como uno puesto a mano, aunque su cuerpo este dos niveles adentro del prefab o la
+//  instancia este escalada; y si un script mueve la INSTANCIA, el cuerpo la sigue (ver W3dRigidosPaso).
+//  (la rotacion de mundo sale de los campos, RotGlobalDe: con una escala NO uniforme en la cadena, la caja
+//   rotada es una aproximacion, como en el resto del motor)
+// ---------------------------------------------------------------------------
+struct EspacioPadre {
+    bool mundo;      // de primer nivel: el espacio del padre ES el mundo (sin cuentas: lo de siempre, bit a bit)
+    Matrix4 m;       // la matriz de mundo BASE del padre (T*R*S de cada eslabon)
+    Quaternion r;    // su rotacion de mundo
+    Vector3 s;       // su escala de mundo (el producto de las de la cadena)
+    EspacioPadre() : mundo(true), r(), s(1.0f, 1.0f, 1.0f) { m.Identity(); }
+};
+// false = el cuerpo cuelga de algo que no es su instancia de prefab: no participa
+static bool EspacioDe(const Object* o, EspacioPadre& e) {
     extern Object* SceneCollection;
-    if (o->Parent && o->Parent != SceneCollection) {
-        w3dLogfW("[rigido] '%s' tiene fisica pero esta emparentado: se salta",
-                 o->name.c_str());
+    e = EspacioPadre();
+    Object* p = o->Parent;
+    if (!p || p == SceneCollection) return true;
+    if (!W3dEsGenerado(o)) return false;
+    e.mundo = false;
+    p->GetWorldMatrixBase(e.m);
+    e.r = RotGlobalDe(p).Normalized();
+    for (Object* q = p; q; q = q->Parent) { e.s.x *= q->scale.x; e.s.y *= q->scale.y; e.s.z *= q->scale.z; }
+    return true;
+}
+static Vector3 PosMundo(const Object* o, const EspacioPadre& e) {
+    return e.mundo ? o->pos : e.m * o->pos;
+}
+static Quaternion RotMundo(const Object* o, const EspacioPadre& e) {
+    return e.mundo ? o->Rot().Normalized() : (e.r * o->Rot()).Normalized();
+}
+// escribe en el objeto una pose de MUNDO (la pasa al espacio de su padre)
+static void EscribirPose(Object* o, const EspacioPadre& e, const Vector3& pos, const Quaternion& rot, bool conRot) {
+    if (e.mundo) {
+        o->pos = pos;
+        if (conRot) o->SetRot(rot);
         return;
     }
-    Rigido c;
-    c.obj  = o;
-    c.tipo = d->tipo;
-    c.half = Vector3(0.5f * d->caja[0] * o->scale.x,
-                     0.5f * d->caja[1] * o->scale.y,
-                     0.5f * d->caja[2] * o->scale.z);
+    Matrix4 inv;
+    Matrix4::InvertirAfin(e.m, inv);
+    o->pos = inv * pos;
+    if (conRot) o->SetRot(e.r.Inverted() * rot);
+}
+// la foto del espacio del padre (con la del objeto: prevObjPos/prevObjRot)
+static void AnotarPadre(Rigido& c, const EspacioPadre& e) {
+    c.prevPadreP = Vector3(e.m.m[12], e.m.m[13], e.m.m[14]);
+    c.prevPadreR = e.r;
+    c.prevPadreS = e.s;
+}
+static bool PadreCambio(const Rigido& c, const EspacioPadre& e) {
+    if (e.mundo) return false;
+    if ((Vector3(e.m.m[12], e.m.m[13], e.m.m[14]) - c.prevPadreP).LengthSq() > 1e-8f) return true;
+    if ((e.s - c.prevPadreS).LengthSq() > 1e-10f) return true;
+    const float dq = fabsf(e.r.w * c.prevPadreR.w + e.r.x * c.prevPadreR.x + e.r.y * c.prevPadreR.y + e.r.z * c.prevPadreR.z);
+    return dq < 0.99999f;
+}
+// las medidas de la caja con la escala de MUNDO del objeto (la suya por la de su padre) y su inercia
+static void Dimensionar(Rigido& c, const W3dRigidoDef* d, const Vector3& esc) {
+    c.half = Vector3(0.5f * d->caja[0] * esc.x,
+                     0.5f * d->caja[1] * esc.y,
+                     0.5f * d->caja[2] * esc.z);
     if (c.half.x < 0.01f) c.half.x = 0.01f;
     if (c.half.y < 0.01f) c.half.y = 0.01f;
     if (c.half.z < 0.01f) c.half.z = 0.01f;
-    c.centroLocal = Vector3(d->centro[0] * o->scale.x,
-                            d->centro[1] * o->scale.y,
-                            d->centro[2] * o->scale.z);
-    c.friccion = d->friccion;
-    c.rebote   = d->rebote;
+    c.centroLocal = Vector3(d->centro[0] * esc.x,
+                            d->centro[1] * esc.y,
+                            d->centro[2] * esc.z);
     float m = (d->masa > 0.001f) ? d->masa : 0.001f;
-    c.invMasa = (c.tipo == 0) ? 0.0f : 1.0f / m;
     if (c.tipo == 1) {
         // inercia de una caja solida: I = m/12 * (h^2 + p^2) por eje
         float ex = 2.0f * c.half.x, ey = 2.0f * c.half.y, ez = 2.0f * c.half.z;
@@ -141,8 +195,31 @@ static void CrearCuerpo(Object* o) {
         // estatico o personaje: la rotacion no la toca la fisica
         c.invInercia = Vector3(0, 0, 0);
     }
-    c.rot = o->Rot().Normalized();
-    c.pos = o->pos + c.rot * c.centroLocal;
+}
+static Vector3 EscalaMundo(const Object* o, const EspacioPadre& e) {
+    return e.mundo ? o->scale : Vector3(e.s.x * o->scale.x, e.s.y * o->scale.y, e.s.z * o->scale.z);
+}
+
+static void CrearCuerpo(Object* o) {
+    const W3dRigidoDef* d = o->fisica;
+    if (!d || Buscar(o)) return;
+    // los cuerpos se asumen de primer nivel (o generados por una instancia de prefab: ver EspacioDe)
+    EspacioPadre e;
+    if (!EspacioDe(o, e)) {
+        w3dLogfW("[rigido] '%s' tiene fisica pero esta emparentado: se salta",
+                 o->name.c_str());
+        return;
+    }
+    Rigido c;
+    c.obj  = o;
+    c.tipo = d->tipo;
+    Dimensionar(c, d, EscalaMundo(o, e));
+    c.friccion = d->friccion;
+    c.rebote   = d->rebote;
+    float m = (d->masa > 0.001f) ? d->masa : 0.001f;
+    c.invMasa = (c.tipo == 0) ? 0.0f : 1.0f / m;
+    c.rot = RotMundo(o, e);
+    c.pos = PosMundo(o, e) + c.rot * c.centroLocal;
     c.vel = Vector3(0, 0, 0);
     c.velAng = Vector3(0, 0, 0);
     c.fAcum = Vector3(0, 0, 0);
@@ -152,6 +229,7 @@ static void CrearCuerpo(Object* o) {
     c.activo = true;             // cae solo hasta que algo lo toque o empuje
     c.prevObjPos = o->pos;
     c.prevObjRot = o->Rot();
+    AnotarPadre(c, e);
     ActualizarEjes(c);
     gR.push_back(c);
 }
@@ -229,18 +307,35 @@ void W3dRigidoFuerza(Object* o, const Vector3& f, const Vector3& punto) {
 void W3dRigidosGravedad(float g) { gGravedad = g; }
 float W3dRigidosGravedadActual(void) { return gGravedad; }
 
+int W3dRigidosCantidad(void) { return (int)gR.size(); }
+bool W3dRigidoCaja(int i, Object** o, Vector3* centro, Vector3 ejes[3], Vector3* semi,
+                   bool* activo, bool* quieto) {
+    if (i < 0 || i >= (int)gR.size()) return false;
+    const Rigido& c = gR[i];
+    if (o)      *o = c.obj;
+    if (centro) *centro = c.pos;
+    if (ejes)   { ejes[0] = c.u[0]; ejes[1] = c.u[1]; ejes[2] = c.u[2]; }
+    if (semi)   *semi = c.half;
+    if (activo) *activo = c.activo;
+    if (quieto) *quieto = (c.tipo == 0 || c.dormido);
+    return true;
+}
+
 // prende/apaga el cuerpo sin sacarlo (apagado = no colisiona ni se integra);
 // al prenderlo se re-sincroniza con el objeto y arranca despierto
 void W3dRigidoActivo(Object* o, bool activo) {
     Rigido* c = Buscar(o);
     if (!c) return;
     if (activo && !c->activo) {
-        c->rot = o->Rot().Normalized();
-        c->pos = o->pos + c->rot * c->centroLocal;
+        EspacioPadre e;
+        EspacioDe(o, e);
+        c->rot = RotMundo(o, e);
+        c->pos = PosMundo(o, e) + c->rot * c->centroLocal;
         c->vel = Vector3(0, 0, 0);
         c->velAng = Vector3(0, 0, 0);
         c->prevObjPos = o->pos;
         c->prevObjRot = o->Rot();
+        AnotarPadre(*c, e);
         ActualizarEjes(*c);
         Despertar(*c);
     }
@@ -529,7 +624,13 @@ static void Resolver(std::vector<Manifold>& ms, float h) {
                     n.Dot(Vector3::Cross(InerciaInv(A, Vector3::Cross(ra, n)), ra)) +
                     n.Dot(Vector3::Cross(InerciaInv(B, Vector3::Cross(rb, n)), rb));
                 if (kn < 1e-8f) continue;
-                float sesgo = (BAUMGARTE / h) * (p.hundido - PENETRACION_OK);
+                // el sesgo es una VELOCIDAD (hundido / paso) que queda puesta despues de sacar la
+                // caja del piso: con sub-pasos cortisimos (el juego compilado sin vsync corre a
+                // 1 ms por frame) 2 cm de hundido eran 4 m/s hacia arriba y la caja salia
+                // CATAPULTADA (un segundo alTocar). Se mide contra un paso de 1/60 s como minimo:
+                // a 30 fps (el Play) es el mismo paso de siempre y da exactamente lo mismo.
+                const float hSesgo = (h < SUBPASO_MAX * 0.999f) ? SUBPASO_MAX : h;
+                float sesgo = (BAUMGARTE / hSesgo) * (p.hundido - PENETRACION_OK);
                 if (sesgo < 0.0f) sesgo = 0.0f;
                 if (sesgo > 4.0f) sesgo = 4.0f;   // tope: una penetracion honda
                                                   // empuja, no catapulta
@@ -616,23 +717,36 @@ void W3dRigidosPaso(float dt) {
     for (size_t i = 0; i < gR.size(); i++) {
         Rigido& c = gR[i];
         Object* o = c.obj;
-        if ((o->pos - c.prevObjPos).LengthSq() > 1e-8f) {
-            c.rot = o->Rot().Normalized();
-            c.pos = o->pos + c.rot * c.centroLocal;
+        EspacioPadre e;
+        EspacioDe(o, e);
+        // (lo generado por una instancia: tambien si la movieron a ELLA -o a algo de mas arriba-; si le cambiaron
+        //  la escala, la caja se vuelve a medir)
+        const bool padre = PadreCambio(c, e);
+        if (padre && o->fisica && (e.s - c.prevPadreS).LengthSq() > 1e-10f) Dimensionar(c, o->fisica, EscalaMundo(o, e));
+        if (padre || (o->pos - c.prevObjPos).LengthSq() > 1e-8f) {
+            c.rot = RotMundo(o, e);
+            c.pos = PosMundo(o, e) + c.rot * c.centroLocal;
             ActualizarEjes(c);
         } else {
             float dq = fabsf(o->Rot().w * c.prevObjRot.w + o->Rot().x * c.prevObjRot.x +
                              o->Rot().y * c.prevObjRot.y + o->Rot().z * c.prevObjRot.z);
             if (dq < 0.99999f) {
-                c.rot = o->Rot().Normalized();
-                c.pos = o->pos + c.rot * c.centroLocal;
+                c.rot = RotMundo(o, e);
+                c.pos = PosMundo(o, e) + c.rot * c.centroLocal;
                 ActualizarEjes(c);
             }
         }
+        if (padre) AnotarPadre(c, e);
     }
-    float h = dt / (float)SUBPASOS;
+    // un frame LENTO (un tiron del juego compilado, que corre con el dt real: 50+ ms) en dos
+    // sub-pasos eran pasos mucho mas largos que los del Play: una caja que cae a 8 m/s se hundia
+    // 23 cm en el piso en un solo sub-paso. Ningun sub-paso pasa de 1/60 s: a 30 fps o mas (el
+    // Play) son los dos de siempre y da exactamente lo mismo que antes.
+    int subpasos = SUBPASOS;
+    while (dt / (float)subpasos > SUBPASO_MAX * 1.001f) subpasos++;
+    float h = dt / (float)subpasos;
     std::vector<Manifold> ms;
-    for (int paso = 0; paso < SUBPASOS; paso++) {
+    for (int paso = 0; paso < subpasos; paso++) {
         // ---- integrar velocidades (gravedad + fuerzas del frame) -----------
         for (size_t i = 0; i < gR.size(); i++) {
             Rigido& c = gR[i];
@@ -705,13 +819,15 @@ void W3dRigidosPaso(float dt) {
             c.quietud = 0;
         }
         Object* o = c.obj;
-        o->pos = c.pos - (c.rot * c.centroLocal);
-        if (c.tipo != 2) {
-            // el PERSONAJE no rota por fisica: su facing lo maneja el script
-            o->SetRot(c.rot);
-        }
+        // (el PERSONAJE -tipo 2- no rota por fisica: su facing lo maneja el script)
+        // (en el espacio de su padre TAL COMO ESTA AHORA: un padre que tambien es un cuerpo ya se escribio, los
+        //  cuerpos van en preorden; el dormido de arriba NO anota el padre, asi si el suyo se movio lo sigue)
+        EspacioPadre e;
+        EspacioDe(o, e);
+        EscribirPose(o, e, c.pos - (c.rot * c.centroLocal), c.rot, c.tipo != 2);
         c.prevObjPos = o->pos;
         c.prevObjRot = o->Rot();
+        AnotarPadre(c, e);
     }
 }
 

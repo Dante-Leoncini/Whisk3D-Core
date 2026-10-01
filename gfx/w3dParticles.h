@@ -85,7 +85,7 @@ struct ParticleSystem {
     float uvU0, uvV0, uvU1, uvV1;
 
     // ---------- CURVAS POR EDAD (t = segundos desde que nacio). Defaults = apagadas ----------
-    // Pensadas para reproducir los efectos de juegos de consola (RE4 GC: esp), que integran por frame
+    // Pensadas para reproducir los efectos de juegos de consola (motores clasicos), que integran por frame
     // "size += plus; plus *= freno", "alpha *= k", "v *= drag". Aca van en formas CERRADAS por segundo:
     // no dependen del framerate (30 o 60 fps dan lo mismo).
     float crece;         // CRECIMIENTO: el tamanio gana crece*(tamanio inicial) por segundo al nacer...
@@ -102,6 +102,12 @@ struct ParticleSystem {
     int   estelaPuntos;  // FormaLinea: puntos de la estela (2..ParticulaMaxEstela)
     float estelaPaso;    // FormaLinea: segundos entre muestras de la estela
     float grosorLinea;   // FormaLinea: ancho en pixeles
+    // FUNDIDOS de DIBUJO (no cuentan para la muerte por alpha): una nube que nace o se cruza con la camara no
+    // aparece/desaparece de golpe (una niebla de clima que se funde con la distancia a la camara).
+    float aparecer;      // segundos para ir de alpha 0 a 1 al nacer (0 = nace entera)
+    float cerca0, cerca1;// distancia a la camara: alpha 0 hasta cerca0, 1 desde cerca1 (cerca1 <= 0 = apagado)
+    float lejos0, lejos1;// alpha 1 hasta lejos0, 0 desde lejos1 (lejos1 <= 0 = apagado)
+    float ojoX, ojoY, ojoZ; // la camara que dibuja (la pone el que dibuja antes de AppendBillboard)
 
     // ---------- RUNTIME ----------
     std::vector<Particle> parts;
@@ -127,6 +133,25 @@ struct ParticleSystem {
         usarColorFinal=false; colorFinR=1; colorFinG=1; colorFinB=1; alphaFinMul=1;
         flipFps=0; flipUnaVez=false;
         forma=FormaBillboard; estiramiento=0.05f; estelaPuntos=4; estelaPaso=1.0f/30.0f; grosorLinea=1.0f;
+        aparecer=0; cerca0=0; cerca1=0; lejos0=0; lejos1=0; ojoX=0; ojoY=0; ojoZ=0;
+    }
+    // el factor de los FUNDIDOS de dibujo (aparecer + distancia a la camara), 0..1
+    float FactorFundidos(const Particle& p) const {
+        float f = 1.0f;
+        if (aparecer > 0.0f) { float t = Edad(p) / aparecer; if (t < 1.0f) f = t < 0.0f ? 0.0f : t; }
+        if (cerca1 > 0.0f || lejos1 > 0.0f) {
+            float dx = p.x - ojoX, dy = p.y - ojoY, dz = p.z - ojoZ;
+            float d = sqrtf(dx*dx + dy*dy + dz*dz);
+            if (cerca1 > 0.0f) {
+                float k = (cerca1 > cerca0) ? (d - cerca0) / (cerca1 - cerca0) : (d >= cerca1 ? 1.0f : 0.0f);
+                if (k < 1.0f) f *= (k < 0.0f ? 0.0f : k);
+            }
+            if (lejos1 > 0.0f) {
+                float k = (lejos1 > lejos0) ? (lejos1 - d) / (lejos1 - lejos0) : (d <= lejos1 ? 1.0f : 0.0f);
+                if (k < 1.0f) f *= (k < 0.0f ? 0.0f : k);
+            }
+        }
+        return f;
     }
 
     // ---- las curvas por EDAD (formas cerradas) ----
@@ -170,7 +195,7 @@ struct ParticleSystem {
     // color y alpha de la particula hoy (sin tinte de mezcla): r,g,b y la opacidad 0..1
     void ColorDe(const Particle& p, float& r, float& g, float& b, float& a) const {
         float lt = 1.0f - p.life/p.lifeMax;
-        a = p.a0 * BrilloPorVida(p) * MulAlpha(p);
+        a = p.a0 * BrilloPorVida(p) * MulAlpha(p) * FactorFundidos(p);
         r = tintR; g = tintG; b = tintB;
         if (usarColorFinal) {
             r += (colorFinR - r)*lt; g += (colorFinG - g)*lt; b += (colorFinB - b)*lt;
@@ -188,9 +213,12 @@ struct ParticleSystem {
     // idem con el cuadro ya elegido (-1 = el quad entero)
     void CeldaUVIdx(int cel, float* out) const {
         float ru = uvU1 - uvU0, rv = uvV1 - uvV0;
+        // Los vertices del quad van (-x,-y) (+x,-y) (+x,+y) | (-x,-y) (+x,+y) (-x,+y): los de ABAJO toman v1 y los de
+        // ARRIBA v0, porque la textura se sube sin invertir (fila 0 del PNG = v 0 = ARRIBA, la convencion de glTF).
+        // Antes era al reves y TODAS las particulas salian cabeza abajo (una llama "iba hacia abajo").
         if (flipCuadros <= 0 || cel < 0) {
-            out[0]=uvU0; out[1]=uvV0;  out[2]=uvU1; out[3]=uvV0;  out[4]=uvU1;  out[5]=uvV1;
-            out[6]=uvU0; out[7]=uvV0;  out[8]=uvU1; out[9]=uvV1;  out[10]=uvU0; out[11]=uvV1;
+            out[0]=uvU0; out[1]=uvV1;  out[2]=uvU1; out[3]=uvV1;  out[4]=uvU1;  out[5]=uvV0;
+            out[6]=uvU0; out[7]=uvV1;  out[8]=uvU1; out[9]=uvV0;  out[10]=uvU0; out[11]=uvV0;
             return;
         }
         if (cel >= flipCuadros) cel = flipCuadros - 1;
@@ -199,8 +227,8 @@ struct ParticleSystem {
         float du = ru / (float)cols, dv = rv / (float)filas;
         float u0 = uvU0 + col * du, u1 = u0 + du;
         float v0 = uvV0 + fila * dv, v1 = v0 + dv;   // fila 0 = arriba del atlas
-        out[0]=u0; out[1]=v0;  out[2]=u1; out[3]=v0;  out[4]=u1;  out[5]=v1;
-        out[6]=u0; out[7]=v0;  out[8]=u1; out[9]=v1;  out[10]=u0; out[11]=v1;
+        out[0]=u0; out[1]=v1;  out[2]=u1; out[3]=v1;  out[4]=u1;  out[5]=v0;
+        out[6]=u0; out[7]=v1;  out[8]=u1; out[9]=v0;  out[10]=u0; out[11]=v0;
     }
 
     void SetTexturas(const unsigned* t, int n) { if(n>MaxTexs)n=MaxTexs; nTex=n; for(int i=0;i<n;i++) texs[i]=t[i]; }

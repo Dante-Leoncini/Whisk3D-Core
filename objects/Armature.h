@@ -84,6 +84,14 @@ class Armature : public Object {
         // panel de propiedades (pestania Animation). Las CURVAS (posicion/rotacion/escala por hueso) viven dentro.
         std::vector<SkeletalAnimation*> animations;
         int animActiva;    // clip activo (-1 = ninguno)
+        // ANIMSET COMPARTIDO (animation/W3dAnimSet.h): con animsRec != NULL los punteros de 'animations'
+        // apuntan ADENTRO de un recurso del almacen (los mismos clips para todos los armatures que lo usan):
+        // NO son de este armature, no se borran ni se editan. Antes de modificar un clip hay que llamar a
+        // W3dArmatureAnimsPropias (copy-on-write). animsVar = la variante reindexada si el esqueleto no calza.
+        void* animsRec;    // W3dRecurso* (tipo W3DREC_ANIMSET) o NULL = clips PROPIOS
+        void* animsVar;    // W3dAnimSetVariante* o NULL = los clips canonicos del animset
+        std::string animSetNombre;  // de que animset vinieron los clips (sobrevive a la copia: pista del guardado)
+        std::string animSetNoCargo; // el animset que no se pudo leer al abrir: FRENA el guardado (no se pisa)
         bool skinUsaBind;  // true = usar el TransformLink real del FBX como bind (rigs estandar); false = FK-rest (LISA: TL en cero)
         bool skinReconstruirFK; // true = el Lcl-FK es DEGENERADO (restT ~0 -> se colapsa; biped 3ds Max nani/barney): el
                            // rest local se reconstruye del TransformLink (inv(tlNode_padre)*tlNode) y la animacion se
@@ -96,6 +104,7 @@ class Armature : public Object {
                            // (no se deriva del primer hijo como en FBX). Un armature "2D" es uno autorado con Z=0.
         bool poseDirty;    // true = la pose fue editada a mano (posando) -> re-evaluar FK sin refrescar desde la curva
         int boneActivo;    // hueso seleccionado/activo en Pose Mode (-1 = ninguno); indice en bones[]
+        float lastPoseFrameF; // jugando: el frame CONTINUO de la ultima pose (se interpola entre frames del clip)
         int lastPoseFrame; // cache de pose: NO se recalcula la deformacion si el frame (y el clip) no cambiaron
         int lastPoseAnim;
         float figureScale; // (biped skinReconstruirFK) escala del FIGURE bakeada en el TL, con la que se NORMALIZO el
@@ -112,7 +121,7 @@ class Armature : public Object {
         std::vector<W3dCapaAnim> capas;
         int capaActiva;        // la capa elegida en la lista del Mix (-1 = ninguna)
         unsigned mixFirma;     // cache: firma del estado de las capas de la ultima pose calculada
-        // TRANSICION (el "hokan" de los juegos de consola): al cambiar de animacion la pose NUEVA se funde desde la
+        // TRANSICION (el crossfade de pose de los juegos): al cambiar de animacion la pose NUEVA se funde desde la
         // pose CONGELADA del momento del cambio durante transTotal segundos (animTransicion de lua). Runtime.
         float transRestante, transTotal;
         std::vector<Vector3> transT, transS;
@@ -121,11 +130,18 @@ class Armature : public Object {
         float juegoVel;    // multiplicador de velocidad (1 = el FrameRate del clip)
         bool  juegoLoop;   // true = vuelve a empezar al terminar; false = se queda en el ultimo frame
         bool  juegoTermino;// el clip sin loop llego al final (lo lee animTermino)
+        // RETARGET (W3dArmatureRetarget, SkeletalAnimation.h): 0 completo (el clip tal cual) / 1 solo rotaciones
+        // + el movimiento de las raices escalado por tamano. retargetClip/retargetEscala: la escala calculada
+        // para el ultimo clip (se recalcula si cambia el clip). Runtime: no se guarda en el .w3d.
+        int   retarget;
+        const void* retargetClip;
+        float retargetEscala;
 
         Armature(Object* parent = NULL, Vector3 pos = Vector3(0, 0, 0))
-            : Object(parent, "Armature", pos), animActiva(-1), skinUsaBind(false), skinReconstruirFK(false), skinGltf(false), skinAutorado(false), poseDirty(false), boneActivo(-1), lastPoseFrame(-999999), lastPoseAnim(-999), figureScale(1.0f), poseSerial(1),
-              capaActiva(-1), mixFirma(0), transRestante(0.0f), transTotal(0.0f), juegoFrame(0.0f), juegoVel(1.0f), juegoLoop(true), juegoTermino(false) {}
-        ~Armature() W3D_OVERRIDE; // libera los clips (animations)
+            : Object(parent, "Armature", pos), animActiva(-1), animsRec(NULL), animsVar(NULL), skinUsaBind(false), skinReconstruirFK(false), skinGltf(false), skinAutorado(false), poseDirty(false), boneActivo(-1), lastPoseFrameF(-999999.0f), lastPoseFrame(-999999), lastPoseAnim(-999), figureScale(1.0f), poseSerial(1),
+              capaActiva(-1), mixFirma(0), transRestante(0.0f), transTotal(0.0f), juegoFrame(0.0f), juegoVel(1.0f), juegoLoop(true), juegoTermino(false),
+              retarget(0), retargetClip(NULL), retargetEscala(1.0f) {}
+        ~Armature() W3D_OVERRIDE; // libera los clips PROPIOS (los de un animset compartido solo se sueltan)
 
         ObjectType getType() W3D_OVERRIDE { return ObjectType::armature; }
         void RenderObject() W3D_OVERRIDE; // huesos como lineas AZULES, siempre encima (sin z-test)

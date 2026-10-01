@@ -305,6 +305,9 @@ void EstencilApagar() {
 
 // ---- viewport / recorte ----
 void Viewport(int x, int y, int w, int h) { glViewport(x, y, w, h); }
+void GetViewport(int v[4]) { GLint g[4]; glGetIntegerv(GL_VIEWPORT, g); for (int i = 0; i < 4; i++) v[i] = (int)g[i]; }
+void GetScissor(int v[4])  { GLint g[4]; glGetIntegerv(GL_SCISSOR_BOX, g); for (int i = 0; i < 4; i++) v[i] = (int)g[i]; }
+bool ScissorActivo()       { return glIsEnabled(GL_SCISSOR_TEST) == GL_TRUE; }
 void Scissor(int x, int y, int w, int h)  { glScissor(x, y, w, h); }
 
 // ---- matrices ----
@@ -589,6 +592,8 @@ void FogMode(bool linear) { glFogf(GL_FOG_MODE, (float)(linear ? GL_LINEAR : GL_
 void FogStart(float z)    { glFogf(GL_FOG_START, z); }
 void FogEnd(float z)      { glFogf(GL_FOG_END, z); }
 void FogColor(const float* c) { glFogfv(GL_FOG_COLOR, c); }
+void FogModo(int m)       { glFogf(GL_FOG_MODE, (float)(m == 2 ? GL_EXP2 : (m == 1 ? GL_EXP : GL_LINEAR))); }
+void FogDensidad(float d) { glFogf(GL_FOG_DENSITY, d); }
 
 // --- luz 0 ---
 static GLenum LightFvGL(LightFv p) {
@@ -673,7 +678,8 @@ enum {
     FzScreen,         // ONE, ONE_MINUS_SRC_COLOR
     FzPremult,        // ONE, ONE_MINUS_SRC_ALPHA
     FzAlpha,          // SRC_ALPHA, ONE_MINUS_SRC_ALPHA
-    FzSubAprox        // ZERO, ONE_MINUS_SRC_COLOR (aprox Symbian)
+    FzSubAprox,       // ZERO, ONE_MINUS_SRC_COLOR (aprox Symbian)
+    FzMultiply2x      // DST_COLOR, SRC_COLOR (= 2 * dst * src: el "x2" de un lightmap con overbright)
 };
 static void PonerBlendFunc(int firma) {
     if (gBlendFuncCache == firma) return;
@@ -687,6 +693,7 @@ static void PonerBlendFunc(int firma) {
         case FzScreen:   glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR); break;
         case FzPremult:  glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
         case FzSubAprox: glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_COLOR); break;
+        case FzMultiply2x: glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR); break;
         case FzAlpha: default: glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;
     }
 }
@@ -757,13 +764,22 @@ void SetMezcla(int m) {
 #endif
     PonerBlendFunc(firma);
 }
-void BlendMode(int modo) { // capa multi-pass sobre lo de abajo
+void BlendMode(int modo) { // capa multi-pass sobre lo de abajo (W3dCapaMezcla, objects/Materials.h)
 #ifndef W3D_SYMBIAN
-    PonerBlendEq(0);   // las capas mezclan con FUNC_ADD (mismo porque que BlendAlpha)
+    PonerBlendEq(modo == 4 ? 1 : 0);   // solo Subtract deja REVERSE_SUBTRACT; BlendAlpha lo repone
 #endif
-    if (modo == 1)      PonerBlendFunc(FzMultiply);  // Multiply (oscurece)
-    else if (modo == 2) PonerBlendFunc(FzAdd);       // Add (aclara)
-    else                PonerBlendFunc(FzAlpha);     // Mix (alpha encima)
+    if (modo == 1)      PonerBlendFunc(FzMultiply);    // Multiply (oscurece)
+    else if (modo == 2) PonerBlendFunc(FzAdd);         // Add (aclara)
+    else if (modo == 3) PonerBlendFunc(FzMultiply2x);  // Multiply 2x (lightmaps con overbright)
+    else if (modo == 4) {
+#ifndef W3D_SYMBIAN
+        PonerBlendFunc(FzAdd);                         // resta real: ONE,ONE + REVERSE_SUBTRACT
+#else
+        PonerBlendFunc(FzSubAprox);                    // GL ES 1.1 sin blend equation: aprox (oscurece)
+#endif
+    }
+    else if (modo == 5) PonerBlendFunc(FzScreen);      // Screen (aclara suave)
+    else                PonerBlendFunc(FzAlpha);       // Mix (alpha encima)
 }
 
 // ---- parametros de la textura activa ----

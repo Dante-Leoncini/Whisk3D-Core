@@ -48,7 +48,11 @@ enum W3dRecTipo {
     W3DREC_LISTA_VIS = 3,   // VisSet* (la lista de visibilidad ES un recurso)
     W3DREC_AUDIO     = 4,
     W3DREC_OTRO      = 5,
-    W3DREC_TIPOS     = 6    // tope (dimensiona las tablas internas)
+    W3DREC_ANIMSET   = 6,   // W3dAnimSet* (clips de esqueleto compartidos entre armatures, .w3da)
+    W3DREC_SCRIPT    = 7,   // la FUENTE de un script (std::vector<unsigned char>*, el .lua/.luac tal cual):
+                            // el streaming la pide antes de generar una instancia y el script la compila de
+                            // memoria (script/W3dScript.cpp: W3dScriptFuentesAsegurarOps)
+    W3DREC_TIPOS     = 8    // tope (dimensiona las tablas internas)
 };
 
 // ---- estados (la maquina del descriptor de 44 B del original, con nombres
@@ -71,17 +75,22 @@ struct W3dRecurso {
     std::string   id;         // nombre de entrada del contenedor v4 (o ruta)
     unsigned char tipo;       // W3dRecTipo
     unsigned char estado;     // W3dRecEstado
-    short refTotal;           // TODAS las referencias vivas
-    short refTransitoria;     // solo las de ListaCarga (subconjunto de refTotal)
+    // int (no short): una malla compartida por MILES de objetos iguales (pasto, arboles de un
+    // mundo abierto) pasaba de 32767 usuarios y el contador daba la vuelta en silencio
+    int   refTotal;           // TODAS las referencias vivas
+    int   refTransitoria;     // solo las de ListaCarga (subconjunto de refTotal)
     short pagina;             // primera pagina del pool que lo aloja (-1 = sin pagina)
     short paginas;            // cuantas paginas ocupa (0 = sin pagina / empaquetado en 1)
     long  bytes;              // medida del dato (lo reporta el op de carga)
     void* dato;               // el payload (Texture*, MallaDatos*, ...)
     std::string ultimoQuien;  // ultimo que lo adquirio (volcado de fugas)
+    unsigned serie;           // IDENTIDAD en la sesion (unica, nunca se repite): quien guarda un W3dRecurso* mas
+                              // alla de una llamada lo valida con W3dRecursoVigente (el descriptor se puede borrar
+                              // -una textura purgada, un cierre- y otro nacer en la misma direccion)
 
     W3dRecurso() : tipo(0), estado(W3DREC_NO_CARGADO),
                    refTotal(0), refTransitoria(0), pagina(-1), paginas(0),
-                   bytes(0), dato(0) {}
+                   bytes(0), dato(0), serie(0) {}
 };
 
 // ---- ops por tipo: el almacen cuenta, el tipo sabe cargar/liberar ----
@@ -115,6 +124,9 @@ void        W3dRecursoRetener(W3dRecurso* r, int clase);
 void        W3dRecursoSoltar(W3dRecurso* r, int clase);
 // el dato, o NULL si no esta LISTO (EN_VUELO/FALLO -> reintentar otro frame)
 void*       W3dRecursoResolver(W3dRecurso* r);
+// el descriptor 'r' (con esa 'serie') sigue existiendo? No lo desreferencia: un puntero guardado de un descriptor
+// que ya se borro (W3dRecursoOlvidar, la purga de una textura, el cierre del proyecto) da false
+bool        W3dRecursoVigente(const W3dRecurso* r, unsigned serie);
 // suelta EN BLOQUE todas las refs transitorias (cambio de curva). Devuelve
 // cuantos recursos se liberaron de verdad.
 int         W3dRecursosPurgarTransitorias();
@@ -124,6 +136,10 @@ void        W3dRecursosPump();
 // cierre de escena, donde el cliente ya destruyo los payloads por su cuenta
 // (TexturasLiberarEscena barre el vector global ANTES de esto).
 void        W3dRecursosOlvidarTipo(int tipo);
+// borra UN descriptor sin llamar a Liberar, SOLO si nadie lo referencia (refTotal == 0): el
+// FALLO recordado de un id que el cliente sabe que va a volver a existir (una malla del
+// proyecto que no se pudo leer, al cerrarlo). false si no esta o todavia tiene refs.
+bool        W3dRecursoOlvidar(int tipo, const std::string& id);
 
 // ---- medicion (meminfo / texinfo) ----
 int  W3dRecursosVivos(int tipo);                 // descriptores con dato LISTO
@@ -141,6 +157,12 @@ W3dRecurso* W3dRecursoRegistrarFallo(int tipo, const std::string& id);
 // Deja refTotal=1. No cuenta stats (eso es ContarCargaExterna).
 // cambia la CLAVE de un recurso registrado (misma ficha). false si 'viejo' no existe o 'nuevo' ya esta.
 bool W3dRecursoRenombrar(int tipo, const std::string& viejo, const std::string& nuevo);
+// MUDA la clave de un recurso registrado aunque la nueva este tomada por un descriptor SIN
+// dato (EN_VUELO de una ListaCarga, un FALLO recordado): esas referencias pedian ESE id y
+// pasan al que llega (el otro descriptor se borra). false si 'viejo' no existe o si 'nuevo'
+// lo ocupa un dato VIVO (dos datos no pueden tener la misma clave). La usa quien renombra
+// entradas en tanda (el guardado de las mallas, con una clave temporal de por medio).
+bool W3dRecursoMover(int tipo, const std::string& viejo, const std::string& nuevo);
 W3dRecurso* W3dRecursoRegistrarExterno(int tipo, const std::string& id,
                                        void* dato, long bytes);
 // volcado: punteros a TODOS los descriptores del tipo (para listar/asertar)

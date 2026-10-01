@@ -1,6 +1,7 @@
 #include "CameraBase.h"
 #include <math.h> // C puro: compila en RVCT (Symbian) y PC por igual
 
+float g_renderMarco[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
 Vector3 g_renderCamPos(0, 0, 0); // la setea el viewport antes de renderizar (chrome equirect)
 Vector3 g_renderCamRight(1, 0, 0);   // base de la camara en mundo (matcap por software / sphere-map)
 Vector3 g_renderCamUp(0, 1, 0);

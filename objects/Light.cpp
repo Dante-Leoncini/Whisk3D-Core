@@ -21,6 +21,7 @@ Light::Light(Object* parent, float x, float y, float z)
     diffuse[0] = diffuse[1] = diffuse[2] = 1.0f; diffuse[3] = 1.0f;
     specular[0] = specular[1] = specular[2] = 0.0f; specular[3] = 1.0f;
     direccional = false;                       // por defecto luz PUNTUAL (w=1) con atenuacion suave
+    ignorarOrden = true;                       // por defecto alumbra toda la escena (pre-pase de luces)
     attConstant = 0.5f; attLinear = 0.1f; attQuadratic = 0.0f;
     spotCutoff = 180.0f;                       // 180 = sin cono (punto). <90 -> spotlight
     spotExponent = 0.0f;
@@ -96,7 +97,7 @@ bool g_lucesPrepase = false;         // true = este pase ya encendio las luces (
 static bool gAplicandoPrepase = false;
 static void W3dLucesPrepaseRec(Object* o){
     if (!o || !o->visible) return;
-    if (o->getType() == ObjectType::light){
+    if (o->getType() == ObjectType::light && ((Light*)o)->ignorarOrden){   // las "en orden" van en el recorrido
         Matrix4 W; o->GetWorldMatrix(W);
         w3dEngine::PushMatrix();
         w3dEngine::MultMatrix(W.m);
@@ -119,7 +120,7 @@ void W3dLucesPrepaseFin(){ g_lucesPrepase = false; }
 void Light::RenderObject() {
     // Las luces de la ESCENA se aplican SOLO en RENDER preview (esto es algo mas del editor 3d puede quitarse en el futuro)
     // Con el PRE-PASE hecho, el recorrido normal no las re-aplica (solo el gizmo); el pre-pase no dibuja gizmo.
-    bool aplicar = w3dRenderLuces && (!g_lucesPrepase || gAplicandoPrepase);
+    bool aplicar = w3dRenderLuces && (!g_lucesPrepase || gAplicandoPrepase || !ignorarOrden);
 #ifdef W3D_SYMBIAN
     // misma logica de luz que PC: la luz de ESCENA se enciende aca (bajo la matriz del objeto: position local =
     // origen del objeto). El icono lo dibuja render.cpp (RenderIcons3D).

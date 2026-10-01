@@ -9,11 +9,15 @@
 #include "objects/Light.h"   // binds de LUZ: color()/setColor()/energia()/setEnergia()
 #include "objects/Armature.h"            // binds de ESQUELETO: animClip()/animFrame()/huesoPunto()...
 #include "animation/SkeletalAnimation.h" // W3dArmaturePlayClip / EvaluarPoseEsqueleto
+#include "animation/W3dAnimSet.h"        // las CAPAS de clips de jerarquia de una raiz (objetoCapa...)
 #include "math/Quaternion.h"
 #include "w3dFilesystem.h"   // leer el .lua para ORDENAR las propiedades como estan declaradas
 #include "base/W3dConfig.h"  // config()/setConfig()/silenciar(): persistencia + mute para los juegos lua
 #include "physics/W3dFisica.h"  // fisica minima del Core: velocidad/rebotar/... (los binds los registra ella)
-#include "physics/W3dRigido.h"  // cuerpos rigidos del Core (fisicaVel/fisicaRayo/contactos/...)
+#include "physics/W3dRigido.h"
+#include "physics/W3dColMalla.h" // colision contra triangulos (colSuelo/colPared/colRayo)  // cuerpos rigidos del Core (fisicaVel/fisicaRayo/contactos/...)
+#include "physics/W3dHitbox.h"   // hitbox: binds + limpiar pares al Stop
+#include "io/W3dRecursos.h"      // las FUENTES de los scripts como recurso (el streaming las pide antes)
 #include "w3dlog.h"
 #include <math.h>
 #include <map>
@@ -84,13 +88,22 @@ void W3dFisicaRegistrarBinds(void* Lv) {
 #endif // W3D_SIN_FISICA
 
 // una instancia viva = un lua_State propio + sus referencias resueltas
+// los EVENTOS que se cachean por instancia (ver W3dScriptEvento): el indice es el de eventos[]
+static const char* const kEventosScript[] = { "alEntrar", "alQuedarse", "alSalir", "alTocar" };
+enum { W3D_EVENTOS_SCRIPT = 4 };
+
 struct W3dScriptInst {
     lua_State* L;
     std::map<std::string, Object*> refs;
     std::map<std::string, std::string> opciones;   // desplegables elegidos
     std::map<std::string, std::string> valores;    // valores por instancia (tipo 2), como texto
     Object* duenio;
-    W3dScriptInst() : L(NULL), duenio(NULL) {}
+    // el script DEFINE el evento i? -1 = sin mirar todavia, 0 = no, 1 = si. Se mira una vez
+    // (al primer evento) y queda: un hitbox con cien pares por tick no hace cien getglobal.
+    signed char eventos[W3D_EVENTOS_SCRIPT];
+    W3dScriptInst() : L(NULL), duenio(NULL) {
+        for (int i = 0; i < W3D_EVENTOS_SCRIPT; i++) eventos[i] = -1;
+    }
 };
 
 // ---- estado COMPARTIDO entre scripts (ver W3dScript.h) ---------------------
@@ -113,6 +126,7 @@ static std::map<std::string, bool> gTeclas;
 // copia UNA vez por frame al final de W3dScriptActualizar, DESPUES de correr los scripts, para que todas
 // las llamadas del frame vean el mismo estado previo.
 static std::map<std::string, bool> gTeclasPrev;
+static bool gFinFrameExterno = false;   // alguien llama W3dScriptFinFrame: el snapshot es suyo (ver el .h)
 static float gSticks[2][2] = { {0,0}, {0,0} };   // [izq/der][x/y]
 static std::map<std::string, bool> gBotonesPad;
 static std::map<std::string, bool> gBotonesPadPrev;   // gemelo de gTeclasPrev para el gamepad
@@ -176,6 +190,15 @@ void W3dScriptDedo(int i, float x, float y, bool activo) { if (i>=0 && i<W3D_MAX
 // de los menus. 'dentro' = el mouse esta sobre la pantalla del juego. El clic llega por dedo(1)/toque().
 static float gRatonX = 0, gRatonY = 0; static bool gRatonDentro = false;
 void W3dScriptRaton(float x, float y, bool dentro) { gRatonX = x; gRatonY = y; gRatonDentro = dentro; }
+// MOUSE CAPTURADO (juego estilo FPS en PC): capturarRaton(true) desde lua pide que la plataforma esconda el cursor
+// y entregue el movimiento RELATIVO (SDL_SetRelativeMouseMode en main.cpp; ESC pausa el juego y lo suelta).
+// ratonRel() devuelve el delta acumulado en px desde la ultima lectura y lo deja en cero. En Symbian no hay
+// mouse: ratonRel() da 0,0 y el script sigue con el dedo / las flechas.
+static float gRatonDX = 0, gRatonDY = 0; static bool gRatonCapturar = false;
+void W3dScriptRatonRel(float dx, float dy) { gRatonDX += dx; gRatonDY += dy; }
+bool W3dScriptRatonCapturar() { return gRatonCapturar; }
+static bool gRatonCapturado = false;   // lo que la plataforma logro de verdad (PC: cursor oculto y clavado al centro)
+void W3dScriptRatonCapturadoSet(bool v) { gRatonCapturado = v; }
 
 // ---- funciones BASE que ven todos los scripts ------------------------------
 // tecla("w") -> true si esta apretada
@@ -230,6 +253,75 @@ static int LAzar(lua_State* L) {
 }
 // el hook de PREFABS (ver W3dScript.h): lo instala el importador del editor
 Object* (*W3dInstanciarPrefabHook)(const char* nombre, const float* posMotor) = 0;
+// ...y el de los prefabs del proyecto (io/Prefabs) + quien corre la partida (ver W3dScript.h)
+W3dPrefabInstanciarFn W3dPrefabInstanciarHook = 0;
+Object* W3dPrefabInstanciarDuenio = 0;
+// ...y los de los scripts de una LIBRERIA externa (ver W3dScript.h)
+std::string (*W3dScriptLibreriaHook)(Object* duenio) = 0;
+std::string (*W3dScriptRutaSueltaHook)(const std::string& libreria, const std::string& ruta) = 0;
+std::string W3dScriptLibreria(void* Lv) {
+    lua_State* L = (lua_State*)Lv;
+    if (!L) return std::string();
+    lua_getfield(L, LUA_REGISTRYINDEX, "w3d_lib");
+    const char* s = lua_isstring(L, -1) ? lua_tostring(L, -1) : 0;
+    const std::string lib = s ? s : "";
+    lua_pop(L, 1);
+    return lib;
+}
+std::string W3dScriptRutaDeLibreria(void* L, const std::string& ruta) {
+    if (ruta.empty() || ruta[0] == '/' || ruta[0] == '\\' || ruta.find(':') != std::string::npos) return std::string();
+    const std::string lib = W3dScriptLibreria(L);
+    if (lib.empty()) return std::string();
+    // una ENTRADA de su libreria (en el juego compilado: su copia empaquetada, donde viajan tambien sus sueltos)
+    const std::string r = "lib:" + lib + "/" + ruta;
+    if (w3dFileSystem::FileExists(r)) return r;
+    // un archivo SUELTO al lado de su .w3d (el editor)
+    if (W3dScriptRutaSueltaHook) {
+        const std::string d = W3dScriptRutaSueltaHook(lib, ruta);
+        if (!d.empty()) return d;
+    }
+    return std::string();
+}
+static W3dScriptObjetoFn gObjetoNuevoFn = 0;
+static W3dScriptObjetoFn gObjetoDestruirFn = 0;
+void W3dScriptSetObjetoNuevo(W3dScriptObjetoFn fn) { gObjetoNuevoFn = fn; }
+void W3dScriptSetObjetoDestruir(W3dScriptObjetoFn fn) { gObjetoDestruirFn = fn; }
+// ---- el STREAMING por las rutas de instanciar()/destruir() (ver W3dScript.h) ----
+bool W3dScriptHayPartida() { return gObjetoNuevoFn != 0; }
+bool W3dScriptAvisarObjetoNuevo(Object* raiz) {
+    if (!gObjetoNuevoFn || !raiz) return false;
+    gObjetoNuevoFn(raiz);
+    return true;
+}
+static W3dScriptObjetoFn gObjetoLiberarFn = 0;
+void W3dScriptSetObjetoLiberar(W3dScriptObjetoFn fn) { gObjetoLiberarFn = fn; }
+void W3dScriptLiberarYa(Object* o) {
+    if (!o) return;
+    if (gObjetoLiberarFn) gObjetoLiberarFn(o);
+    else W3dScriptDestruirObjeto(o);
+}
+int (*W3dStreamingLuaHook)(Object* o, int pedido) = 0;
+
+// ---- LAS FUENTES DE LOS SCRIPTS como recurso del almacen (W3DREC_SCRIPT, ver W3dScript.h) ----
+static void* OpCargarFuente(const std::string& id, long* bytes) {
+    std::vector<unsigned char>* v = new std::vector<unsigned char>();
+    if (!w3dFileSystem::ReadFileBytes(id, *v) || v->empty()) { delete v; return 0; }
+    if (bytes) *bytes = (long)v->size();
+    return v;
+}
+static bool OpLiberarFuente(void* dato) {
+    delete (std::vector<unsigned char>*)dato;
+    return true;
+}
+void W3dScriptFuentesAsegurarOps() {
+    static bool listo = false;
+    if (listo) return;
+    W3dRecursoOps ops;
+    ops.Cargar = OpCargarFuente;
+    ops.Liberar = OpLiberarFuente;
+    W3dRecursosRegistrarTipo(W3DREC_SCRIPT, ops);
+    listo = true;
+}
 
 // instanciar("nombre" [, x, y, z]) -> clona un Prefab de la Biblioteca del .w3d
 // como hijo de la escena y devuelve el objeto (light userdata, como objeto()).
@@ -244,10 +336,56 @@ static int LInstanciar(lua_State* L) {
         pos[2] = (float)luaL_checknumber(L, 4);
         pp = pos;
     }
-    Object* o = W3dInstanciarPrefabHook ? W3dInstanciarPrefabHook(n, pp) : 0;
+    // un PREFAB DEL PROYECTO primero (con rotY opcional, el 5to argumento); si no hay, el de la Biblioteca del
+    // formato texto (que no gira ni avisa a la partida: queda como estaba)
+    Object* o = 0;
+    if (W3dPrefabInstanciarHook) {
+        const float rotY = (lua_gettop(L) >= 5) ? (float)luaL_checknumber(L, 5) : 0.0f;
+        // (quien llama: un script de una libreria externa nombra primero los prefabs de SU libreria)
+        lua_getfield(L, LUA_REGISTRYINDEX, "w3d_duenio");
+        W3dPrefabInstanciarDuenio = lua_islightuserdata(L, -1) ? (Object*)lua_touserdata(L, -1) : 0;
+        lua_pop(L, 1);
+        o = W3dPrefabInstanciarHook(n, pp, rotY);
+        W3dPrefabInstanciarDuenio = 0;
+        if (o && gObjetoNuevoFn) gObjetoNuevoFn(o);   // sus scripts, sus cuerpos: los arranca la partida
+    }
+    if (!o && W3dInstanciarPrefabHook) o = W3dInstanciarPrefabHook(n, pp);
     if (o) lua_pushlightuserdata(L, o); else lua_pushnil(L);
     return 1;
 }
+
+// ---- destruir(obj): DIFERIDO al final del frame (ver W3dScript.h) ----
+// lo pedido va por SERIAL: si el objeto se libera antes por otro camino (un cambiarEscena, otro destruir de
+// un ancestro) el pedido se descarta solo
+struct W3dDestruirPedido { Object* o; unsigned serial; };
+static std::vector<W3dDestruirPedido> gDestruir;
+static int LDestruir(lua_State* L) {
+    Object* o = W3dScriptParamObjeto((void*)L, 1);
+    extern Object* SceneCollection;
+    if (!o || o == SceneCollection || W3dEsRaizRegistrada(o) || W3dScriptEsEscenaUI(o)) { lua_pushboolean(L, 0); return 1; }
+    for (size_t i = 0; i < gDestruir.size(); i++)
+        if (gDestruir[i].o == o && gDestruir[i].serial == o->serial) { lua_pushboolean(L, 1); return 1; }
+    W3dDestruirPedido p; p.o = o; p.serial = o->serial;
+    gDestruir.push_back(p);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// ---- cargar(obj) / descargar(obj) / cargaAuto(obj) / cargado(obj): el STREAMING de una instancia de prefab o un
+// proxy (main/io/Streaming.h, por el hook). Los tres primeros devuelven true si 'obj' es una instancia (el pedido
+// queda anotado: se aplica en el tick del streaming); cargado() dice si sus hijos estan generados. nil = sin streaming
+static int LStreaming(lua_State* L, int pedido) {
+    Object* o = W3dScriptParamObjeto((void*)L, 1);
+    if (!W3dStreamingLuaHook || !o) { lua_pushnil(L); return 1; }
+    const int e = W3dStreamingLuaHook(o, pedido);
+    if (pedido == 0) lua_pushboolean(L, e == 2);
+    else lua_pushboolean(L, e >= 0);
+    return 1;
+}
+static int LCargar(lua_State* L)    { return LStreaming(L, 1); }
+static int LDescargar(lua_State* L) { return LStreaming(L, -1); }
+static int LCargaAuto(lua_State* L) { return LStreaming(L, 2); }
+static int LCargado(lua_State* L)   { return LStreaming(L, 0); }
 
 // buscar("nombre") -> el objeto de la escena con ese nombre (busqueda recursiva
 // por el arbol), o nil. Es la via para agarrar lo que entro EN RUNTIME
@@ -272,8 +410,19 @@ static int LBuscar(lua_State* L) {
     // mismas partes ("door_lf_dummy" del taxi Y del patrullero).
     Object* raiz = SceneCollection;
     if (lua_islightuserdata(L, 2)) {
-        Object* r = (Object*)lua_touserdata(L, 2);
+        Object* r = W3dScriptParamObjeto((void*)L, 2);
         if (r) raiz = r;
+    } else {
+        // SIN raiz: como lo ve el objeto del script. Uno GENERADO por una instancia de prefab busca primero
+        // adentro de SU instancia (su "Arma", no la del primer enemigo) y despues en toda la escena
+        lua_getfield(L, LUA_REGISTRYINDEX, "w3d_duenio");
+        Object* duenio = lua_islightuserdata(L, -1) ? (Object*)lua_touserdata(L, -1) : NULL;
+        lua_pop(L, 1);
+        if (duenio && W3dInstanciaDe(duenio)) {
+            Object* o = W3dBuscarNombreDesde(duenio, n, SceneCollection);
+            if (o) lua_pushlightuserdata(L, o); else lua_pushnil(L);
+            return 1;
+        }
     }
     if (raiz && raiz->name == n) { lua_pushlightuserdata(L, raiz); return 1; }
     Object* o = BuscarNombreRec(raiz, n);
@@ -302,6 +451,29 @@ static int LPuntoMundo(lua_State* L) {
 // duracion en SEGUNDOS (para armar timers en lua), o nil si no existe. loop
 // false = one-shot: al terminar queda clavada en la ultima pose. UNA activa por
 // vez; el tick lo corre la simulacion (W3dAnimEscenaTick).
+// pararEscena(): corta la ANIMACION DE ESCENA que este sonando (animEscena). Los objetos quedan donde estaban y
+// su pista "Camara activa" deja de mandar (sino una one-shot terminada seguia imponiendo su ultima camara).
+// animEscenaFrame(f): fija el frame de la animacion de escena que suena y apaga su reloj propio (el script manda).
+// Una cinematica lo llama cada tick con el MISMO frame que usa para los clips de los personajes (animFrame).
+static int LAnimEscenaFrame(lua_State* L) {
+    W3dAnimEscenaFijar((float)luaL_checknumber(L, 1));
+    return 0;
+}
+// animEscenaActual() -> frame, nombre de la animacion de escena que esta sonando (nil si ninguna). Lo
+// usa una CINEMATICA para saber cuando termino su animacion (una ESCENA pedida con cambiarEscena la
+// reproduce una vez desde el inicio) y pedir la siguiente.
+static int LAnimEscenaActual(lua_State* L) {
+    const int i = W3dAnimEscenaSonando();
+    if (i < 0 || i >= (int)SceneAnimations.size() || !SceneAnimations[(size_t)i]) { lua_pushnil(L); return 1; }
+    lua_pushnumber(L, (lua_Number)W3dAnimEscenaFrame());
+    lua_pushstring(L, SceneAnimations[(size_t)i]->name.c_str());
+    return 2;
+}
+static int LPararEscena(lua_State* L) {
+    (void)L;
+    W3dAnimEscenaReset();
+    return 0;
+}
 static int LAnimEscena(lua_State* L) {
     const char* n = luaL_checkstring(L, 1);
     const bool loop = lua_isnoneornil(L, 2) ? true : (lua_toboolean(L, 2) != 0);
@@ -313,6 +485,92 @@ static int LAnimEscena(lua_State* L) {
         return 1;
     }
     lua_pushnumber(L, W3dAnimEscenaDur(idx));
+    return 1;
+}
+
+// ---- CLIPS DE JERARQUIA (animation/W3dAnimSet.h: una raiz anima a si misma y a sus hijos por ruta de nombres) ----
+// animObjeto(raiz, "clip" [, loop=true]) -> duracion en SEGUNDOS, o nil si no hay un clip con ese nombre.
+// El clip se busca en la biblioteca de la raiz; si no esta, se acepta "Biblioteca/clip" (o el nombre suelto
+// si es el unico): cualquier jerarquia con los mismos nombres lo puede reproducir (lo que no tiene se ignora).
+// Cada raiz tiene SU cabezal: varias animaciones suenan a la vez e independientes (la puerta, el ascensor,
+// el auto), y conviven con animEscena() y con los clips de los armatures (animClip). Una raiz puede estar
+// ADENTRO de otra que suena (la puerta del auto con su propio clip): se posa primero el ancestro y la pista
+// "." de la de adentro se suma a lo que el le hace, sin importar cual se arranco antes (Animation.cpp).
+// loop false = una pasada: al terminar queda en la ultima pose (animObjetoTermino da true).
+static int LAnimObjeto(lua_State* L) {
+    Object* o = W3dScriptParamObjeto((void*)L, 1);
+    const char* n = luaL_checkstring(L, 2);
+    const bool loop = lua_isnoneornil(L, 3) ? true : (lua_toboolean(L, 3) != 0);
+    const float dur = o ? W3dAnimObjetoPlay(o, n, loop) : -1.0f;
+    if (dur < 0.0f) {
+        static bool avisado = false;   // una vez por sesion (no spamear el log)
+        if (!avisado) { avisado = true; w3dLogfW("animObjeto(): '%s' no tiene un clip '%s'", o ? o->name.c_str() : "?", n); }
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushnumber(L, dur);
+    return 1;
+}
+// animObjetoFrame(obj [, f]) -> el frame del clip que suena en el objeto (nil si ninguno). Con f mueve su
+// cabezal ahi (acotado al rango del clip) y el clip sigue sonando desde ese frame.
+static int LAnimObjetoFrame(lua_State* L) {
+    Object* o = W3dScriptParamObjeto((void*)L, 1);
+    if (o && !lua_isnoneornil(L, 2)) W3dAnimObjetoFijarFrame(o, (float)luaL_checknumber(L, 2));
+    const float f = o ? W3dAnimObjetoFrame(o) : -1.0f;
+    if (f < 0.0f) lua_pushnil(L); else lua_pushnumber(L, f);
+    return 1;
+}
+// animObjetoTermino(obj) -> true si no le suena nada o si su clip de una pasada llego al final
+static int LAnimObjetoTermino(lua_State* L) {
+    Object* o = W3dScriptParamObjeto((void*)L, 1);
+    lua_pushboolean(L, W3dAnimObjetoTermino(o) ? 1 : 0);
+    return 1;
+}
+// animObjetoActual(obj) -> el nombre del clip que suena (nil si ninguno)
+static int LAnimObjetoActual(lua_State* L) {
+    Object* o = W3dScriptParamObjeto((void*)L, 1);
+    const std::string c = o ? W3dAnimObjetoClip(o) : std::string();
+    if (c.empty()) lua_pushnil(L); else lua_pushstring(L, c.c_str());
+    return 1;
+}
+// animObjetoParar(obj): corta su clip (el objeto queda donde esta)
+static int LAnimObjetoParar(lua_State* L) {
+    Object* o = W3dScriptParamObjeto((void*)L, 1);
+    if (o) W3dAnimObjetoParar(o);
+    return 0;
+}
+// animObjetoVelocidad(raiz, v) -> true si le suena un clip. 1 = sus fps, 2 = el doble, negativa = hacia atras
+static int LAnimObjetoVelocidad(lua_State* L) {
+    Object* o = W3dScriptParamObjeto((void*)L, 1);
+    const float v = (float)luaL_checknumber(L, 2);
+    lua_pushboolean(L, (o && W3dAnimObjetoVelocidad(o, v)) ? 1 : 0);
+    return 1;
+}
+// animRetarget(obj, "completo" | "rotaciones") : REUTILIZAR ANIMACIONES ENTRE TAMANOS DISTINTOS. Con
+// "rotaciones" el armature (o la jerarquia) usa solo las rotaciones de sus clips: cada hueso/nodo conserva su
+// traslacion y su escala de reposo (sus proporciones) y el movimiento de la raiz se escala por la razon de
+// tamanos (el suyo / el del esqueleto que grabo el clip). "completo" (el de siempre) = el clip tal cual.
+// Tambien acepta 0 / 1. En una jerarquia, "clip" vuelve al modo que diga cada clip.
+static int LAnimRetarget(lua_State* L) {
+    Object* o = W3dScriptParamObjeto((void*)L, 1);
+    if (!o) return 0;
+    int modo = W3D_RETARGET_COMPLETO;
+    if (lua_type(L, 2) == LUA_TNUMBER) modo = (int)lua_tonumber(L, 2);
+    else {
+        const char* m = luaL_optstring(L, 2, "completo");
+        if (!strcmp(m, "rotaciones")) modo = W3D_RETARGET_ROTACIONES;
+        else if (!strcmp(m, "clip")) modo = -1;
+    }
+    if (o->getType() == ObjectType::armature) W3dArmatureRetarget((Armature*)o, modo < 0 ? W3D_RETARGET_COMPLETO : modo);
+    else W3dAnimObjetoRetarget(o, modo);
+    return 0;
+}
+
+// yo() -> el objeto que tiene ESTE script (el mismo script puesto en varios objetos: cada instancia se maneja a si
+// misma sin buscarse por nombre)
+static int LYo(lua_State* L) {
+    lua_getfield(L, LUA_REGISTRYINDEX, "w3d_duenio");
+    if (!lua_islightuserdata(L, -1)) { lua_pop(L, 1); lua_pushnil(L); }
     return 1;
 }
 
@@ -462,6 +720,17 @@ static int LDedo(lua_State* L) {
     lua_pushboolean(L, gDedoAct[i]);
     return 3;
 }
+// ratonRel() -> dx, dy: movimiento del mouse capturado (px) desde la ultima llamada; lo consume (queda en 0,0)
+static int LRatonRel(lua_State* L) {
+    lua_pushnumber(L, gRatonDX); lua_pushnumber(L, gRatonDY);
+    gRatonDX = 0; gRatonDY = 0;
+    return 2;
+}
+// capturarRaton(true/false): pide (o suelta) la captura del mouse para mirar estilo FPS. Solo hace algo en PC.
+static int LCapturarRaton(lua_State* L) { gRatonCapturar = lua_toboolean(L, 1) != 0; return 0; }
+// ratonCapturado() -> true si la plataforma tiene el mouse capturado AHORA (para que el script no mire tambien
+// con el arrastre del dedo mientras el cursor esta clavado al centro). En Symbian siempre false.
+static int LRatonCapturado(lua_State* L) { lua_pushboolean(L, gRatonCapturado ? 1 : 0); return 1; }
 // boton("a") -> true si el boton del gamepad esta apretado
 // beep(freq, ms, vol): reproduce un TONO de onda cuadrada (efecto estilo WhiskPaddle, copyright-free).
 // freq en Hz, ms de duracion (default 90), vol 0..1 (default 1). Cachea el tono por (freq,ms).
@@ -727,6 +996,47 @@ static int LVerticePos(lua_State* L) {
     lua_pushnumber(L, m->vertex[i*3+1]);
     lua_pushnumber(L, m->vertex[i*3+2]);
     return 3;
+}
+// verticePosAnim(m, i) -> x, y, z: la posicion ANIMADA del render-vert i (1-based) en coords locales de la malla:
+// con skinning (+ shape keys) es la posicion posada del ultimo skinning calculado (skinVertex); sin skinning es
+// la de verticePos. Para seguir un punto de una malla que se deforma (ej: proyectar el iris sobre el ojo).
+static int LVerticePosAnim(lua_State* L) {
+    Mesh* m = ComoMalla(L, 1);
+    int i = (int)luaL_checkinteger(L, 2) - 1;
+    if (!m || !m->vertex || i < 0 || i >= m->vertexSize) {
+        lua_pushnumber(L, 0); lua_pushnumber(L, 0); lua_pushnumber(L, 0);
+        return 3;
+    }
+    const GLfloat* src = (m->skinArmature && m->skinVertex && m->skinShapeSerial != 0xFFFFFFFFu) ? m->skinVertex : m->vertex;
+    lua_pushnumber(L, src[i*3]);
+    lua_pushnumber(L, src[i*3+1]);
+    lua_pushnumber(L, src[i*3+2]);
+    return 3;
+}
+// numVertices(m) -> cantidad de render-verts de la malla (el rango valido de verticePos/verticePosAnim/setVerticeUV)
+static int LNumVertices(lua_State* L) { Mesh* m = ComoMalla(L, 1); lua_pushinteger(L, m ? m->vertexSize : 0); return 1; }
+// setVerticeUV(m, i, u, v [, capa]): la UV del render-vert i (1-based). capa 0 (default) = la UV base; capa >= 1 =
+// una capa UV extra del render (Mesh::uvExtra, la que usa una capa de textura con uvMapa = capa). Las capas se
+// dibujan de client arrays, asi que el cambio se ve en el proximo frame sin rehacer nada.
+static int LSetVerticeUV(lua_State* L) {
+    Mesh* m = ComoMalla(L, 1);
+    int i = (int)luaL_checkinteger(L, 2) - 1;
+    if (!m || i < 0 || i >= m->vertexSize) return 0;
+    const GLfloat u = (GLfloat)luaL_checknumber(L, 3), v = (GLfloat)luaL_checknumber(L, 4);
+    const int capa = (int)luaL_optinteger(L, 5, 0);
+    if (capa <= 0) {
+        if (!m->uv) return 0;
+        m->DesinstanciarDatos(W3DMD_UV);   // COW: geometria compartida (MallaDatos.h)
+        m->uv[(size_t)i * 2] = u; m->uv[(size_t)i * 2 + 1] = v;
+        m->skinGeomVersion++;   // el VBO se re-sube solo (camino de la AnimacionUV)
+    } else {
+        if ((int)m->uvExtra.size() <= capa) m->uvExtra.resize((size_t)capa + 1);
+        std::vector<GLfloat>& cap = m->uvExtra[(size_t)capa];
+        if ((int)cap.size() < m->vertexSize * 2) cap.resize((size_t)m->vertexSize * 2, 0.0f);
+        cap[(size_t)i * 2] = u; cap[(size_t)i * 2 + 1] = v;
+    }
+    Redibujar();
+    return 0;
 }
 // setVerticePos(m, i, x, y, z): mueve UN vertice (coords LOCALES). Para mover
 // muchos por frame usa setVertices() (batch, un solo cruce lua<->C).
@@ -1171,8 +1481,81 @@ static int LEscenaCapas(lua_State* L) {
     lua_pushinteger(L, (lua_Integer)g_mixEscenas.size()); return 1;
 }
 
+// ---- CAPAS DE CLIPS DE JERARQUIA (el mix de una RAIZ: varios clips de jerarquia mezclados sobre ella y sus hijos;
+//      ver W3dJerRaiz::capas en animation/W3dAnimSet.h). Con al menos una capa la raiz muestra la MEZCLA y su
+//      animObjeto deja de posarla (como un armature con animCapa). Indices base 1. El clip: el de su biblioteca o
+//      "Biblioteca/clip" de una biblioteca cargada (una capa no carga bibliotecas). ----
+static W3dCapaAnim* JerCapaArg(lua_State* L, Object* o, int i, bool crear) {
+    if (!o) return NULL;
+    int n = (int)luaL_checkinteger(L, i);
+    if (n < 1 || n > 16) return NULL;
+    if (!o->clipsJer || (int)o->clipsJer->capas.size() < n) {
+        if (!crear) return NULL;
+        if (!o->clipsJer) o->clipsJer = new W3dJerRaiz();
+        o->clipsJer->capas.resize(n);
+        W3dJerCapasCambiaron(o);
+    }
+    return &o->clipsJer->capas[n - 1];
+}
+// objetoCapa(raiz, n, "clip" [, influencia 0..1 = 1 [, "mezclar"|"sumar"|"restar" [, loop = true [, reiniciar = false]]]])
+// -> true si encontro el clip. Crea las capas que falten. Cambiar de clip arranca la capa de 0.
+static int LObjetoCapa(lua_State* L) {
+    Object* o = W3dScriptParamObjeto((void*)L, 1);
+    W3dCapaAnim* c = JerCapaArg(L, o, 2, true);
+    const char* clip = lua_tostring(L, 3);
+    if (!c || !clip) { lua_pushboolean(L, 0); return 1; }
+    bool reiniciar = lua_toboolean(L, 7) != 0;
+    if (c->anim != clip || reiniciar) { c->anim = clip; c->retClip = 0; c->juegoFrame = 0.0f; c->juegoTermino = false; }
+    if (!lua_isnoneornil(L, 4)) c->influencia = (float)lua_tonumber(L, 4) * 100.0f;
+    if (!lua_isnoneornil(L, 5)) { const char* m = lua_tostring(L, 5);
+        c->modo = (m && !strcmp(m, "sumar")) ? 1 : (m && !strcmp(m, "restar")) ? 2 : 0; }
+    c->loop = lua_isnoneornil(L, 6) ? true : (lua_toboolean(L, 6) != 0);
+    if (c->loop) c->juegoTermino = false;
+    c->visible = true;
+    lua_pushboolean(L, W3dJerCapaClip(o, *c, 0) ? 1 : 0);
+    return 1;
+}
+// objetoCapaPeso(raiz, n [, influencia 0..1]) -> influencia
+static int LObjetoCapaPeso(lua_State* L) {
+    W3dCapaAnim* c = JerCapaArg(L, W3dScriptParamObjeto((void*)L, 1), 2, false);
+    if (c && !lua_isnoneornil(L, 3)) c->influencia = (float)lua_tonumber(L, 3) * 100.0f;
+    lua_pushnumber(L, c ? c->influencia * 0.01f : 0.0f);
+    return 1;
+}
+// objetoCapaFrame(raiz, n [, f]) -> frame de la capa (desde el inicio de su clip)
+static int LObjetoCapaFrame(lua_State* L) {
+    W3dCapaAnim* c = JerCapaArg(L, W3dScriptParamObjeto((void*)L, 1), 2, false);
+    if (c && !lua_isnoneornil(L, 3)) { c->juegoFrame = (float)lua_tonumber(L, 3); c->juegoTermino = false; }
+    lua_pushnumber(L, c ? c->juegoFrame : 0.0f);
+    return 1;
+}
+// objetoCapaTermino(raiz, n) -> true si su clip sin loop llego al final
+static int LObjetoCapaTermino(lua_State* L) {
+    W3dCapaAnim* c = JerCapaArg(L, W3dScriptParamObjeto((void*)L, 1), 2, false);
+    lua_pushboolean(L, (c && c->juegoTermino) ? 1 : 0);
+    return 1;
+}
+// objetoCapaVel(raiz, n, v): velocidad de la capa (1 = normal)
+static int LObjetoCapaVel(lua_State* L) {
+    W3dCapaAnim* c = JerCapaArg(L, W3dScriptParamObjeto((void*)L, 1), 2, false);
+    if (c && !lua_isnoneornil(L, 3)) { float v = (float)lua_tonumber(L, 3); c->vel = v < 0.0f ? 0.0f : v; }
+    lua_pushnumber(L, c ? c->vel : 0.0f);
+    return 1;
+}
+// objetoCapas(raiz [, n]) -> cantidad de capas; con n recorta a n (0 = vuelve al clip unico de animObjeto; los
+// nodos quedan donde los dejo la mezcla)
+static int LObjetoCapas(lua_State* L) {
+    Object* o = W3dScriptParamObjeto((void*)L, 1);
+    if (o && o->clipsJer && !lua_isnoneornil(L, 2)) {
+        int n = (int)lua_tointeger(L, 2); if (n < 0) n = 0;
+        if (n < (int)o->clipsJer->capas.size()) { o->clipsJer->capas.resize(n); W3dJerCapasCambiaron(o); }
+    }
+    lua_pushinteger(L, (o && o->clipsJer) ? (lua_Integer)o->clipsJer->capas.size() : 0);
+    return 1;
+}
+
 // animTransicion(arm, frames [, fps = 30]): congela la pose de AHORA y la funde hacia lo que suene despues durante
-// 'frames' (el "hokan" de RE4 / el crossfade de cualquier juego). Llamarla ANTES de cambiar el clip de la capa.
+// 'frames' (el crossfade de pose de cualquier juego). Llamarla ANTES de cambiar el clip de la capa.
 static int LAnimTransicion(lua_State* L) {
     Armature* a = ArmArg(L, 1);
     float fr = (float)luaL_optnumber(L, 2, 8), fps = (float)luaL_optnumber(L, 3, 30);
@@ -1309,7 +1692,10 @@ static int LSetEnergia(lua_State* L) {
 Object* W3dScriptParamObjeto(void* Lv, int idx) {
     lua_State* L = (lua_State*)Lv;
     if (!lua_islightuserdata(L, idx)) return NULL;
-    return (Object*)lua_touserdata(L, idx);
+    Object* o = (Object*)lua_touserdata(L, idx);
+    // un puntero que lua guardo de un objeto que ya no existe (destruir(), una escena descargada): NULL, no
+    // memoria liberada
+    return W3dObjetoVivo(o) ? o : NULL;
 }
 
 // BUG que arregla esto: antes math.random NUNCA se re-sembraba desde el Core, asi que cada partida salia
@@ -1373,6 +1759,7 @@ static void RegistrarAPI(lua_State* L) {
     lua_pushcfunction(L, LObjeto); lua_setglobal(L, "objeto");
     lua_pushcfunction(L, LOpcion); lua_setglobal(L, "opcion");
     lua_pushcfunction(L, LPropiedad); lua_setglobal(L, "propiedad");
+    lua_pushcfunction(L, LYo); lua_setglobal(L, "yo");
     // estado compartido entre scripts (el canal unico entre lua_States)
     lua_pushcfunction(L, LCompartido);    lua_setglobal(L, "compartido");
     lua_pushcfunction(L, LSetCompartido); lua_setglobal(L, "setCompartido");
@@ -1380,6 +1767,9 @@ static void RegistrarAPI(lua_State* L) {
     lua_pushcfunction(L, LToque);  lua_setglobal(L, "toque");
     lua_pushcfunction(L, LDedo);   lua_setglobal(L, "dedo");
     lua_pushcfunction(L, LRaton);  lua_setglobal(L, "raton");
+    lua_pushcfunction(L, LRatonRel); lua_setglobal(L, "ratonRel");
+    lua_pushcfunction(L, LCapturarRaton); lua_setglobal(L, "capturarRaton");
+    lua_pushcfunction(L, LRatonCapturado); lua_setglobal(L, "ratonCapturado");
     lua_pushcfunction(L, LBeep);   lua_setglobal(L, "beep");
     lua_pushcfunction(L, LBoton);  lua_setglobal(L, "boton");
     lua_pushcfunction(L, LPos3);   lua_setglobal(L, "pos3");
@@ -1387,13 +1777,32 @@ static void RegistrarAPI(lua_State* L) {
     lua_pushcfunction(L, LGirarHacia); lua_setglobal(L, "girarHacia");
     lua_pushcfunction(L, LAnimar); lua_setglobal(L, "animar");
     lua_pushcfunction(L, LInstanciar); lua_setglobal(L, "instanciar");
+    lua_pushcfunction(L, LDestruir); lua_setglobal(L, "destruir");
+    lua_pushcfunction(L, LCargar);    lua_setglobal(L, "cargar");      // el streaming de una instancia / proxy
+    lua_pushcfunction(L, LDescargar); lua_setglobal(L, "descargar");
+    lua_pushcfunction(L, LCargaAuto); lua_setglobal(L, "cargaAuto");
+    lua_pushcfunction(L, LCargado);   lua_setglobal(L, "cargado");
     lua_pushcfunction(L, LBuscar); lua_setglobal(L, "buscar");
     lua_pushcfunction(L, LPuntoMundo); lua_setglobal(L, "puntoMundo");
     lua_pushcfunction(L, LAnimEscena); lua_setglobal(L, "animEscena");
+    lua_pushcfunction(L, LPararEscena); lua_setglobal(L, "pararEscena");
+    lua_pushcfunction(L, LAnimEscenaFrame); lua_setglobal(L, "animEscenaFrame");
+    lua_pushcfunction(L, LAnimEscenaActual); lua_setglobal(L, "animEscenaActual");
+    // clips de JERARQUIA: un cabezal por raiz (varias animaciones a la vez) + el retarget por tamano
+    lua_pushcfunction(L, LAnimObjeto);        lua_setglobal(L, "animObjeto");
+    lua_pushcfunction(L, LAnimObjetoFrame);   lua_setglobal(L, "animObjetoFrame");
+    lua_pushcfunction(L, LAnimObjetoTermino); lua_setglobal(L, "animObjetoTermino");
+    lua_pushcfunction(L, LAnimObjetoActual);  lua_setglobal(L, "animObjetoActual");
+    lua_pushcfunction(L, LAnimObjetoParar);   lua_setglobal(L, "animObjetoParar");
+    lua_pushcfunction(L, LAnimObjetoVelocidad); lua_setglobal(L, "animObjetoVelocidad");
+    lua_pushcfunction(L, LAnimRetarget);      lua_setglobal(L, "animRetarget");
     // vertices por grupo (sidecar .grupos.json; ver el bloque VERTICES POR SCRIPT)
     lua_pushcfunction(L, LGrupoVertices);   lua_setglobal(L, "grupoVertices");
     lua_pushcfunction(L, LVerticePos);      lua_setglobal(L, "verticePos");
     lua_pushcfunction(L, LSetVerticePos);   lua_setglobal(L, "setVerticePos");
+    lua_pushcfunction(L, LVerticePosAnim); lua_setglobal(L, "verticePosAnim");
+    lua_pushcfunction(L, LSetVerticeUV); lua_setglobal(L, "setVerticeUV");
+    lua_pushcfunction(L, LNumVertices); lua_setglobal(L, "numVertices");
     lua_pushcfunction(L, LSetVerticeColor); lua_setglobal(L, "setVerticeColor");
     lua_pushcfunction(L, LSetVertices);     lua_setglobal(L, "setVertices");
     lua_pushcfunction(L, LSetVerticesColor);lua_setglobal(L, "setVerticesColor");
@@ -1437,6 +1846,12 @@ static void RegistrarAPI(lua_State* L) {
     lua_pushcfunction(L, LEscenaCapaFrame);   lua_setglobal(L, "escenaCapaFrame");
     lua_pushcfunction(L, LEscenaCapaTermino); lua_setglobal(L, "escenaCapaTermino");
     lua_pushcfunction(L, LEscenaCapas);       lua_setglobal(L, "escenaCapas");
+    lua_pushcfunction(L, LObjetoCapa);        lua_setglobal(L, "objetoCapa");
+    lua_pushcfunction(L, LObjetoCapaPeso);    lua_setglobal(L, "objetoCapaPeso");
+    lua_pushcfunction(L, LObjetoCapaFrame);   lua_setglobal(L, "objetoCapaFrame");
+    lua_pushcfunction(L, LObjetoCapaTermino); lua_setglobal(L, "objetoCapaTermino");
+    lua_pushcfunction(L, LObjetoCapaVel);     lua_setglobal(L, "objetoCapaVel");
+    lua_pushcfunction(L, LObjetoCapas);       lua_setglobal(L, "objetoCapas");
     lua_pushcfunction(L, LMirarA);          lua_setglobal(L, "mirarA");
     // luz
     lua_pushcfunction(L, LColor);       lua_setglobal(L, "color");
@@ -1464,6 +1879,12 @@ static void RegistrarAPI(lua_State* L) {
     // CUERPOS RIGIDOS (fisicaVel/fisicaImpulso/fisicaFuerza/fisicaRayo/contactos/
     // fisicaActiva/fisicaGravedad): cajas con masa, gravedad e impulsos. Ver physics/W3dRigido.h.
     W3dRigidosRegistrarBinds((void*)L);
+    // COLISION CONTRA MALLAS (colSuelo/colPared/colRayo/colOlvidar): piso y paredes de un escenario
+    // para un personaje movido por script. Ver physics/W3dColMalla.h.
+    W3dColMallaRegistrarBinds((void*)L);
+    // HITBOX (hitboxActivo/setHitboxActivo/setHitboxTam/hitboxDentro/hitboxTocando/verHitboxes):
+    // cajas de deteccion con eventos alEntrar/alQuedarse/alSalir. Ver physics/W3dHitbox.h.
+    W3dHitboxRegistrarBinds((void*)L);
     if (gBindExtra) gBindExtra((void*)L);   // la API 2D del editor / plataforma
 }
 
@@ -1472,7 +1893,16 @@ static bool CorrerArchivo(lua_State* L, const std::string& ruta) {
     // no en disco, y luaL_loadfile (que usa fopen) fallaba. luaL_loadbuffer detecta el bytecode .luac
     // por el header igual que loadfile, asi que los compilados siguen cargando por el mismo camino.
     std::vector<unsigned char> src;
-    if (!w3dFileSystem::ReadFileBytes(ruta, src) || src.empty()) {
+    // la FUENTE que el streaming ya trajo a memoria (W3DREC_SCRIPT): sin tocar el disco. Solo en el JUEGO COMPILADO,
+    // donde los scripts no cambian; el editor los lee frescos siempre (el IDE los edita y los recarga jugando, y una
+    // copia retenida haria correr la version vieja)
+    const std::vector<unsigned char>* enMemoria = 0;
+#ifdef W3D_SIN_EDITOR
+    { W3dRecurso* rf = W3dRecursoBuscar(W3DREC_SCRIPT, ruta);
+      enMemoria = rf ? (const std::vector<unsigned char>*)W3dRecursoResolver(rf) : 0; }
+#endif
+    if (enMemoria && !enMemoria->empty()) src = *enMemoria;
+    else if (!w3dFileSystem::ReadFileBytes(ruta, src) || src.empty()) {
         gUltimoError = "no pude leer el script: " + ruta;
         w3dLogfE("Script: %s", gUltimoError.c_str());
         return false;
@@ -1514,6 +1944,20 @@ bool W3dScriptCargar(Object* duenio) {
             lua_setfield(inst->L, LUA_REGISTRYINDEX, "w3d_inst");
             lua_pushlightuserdata(inst->L, duenio);
             lua_setfield(inst->L, LUA_REGISTRYINDEX, "w3d_duenio");
+            // SU LIBRERIA (si es de una): su .lua es una entrada de ella, o a su dueno lo genero un proxy de ella. Las
+            // rutas que nombra son primero de ella (W3dScriptRutaDeLibreria)
+            {
+                std::string lib;
+                if (ent.ruta.compare(0, 4, "lib:") == 0) {
+                    const size_t b = ent.ruta.find('/', 4);
+                    if (b != std::string::npos && b > 4) lib = ent.ruta.substr(4, b - 4);
+                }
+                if (lib.empty() && W3dScriptLibreriaHook) lib = W3dScriptLibreriaHook(duenio);
+                if (!lib.empty()) {
+                    lua_pushstring(inst->L, lib.c_str());
+                    lua_setfield(inst->L, LUA_REGISTRYINDEX, "w3d_lib");
+                }
+            }
             RegistrarAPI(inst->L);
             if (!CorrerArchivo(inst->L, ent.ruta)) {
                 lua_close(inst->L);
@@ -1583,14 +2027,145 @@ bool W3dScriptActualizar(Object* duenio, float dt) {
     bool ok = false;
     for (size_t i = 0; i < it->second.size(); i++)
         if (it->second[i] && Llamar(it->second[i], "actualizar", true, dt)) ok = true;
-    // SNAPSHOT para el flanco de teclaApretada()/botonApretado(): se toma DESPUES de correr TODOS los
-    // scripts de este frame, asi todas sus llamadas vieron el mismo estado previo. Mismo criterio y mismo
-    // punto que el gPunPrev de apretado() en el runtime (W3dGameActualizar corre este actualizar una vez
-    // por frame para el unico duenio del juego). El proximo frame comparara contra este snapshot.
-    gTeclasPrev = gTeclas;
-    gBotonesPadPrev = gBotonesPad;
+    // SNAPSHOT para el flanco de teclaApretada()/botonApretado(). Con W3dScriptFinFrame (el editor y el
+    // runtime 3D la llaman una vez por frame, despues de TODOS los objetos) el snapshot lo toma ella; aca solo
+    // queda el camino viejo para los runtimes de un unico duenio que no la llaman.
+    if (!gFinFrameExterno) {
+        gTeclasPrev = gTeclas;
+        gBotonesPadPrev = gBotonesPad;
+    }
     return ok;
 }
+
+// ---- EVENTOS (hitbox / contactos): fn(objs..., nums...) --------------------
+static int IndiceEvento(const char* fn) {
+    for (int i = 0; i < W3D_EVENTOS_SCRIPT; i++)
+        if (strcmp(fn, kEventosScript[i]) == 0) return i;
+    return -1;
+}
+
+static bool LlamarEvento(W3dScriptInst* inst, const char* fn, int idx, Object* const* objs, int nObjs,
+                         const float* nums, int nNums) {
+    if (idx >= 0 && inst->eventos[idx] == 0) return false;   // ya se sabe que no lo define
+    lua_State* L = inst->L;
+    lua_getglobal(L, fn);
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 1);
+        if (idx >= 0) inst->eventos[idx] = 0;
+        return false;
+    }
+    if (idx >= 0) inst->eventos[idx] = 1;
+    // los objetos viajan como TODO Object* hacia lua: lightuserdata (mismo tipo que yo()/objeto())
+    for (int i = 0; i < nObjs; i++) {
+        if (objs && objs[i]) lua_pushlightuserdata(L, objs[i]); else lua_pushnil(L);
+    }
+    for (int i = 0; i < nNums; i++) lua_pushnumber(L, nums ? nums[i] : 0.0f);
+    if (lua_pcall(L, nObjs + nNums, 0, 0) != LUA_OK) {
+        gUltimoError = lua_tostring(L, -1) ? lua_tostring(L, -1) : "error de lua";
+        w3dLogfE("Script %s(): %s", fn, gUltimoError.c_str());
+        lua_pop(L, 1);
+        return false;
+    }
+    return true;
+}
+
+bool W3dScriptEvento(Object* duenio, const char* fn, Object* const* objs, int nObjs,
+                     const float* nums, int nNums) {
+    if (!duenio || !fn) return false;
+    std::map<Object*, std::vector<W3dScriptInst*> >::iterator it = gInstancias.find(duenio);
+    if (it == gInstancias.end()) return false;
+    const int idx = IndiceEvento(fn);
+    bool ok = false;
+    // por INDICE y releyendo el mapa en cada vuelta: el evento puede recargar los scripts de
+    // su propio duenio (edicion en vivo) y dejar el vector viejo liberado
+    for (size_t i = 0; ; i++) {
+        it = gInstancias.find(duenio);
+        if (it == gInstancias.end() || i >= it->second.size()) break;
+        W3dScriptInst* inst = it->second[i];
+        if (inst && LlamarEvento(inst, fn, idx, objs, nObjs, nums, nNums)) ok = true;
+    }
+    return ok;
+}
+
+bool W3dScriptEvento(Object* duenio, const char* fn, Object* otro, const float* nums, int nNums) {
+    Object* objs[1]; objs[0] = otro;
+    return W3dScriptEvento(duenio, fn, objs, 1, nums, nNums);
+}
+
+void W3dScriptFinFrame() {
+    gFinFrameExterno = true;
+    gTeclasPrev = gTeclas;
+    gBotonesPadPrev = gBotonesPad;
+    // los destruir() del frame: ahora que no corre ningun actualizar()
+    W3dScriptDestruirPendientes();
+}
+
+// ---- LA DESTRUCCION (destruir de lua, ver W3dScript.h) ----
+static void JuntarSubarbol(Object* o, std::vector<Object*>& out) {
+    if (!o) return;
+    out.push_back(o);
+    for (size_t i = 0; i < o->Childrens.size(); i++) JuntarSubarbol(o->Childrens[i], out);
+}
+static void QuitarCurvasDe(std::vector<AnimationObject>& v, const std::set<Object*>& s) {
+    for (size_t i = v.size(); i-- > 0; ) if (s.count(v[i].obj)) v.erase(v.begin() + (long)i);
+}
+// una raiz 2D (escena UI): la registra el sistema de escenas (W3dEscena) y el juego compilado la sigue
+// dibujando y corriendo como la escena activa; liberarla dejaba ese puntero colgado (SIGSEGV al frame siguiente)
+bool W3dScriptEsEscenaUI(const Object* o) {
+    extern Object* SceneCollection;
+    if (!o || const_cast<Object*>(o)->getType() != ObjectType::ui) return false;
+    return !o->Parent || o->Parent == SceneCollection;
+}
+void W3dScriptSoltarRefsA(const std::vector<Object*>& objs) {
+    if (objs.empty()) return;
+    std::set<Object*> todos(objs.begin(), objs.end());
+    for (std::map<Object*, std::vector<W3dScriptInst*> >::iterator it = gInstancias.begin(); it != gInstancias.end(); ++it)
+        for (size_t k = 0; k < it->second.size(); k++) {
+            W3dScriptInst* inst = it->second[k];
+            if (!inst) continue;
+            for (std::map<std::string, Object*>::iterator r = inst->refs.begin(); r != inst->refs.end(); ++r)
+                if (todos.count(r->second)) r->second = NULL;
+        }
+}
+void W3dScriptDestruirObjeto(Object* o) {
+    extern Object* SceneCollection;
+    if (!o || o == SceneCollection || W3dEsRaizRegistrada(o) || W3dScriptEsEscenaUI(o)) return;
+    std::vector<Object*> sub;
+    JuntarSubarbol(o, sub);
+    std::set<Object*> todos(sub.begin(), sub.end());
+    for (size_t i = 0; i < sub.size(); i++) {
+        W3dScriptDescargarDe(sub[i]);   // (su lua_State se cierra: no queda nadie que lo nombre como yo())
+        W3dFisicaOlvidar(sub[i]);
+    }
+    // nadie lo sigue teniendo en objeto("x")
+    W3dScriptSoltarRefsA(sub);
+    // las curvas de las animaciones de escena que lo nombran (la activa y las demas de la raiz activa)
+    QuitarCurvasDe(AnimationObjects, todos);
+    for (size_t e = 0; e < SceneAnimations.size(); e++) if (SceneAnimations[e]) QuitarCurvasDe(SceneAnimations[e]->objetos, todos);
+    // la seleccion
+    for (size_t i = ObjSelects.size(); i-- > 0; ) if (todos.count(ObjSelects[i])) ObjSelects.erase(ObjSelects.begin() + (long)i);
+    if (todos.count(ObjActivo)) ObjActivo = NULL;
+    if (todos.count(CollectionActive)) CollectionActive = SceneCollection;
+    // descolgarlo y liberarlo (~Object olvida sus cuerpos rigidos, sus hitbox y sus pares)
+    if (o->Parent) {
+        std::vector<Object*>& ch = o->Parent->Childrens;
+        for (size_t i = 0; i < ch.size(); i++) if (ch[i] == o) { ch.erase(ch.begin() + (long)i); break; }
+    }
+    W3dLiberarSubarbol(o);
+    Redibujar();
+}
+void W3dScriptDestruirPendientes() {
+    if (gDestruir.empty()) return;
+    std::vector<W3dDestruirPedido> lista;
+    lista.swap(gDestruir);   // (destruir uno puede correr codigo que pida otro: va al frame siguiente)
+    for (size_t i = 0; i < lista.size(); i++) {
+        Object* o = lista[i].o;
+        if (!W3dObjetoVivoSerial(o, lista[i].serial)) continue;   // ya se fue (un ancestro, otra via)
+        if (gObjetoDestruirFn) gObjetoDestruirFn(o);
+        else W3dScriptDestruirObjeto(o);
+    }
+}
+int W3dScriptDestruirPedidos() { return (int)gDestruir.size(); }
 
 // cierra el lua_State y libera cada instancia de una lista (lo comparten DescargarDe/DescargarTodo)
 static void CerrarInstancias(std::vector<W3dScriptInst*>& lista) {
@@ -1609,13 +2184,17 @@ void W3dScriptDescargarDe(Object* duenio) {
 }
 
 void W3dScriptDescargarTodo() {
+    gDestruir.clear();   // (lo pedido y no aplicado: el Stop repone la escena como estaba)
     for (std::map<Object*, std::vector<W3dScriptInst*> >::iterator it = gInstancias.begin();
          it != gInstancias.end(); ++it)
         CerrarInstancias(it->second);
     gInstancias.clear();
     gTonoLuz.clear();   // el recuerdo del tono de las luces muere con la partida (se re-deriva del difuso)
     gCompartido.clear(); // el estado compartido entre scripts es DEL PLAY: la proxima partida arranca limpia
+    gRatonCapturar = false; gRatonDX = 0; gRatonDY = 0;   // la captura del mouse muere con la partida (STOP la suelta)
     W3dFisicaLimpiar(); // y las velocidades tambien: el Stop deja la escena quieta (y sin punteros viejos)
+    W3dHitboxFinPartida(); // y los pares de hitbox / contactos (la proxima partida arranca sin
+                           // "adentro") y el overlay verHitboxes que haya prendido un script
 }
 
 // ordena las propiedades por la posicion en que estan DECLARADAS en el archivo (ver abajo).

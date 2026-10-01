@@ -188,15 +188,19 @@ void TexturaRenombrar(Texture* t, const std::string& nuevoCrudo) {
     if (!t || nuevoCrudo.empty()) return;
     std::string nuevo = TexClave(nuevoCrudo);
     if (nuevo == t->path) return;
-    if (!W3dRecursoRenombrar(W3DREC_TEXTURA, t->path, nuevo)) {
+    // MOVER (no solo renombrar): la clave nueva pudo quedar tomada por un descriptor SIN dato (el
+    // FALLO recordado de una vista previa que la pidio antes de que existiera). Con Renombrar eso
+    // caia al RegistrarExterno de abajo y la clave VIEJA seguia apuntando a esta textura.
+    if (!W3dRecursoMover(W3DREC_TEXTURA, t->path, nuevo)) {
         // no estaba registrada por su ruta (copia con refcount local): se registra con la nueva
         const long b = (long)t->ancho * (long)t->alto * 4L;
         W3dRecursoRegistrarExterno(W3DREC_TEXTURA, nuevo, t, b);
     }
     t->path = nuevo;
 }
+static bool EnCementerio(const Texture* t);   // (las purgadas en caliente: mas abajo)
 void TexturaRetener(Texture* t) {
-    if (!t) return;
+    if (!t || EnCementerio(t)) return;   // (la del cementerio no tiene cuenta: ver TexturaSoltar)
     W3dRecurso* r = W3dRecursoBuscar(W3DREC_TEXTURA, t->path);
     if (r && r->dato == t) { W3dRecursoRetener(r, W3DREC_PERMANENTE); t->refs = r->refTotal; }
     else t->refs++;                      // copia sin descriptor: refcount local
@@ -204,6 +208,9 @@ void TexturaRetener(Texture* t) {
 
 void TexturaSoltar(Texture* t) {
     if (!t) return;
+    // una PURGADA en caliente es del CEMENTERIO (sus referencias se cerraron al purgarla y el objeto lo libera el
+    // cierre del proyecto): soltarla aca -un paso de undo que la tenia y se cae del historial- la borraba dos veces
+    if (EnCementerio(t)) return;
     W3dRecurso* r = W3dRecursoBuscar(W3DREC_TEXTURA, t->path);
     if (r && r->dato == t) {
         // espejo ANTES de soltar: si el refcount llega a 0 el almacen libera
@@ -216,6 +223,83 @@ void TexturaSoltar(Texture* t) {
     if (t->refs > 0) t->refs--;
     if (t->refs > 0) return;
     LiberarDeVerdad(t);
+}
+
+// la RANURA de un material es duena de una referencia (ver Textures.h): la nueva se retiene ANTES de soltar la vieja
+// (si es la misma no se toca: soltarla primero la podia liberar en el medio)
+void TexturaPonerEn(Texture*& ranura, Texture* t) {
+    if (ranura == t) return;
+    Texture* anterior = ranura;
+    TexturaRetener(t);
+    ranura = t;
+    TexturaSoltar(anterior);
+}
+
+W3dRecurso* TexturaPedir(const std::string& pathCrudo, int modo) {
+    if (pathCrudo.empty()) return NULL;
+    AsegurarOps();
+    W3dRecurso* r = W3dRecursoAdquirir(W3DREC_TEXTURA, TexClave(pathCrudo), W3DREC_PERMANENTE, modo, "streaming");
+    if (!r || r->estado == W3DREC_FALLO) return NULL;   // (un fallo no suma referencia)
+    if (r->estado == W3DREC_LISTO && r->dato) ((Texture*)r->dato)->refs = r->refTotal;   // espejo para texinfo
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+//  PURGAR EN CALIENTE / REVIVIR (ver Textures.h): el CEMENTERIO de las purgadas
+// ---------------------------------------------------------------------------
+static std::vector<Texture*> gPurgadas;
+
+const std::vector<Texture*>& TexturasPurgadas() { return gPurgadas; }
+static bool EnCementerio(const Texture* t) {
+    for (size_t i = 0; i < gPurgadas.size(); i++) if (gPurgadas[i] == t) return true;
+    return false;
+}
+
+bool TexturaPurgar(Texture* t) {
+    if (!t) return false;
+    for (size_t i = 0; i < gBase && i < Textures.size(); i++)
+        if (Textures[i] == t) return false;                  // de la UI: jamas
+    bool estaba = false;
+    for (size_t i = gBase; i < Textures.size(); i++)
+        if (Textures[i] == t) { Textures.erase(Textures.begin() + (long)i); estaba = true; break; }
+    if (!estaba) return false;
+    // la GPU se libera YA (es lo que pesa); el objeto queda para los punteros viejos
+    if (t->iID) w3dEngine::DeleteTexture((unsigned int)t->iID);
+    t->iID = 0;
+    // el almacen la olvida SIN liberarla (Olvidar no llama al op Liberar): nadie la vuelve a
+    // obtener por su ruta, y un TexturaTomar posterior de esa ruta la carga como nueva
+    W3dRecurso* r = W3dRecursoBuscar(W3DREC_TEXTURA, TexClave(t->path));
+    if (r && r->dato == t) {
+        r->refTotal = 0; r->refTransitoria = 0;              // las refs eran de esta copia
+        const std::string clave = r->id;                     // (copia: Olvidar borra el descriptor)
+        W3dRecursoOlvidar(W3DREC_TEXTURA, clave);
+    }
+    t->refs = 0;
+    gPurgadas.push_back(t);
+    return true;
+}
+
+bool TexturaRevivir(Texture* t) {
+    size_t k = 0;
+    while (k < gPurgadas.size() && gPurgadas[k] != t) k++;
+    if (!t || k == gPurgadas.size()) return false;
+    if (TexturaBuscar(t->path)) return false;                // la ruta ya tiene OTRA viva
+    GLuint id = 0;
+    if (!LoadTexture(t->path.c_str(), id)) return false;     // la imagen ya no esta: sigue vacia
+    t->iID = id;
+    int w = 0, h = 0;
+    if (w3dEngine::TextureSize((unsigned int)t->iID, w, h)) { t->ancho = w; t->alto = h; }
+#if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__) && !defined(W3D_SYMBIAN)
+    t->conMipmaps = !w3dEngine::PixeladoGlobal();
+#endif
+    gPurgadas.erase(gPurgadas.begin() + (long)k);
+    Textures.push_back(t);
+    AsegurarOps();
+    long b = (long)t->ancho * (long)t->alto * 4L;
+    if (t->conMipmaps) b += b / 3;
+    W3dRecursoRegistrarExterno(W3DREC_TEXTURA, TexClave(t->path), t, b);
+    t->refs = 1;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +320,9 @@ int TexturasLiberarEscena() {
     std::set<Texture*> seVan;
     for (size_t i = gBase; i < Textures.size(); i++)
         if (Textures[i]) seVan.insert(Textures[i]);
+    // el CEMENTERIO de las purgadas en caliente tambien se va (sus objetos siguen vivos)
+    for (size_t i = 0; i < gPurgadas.size(); i++)
+        if (gPurgadas[i]) seVan.insert(gPurgadas[i]);
     if (seVan.empty()) {
         // igual muere la contabilidad (incluidos los FALLOS recordados)
         W3dRecursosOlvidarTipo(W3DREC_TEXTURA);
@@ -245,6 +332,17 @@ int TexturasLiberarEscena() {
     // 2) soltar los punteros de los materiales ANTES de borrar nada
     for (size_t i = 0; i < Materials.size(); i++) {
         Material* m = Materials[i];
+        if (!m) continue;
+        if (m->texture       && seVan.count(m->texture))       m->texture = NULL;
+        if (m->normalTexture && seVan.count(m->normalTexture)) m->normalTexture = NULL;
+        for (size_t c = 0; c < m->capas.size(); c++)
+            if (m->capas[c].tex && seVan.count(m->capas[c].tex)) m->capas[c].tex = NULL;
+    }
+    // el cementerio de MATERIALES tambien puede apuntarlas (se libera despues, en
+    // MaterialesLiberarEscena: que no quede ni un puntero colgado mientras tanto)
+    const std::vector<Material*>& mp = MaterialesPurgados();
+    for (size_t i = 0; i < mp.size(); i++) {
+        Material* m = mp[i];
         if (!m) continue;
         if (m->texture       && seVan.count(m->texture))       m->texture = NULL;
         if (m->normalTexture && seVan.count(m->normalTexture)) m->normalTexture = NULL;
@@ -270,6 +368,9 @@ int TexturasLiberarEscena() {
         if (!LiberarDeVerdad(t)) break;   // fijada: no deberia pasar arriba de gBase
         n++;
     }
+    // las purgadas ya no tienen GPU ni estan en el vector: solo queda el objeto
+    for (size_t i = 0; i < gPurgadas.size(); i++) { delete gPurgadas[i]; n++; }
+    gPurgadas.clear();
     W3dRecursosOlvidarTipo(W3DREC_TEXTURA);
     return n;
 }

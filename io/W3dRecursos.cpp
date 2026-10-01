@@ -11,6 +11,7 @@
 // ============================================================================
 #include "W3dRecursos.h"
 #include <map>
+#include <set>
 
 // una tabla id->descriptor POR TIPO (los namespaces no se pisan: una textura
 // y una malla pueden tener el mismo id sin conflicto)
@@ -27,6 +28,23 @@ static int  gReusos[W3DREC_TIPOS];
 static long gBytesCargados[W3DREC_TIPOS];
 
 static bool TipoValido(int tipo) { return tipo >= 0 && tipo < W3DREC_TIPOS; }
+
+// los descriptores VIVOS (W3dRecursoVigente): todo descriptor nace y muere por aca
+static std::set<const W3dRecurso*> gVigentes;
+static unsigned gSerieProx = 1;
+static W3dRecurso* NuevoDescriptor() {
+    W3dRecurso* r = new W3dRecurso();
+    r->serie = gSerieProx++;
+    gVigentes.insert(r);
+    return r;
+}
+static void BorrarDescriptor(W3dRecurso* r) {
+    gVigentes.erase(r);
+    delete r;
+}
+bool W3dRecursoVigente(const W3dRecurso* r, unsigned serie) {
+    return r && gVigentes.count(r) && r->serie == serie;
+}
 
 // ---------------------------------------------------------------------------
 //  POOL DE PAGINAS (ver .h). gPagAbierta = la pagina donde se empaquetan los
@@ -176,8 +194,18 @@ W3dRecurso* W3dRecursoAdquirir(int tipo, const std::string& id,
         // se reintenta la carga ni se cuenta nada. EN_VUELO: la ref se suma ya
         // (la carga esta en camino).
         if (r->estado == W3DREC_FALLO) return r;
+        // EN_VUELO pedido BLOQUEANTE: el que llama necesita el dato YA (el contrato del modo).
+        // Sin esto se devolvia EN_VUELO con la ref sumada y el que esperaba LISTO fallaba
+        // (una malla que se vincula mientras una ListaCarga async todavia no la bombeo).
+        // Sale de la cola y se carga ahora; si falla, la ref nueva no suma (como una carga nueva).
+        if (r->estado == W3DREC_EN_VUELO && modo == W3DREC_BLOQUEANTE) {
+            for (size_t i = 0; i < gEnVuelo.size(); i++)
+                if (gEnVuelo[i] == r) { gEnVuelo.erase(gEnVuelo.begin() + (long)i); break; }
+            CargarAhora(r);
+            if (r->estado == W3DREC_FALLO) return r;
+        }
     } else {
-        r = new W3dRecurso();
+        r = NuevoDescriptor();
         r->id = id; r->tipo = (unsigned char)tipo;
         gPorId[tipo][id] = r;
         if (modo == W3DREC_ASYNC) {
@@ -214,7 +242,7 @@ static void LiberarRecurso(W3dRecurso* r) {
     }
     MapaRec::iterator it = gPorId[r->tipo].find(r->id);
     if (it != gPorId[r->tipo].end() && it->second == r) gPorId[r->tipo].erase(it);
-    delete r;
+    BorrarDescriptor(r);
 }
 
 void W3dRecursoSoltar(W3dRecurso* r, int clase) {
@@ -238,7 +266,9 @@ int W3dRecursosPurgarTransitorias() {
             W3dRecurso* r = it->second;
             ++it;                          // antes de un posible erase
             if (r->refTransitoria <= 0) continue;
-            r->refTotal = (short)(r->refTotal - r->refTransitoria);
+            // SIN truncar: refTotal es int (una malla compartida por mas de 32767 objetos). Un
+            // cast a short daba negativo y liberaba el recurso con todos sus usuarios vivos.
+            r->refTotal = r->refTotal - r->refTransitoria;
             r->refTransitoria = 0;
             if (r->refTotal <= 0) { r->refTotal = 0; LiberarRecurso(r); liberados++; }
         }
@@ -271,9 +301,21 @@ void W3dRecursosOlvidarTipo(int tipo) {
         for (size_t i = 0; i < gEnVuelo.size(); i++)
             if (gEnVuelo[i] == it->second) { gEnVuelo.erase(gEnVuelo.begin() + (long)i); break; }
         PoolSoltar(it->second);   // sus paginas quedan libres
-        delete it->second;
+        BorrarDescriptor(it->second);
     }
     gPorId[tipo].clear();
+}
+
+bool W3dRecursoOlvidar(int tipo, const std::string& id) {
+    if (!TipoValido(tipo)) return false;
+    MapaRec::iterator it = gPorId[tipo].find(id);
+    if (it == gPorId[tipo].end() || it->second->refTotal > 0) return false;
+    for (size_t i = 0; i < gEnVuelo.size(); i++)
+        if (gEnVuelo[i] == it->second) { gEnVuelo.erase(gEnVuelo.begin() + (long)i); break; }
+    PoolSoltar(it->second);
+    BorrarDescriptor(it->second);
+    gPorId[tipo].erase(it);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,7 +353,7 @@ W3dRecurso* W3dRecursoRegistrarFallo(int tipo, const std::string& id) {
     if (!TipoValido(tipo) || id.empty()) return 0;
     W3dRecurso* r = W3dRecursoBuscar(tipo, id);
     if (!r) {
-        r = new W3dRecurso();
+        r = NuevoDescriptor();
         r->id = id; r->tipo = (unsigned char)tipo;
         gPorId[tipo][id] = r;
     }
@@ -331,12 +373,40 @@ bool W3dRecursoRenombrar(int tipo, const std::string& viejo, const std::string& 
     m[nuevo] = rr;
     return true;
 }
+bool W3dRecursoMover(int tipo, const std::string& viejo, const std::string& nuevo) {
+    if (!TipoValido(tipo) || viejo.empty() || nuevo.empty()) return false;
+    if (viejo == nuevo) return W3dRecursoBuscar(tipo, viejo) != 0;
+    MapaRec& m = gPorId[tipo];
+    MapaRec::iterator it = m.find(viejo);
+    if (it == m.end()) return false;
+    MapaRec::iterator ot = m.find(nuevo);
+    if (ot != m.end()) {
+        W3dRecurso* otro = ot->second;
+        // la clave la tiene un dato VIVO de otro: no se puede pisar (seria el mismo id para dos)
+        if (otro->estado == W3DREC_LISTO && otro->dato) return false;
+        // un descriptor SIN dato (EN_VUELO de una ListaCarga, un FALLO recordado): pedia ESE id,
+        // que ahora es el que se muda -> sus referencias pasan al que llega y el viejo se borra
+        W3dRecurso* rr = it->second;
+        rr->refTotal += otro->refTotal;
+        rr->refTransitoria += otro->refTransitoria;
+        for (size_t i = 0; i < gEnVuelo.size(); i++)
+            if (gEnVuelo[i] == otro) { gEnVuelo.erase(gEnVuelo.begin() + (long)i); break; }
+        PoolSoltar(otro);
+        m.erase(ot);   // (borrar OTRA clave del map no invalida 'it')
+        BorrarDescriptor(otro);
+    }
+    W3dRecurso* rr = it->second;
+    m.erase(it);
+    rr->id = nuevo;
+    m[nuevo] = rr;
+    return true;
+}
 W3dRecurso* W3dRecursoRegistrarExterno(int tipo, const std::string& id,
                                        void* dato, long bytes) {
     if (!TipoValido(tipo) || id.empty() || !dato) return 0;
     W3dRecurso* r = W3dRecursoBuscar(tipo, id);
     if (!r) {
-        r = new W3dRecurso();
+        r = NuevoDescriptor();
         r->id = id; r->tipo = (unsigned char)tipo;
         gPorId[tipo][id] = r;
     }

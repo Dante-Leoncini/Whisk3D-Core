@@ -41,7 +41,13 @@ public:
     int startFrame;                        // rango del clip: arranca en 1
     int endFrame;                          // rango del clip: 0 por defecto (vacio; se setea al importar/editar)
     std::vector<BoneTrack> tracks;         // uno por hueso animado
-    SkeletalAnimation(const std::string& n = "Animation") : name(n), FrameRate(24), startFrame(1), endFrame(0) {}
+    // RETARGET (W3dArmatureRetarget): el TAMANO del esqueleto con el que se grabo el clip (la diagonal de la
+    // caja de sus cabezas en rest, W3dArmatureTamReposo). 0 = no se sabe (un clip importado o de un archivo
+    // viejo): el reproductor lo deduce de las traslaciones del propio clip en su primer frame. Viaja en el
+    // .w3da solo si se sabe (un animset viejo se re-guarda con los mismos bytes).
+    float alturaReposo;
+    SkeletalAnimation(const std::string& n = "Animation") : name(n), FrameRate(24), startFrame(1), endFrame(0),
+                                                           alturaReposo(0.0f) {}
     // devuelve (creando si falta) el track de un hueso
     BoneTrack& TrackDe(int bone);
 };
@@ -51,6 +57,24 @@ class Armature; // objects/Armature.h
 // evalua la POSE del esqueleto en 'frame' con el clip ACTIVO (FK): llena bone.poseHead/poseTail.
 // Si no hay clip activo (o el hueso no esta animado) la pose = rest. Lo llama el render del armature.
 void EvaluarPoseEsqueleto(Armature* a, int frame);
+// RETARGET POR TAMANO (animRetarget de lua / W3dArmatureRetarget): un personaje mas alto o mas chico con la MISMA
+// jerarquia de nombres de huesos reproduce el mismo clip sin deformarse.
+//   W3D_RETARGET_COMPLETO   (0, el de siempre) el clip tal cual: traslaciones, rotaciones y escalas.
+//   W3D_RETARGET_ROTACIONES (1) solo las ROTACIONES del clip: la traslacion y la escala de cada hueso son las
+//                           de REPOSO del destino (sus proporciones), salvo las RAICES (huesos sin padre), cuyo
+//                           movimiento se ESCALA por tamDestino / tamOrigen (el del clip, alturaReposo; si no
+//                           se sabe, el de sus traslaciones en su primer frame).
+// Solo cambia la reproduccion de ESTE armature (su pose): los clips (compartidos) no se tocan. Vale igual para las
+// capas del Mix (cada capa con la escala de SU clip) y para los rigs de FK reconstruido (biped: el tamano se mide
+// en sus TransformLink y la traslacion de cada hueso entra como delta contra su rest, asi que los hijos no se
+// corren y la raiz avanza su delta escalado). Se guarda en el nodo del armature ("retarget": "rotaciones").
+enum { W3D_RETARGET_COMPLETO = 0, W3D_RETARGET_ROTACIONES = 1 };
+void  W3dArmatureRetarget(Armature* a, int modo);
+// el TAMANO del esqueleto en REPOSO: la diagonal de la caja de las cabezas de los huesos por FK con los
+// transforms de rest (espacio del nodo; misma medida que alturaReposo). En un biped (FK reconstruido), la de las
+// cabezas de sus TransformLink. 0 si no tiene huesos con rest. Los importadores FBX/glTF y CrearAnimacion la
+// anotan en cada clip (alturaReposo).
+float W3dArmatureTamReposo(const Armature* a);
 // JUEGO (ActiveAnimKind 2): cada armature reproduce su clip activo con su propio cabezal (Armature::juegoFrame).
 void W3dArmaturesJuegoTick(float dt);   // avanza todos los de la escena (lo llaman el Play del editor y el runtime)
 bool W3dArmaturePlayClip(Armature* a, int clip, bool loop, bool reiniciar); // elige clip (reinicia si cambia)
@@ -67,12 +91,22 @@ extern int   g_mixEscenaActiva;                      // la capa de escena elegid
 int   W3dCapaClip(const Armature* a, W3dCapaAnim& c);
 // frame (del clip) en que suena una capa: jugando el cabezal de la capa; en el editor el del mix
 float W3dCapaFrameEditor(const W3dCapaAnim& c, int frameMix, int clipIni, int clipFin);
-// TRANSICION: congela la pose actual y la funde hacia la nueva durante 'segundos' (el hokan del juego)
+// TRANSICION: congela la pose actual y la funde hacia la nueva durante 'segundos' (crossfade de pose)
 void  W3dArmatureTransicion(Armature* a, float segundos);
-// MIX DE ESCENAS (Animation.cpp): aplica las capas de escena (editor: el frame del mix; juego: su cabezal)
+// MIX DE OBJETOS (Animation.cpp): aplica las capas de escena y las CAPAS DE CLIPS DE JERARQUIA de cada raiz de la
+// escena activa (W3dJerRaiz::capas, animation/W3dAnimSet.h), sobre la misma mezcla (editor: el frame del mix;
+// juego: el cabezal de cada capa). false = no hay ninguna capa.
 bool  W3dMixEscenasAplicar(int frameMix, bool juego);
-void  W3dMixEscenasTick(float dt);        // juego: avanza las capas de escena y aplica la mezcla
+void  W3dMixEscenasTick(float dt);        // juego: avanza las capas (de escena y de jerarquia) y aplica la mezcla
 void  W3dMixEscenasSoltar();              // devuelve los objetos a su base (al salir del Mix)
+void  W3dMixEscenasBasesGuardar();        // Play del editor: guarda las bases (Stop las repone,
+void  W3dMixEscenasBasesReponer();        // sin mover objetos: eso lo hace el snapshot del Play)
+void  W3dMixEscenasOlvidar();             // abrir otro proyecto: olvida las bases sin mover (van a borrarse)
+// las BASES del Mix: cada objeto que el Mix poso y la transformacion que tenia antes (a la que lo devuelve
+// W3dMixEscenasSoltar). El GUARDADO escribe esa y no la mezcla del cabezal: una raiz que solo anima el Mix (sus
+// capas de clips de jerarquia) no esta en ninguna lista de curvas y se guardaba con la pose del frame del Mix
+void  W3dMixEscenasBases(std::vector<Object*>& objs, std::vector<Vector3>& pos, std::vector<Vector3>& rot,
+                         std::vector<Vector3>& esc);
 // precomputa las matrices de skinning de cada hueso (skinA/skinInvBind). Llamar UNA vez tras importar el esqueleto.
 void PrepararSkin(Armature* a);
 // RIG AUTORADO en el editor (huesos creados a mano, sin datos de FBX): arma el rest y las matrices de skin

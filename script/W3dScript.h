@@ -46,6 +46,81 @@ class Object;
 // script reintenta el frame siguiente si quiere.
 extern Object* (*W3dInstanciarPrefabHook)(const char* nombre, const float* posMotor);
 
+// ---- PREFABS DEL PROYECTO (instanciar / destruir de lua; ver main/io/Prefabs.h) ----------------
+//   instanciar("Enemigo", x, y, z [, rotY])  -> la INSTANCIA nueva (sus hijos ya generados) o nil.
+//       Primero se busca un prefab del proyecto (este hook, lo instala io/Prefabs en el editor y en
+//       el juego compilado); si no hay, el de la Biblioteca del formato texto (el hook de arriba).
+//       pos = {x,y,z} del motor (NULL = el origen); rotY en grados.
+//   destruir(obj)  -> DIFERIDO al final del frame (W3dScriptFinFrame): nada se libera en medio de
+//       un actualizar() (el objeto puede ser el mismo que esta corriendo). Devuelve true si quedo pedido.
+typedef Object* (*W3dPrefabInstanciarFn)(const char* nombre, const float* pos, float rotYGrados);
+extern W3dPrefabInstanciarFn W3dPrefabInstanciarHook;
+// mientras corre el hook de arriba: el DUENO del script que llamo a instanciar() (NULL fuera de el). Un script de
+// una LIBRERIA externa (su dueno lo genero un proxy de ella) nombra primero los prefabs de SU libreria
+extern Object* W3dPrefabInstanciarDuenio;
+
+// ---- STREAMING (main/io/Streaming.h): cargar(obj) / descargar(obj) / cargaAuto(obj) / cargado(obj) -----------------
+// 'pedido': 1 = cargar (la FIJA cargada: la distancia deja de decidir), -1 = descargar (la fija descargada), 2 = volver a
+// la carga automatica (la de su nodo: siempre o por distancia), 0 = solo consultar. Se APLICA en el tick del streaming
+// (al final del frame: un script puede descargar la instancia que lo genero). Devuelve el estado de la instancia
+// (0 descargada, 1 pidiendo sus recursos, 2 cargada) o -1 si 'o' no es una instancia de prefab ni un proxy. Lo instala
+// io/Streaming (editor y juego compilado); NULL = sin streaming (los binds devuelven nil)
+extern int (*W3dStreamingLuaHook)(Object* o, int pedido);
+// las FUENTES de los scripts como recurso del almacen (io/W3dRecursos.h, W3DREC_SCRIPT, id = la ruta del script): el
+// streaming las pide ASYNC antes de generar y el script que arranca usa la que este LISTA en vez de leer el archivo
+void W3dScriptFuentesAsegurarOps();
+
+// ---- LOS SCRIPTS DE UNA LIBRERIA EXTERNA (main/io/Librerias.h) ------------------------------------------------
+// Un script es DE UNA LIBRERIA si su .lua es una entrada de ella ("lib:<libreria>/scripts/x.lua") o si su dueno lo
+// genero un proxy de ella (el hook de abajo, que instala io/Prefabs en el editor y en el juego compilado). Las
+// rutas RELATIVAS que ese script nombra (sonido(), setTextura(), importarW3D()) son primero de SU libreria: una
+// entrada suya ("lib:<libreria>/<ruta>", o su copia empaquetada en el juego) o un archivo suelto al lado de su .w3d
+// (el hook de la ruta suelta, solo el editor); si no tiene nada con ese nombre, la regla de siempre (el proyecto).
+extern std::string (*W3dScriptLibreriaHook)(Object* duenio);
+extern std::string (*W3dScriptRutaSueltaHook)(const std::string& libreria, const std::string& ruta);
+// la libreria del script que corre en el lua_State 'L' ("" = del proyecto)
+std::string W3dScriptLibreria(void* L);
+// la ruta RELATIVA 'ruta' que nombra el script de 'L', resuelta en SU libreria ("" = no es de una libreria, o su
+// libreria no tiene nada con ese nombre: el que llama sigue con su regla)
+std::string W3dScriptRutaDeLibreria(void* L, const std::string& ruta);
+// QUIEN CORRE LA PARTIDA se entera de lo que un script crea y destruye (el Play del editor y el runtime
+// compilado registran los suyos). NULL = nadie:
+//   ObjetoNuevo(raiz)     despues de instanciar(): arrancar sus scripts (cargar + refs + inicio()), sus
+//                         cuerpos rigidos... (sin partida registrada, lo nuevo queda quieto)
+//   ObjetoDestruir(obj)   al final del frame, por cada destruir() pedido (el objeto sigue vivo): hacer
+//                         lo propio (sacarlo de sus listas) y DESTRUIRLO. Sin funcion registrada se
+//                         destruye con W3dScriptDestruirObjeto.
+typedef void (*W3dScriptObjetoFn)(Object* raiz);
+void W3dScriptSetObjetoNuevo(W3dScriptObjetoFn fn);
+void W3dScriptSetObjetoDestruir(W3dScriptObjetoFn fn);
+// LA DESTRUCCION GENERICA de un objeto y su subarbol: descarga sus scripts, olvida su fisica minima, lo
+// saca de las referencias de los scripts vivos (objeto("x")), de las curvas de las animaciones de escena y
+// de la seleccion, lo descuelga y lo libera (~Object olvida sus cuerpos rigidos, hitbox y pares).
+void W3dScriptDestruirObjeto(Object* o);
+// ningun script vivo sigue teniendo a estos objetos en objeto("x") (la ref queda en NULL: objeto() da nil). La
+// usa W3dScriptDestruirObjeto y el Play del editor, que NO libera lo del usuario que un script destruye
+void W3dScriptSoltarRefsA(const std::vector<Object*>& objs);
+// una ESCENA UI (una raiz 2D: el nombre de cambiarEscena) no se destruye con destruir(): el sistema de escenas
+// la sigue nombrando (se oculta con visible, o se cambia de escena). true = 'o' es una
+bool W3dScriptEsEscenaUI(const Object* o);
+// el STREAMING (main/io/Streaming.h) genera y destruye lo de una instancia diferida POR LAS MISMAS RUTAS que
+// instanciar() y destruir(): con una partida registrada (ObjetoNuevo != NULL: el Play del editor, el runtime) lo que
+// genera arranca como lo instanciado, y lo que descarga se LIBERA como lo que destruir() libera (W3dScriptDestruirObjeto:
+// sus scripts, su fisica, sus refs, sus curvas). Quien corre la partida puede registrar ObjetoLiberar para sacarlo antes
+// de sus listas y fotos (el Play del editor: a diferencia de destruir(), lo del usuario NO se descuelga hasta el Stop,
+// se libera -lo generado sale de su definicion, el Stop lo vuelve a generar-). Sin partida (la vista previa del
+// editor) no hace nada de esto.
+bool W3dScriptHayPartida();
+// avisa a la partida que nacio 'raiz' (sus scripts, sus cuerpos...). false = no hay partida (no hizo nada)
+bool W3dScriptAvisarObjetoNuevo(Object* raiz);
+void W3dScriptSetObjetoLiberar(W3dScriptObjetoFn fn);
+// libera YA (no al final del frame: el que llama sabe que no corre ningun actualizar()) lo que el streaming descarga
+void W3dScriptLiberarYa(Object* o);
+// los destruir() pedidos se aplican ahora (lo llama W3dScriptFinFrame; el Stop los descarta)
+void W3dScriptDestruirPendientes();
+// cuantos destruir() hay pedidos (el harness)
+int  W3dScriptDestruirPedidos();
+
 // una propiedad expuesta por el .lua (lo que la tarjeta del editor muestra)
 struct W3dScriptProp {
     std::string nombre;
@@ -86,6 +161,23 @@ void W3dScriptResolverOpcion(Object* duenio, int idx, const std::string& prop, c
 void W3dScriptResolverValor(Object* duenio, int idx, const std::string& prop, const std::string& valor);
 bool W3dScriptInicio(Object* duenio);              // llama inicio() de cada script
 bool W3dScriptActualizar(Object* duenio, float dt);// llama actualizar(dt) de cada uno
+// EVENTOS estilo Unity (hitbox, contactos de cuerpos rigidos): llama fn(objs..., nums...) en
+// CADA script de 'duenio' que defina esa funcion global. Los objetos viajan como siempre
+// (lightuserdata; NULL = nil) y despues los numeros. Los eventos conocidos (alEntrar,
+// alQuedarse, alSalir, alTocar) se CACHEAN por instancia: un script que no define la funcion
+// no paga un lua_getglobal por par y por tick. La funcion tiene que existir cuando llega el
+// primer evento (definida en el cuerpo del .lua, como inicio/actualizar). true = alguno corrio.
+bool W3dScriptEvento(Object* duenio, const char* fn, Object* const* objs, int nObjs,
+                     const float* nums, int nNums);
+// atajo: fn(otro, nums...)
+bool W3dScriptEvento(Object* duenio, const char* fn, Object* otro, const float* nums, int nNums);
+// FIN DEL FRAME de scripts: toma el snapshot de teclas/botones para el FLANCO de teclaApretada()/
+// botonApretado() del proximo frame. Llamarla UNA vez por frame, DESPUES de correr los actualizar de TODOS
+// los objetos. Quien la llama al menos una vez pasa a mandar: W3dScriptActualizar deja de tomar el
+// snapshot por su cuenta (sino, con varios objetos con script, solo el PRIMERO veia el flanco: el
+// snapshot se tomaba al terminar cada objeto y el segundo ya veia la tecla como "apretada antes").
+// Un runtime de un solo duenio que no la llama sigue igual que siempre.
+void W3dScriptFinFrame();
 void W3dScriptDescargarTodo();                     // STOP: mata todas las instancias
 void W3dScriptDescargarDe(Object* duenio);         // solo las de ESTE objeto (edicion en vivo)
 
@@ -119,6 +211,9 @@ bool W3dScriptBotonPadLeer(const char* nombre);
 void W3dScriptToque(float x, float y, bool activo);      // dedo 0 (compat)
 void W3dScriptDedo(int i, float x, float y, bool activo); // multi-touch: dedo i (0-based)
 void W3dScriptRaton(float x, float y, bool dentro);       // mouse-over (posicion sin clic)
+void W3dScriptRatonRel(float dx, float dy);               // mouse CAPTURADO (PC, juego estilo FPS): acumula el delta en px para ratonRel() de lua
+bool W3dScriptRatonCapturar();                            // un script pidio capturarRaton(true): la plataforma captura el mouse mientras el juego corre
+void W3dScriptRatonCapturadoSet(bool v);                  // la plataforma avisa si DE VERDAD tiene el mouse capturado (ratonCapturado() en lua)
 
 // SEMILLA del random: refuerzo OPCIONAL de la plataforma para math.random / azar(). El Core ya se siembra
 // solo (self-contained: time() + reloj del motor + direccion del state + contador), asi que math.random ya
@@ -145,7 +240,8 @@ void W3dScriptSetRedibujo(W3dScriptRedibujoFn fn);
 // mueven objetos por su cuenta, como la fisica (physics/W3dFisica.cpp).
 void W3dScriptRedibujar(void);
 
-// helpers para los bindings de plataforma (empujan/leen el Object* del stack)
+// helpers para los bindings de plataforma (empujan/leen el Object* del stack). Un objeto que ya NO EXISTE
+// (lua lo guardo y despues se destruyo: destruir(), cambiarEscena) llega como NULL (ver W3dObjetoVivo)
 Object* W3dScriptParamObjeto(void* L, int idx);
 
 #endif // W3DSCRIPT_H

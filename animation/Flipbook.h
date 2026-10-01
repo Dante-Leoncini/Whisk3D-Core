@@ -29,6 +29,9 @@ class Flipbook {
 public:
     std::string nombre;      // id del asset (lo referencian los consumidores)
     std::string atlas;       // ruta de la textura-atlas
+    std::string libreria;    // la LIBRERIA externa de la que es ("" = del proyecto). Uno de una libreria vive en la
+                             // lista de la escena con su prefijo ("Efectos/Chispa") pero NUNCA se guarda en el
+                             // proyecto: lo registra la libreria cada vez que se usa (main/io/Librerias.h)
     int   cols, filas;       // grilla del atlas (autoria por celdas)
     int   cuadros;           // largo del ciclo en cuadros logicos
     float fps;               // velocidad (cuadros por segundo)

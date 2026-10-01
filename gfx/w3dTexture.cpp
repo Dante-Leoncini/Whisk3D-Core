@@ -43,6 +43,31 @@
 // de ES1 no lo declara -> se declara aca. (Sin esto no compilaba: "use of undeclared identifier".)
 extern "C" GL_API void GL_APIENTRY glGenerateMipmap(GLenum target);
 #endif
+
+// FILTRADO ANISOTROPICO (solo PC de escritorio, GL_EXT_texture_filter_anisotropic): con mipmaps el piso y los caminos
+// vistos en angulo rasante se borroneaban (el trilineal promedia en cuadrado). Con 8x se ven nitidos casi gratis en
+// cualquier GPU de PC. El N95 (ES 1.1), Android y la web quedan como estaban.
+#if !defined(W3D_SYMBIAN) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
+#ifndef GL_TEXTURE_MAX_ANISOTROPY_EXT
+#define GL_TEXTURE_MAX_ANISOTROPY_EXT 0x84FE
+#define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
+#endif
+static void w3dAnisotropico() {
+    static float maximo = -1.0f;
+    if (maximo < 0.0f) {
+        maximo = 0.0f;
+        const char* ext = (const char*)glGetString(GL_EXTENSIONS);
+        if (ext && strstr(ext, "GL_EXT_texture_filter_anisotropic")) {
+            GLfloat m = 0.0f;
+            glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &m);
+            maximo = m < 8.0f ? m : 8.0f;
+        }
+    }
+    if (maximo > 1.0f) glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, maximo);
+}
+#else
+static void w3dAnisotropico() {}
+#endif
 #include "w3dFilesystem.h" // lectura de archivos UNIFICADA del Core (asset del APK o archivo real)
 #include <vector>
 #include <set>
@@ -169,6 +194,7 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
                           : (filtrado ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtro);
+    if (mips && filtrado) w3dAnisotropico();
     const GLint wrap = pot ? GL_REPEAT : GL_CLAMP_TO_EDGE;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
@@ -335,6 +361,7 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
 #else
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtroPix);
+    if (mips && !pix) w3dAnisotropico();
     if (mips) {
         gluBuild2DMipmaps(GL_TEXTURE_2D, formato, w, h,
                           formato, GL_UNSIGNED_BYTE, data);

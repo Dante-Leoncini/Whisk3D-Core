@@ -11,6 +11,8 @@
 //  'hueso' la limita a ese hueso y sus hijos (las piernas caminan con una capa, el torso apunta con otra).
 //  Jugando, cada capa tiene su cabezal (juegoFrame) y la manejan los scripts (animCapa...); en el editor
 //  (modo Mix del timeline) la capa arranca en el frame 'desde' del mix y avanza a 'vel'.
+//  La misma capa sirve para las animaciones de ESCENA (g_mixEscenas) y para los CLIPS DE JERARQUIA de una
+//  raiz (W3dJerRaiz::capas, animation/W3dAnimSet.h: 'anim' = el nombre del clip; sin mascara de hueso).
 // ============================================================================
 struct W3dCapaAnim {
     std::string anim;     // nombre del clip del armature (o de la animacion de escena, en las capas de escena)
@@ -24,8 +26,12 @@ struct W3dCapaAnim {
     bool  loop;
     float juegoFrame;     // JUEGO: frames desde el inicio del clip (runtime, no se guarda)
     bool  juegoTermino;   // JUEGO: un clip sin loop llego al final
+    // RETARGET "rotaciones" (armatures y raices de clips de jerarquia): la escala del movimiento de la raiz para
+    // el clip 'retClip' (cache: se recalcula si la capa cambia de clip). Runtime, no se guarda.
+    const void* retClip;
+    float retEscala;
     W3dCapaAnim() : clipCache(-1), influencia(100.0f), modo(0), visible(true), desde(0.0f), vel(1.0f), loop(true),
-                    juegoFrame(0.0f), juegoTermino(false) {}
+                    juegoFrame(0.0f), juegoTermino(false), retClip(0), retEscala(1.0f) {}
 };
 
 #endif // W3D_CAPA_ANIM_H

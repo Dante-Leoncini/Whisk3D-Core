@@ -110,7 +110,9 @@ VertexAnimation::VertexAnimation(Mesh* tgt, const std::string& animName, bool us
 struct AnimDatos {
     std::vector<VertexFrame*> frames;   // duenio de los frames y sus buffers
     int vcount;
-    AnimDatos() : vcount(0) {}
+    // las capas que traen los frames (las adopta quien los comparte por CLAVE: VertexAnimAdoptarClave)
+    bool useNormals, useUV;
+    AnimDatos() : vcount(0), useNormals(false), useUV(false) {}
     ~AnimDatos() {
         for (size_t i = 0; i < frames.size(); ++i) {
             if (!frames[i]) continue;
@@ -212,6 +214,85 @@ VertexAnimation* VertexAnimClonar(const VertexAnimation* src, Mesh* nuevoTarget)
         if (f->uvs       && nU) { GLfloat* p = new GLfloat[nU]; std::memcpy(p, f->uvs, nU * sizeof(GLfloat)); n->uvs = p; }
         d->frames.push_back(n);
     }
+    return d;
+}
+
+// ===========================================================================
+//  FRAMES COMPARTIDOS POR CLAVE / CON OTRA ANIM (ver el .h). Mismo modelo que los de
+//  LoadFrames: el AnimDatos del almacen es el duenio, cada anim que los usa tiene UNA ref
+//  y cualquier edicion de keyframes pasa antes por DesinstanciarFrames (COW).
+// ===========================================================================
+// los frames PROPIOS de 'anim' pasan a ser el dato del almacen bajo 'id' (la anim se queda con la ref
+// que deja el registro). false = no habia nada que registrar o el id ya existe
+static bool RegistrarFramesPropios(VertexAnimation& anim, const std::string& id) {
+    if (anim.datosRec || anim.frames.empty() || id.empty()) return false;
+    AsegurarOpsAnim();
+    if (W3dRecursoBuscar(W3DREC_ANIM, id)) return false;
+    AnimDatos* d = new AnimDatos();
+    d->frames = anim.frames;
+    d->vcount = anim.vcount;
+    d->useNormals = anim.UseNormals;
+    d->useUV = anim.UseUV;
+    W3dRecurso* r = W3dRecursoRegistrarExterno(W3DREC_ANIM, id, d, d->Bytes());
+    if (!r) { d->frames.clear(); delete d; return false; }
+    anim.datosRec = r;
+    return true;
+}
+// 'anim' toma los frames de 'r' (+1 ref): los mismos punteros, con sus capas y su conteo de vertices
+static void AdoptarDe(VertexAnimation& anim, W3dRecurso* r) {
+    AnimDatos* d = (AnimDatos*)r->dato;
+    anim.LiberarFrames();
+    anim.frames = d->frames;
+    anim.vcount = d->vcount;
+    anim.UseNormals = d->useNormals;
+    anim.UseUV = d->useUV;
+    anim.frameCount = (int)d->frames.size();
+    anim.datosRec = r;
+    W3dRecursoRetener(r, W3DREC_PERMANENTE);
+}
+
+bool VertexAnimAdoptarClave(VertexAnimation& anim, const std::string& clave, int vcountMalla) {
+    if (!gAnimCacheOn || clave.empty()) return false;
+    AsegurarOpsAnim();
+    W3dRecurso* r = W3dRecursoBuscar(W3DREC_ANIM, clave);
+    if (!r || r->estado != W3DREC_LISTO || !r->dato) return false;
+    const AnimDatos* d = (const AnimDatos*)r->dato;
+    if (d->frames.empty() || d->vcount != vcountMalla) return false;   // (armados para otra malla: que lea los suyos)
+    AdoptarDe(anim, r);
+    return true;
+}
+
+void VertexAnimRegistrarClave(VertexAnimation& anim, const std::string& clave) {
+    if (!gAnimCacheOn) return;
+    RegistrarFramesPropios(anim, clave);
+}
+
+VertexAnimation* VertexAnimCompartir(VertexAnimation* src, Mesh* nuevoTarget) {
+    if (!src) return NULL;
+    if (!gAnimCacheOn || src->frames.empty()) return VertexAnimClonar(src, nuevoTarget);
+    if (!src->datosRec) {
+        // sus frames eran PROPIOS (una anim sin guardar): pasan al almacen con un id de memoria, unico
+        static unsigned sProx = 1;
+        std::ostringstream id;
+        id << "mem:" << sProx++;
+        if (!RegistrarFramesPropios(*src, id.str())) return VertexAnimClonar(src, nuevoTarget);
+    }
+    // la copia: todo lo de la anim como VertexAnimClonar, pero los frames son los MISMOS
+    VertexAnimation* d = new VertexAnimation(nuevoTarget, src->name, src->UseNormals,
+                                             src->speed, src->repeat, src->proximaAnimacion);
+    d->basePath   = src->basePath;
+    d->padding    = src->padding;
+    d->startFrame = src->startFrame;
+    d->endFrame   = src->endFrame;
+    d->fps        = src->fps;
+    d->noCargo    = src->noCargo;
+    d->curvas     = src->curvas;
+    AdoptarDe(*d, (W3dRecurso*)src->datosRec);
+    // (lo que dice la anim de origen manda: el dato de LoadFrames no anota sus capas)
+    d->frameCount = src->frameCount;
+    d->vcount     = src->vcount;
+    d->UseNormals = src->UseNormals;
+    d->UseUV      = src->UseUV;
     return d;
 }
 
@@ -359,6 +440,8 @@ bool VertexAnimation::LoadFrames() {
             AnimDatos* d = new AnimDatos();
             d->frames = frames;
             d->vcount = vcount;
+            d->useNormals = UseNormals;
+            d->useUV = UseUV;
             W3dRecurso* nr = W3dRecursoRegistrarExterno(W3DREC_ANIM, id, d, d->Bytes());
             if (nr) datosRec = nr;
             else { d->frames.clear(); delete d; }

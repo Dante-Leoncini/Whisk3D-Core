@@ -44,16 +44,47 @@ int  MaterialesBase();        // cuantos materiales quedan fijos (los del editor
 int  MaterialesLiberarEscena();
 
 // ===================================================
+//  PURGAR un material HUERFANO (el outliner por recursos, "Purge orphans")
+//
+//  Sale de `Materials` (no se guarda mas ni aparece en los selectores) pero NO se
+//  libera: pasos de undo viejos (el material de un mesh part, un snapshot de la
+//  geometria) pueden guardar su puntero y volver a ponerlo en una malla. Queda en
+//  el CEMENTERIO hasta que se cierre el proyecto (MaterialesLiberarEscena lo
+//  libera junto con los demas). Si un undo lo vuelve a usar, MaterialRevivir lo
+//  devuelve a la lista (con un nombre libre).
+// ===================================================
+// false = no es un material del proyecto (base de la UI, el por defecto, o ya purgado)
+bool MaterialPurgar(Material* m);
+// true = estaba en el cementerio y volvio a `Materials`
+bool MaterialRevivir(Material* m);
+const std::vector<Material*>& MaterialesPurgados();
+
+// ===================================================
 // Clase Material
 // ===================================================
-// capa de textura EXTRA (encima de la textura base del material): su textura + como se MEZCLA con lo de
-// abajo. Comparten las UV del modelo (UV por capa = TODO). Render por MULTI-PASS (GL 1.1, portable PC+N95).
+// capa de textura EXTRA (encima de la textura base del material): su textura, con QUE UV se dibuja y como se
+// MEZCLA con lo de abajo. Render por MULTI-PASS (GL 1.1, portable PC+N95): cada capa es un draw mas sobre la
+// misma superficie, con la textura PURA (sin luz ni color de vertice: eso ya lo aplico la base).
+//   uvMapa: indice de la capa UV de la malla con la que se dibuja (Mesh::uvMaps / Mesh::UVDeCapa). 0 = la de
+//           siempre; 1 = la segunda capa (ej. el unwrap propio de un lightmap horneado, TEXCOORD_1 del glTF).
+//   blend:  W3dCapaMezcla. "Multiply 2x" es el modo de los lightmaps con overbright (dst * src * 2).
+enum W3dCapaMezcla {
+    W3D_CAPA_MIX = 0,        // alpha encima (SRC_ALPHA, ONE_MINUS_SRC_ALPHA)
+    W3D_CAPA_MULTIPLY = 1,   // DST_COLOR, ZERO (oscurece: sombras, lightmaps)
+    W3D_CAPA_ADD = 2,        // ONE, ONE (aclara: brillos, luces)
+    W3D_CAPA_MULTIPLY2X = 3, // DST_COLOR, SRC_COLOR = 2 * dst * src (lightmap con overbright hasta 2.0)
+    W3D_CAPA_SUBTRACT = 4,   // resta (REVERSE_SUBTRACT en PC; aprox en GL ES 1.1)
+    W3D_CAPA_SCREEN = 5,     // ONE, ONE_MINUS_SRC_COLOR (aclara suave)
+    W3D_CAPA_MEZCLAS = 6     // (cantidad; dejalo ultimo)
+};
+const char* W3dCapaMezclaNombre(int m);   // "Mix", "Multiply", ... (panel, harness, logs)
 class TexLayer {
     public:
         Texture* tex;
-        int blend;  // 0 = Mix (alpha encima), 1 = Multiply, 2 = Add
+        int blend;   // W3dCapaMezcla
+        int uvMapa;  // capa UV de la malla (0 = la base)
         bool on;
-        TexLayer() : tex(NULL), blend(0), on(true) {}
+        TexLayer() : tex(NULL), blend(0), uvMapa(0), on(true) {}
 };
 
 class Material {
@@ -88,6 +119,9 @@ class Material {
         int  mezcla;       // modo de mezcla cuando transparent = true. 0 = alpha (default, compatible
                            // con todo lo guardado hasta hoy); el resto son los codigos de gfx::Mezcla
                            // (2 = MezclaAdd = ADITIVO: GL_ONE/GL_ONE, aclara y el negro es invisible).
+        float alphaTest;   // RECORTE POR ALFA (GL_ALPHA_TEST, fijo en GL ES 1.1): 0 = apagado; > 0 = se descartan los
+                           // texels con alfa <= ref. Rejas, alambrados, hojas: SIN blend, con z y en la pasada opaca,
+                           // asi no dependen del orden de dibujo (con blend el agujero escribia z y tapaba lo de atras).
         // TRAZADO DE RAYOS (editor, render/RayTracer): rugosidad 0..1 (0 = espejo, 1 = mate) y metalico 0..1
         // (0 = difuso; 1 = metal: refleja la escena teñido por su color). Metalico 1 + rugosidad 0 = espejo.
         float rtRugosidad;
@@ -118,6 +152,13 @@ class Material {
         float ambient[4]; // reflectancia de la luz ambiente del material
         float shininess;  // brillo especular (exponente)
         std::string name;
+        // CARPETA cosmetica del outliner por recursos ("Piel/Enemigos"; "" = la raiz). No
+        // afecta al render ni al runtime: solo ordena la vista de materiales del editor.
+        std::string carpeta;
+        // LA LIBRERIA externa de la que es ("" = del proyecto). Un material de libreria vive en SU espacio de
+        // nombres (el nombre lleva el prefijo: "Personajes/Piel"), es de SOLO LECTURA y no se guarda en el
+        // proyecto (el que lo nombra guarda solo su nombre). Ver main/io/Librerias.h.
+        std::string libreria;
 
         Material(const std::string& nombre, bool MaterialDefecto = false, bool TieneVertexColor = false);
         ~Material();

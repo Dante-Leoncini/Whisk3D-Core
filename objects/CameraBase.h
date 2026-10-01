@@ -34,6 +34,12 @@ class CameraBase {
 // reflexion por vertice. Vive en el core para que el path por software ande igual en PC y N95.
 extern Vector3 g_renderCamPos;
 
+// el MARCO del render adentro del viewport que se esta dibujando, en NDC del viewport: centro (x, y) y
+// medias-extensiones (x, y). {0, 0, 1, 1} = todo el viewport. Mirando por una camara con encuadre (passepartout /
+// barras) es el cuadro de la IMAGEN: lo que miden en fracciones los objetos que dibujan en una parte de la pantalla
+// (Recorte) para coincidir con la UI, que se encaja a ese mismo cuadro. Lo publica la proyeccion de la escena.
+extern float g_renderMarco[4];
+
 // base (ejes) de la camara en MUNDO: right/up/forward. Tambien la setea el viewport. El MATCAP por software
 // (sphere-map del N95, sin glTexGen) la necesita para llevar pos/normal a espacio de OJO. Right=+X, Up=+Y,
 // Forward=hacia la escena (el -Z del eye space).
