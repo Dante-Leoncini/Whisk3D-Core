@@ -838,6 +838,59 @@ static void SkinCacheGuardar(Mesh* m, int q){
     m->skinCache[q].pos = p; m->skinCache[q].nor = nb;
 }
 
+// SKINNING INCREMENTAL (interruptor A/B del harness 'skininc'): recalcular SOLO los vertices cuyos
+// huesos o formas se MOVIERON de verdad desde su ultima aplicacion. Default ON. Ver SkinearMesh.
+bool g_skinIncremental = true;
+// diagnostico del harness (skinverify): que camino tomo el ULTIMO SkinearMesh de cada malla.
+// 0=early-out(frame/pose/shape iguales) 1=cache-hit 2=nada-se-movio 3=salpicado 4=completo 5=sin-mapeo
+int g_skinUltimoCamino = -1;
+// PERF EN EL DEVICE: ms acumulados skinneando (los mide el caller del render, Mesh::RenderObject,
+// con este reloj; NULL = sin medicion, costo cero). La plataforma instala su reloj de ms (el N95
+// User::NTickCount) y el log PERF /30f del contenedor imprime y resetea los contadores: dice si
+// el cuello del frame es el skinning (y si el incremental esta cortando o cae al camino completo).
+unsigned int (*g_skinRelojMs)() = 0;
+int g_skinPerfMs = 0;        // ms acumulados en SkinearMesh (quien loguea resetea)
+int g_skinPerfSkins = 0;     // llamadas que RECALCULARON algo (camino >= 2)
+int g_skinPerfCompletos = 0; // de esas, las que cayeron al camino COMPLETO (4)
+
+// suma TODAS las formas activas al delta denso por control-point (shapeCpDelta). Lo usa el pase
+// COMPLETO (de cero); el incremental lo mantiene por DIFERENCIA de pesos. NULL = sin formas.
+static const float* SkinFormasCompletas(Mesh* m, int nv, bool formas){
+    if (!formas){ m->shapeCpDelta.clear(); return NULL; }   // sin formas: el delta persistente queda VACIO (coherente con el incremental)
+    int nCp = 0;
+    for (int ri = 0; ri < nv && ri < (int)m->vertCtrlPoint.size(); ri++) { int c = m->vertCtrlPoint[ri]; if (c + 1 > nCp) nCp = c + 1; }
+    m->shapeCpDelta.assign((size_t)nCp * 3, 0.0f);
+    for (size_t k = 0; k < m->shapeKeys.size() && k < m->shapePesos.size(); k++) {
+        const float w = m->shapePesos[k]; if (w == 0.0f) continue;
+        const W3dShapeKey& sk = m->shapeKeys[k];
+        for (size_t j = 0; j < sk.idx.size() && j * 3 + 2 < sk.d.size(); j++) {
+            const int c = sk.idx[j]; if (c < 0 || c >= nCp) continue;
+            m->shapeCpDelta[(size_t)c*3]   += w * sk.d[j*3];
+            m->shapeCpDelta[(size_t)c*3+1] += w * sk.d[j*3+1];
+            m->shapeCpDelta[(size_t)c*3+2] += w * sk.d[j*3+2];
+        }
+    }
+    return m->shapeCpDelta.empty() ? NULL : &m->shapeCpDelta[0];
+}
+
+// AABB LOCAL de la pose recien skinneada (para el autocull por frustum de RenderObject): un pase
+// barato sobre skinVertex. Corre SOLO cuando se (re)calculo la pose, no por frame.
+static void SkinActualizarAabb(Mesh* m){
+    const int nv = m->vertexSize;
+    if (!m->skinVertex || nv <= 0){ m->skinAabbOk = false; return; }
+    float mnx = m->skinVertex[0], mny = m->skinVertex[1], mnz = m->skinVertex[2];
+    float mxx = mnx, mxy = mny, mxz = mnz;
+    for (int i = 1; i < nv; i++){
+        const GLfloat* p = &m->skinVertex[i*3];
+        if (p[0] < mnx) mnx = p[0]; else if (p[0] > mxx) mxx = p[0];
+        if (p[1] < mny) mny = p[1]; else if (p[1] > mxy) mxy = p[1];
+        if (p[2] < mnz) mnz = p[2]; else if (p[2] > mxz) mxz = p[2];
+    }
+    m->skinAabbMin = Vector3(mnx, mny, mnz);
+    m->skinAabbMax = Vector3(mxx, mxy, mxz);
+    m->skinAabbOk = true;
+}
+
 void SkinearMesh(Mesh* m){
     if (!m || !m->skinArmature || !m->vertex || m->vertexSize <= 0) return;
     Armature* a = m->skinArmature;
@@ -845,9 +898,10 @@ void SkinearMesh(Mesh* m){
     // ya skinneado para ESTA pose? cache por (frame, poseSerial): si la pose se recalculo (posar/elegir clip en el mismo
     // frame) el serial cambio -> re-skinnea aunque el frame sea el mismo (antes solo miraba el frame -> quedaba stale).
     if (m->lastSkinFrame == CurrentFrame && m->skinPoseSerial == a->poseSerial && m->skinVertex &&
-        m->skinShapeSerial == m->shapeSerial) return;
+        m->skinShapeSerial == m->shapeSerial) { g_skinUltimoCamino = 0; return; }
     m->skinPoseSerial = a->poseSerial;
     m->skinShapeSerial = m->shapeSerial;
+    g_skinUltimoCamino = 4;   // default: completo (los otros caminos lo pisan al salir)
     // SHAPE KEYS: con alguna forma prendida la base del skinning es vertex + suma(peso * forma), por punto de control.
     // El cache de snapshots por frame no sabe de pesos: con formas activas se saltea (se skinnea cada frame).
     const bool formas = m->HayFormasActivas() && !m->vertCtrlPoint.empty();
@@ -859,7 +913,7 @@ void SkinearMesh(Mesh* m){
     const bool cacheValido = (ActiveAnimKind != 2);
     if (m->skinCacheOn && !formas && cacheValido){
         if (SkinCacheValidar(m)){
-            if (SkinCacheReproducir(m)){ m->lastSkinFrame = CurrentFrame; return; } // HIT -> sin recomputar skinning
+            if (SkinCacheReproducir(m)){ m->lastSkinFrame = CurrentFrame; m->skinIncOk = false; SkinActualizarAabb(m); g_skinUltimoCamino = 1; return; } // HIT (el snapshot piso skinVertex: la referencia incremental ya no vale)
             int idx = CurrentFrame - m->skinCacheStart, stride = m->skinCacheSkip + 1; if (stride < 1) stride = 1;
             if (idx >= 0 && CurrentFrame <= m->skinCacheEnd && (idx % stride) == 0) slotAGuardar = idx / stride; // keyframe slot -> guardar tras skinnear
         }
@@ -872,38 +926,24 @@ void SkinearMesh(Mesh* m){
     int fc = m->vertexSize * 3;  // floats/bytes de los arrays (3 por vertice)
     // REALLOC si el mesh cambio de tamaño (edit/apply modificador): sino skinVertex queda chico -> overflow -> crash
     if (m->skinVertex && m->skinVertexCap != fc) { delete[] m->skinVertex; m->skinVertex = NULL;
-        if (m->skinNormals){ delete[] m->skinNormals; m->skinNormals = NULL; } }
+        if (m->skinNormals){ delete[] m->skinNormals; m->skinNormals = NULL; } m->skinIncOk = false; }
     // PADDING: el driver GL (mesa) sube los client arrays con copias vectorizadas (AVX, 32 bytes/vez) y SOBRE-LEE el
     // final del array; +16 floats / +32 bytes de holgura para que el over-read no se salga del heap (cazado con ASan).
-    if (!m->skinVertex) { m->skinVertex = new GLfloat[fc + 16]; m->skinVertexCap = fc; }
-    // SHAPE KEYS: suma de las formas por punto de control (esparso -> denso temp) + helper de base por render-vert
-    const float* cpd = NULL;
-    if (formas) {
-        int nCp = 0;
-        for (int ri = 0; ri < nv && ri < (int)m->vertCtrlPoint.size(); ri++) { int c = m->vertCtrlPoint[ri]; if (c + 1 > nCp) nCp = c + 1; }
-        m->shapeCpDelta.assign((size_t)nCp * 3, 0.0f);
-        for (size_t k = 0; k < m->shapeKeys.size() && k < m->shapePesos.size(); k++) {
-            const float w = m->shapePesos[k]; if (w == 0.0f) continue;
-            const W3dShapeKey& sk = m->shapeKeys[k];
-            for (size_t j = 0; j < sk.idx.size() && j * 3 + 2 < sk.d.size(); j++) {
-                const int c = sk.idx[j]; if (c < 0 || c >= nCp) continue;
-                m->shapeCpDelta[(size_t)c*3]   += w * sk.d[j*3];
-                m->shapeCpDelta[(size_t)c*3+1] += w * sk.d[j*3+1];
-                m->shapeCpDelta[(size_t)c*3+2] += w * sk.d[j*3+2];
-            }
-        }
-        cpd = m->shapeCpDelta.empty() ? NULL : &m->shapeCpDelta[0];
-    }
-    for (int i = 0; i < fc; i++) m->skinVertex[i] = m->vertex[i]; // default = bind (verts sin peso quedan)
-    if (cpd) for (int ri = 0; ri < nv && ri < (int)m->vertCtrlPoint.size(); ri++) {   // la forma, tambien sin peso
-        const int c = m->vertCtrlPoint[ri]; if (c < 0) continue;
-        m->skinVertex[ri*3] += cpd[c*3]; m->skinVertex[ri*3+1] += cpd[c*3+1]; m->skinVertex[ri*3+2] += cpd[c*3+2];
-    }
+    if (!m->skinVertex) { m->skinVertex = new GLfloat[fc + 16]; m->skinVertexCap = fc; m->skinIncOk = false; }
     // NORMALES: rotarlas por los huesos (iluminacion correcta al doblar). Solo si hay luz (skinConLuz) y normales de bind.
     bool doN = m->skinConLuz && m->normals != NULL;
-    if (doN){ if (!m->skinNormals) m->skinNormals = new GLbyte[fc + 32];
-        for (int i = 0; i < fc; i++) m->skinNormals[i] = m->normals[i]; } // default = bind
-    if ((int)m->vertCtrlPoint.size() < nv) return; // sin mapeo render-vert -> control-point: no skinnear (no romper)
+    if (doN && !m->skinNormals){ m->skinNormals = new GLbyte[fc + 32]; m->skinIncOk = false; }
+    if ((int)m->vertCtrlPoint.size() < nv) {   // sin mapeo render-vert -> control-point: queda bind + formas (no romper)
+        const float* cpd0 = SkinFormasCompletas(m, nv, formas);
+        for (int i = 0; i < fc; i++) m->skinVertex[i] = m->vertex[i];
+        if (cpd0) for (int ri = 0; ri < nv && ri < (int)m->vertCtrlPoint.size(); ri++) {
+            const int c = m->vertCtrlPoint[ri]; if (c < 0) continue;
+            m->skinVertex[ri*3] += cpd0[c*3]; m->skinVertex[ri*3+1] += cpd0[c*3+1]; m->skinVertex[ri*3+2] += cpd0[c*3+2];
+        }
+        if (doN) for (int i = 0; i < fc; i++) m->skinNormals[i] = m->normals[i];
+        m->skinIncOk = false;
+        SkinActualizarAabb(m); return;
+    }
 
     // ---- CACHE CSR de pesos por CONTROL-POINT (no por render-vert). Se arma UNA sola vez y se reusa cada frame. Un
     //      asset de juego duplica cada control-point en varios render-verts por seams de UV/normal/material (banana:
@@ -969,8 +1009,192 @@ void SkinearMesh(Mesh* m){
             for (size_t k = 0; k < it->second.size(); k++){ m->skinCpBone[base+(int)k]=it->second[k].first; m->skinCpW[base+(int)k]=it->second[k].second; }
         }
         m->skinCpMat.assign((size_t)(nCtrl>0?nCtrl:0)*12, 0.0f); // buffer temp por-frame (matriz mezclada por CP; reusado)
+        // ---- INVERSOS para el skinning INCREMENTAL: hueso -> CPs que influye, y CP -> render-verts.
+        //      Con esto "se movio el hueso B / la forma K" se traduce directo a la lista EXACTA de
+        //      vertices a recalcular, sin recorrer la malla entera. Mismo ciclo de vida que el CSR. ----
+        m->skinBoneCpOff.assign(a->bones.size() + 1, 0);
+        for (int c = 0; c < nCtrl; c++)
+            for (int k = m->skinCpOff[c]; k < m->skinCpOff[c+1]; k++) m->skinBoneCpOff[(size_t)m->skinCpBone[k] + 1]++;
+        for (size_t b = 0; b < a->bones.size(); b++) m->skinBoneCpOff[b+1] += m->skinBoneCpOff[b];
+        m->skinBoneCp.assign(m->skinCpBone.size(), 0);
+        { std::vector<int> cur(m->skinBoneCpOff.begin(), m->skinBoneCpOff.end());
+          for (int c = 0; c < nCtrl; c++)
+              for (int k = m->skinCpOff[c]; k < m->skinCpOff[c+1]; k++) m->skinBoneCp[(size_t)cur[m->skinCpBone[k]]++] = c; }
+        m->skinCpRvOff.assign((size_t)nCtrl + 1, 0);
+        for (int ri = 0; ri < nv; ri++){ int c = m->vertCtrlPoint[ri]; if (c >= 0 && c < nCtrl) m->skinCpRvOff[(size_t)c + 1]++; }
+        for (int c = 0; c < nCtrl; c++) m->skinCpRvOff[(size_t)c + 1] += m->skinCpRvOff[c];
+        m->skinCpRv.assign((size_t)m->skinCpRvOff[nCtrl], 0);
+        { std::vector<int> cur(m->skinCpRvOff.begin(), m->skinCpRvOff.end());
+          for (int ri = 0; ri < nv; ri++){ int c = m->vertCtrlPoint[ri]; if (c >= 0 && c < nCtrl) m->skinCpRv[(size_t)cur[c]++] = ri; } }
+        m->skinCpDirty.assign((size_t)(nCtrl > 0 ? nCtrl : 1), 0);
+        // UMBRAL SUB-VISIBLE escalado a la malla: un hueso que se movio menos que esto no mueve ningun
+        // vertex mas que una fraccion de pixel. Los bakes por-frame del juego (clip .w3da) traen RUIDO float
+        // en TODOS los huesos cada frame -> medido en la intro HL2 (G-Man hablando): el 85% de los deltas de
+        // matriz caen por debajo de 1e-4 (jitter de cuantizacion), solo el 1% supera 1e-3 (movimiento real).
+        // Con el umbral viejo (5e-5) ese jitter PASABA -> los 70 huesos "cambiaban" cada frame -> 100% de CPs
+        // sucios -> el incremental caia SIEMPRE al pase completo (en el N95: skin ~200 ms/frame = 4 fps). El
+        // umbral 2e-4 filtra la banda del jitter y deja pasar el movimiento real; el error maximo por vertex
+        // es umbral * brazo_de_palanca (~0.2 mm en el cuerpo, ~0.03 mm en la cara: sub-pixel a 240p) y NO
+        // deriva (la referencia solo avanza para los huesos aplicados; el ruido oscila sin acumular).
+        { float mnx=1e30f,mny=1e30f,mnz=1e30f,mxx=-1e30f,mxy=-1e30f,mxz=-1e30f;
+          for (int i = 0; i < nv; i++){ const GLfloat* p = &m->vertex[i*3];
+              if(p[0]<mnx)mnx=p[0]; if(p[0]>mxx)mxx=p[0];
+              if(p[1]<mny)mny=p[1]; if(p[1]>mxy)mxy=p[1];
+              if(p[2]<mnz)mnz=p[2]; if(p[2]>mxz)mxz=p[2]; }
+          float dx=mxx-mnx, dy=mxy-mny, dz=mxz-mnz;
+          float diag = (float)sqrt((double)(dx*dx + dy*dy + dz*dz)); if (diag <= 0.0f) diag = 1.0f;
+          m->skinEpsPos = diag * 2e-4f;   // traslacion: ~1/5000 del tamaño de la malla
+          m->skinEpsRot = 2e-4f; }        // rotacion (adimensional): filtra el jitter del bake (85% < 1e-4)
+        m->skinIncOk = false;   // el proximo pase COMPLETO deja la referencia del incremental
         m->skinFlatSig = sig;
     }
+
+    // ================= SKINNING INCREMENTAL =================
+    // Pedido del dueno, textual: "hay que mover/recalcular los vertices minimos y necesarios. nada mas.
+    // si el motor recalcula vertices de mas, esta mal". Con una referencia valida (un pase completo
+    // previo con este layout), cada frame se recalculan SOLO los CPs cuyos huesos se movieron MAS que
+    // el umbral sub-visible (contra la matriz con la que se APLICARON por ultima vez: el arrastre
+    // lento acumula contra la referencia y entra solo -> sin deriva) y los CPs de las shape keys cuyo
+    // peso cambio (el delta denso se mantiene por DIFERENCIA: un flex del labio solo toca el labio).
+    // Si lo sucio cubre >60% de los CPs, el pase completo es mas barato y se cae a el.
+    {
+        extern bool g_skinIncremental;
+        const int nCtrlI = m->skinNCtrl;
+        const int nbI = (int)a->bones.size();
+        if (g_skinIncremental && m->skinIncOk && nCtrlI > 0 && m->skinVertex &&
+            doN == m->skinPrevConLuz && (int)m->skinPrevMat.size() == nbI * 12 &&
+            m->skinPrevPesos.size() == m->shapePesos.size() &&
+            (int)m->skinCpDirty.size() >= nCtrlI && !m->skinBoneCpOff.empty()) {
+            // 1) huesos movidos por encima del umbral (rotacion y traslacion por separado)
+            std::vector<int> bch;
+            for (int b = 0; b < nbI; b++){
+                const float* mm = a->bones[b].skinMatrix.m;
+                const float* pv = &m->skinPrevMat[(size_t)b*12];
+                bool ch = false;
+                for (int k = 0; k < 9 && !ch; k++){ float d = mm[(k/3)*4 + (k%3)] - pv[k]; if (d < 0) d = -d; if (d > m->skinEpsRot) ch = true; }
+                if (!ch) for (int k = 0; k < 3 && !ch; k++){ float d = mm[12+k] - pv[9+k]; if (d < 0) d = -d; if (d > m->skinEpsPos) ch = true; }
+                if (ch) bch.push_back(b);
+            }
+            // 2) shape keys con peso distinto al aplicado (umbral chico sobre el peso 0..1)
+            std::vector<int> kch;
+            for (size_t k = 0; k < m->shapePesos.size() && k < m->shapeKeys.size(); k++){
+                float d = m->shapePesos[k] - m->skinPrevPesos[k]; if (d < 0) d = -d;
+                if (d > 0.0005f) kch.push_back((int)k);
+            }
+            if (bch.empty() && kch.empty()){   // NADA se movio de verdad: cero trabajo este frame
+                if (slotAGuardar >= 0) SkinCacheGuardar(m, slotAGuardar);   // la pose vigente VALE para este frame
+                g_skinUltimoCamino = 2;
+                return;
+            }
+            // 3) marcar los CPs sucios UNICOS (bitmap persistente) -> 'sucios'. El presupuesto se decide por el
+            //    conteo UNICO (sucios.size()), no por la suma de CPs-por-hueso + indices-de-forma: varias shape
+            //    keys de la boca pisan los MISMOS CPs (15 visemas sobre ~1500 CPs del labio), y esa suma con
+            //    solapamiento disparaba el fallback al pase completo aunque los CPs reales sucios fueran pocos.
+            std::vector<int> sucios;
+            for (size_t q = 0; q < bch.size(); q++){ int b = bch[q];
+                for (int t = m->skinBoneCpOff[(size_t)b]; t < m->skinBoneCpOff[(size_t)b+1]; t++){
+                    int c = m->skinBoneCp[(size_t)t];
+                    if (!m->skinCpDirty[(size_t)c]){ m->skinCpDirty[(size_t)c] = 1; sucios.push_back(c); } } }
+            for (size_t q = 0; q < kch.size(); q++){ int k = kch[q];
+                const W3dShapeKey& sk = m->shapeKeys[(size_t)k];
+                for (size_t j = 0; j < sk.idx.size() && j*3+2 < sk.d.size(); j++){
+                    int c = sk.idx[j]; if (c < 0 || c >= nCtrlI) continue;
+                    if (!m->skinCpDirty[(size_t)c]){ m->skinCpDirty[(size_t)c] = 1; sucios.push_back(c); } } }
+            // PRESUPUESTO al 95%: el pase completo hace trabajo REDUNDANTE que el incremental evita (copia el
+            // array entero bind->skinVertex, reconstruye el delta denso de TODAS las formas, y recorre nv + nCtrl).
+            // En estas mallas nCtrl ~= nv (sin seams colapsados: cada vertex es su CP), asi que el incremental es
+            // mas barato incluso con 85-90% sucio (procesa solo lo sucio y se saltea copia + formas-de-cero). El
+            // completo solo gana cuando casi TODO esta sucio Y hay mucha deduplicacion (nCtrl << nv): ahi su pase1
+            // por-CP es chico. Umbral 95%: el habla con gestos (60-90% sucio) ahora va por el incremental.
+            if ((long)sucios.size() <= (long)nCtrlI * 19 / 20) {
+                const int*   cpOffI = &m->skinCpOff[0];
+                const int*   cpBnI  = m->skinCpBone.empty() ? NULL : &m->skinCpBone[0];
+                const float* cpWtI  = m->skinCpW.empty()    ? NULL : &m->skinCpW[0];
+                float*       cpMatI = m->skinCpMat.empty()  ? NULL : &m->skinCpMat[0];
+                // 4) formas: delta persistente por DIFERENCIA (sus CPs ya quedaron marcados arriba)
+                for (size_t q = 0; q < kch.size(); q++){ int k = kch[q];
+                    float dw = m->shapePesos[(size_t)k] - m->skinPrevPesos[(size_t)k];
+                    const W3dShapeKey& sk = m->shapeKeys[(size_t)k];
+                    if (m->shapeCpDelta.size() < (size_t)nCtrlI * 3) m->shapeCpDelta.assign((size_t)nCtrlI * 3, 0.0f);
+                    for (size_t j = 0; j < sk.idx.size() && j*3+2 < sk.d.size(); j++){
+                        int c = sk.idx[j]; if (c < 0 || c >= nCtrlI) continue;
+                        m->shapeCpDelta[(size_t)c*3]   += dw * sk.d[j*3];
+                        m->shapeCpDelta[(size_t)c*3+1] += dw * sk.d[j*3+1];
+                        m->shapeCpDelta[(size_t)c*3+2] += dw * sk.d[j*3+2];
+                    }
+                    m->skinPrevPesos[(size_t)k] = m->shapePesos[(size_t)k];
+                }
+                const float* cpdI = m->shapeCpDelta.empty() ? NULL : &m->shapeCpDelta[0];
+                // 5) SOLO los CPs sucios: re-mezclar su matriz y re-aplicarla a SUS render-verts
+                for (size_t q = 0; q < sucios.size(); q++){
+                    int c = sucios[q]; m->skinCpDirty[(size_t)c] = 0;
+                    int s = cpOffI[c], e = cpOffI[c+1];
+                    const float* M = NULL;
+                    if (s < e && cpMatI){
+                        float* Mw = &cpMatI[(size_t)c*12];
+                        Mw[0]=Mw[1]=Mw[2]=Mw[3]=Mw[4]=Mw[5]=Mw[6]=Mw[7]=Mw[8]=Mw[9]=Mw[10]=Mw[11]=0.0f;
+                        for (int k = s; k < e; k++){
+                            int bi = cpBnI[k]; if (bi < 0 || bi >= nbI) continue;
+                            const float* mm = a->bones[bi].skinMatrix.m; float w = cpWtI[k];
+                            Mw[0]+=mm[0]*w;  Mw[1]+=mm[1]*w;  Mw[2]+=mm[2]*w;
+                            Mw[3]+=mm[4]*w;  Mw[4]+=mm[5]*w;  Mw[5]+=mm[6]*w;
+                            Mw[6]+=mm[8]*w;  Mw[7]+=mm[9]*w;  Mw[8]+=mm[10]*w;
+                            Mw[9]+=mm[12]*w; Mw[10]+=mm[13]*w; Mw[11]+=mm[14]*w;
+                        }
+                        M = Mw;
+                    }
+                    // la POSICION es la misma para todos los render-verts del punto (comparten bind): 1 mat*vec
+                    const int rs = m->skinCpRvOff[(size_t)c], re = m->skinCpRvOff[(size_t)c+1];
+                    if (rs >= re) continue;
+                    const int ri0 = m->skinCpRv[(size_t)rs];
+                    float vx = m->vertex[ri0*3], vy = m->vertex[ri0*3+1], vz = m->vertex[ri0*3+2];
+                    if (cpdI){ vx += cpdI[(size_t)c*3]; vy += cpdI[(size_t)c*3+1]; vz += cpdI[(size_t)c*3+2]; }
+                    float px, py, pz; bool okp;
+                    if (!M){ px = vx; py = vy; pz = vz; okp = true; }   // punto sin peso: bind + forma
+                    else {
+                        px = M[0]*vx + M[3]*vy + M[6]*vz + M[9];
+                        py = M[1]*vx + M[4]*vy + M[7]*vz + M[10];
+                        pz = M[2]*vx + M[5]*vy + M[8]*vz + M[11];
+                        okp = (px==px && py==py && pz==pz && px<1e6f&&px>-1e6f && py<1e6f&&py>-1e6f && pz<1e6f&&pz>-1e6f);
+                    }
+                    for (int t = rs; t < re; t++){
+                        int ri = m->skinCpRv[(size_t)t];
+                        if (okp){ m->skinVertex[ri*3]=px; m->skinVertex[ri*3+1]=py; m->skinVertex[ri*3+2]=pz; }
+                        if (M && doN && m->skinNormals){
+                            float nx=m->normals[ri*3]/127.0f, ny=m->normals[ri*3+1]/127.0f, nz=m->normals[ri*3+2]/127.0f;
+                            float anx = M[0]*nx + M[3]*ny + M[6]*nz;
+                            float any = M[1]*nx + M[4]*ny + M[7]*nz;
+                            float anz = M[2]*nx + M[5]*ny + M[8]*nz;
+                            float l2 = anx*anx + any*any + anz*anz;
+                            if (l2 > 1e-12f && l2==l2){ float sc = 127.0f * FastInvSqrt(l2);
+                                m->skinNormals[ri*3]=(GLbyte)(anx*sc); m->skinNormals[ri*3+1]=(GLbyte)(any*sc); m->skinNormals[ri*3+2]=(GLbyte)(anz*sc); }
+                        }
+                    }
+                }
+                // 6) la referencia avanza SOLO para los huesos aplicados (anti-deriva del resto)
+                for (size_t q = 0; q < bch.size(); q++){ int b = bch[q];
+                    const float* mm = a->bones[(size_t)b].skinMatrix.m; float* pv = &m->skinPrevMat[(size_t)b*12];
+                    pv[0]=mm[0]; pv[1]=mm[1]; pv[2]=mm[2];  pv[3]=mm[4];  pv[4]=mm[5];  pv[5]=mm[6];
+                    pv[6]=mm[8]; pv[7]=mm[9]; pv[8]=mm[10]; pv[9]=mm[12]; pv[10]=mm[13]; pv[11]=mm[14]; }
+                if (slotAGuardar >= 0) SkinCacheGuardar(m, slotAGuardar);
+                SkinActualizarAabb(m);
+                g_skinUltimoCamino = 3;
+                return;
+            }
+            // sobre presupuesto (>60% sucio): el pase completo es mas barato. Hay que DESMARCAR el bitmap
+            // que se ensucio arriba, sino esos CPs quedan en 1 y el proximo frame incremental los saltea
+            // (el guard '!skinCpDirty[c]') -> no se recalcularian nunca -> verts stale.
+            for (size_t q = 0; q < sucios.size(); q++) m->skinCpDirty[(size_t)sucios[q]] = 0;
+        }
+    }
+    // ---- pase COMPLETO: base = bind (+formas de cero) y las dos pasadas de siempre ----
+    const float* cpd = SkinFormasCompletas(m, nv, formas);
+    for (int i = 0; i < fc; i++) m->skinVertex[i] = m->vertex[i]; // default = bind (verts sin peso quedan)
+    if (cpd) for (int ri = 0; ri < nv && ri < (int)m->vertCtrlPoint.size(); ri++) {   // la forma, tambien sin peso
+        const int c = m->vertCtrlPoint[ri]; if (c < 0) continue;
+        m->skinVertex[ri*3] += cpd[c*3]; m->skinVertex[ri*3+1] += cpd[c*3+1]; m->skinVertex[ri*3+2] += cpd[c*3+2];
+    }
+    if (doN) for (int i = 0; i < fc; i++) m->skinNormals[i] = m->normals[i]; // default = bind
 
     // ---- PASE 1: por CONTROL-POINT con peso, mezcla la matriz de skin (4x3) UNA vez -> skinCpMat[c]. Este es el blend
     //      CARO (leer + acumular cada skinMatrix de hueso) y ahora corre nCtrl veces (7186) en vez de nv (42840): 6x
@@ -996,36 +1220,56 @@ void SkinearMesh(Mesh* m){
             M[9]+=mm[12]*w; M[10]+=mm[13]*w; M[11]+=mm[14]*w; // traslacion
         }
     }
-    // ---- PASE 2: por RENDER-vert, aplica la matriz mezclada de su CP a SU PROPIO bind (posicion) y normal. No usa
-    //      un representante ni asume que los render-verts de un CP compartan bind position: cada uno usa vertex[ri] y
-    //      normals[ri] -> resultado identico al loop por render-vert anterior (LBS lineal), para CUALQUIER malla.
-    //      Barato: aca NO hay loop de influencias (esa parte, la cara, ya se hizo 1 vez por CP en el Pase 1). ----
-    for (int ri = 0; ri < nv; ri++){
-        int c = m->vertCtrlPoint[ri];
-        if (c < 0 || c >= nCtrl) continue;          // sin CP -> queda en bind
-        if (cpOff[c] == cpOff[c+1]) continue;       // CP sin peso -> queda en bind
+    // ---- PASE 2: por PUNTO (control-point), aplica la matriz mezclada a su bind UNA vez y COPIA la posicion a
+    //      todos sus render-verts. Los render-verts de un punto comparten la MISMA posicion de bind (es la
+    //      definicion del control-point: W3dMallaCalcularPuntos agrupa por posicion exacta) -> su posicion
+    //      skinneada es IDENTICA, asi que el mat*vec (9 mult) se hace 1 vez por punto (~1695) y no 1 por
+    //      render-vert (~10170): 6x menos en estas mallas. La NORMAL si difiere por render-vert (seams de
+    //      smoothing), asi que esa rotacion queda en el loop interno, pero SOLO si hay luz (doN). ----
+    for (int c = 0; c < nCtrl; c++){
+        if (cpOff[c] == cpOff[c+1]) continue;       // punto sin peso -> sus render-verts quedan en bind
+        const int rs = m->skinCpRvOff[c], re = m->skinCpRvOff[c+1];
+        if (rs >= re) continue;                     // punto sin render-verts (huerfano)
         const float* M = &cpMat[c*12];
-        float vx=m->vertex[ri*3], vy=m->vertex[ri*3+1], vz=m->vertex[ri*3+2];
+        const int ri0 = m->skinCpRv[rs];            // representante: su bind es el de TODOS (misma posicion)
+        float vx=m->vertex[ri0*3], vy=m->vertex[ri0*3+1], vz=m->vertex[ri0*3+2];
         if (cpd) { vx += cpd[c*3]; vy += cpd[c*3+1]; vz += cpd[c*3+2]; }   // la base con las formas de la cara
         float px = M[0]*vx + M[3]*vy + M[6]*vz + M[9];
         float py = M[1]*vx + M[4]*vy + M[7]*vz + M[10];
         float pz = M[2]*vx + M[5]*vy + M[8]*vz + M[11];
         // POSICION: guard NaN/inf (una matriz degenerada no debe mandar el vert al infinito -> queda en bind)
-        if (px==px && py==py && pz==pz && px<1e6f&&px>-1e6f && py<1e6f&&py>-1e6f && pz<1e6f&&pz>-1e6f){
-            m->skinVertex[ri*3]=px; m->skinVertex[ri*3+1]=py; m->skinVertex[ri*3+2]=pz; }
-        // NORMAL: la 3x3 mezclada del CP * la normal de bind del render-vert (distinta por seam), FAST INVERSE SQRT
-        if (doN){
-            float nx=m->normals[ri*3]/127.0f, ny=m->normals[ri*3+1]/127.0f, nz=m->normals[ri*3+2]/127.0f;
-            float anx = M[0]*nx + M[3]*ny + M[6]*nz;
-            float any = M[1]*nx + M[4]*ny + M[7]*nz;
-            float anz = M[2]*nx + M[5]*ny + M[8]*nz;
-            float l2 = anx*anx + any*any + anz*anz;
-            if (l2 > 1e-12f && l2==l2){ float sc = 127.0f * FastInvSqrt(l2);
-                m->skinNormals[ri*3]=(GLbyte)(anx*sc); m->skinNormals[ri*3+1]=(GLbyte)(any*sc); m->skinNormals[ri*3+2]=(GLbyte)(anz*sc); }
+        const bool okp = (px==px && py==py && pz==pz && px<1e6f&&px>-1e6f && py<1e6f&&py>-1e6f && pz<1e6f&&pz>-1e6f);
+        for (int t = rs; t < re; t++){
+            const int ri = m->skinCpRv[t];
+            if (okp){ m->skinVertex[ri*3]=px; m->skinVertex[ri*3+1]=py; m->skinVertex[ri*3+2]=pz; }
+            // NORMAL: la 3x3 mezclada del punto * la normal de bind del render-vert (distinta por seam)
+            if (doN){
+                float nx=m->normals[ri*3]/127.0f, ny=m->normals[ri*3+1]/127.0f, nz=m->normals[ri*3+2]/127.0f;
+                float anx = M[0]*nx + M[3]*ny + M[6]*nz;
+                float any = M[1]*nx + M[4]*ny + M[7]*nz;
+                float anz = M[2]*nx + M[5]*ny + M[8]*nz;
+                float l2 = anx*anx + any*any + anz*anz;
+                if (l2 > 1e-12f && l2==l2){ float sc = 127.0f * FastInvSqrt(l2);
+                    m->skinNormals[ri*3]=(GLbyte)(anx*sc); m->skinNormals[ri*3+1]=(GLbyte)(any*sc); m->skinNormals[ri*3+2]=(GLbyte)(anz*sc); }
+            }
         }
+    }
+    // REFERENCIA del skinning incremental: la pose/formas que ESTE pase completo dejo aplicadas
+    {
+        const int nbF = (int)a->bones.size();
+        m->skinPrevMat.resize((size_t)nbF * 12);
+        for (int b = 0; b < nbF; b++){
+            const float* mm = a->bones[(size_t)b].skinMatrix.m; float* pv = &m->skinPrevMat[(size_t)b*12];
+            pv[0]=mm[0]; pv[1]=mm[1]; pv[2]=mm[2];  pv[3]=mm[4];  pv[4]=mm[5];  pv[5]=mm[6];
+            pv[6]=mm[8]; pv[7]=mm[9]; pv[8]=mm[10]; pv[9]=mm[12]; pv[10]=mm[13]; pv[11]=mm[14];
+        }
+        m->skinPrevPesos.assign(m->shapePesos.begin(), m->shapePesos.end());
+        m->skinPrevConLuz = doN;
+        m->skinIncOk = true;
     }
     // CACHE: si este frame era un keyframe slot no bakeado, guardar el resultado del skinning (lazy: se paga 1 vez)
     if (slotAGuardar >= 0) SkinCacheGuardar(m, slotAGuardar);
+    SkinActualizarAabb(m);   // AABB de ESTA pose (lo usa el autocull por frustum de RenderObject)
 }
 
 // ===== gestion de clips (crear/borrar/mover el activo), igual que los vertex groups =====

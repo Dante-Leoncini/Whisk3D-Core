@@ -204,6 +204,15 @@ struct W3dMallaPuntos {
 };
 void W3dMallaCalcularPuntos(const Mesh* m, W3dMallaPuntos& out);
 
+// AGRUPA la identidad de los puntos (vertCtrlPoint) de una malla SKINNEADA ya cargada cuyo
+// .w3db vino con ctrl casi-identidad ("sopa de triangulos": muchos render-verts coincidentes
+// sin colapsar). Fusiona los que comparten posicion + pesos + deltas de forma en un punto unico
+// y REMAPEA los vertex groups y las shape keys a ese espacio -> el skinning calcula 1 vez por
+// punto real y escalea (LOSSLESS; el G-Man pasa de 10170 a ~1695 puntos = 6x menos skinning).
+// No toca el render (triangulos/UV). Si algun merge diera distinto peso/delta (no deberia: la
+// firma lo separa) ABORTA sin tocar nada. Idempotente: si ya esta agrupada, no hace nada.
+void W3dReagruparPuntosSkin(Mesh* m);
+
 // QUE CAPAS SALEN al archivo. Una capa UV/color que no mide lo que la topologia dice
 // (nC esquinas) no sale y se avisa; el indice de la ACTIVA es el de la lista ESCRITA.
 // Capas LAZY (la malla todavia no las materializo): sale la version derivada del

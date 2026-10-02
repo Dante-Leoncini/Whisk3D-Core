@@ -276,6 +276,19 @@ void W3dSoundSetVolume(int voice, float volume) {
     W3dAudioBackendUnlock();
 }
 
+// la posicion de la voz en segundos del sonido (ver W3dAudio.h): el reloj maestro para
+// sincronizar animacion con audio. pos esta en frames del sonido AL RATE DEL MIXER
+// (decodeWav ya resampleo), asi que pos / s_rate = segundos del wav reproducidos.
+float W3dSoundPos(int voice) {
+    if (!s_ready || voice <= 0) return -1.0f;
+    float seg = -1.0f;
+    W3dAudioBackendLock();
+    for (int i = 0; i < MAX_VOICES; i++)
+        if (s_voices[i].active && s_voices[i].id == voice) { seg = s_voices[i].pos / (float)s_rate; break; }
+    W3dAudioBackendUnlock();
+    return seg;
+}
+
 void W3dAudioMasterVolume(float v) { s_master = v < 0 ? 0 : (v > 1 ? 1 : v); }
 
 // volumen del JUEGO (0..1): un SEGUNDO escalar, independiente del master de usuario, para que el aplicar() del
@@ -340,6 +353,7 @@ void W3dSoundStop(int) {}
 void W3dSoundStopFade(int, float) {}
 void W3dSoundStopAll() {}
 void W3dSoundSetVolume(int, float) {}
+float W3dSoundPos(int) { return -1.0f; }
 void W3dAudioMasterVolume(float) {}
 void W3dAudioMix(short*, int) {}
 

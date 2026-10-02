@@ -157,10 +157,39 @@ bool TextureSize(unsigned int id, int& w, int& h) {
 // texturas de UI que ya vienen como pixeles (cursor, atlas, etc.). Comun a
 // todos los backends GL/GLES.
 // ----------------------------------------------------------------------------
-unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, bool conMips) {
+unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, bool conMips, bool forzarPOT) {
     if (!rgba || w <= 0 || h <= 0) {
         return 0;
     }
+#ifdef W3D_SYMBIAN
+    // N95 (PowerVR MBX Lite, GLES 1.1): una textura NPOT se RECHAZA (glTexImage2D ->
+    // INVALID_VALUE) y el quad sale SIN textura -- es el bug del fuego: sus atlas son NPOT
+    // (960x24, 1440x48). El camino de MATERIAL ya remuestrea a POT (w3dtexload ReescalarPOT);
+    // el de particulas/UI-2D (Textura2D -> aca) se lo saltaba. forzarPOT lo iguala: remuestreo
+    // por VECINO al POT siguiente (tope 1024), igual que el material. Los UV 0..1 no cambian.
+    unsigned char* potBuf = 0;
+    if (forzarPOT) {
+        const bool yaPot = ((w & (w - 1)) == 0) && ((h & (h - 1)) == 0) && w <= 1024 && h <= 1024;
+        if (!yaPot) {
+            int pw = 1; while (pw < w && pw < 1024) { pw <<= 1; }
+            int ph = 1; while (ph < h && ph < 1024) { ph <<= 1; }
+            potBuf = new unsigned char[(size_t)pw * ph * 4];
+            if (potBuf) {
+                for (int y = 0; y < ph; y++) {
+                    const unsigned char* fila = rgba + (size_t)(y * h / ph) * w * 4;
+                    unsigned char* out = potBuf + (size_t)y * pw * 4;
+                    for (int x = 0; x < pw; x++) {
+                        const unsigned char* p = fila + (size_t)(x * w / pw) * 4;
+                        out[x*4] = p[0]; out[x*4+1] = p[1]; out[x*4+2] = p[2]; out[x*4+3] = p[3];
+                    }
+                }
+                rgba = potBuf; w = pw; h = ph;
+            }
+        }
+    }
+#else
+    (void)forzarPOT;
+#endif
     GLuint id = 0;
     glGenTextures(1, &id);
     // OJO: bind por la ABSTRACCION, no glBindTexture crudo: el backend cachea la textura bindeada
@@ -204,6 +233,9 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
 
     w3dEngine::BindTexture(0);
     g_texSizes[id] = std::make_pair(w, h); // recordar el tamano para el aspect ratio del UV editor
+#ifdef W3D_SYMBIAN
+    if (potBuf) delete[] potBuf;
+#endif
     return id;
 }
 

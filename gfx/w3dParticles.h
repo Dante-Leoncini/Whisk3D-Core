@@ -71,6 +71,7 @@ struct ParticleSystem {
     // Con mezcla ALFA eso OSCURECE la particula mientras se desvanece, que casi nunca es lo que
     // se quiere: colorPlano deja el color quieto y solo baja el alfa.
     bool  colorPlano;
+    bool  filtrar;                // textura LINEAR (suave) si true, NEAREST (pixelada) si false. Lo fija el emisor.
     int   maxParts;               // tope de particulas vivas
     enum { MaxTexs = 8 };
     unsigned texs[MaxTexs]; int nTex;   // texturas (elige una al azar por particula)
@@ -126,7 +127,7 @@ struct ParticleSystem {
         alphaMin=0.3f; alphaMax=1.0f; spinMin=-0.5f; spinMax=0.5f;
         fadeIn=0.12f; fadeOut=0.30f; rate=0; turbAmp=0; tintR=1; tintG=1; tintB=1;
         offsetX=0; offsetY=0; offsetZ=0;
-        blend=MezclaAdd; colorPlano=false; maxParts=200; nTex=0; acc=0; phase=0; rng=2463534242u;
+        blend=MezclaAdd; colorPlano=false; filtrar=true; maxParts=200; nTex=0; acc=0; phase=0; rng=2463534242u;
         flipCols=1; flipFilas=1; flipCuadros=0;
         uvU0=0; uvV0=0; uvU1=1; uvV1=1;
         crece=0; frenoCrece=1; alphaDecae=1; alphaMuerte=0; arrastre=1;

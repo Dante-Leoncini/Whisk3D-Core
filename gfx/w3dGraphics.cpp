@@ -329,6 +329,9 @@ void Rotatef(float a, float x, float y, float z) { glRotatef(a, x, y, z); }
 void Scalef(float x, float y, float z)           { glScalef(x, y, z); }
 void MultMatrix(const float* m)                  { glMultMatrixf(m); }
 void LoadMatrix(const float* m)                  { glLoadMatrixf(m); }
+void GetMatrix(Matrix m, float* out16) {
+    glGetFloatv(m == Projection ? GL_PROJECTION_MATRIX : m == TextureMatrix ? GL_TEXTURE_MATRIX : GL_MODELVIEW_MATRIX, out16);
+}
 void Ortho(float l, float r, float b, float t, float n, float f) {
     #if defined(W3D_SYMBIAN) || defined(__ANDROID__)
         glOrthof(l, r, b, t, n, f);

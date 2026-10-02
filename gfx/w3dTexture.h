@@ -27,8 +27,13 @@ namespace w3dEngine {
     // interno GL_RGBA: valido tanto en GL de escritorio como en GLES 1.1.
     // 'conMips' = false la excluye del mipmapping global (la UI 2D lo evita a
     // proposito: los mips promediaban los slice9 chicos).
+    // 'forzarPOT' remuestrea a potencia-de-dos ANTES de subir (solo hace falta
+    // en Symbian: GLES 1.1 del N95 rechaza las texturas NPOT y el billboard sale
+    // sin textura). El camino de material ya lo hace (w3dtexload ReescalarPOT); el
+    // de particulas/UI-2D (Textura2D) se lo saltaba. No-op en el resto de OSes.
     unsigned int UploadRGBA(const unsigned char* rgba, int w, int h,
-                            bool filtrado = true, bool conMips = true);
+                            bool filtrado = true, bool conMips = true,
+                            bool forzarPOT = false);
 
     // actualiza un RECTANGULO (x,y,w,h) de una textura ya subida con w*h pixeles RGBA (pintura en vivo)
     bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect);

@@ -669,6 +669,10 @@ static void ExtrasAMalla(Mesh* m, MallaRecurso* r, bool conservarEdicion) {
     }
     m->grupoActivo = r->grupoActivo; m->uvGrupoActivo = r->uvGrupoActivo;
     m->shapePesos.assign(m->shapeKeys.size(), 0.0f);
+    // NO se reagrupa al cargar: seria gastar CPU del telefono en cada apertura. El agrupamiento de los puntos
+    // de skinning viene HORNEADO en el .w3db (vertCtrlPoint compacto + grupos/formas por punto) cuando la malla
+    // se guardo como NO-EDITABLE (ver W3dMallaBinEscribir). Una malla editable vieja carga sin agrupar (mas lenta,
+    // pero editable); convertila a no-editable y volve a guardar para hornear el agrupamiento.
 }
 // la identidad de los puntos del RECURSO (canonica) para el AABB: la de la malla si la tiene,
 // la del recurso si todavia la guarda, o releida

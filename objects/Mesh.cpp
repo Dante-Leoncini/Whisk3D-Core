@@ -29,6 +29,8 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     //ejemplo: "edit" o "modificadorActivo" etc... eso es del Editor de Whisk3D
 
     skinArmature = NULL; skinVertex = NULL; skinNormals = NULL; skinVertexCap = 0; skinConLuz = true; lastSkinFrame = -999999; skinPoseSerial = 0; lastSkinBordesFrame = -999999; skinBordesPoseSerial = 0; skinFlatSig = 0; skinNCtrl = 0; skinGeomVersion = 1; bordesGeomVersion = 0; vtxAnimRecipeBase = 0; // skinning apagado por defecto
+    skinAabbMin = Vector3(0,0,0); skinAabbMax = Vector3(0,0,0); skinAabbOk = false; skinCullSeguidos = 0; // autocull
+    skinEpsPos = 0.0f; skinEpsRot = 0.0f; skinIncOk = false; skinPrevConLuz = false; // skinning incremental
     shapeSerial = 0; skinShapeSerial = 0xFFFFFFFFu;   // shape keys: ninguna forma, nada calculado
     skinCacheOn = false; skinCacheSkip = 0; skinCacheStart = 0; skinCacheEnd = -1; skinCacheConLuz = false; skinCacheSig = 0; // cache de vertex-animation (lazy, off)
     meshTipo = -1;       // no es una primitiva regenerable por defecto
@@ -297,6 +299,23 @@ void Mesh::LiberarMemoria() {
 // ===========================================================================
 void (*W3dMallaDatosSoltarHook)(void*) = 0;   // lo apunta MallaDatos.cpp
 int W3dMallaDesinstanciados = 0;              // contador COW (lo muestra meminfo)
+
+// ---- AUTOCULL por malla (frustum): el test "este AABB de MUNDO se ve?" lo instala el EDITOR
+//      (Culling.cpp -> W3dAabbVisible) via el hook; NULL (un juego compilado sin editor) = sin cull.
+//      g_mallaAutocull es el interruptor A/B (harness 'autocull'). Ver Mesh::RenderObject.
+bool (*g_mallaVisibleHook)(const Vector3&, const Vector3&) = NULL;
+bool g_mallaAutocull = true;
+
+// GRABADOR de visibilidad para preparar demos (harness 'cullcamaras'): acumula los NOMBRES de las
+// mallas que pasaron el autocull y se dibujaron a lo largo de una corrida -> lo que las camaras VEN.
+// Vive en el Core para que linkee igual en Symbian (ahi nunca se prende). Costo cero con g_cullGrabar=false.
+#include <set>
+bool g_cullGrabar = false;
+static std::set<std::string> g_cullVistas;
+void W3dCullVistaRegistrar(const char* n) { if (n && *n) g_cullVistas.insert(n); }
+void W3dCullVistaLimpiar() { g_cullVistas.clear(); }
+bool W3dCullVistaTiene(const char* n) { return n && g_cullVistas.count(n) > 0; }
+int  W3dCullVistaCantidad() { return (int)g_cullVistas.size(); }
 
 void Mesh::SoltarDatosCompartidos() {
     if (!datosRec && !malla) return;
@@ -1433,7 +1452,50 @@ void Mesh::RenderObject() {
     if (!vertex || vertexSize <= 0) return;
     const bool hayGen = (genValido && genVertex && genFaces);
     if ((!faces || facesSize < 3) && !editActiva && !hayGen && looseEdges.empty()) return;
+    // ---- AUTOCULL por FRUSTUM (clave N95): una malla ENTERA fuera de la camara que esta dibujando no se
+    //      skinnea ni se dibuja (en un primer plano, un cuerpo skinneado de 10k verts se deformaba y subia
+    //      al GL para nada). El test lo pone el EDITOR via g_mallaVisibleHook (Culling.cpp/W3dAabbVisible,
+    //      que ya devuelve "visible" sin vista bindeada o en ortografica; un juego sin editor no instala el
+    //      hook = sin cull). Skinneadas: AABB de la ULTIMA pose con margen (la pose avanza mientras esta
+    //      afuera) y cada 30 frames culleada se RE-SKINNEA sin dibujar para refrescar el AABB. Sin cull:
+    //      Edit Mode / weight-vertex paint (inspectores) y la malla generada por modificadores (el AABB
+    //      cacheado es de la BASE, un Array desplazado lo desbordaria).
+    {
+        extern bool g_mallaAutocull;
+        extern bool (*g_mallaVisibleHook)(const Vector3&, const Vector3&);
+        if (g_mallaAutocull && g_mallaVisibleHook && !editActiva && !weightPaintOn && !vertexPaintOn && !hayGen) {
+            bool probar = false; Vector3 mnL(0,0,0), mxL(0,0,0);
+            if (skinArmature) {
+                if (skinAabbOk) {
+                    const float dx = (skinAabbMax.x-skinAabbMin.x)*0.15f + 0.05f;
+                    const float dy = (skinAabbMax.y-skinAabbMin.y)*0.15f + 0.05f;
+                    const float dz = (skinAabbMax.z-skinAabbMin.z)*0.15f + 0.05f;
+                    mnL = Vector3(skinAabbMin.x-dx, skinAabbMin.y-dy, skinAabbMin.z-dz);
+                    mxL = Vector3(skinAabbMax.x+dx, skinAabbMax.y+dy, skinAabbMax.z+dz);
+                    probar = true;
+                }
+            } else if (aabbOk) { mnL = aabbMin; mxL = aabbMax; probar = true; }
+            if (probar) {
+                // el hook testea el AABB en coords LOCALES contra las matrices VIGENTES del pase
+                // (el ModelView ya trae el transform de este objeto): sin esquinas a mundo aca.
+                if (!g_mallaVisibleHook(mnL, mxL)) {
+                    if (skinArmature && ++skinCullSeguidos >= 30) {
+                        skinCullSeguidos = 0;
+                        extern void SkinearMesh(Mesh*); SkinearMesh(this); // refresca pose + AABB, sin dibujar
+                    }
+                    return;
+                }
+                skinCullSeguidos = 0;
+            }
+        }
+    }
     w3dEngine::g_statMeshes++; // estadistica de frame (bench): mallas que llegan a dibujarse
+    // GRABADOR de visibilidad (harness 'cullcamaras'): registra el NOMBRE de cada malla que pasa el
+    // autocull y llega a dibujarse, acumulado sobre la cinematica -> lo que las camaras VEN de verdad.
+    // Lo no visto nunca se puede borrar del .w3d (el exterior, el fondo tapado). g_cullGrabar lo prende
+    // el comando; NULL/false = costo cero en el juego real.
+    extern bool g_cullGrabar; extern void W3dCullVistaRegistrar(const char*);
+    if (g_cullGrabar) W3dCullVistaRegistrar(this->name.c_str());
     // el material por defecto SIEMPRE tiene que existir (en Symbian arranca NULL)
     if (!MaterialDefecto) MaterialDefecto = new Material("Default", true);
     namespace gfx = w3dEngine;
@@ -1459,7 +1521,15 @@ void Mesh::RenderObject() {
         if (!w3dRenderSinLuz) for (size_t g = 0; g < materialsGroup.size(); g++)
             if (materialsGroup[g].material && materialsGroup[g].material->lighting){ algunaLuz = true; break; }
         skinConLuz = algunaLuz || w3dRenderNormalColor;
+        // medicion para el log PERF del device (SkeletalAnimation.cpp): sin reloj instalado, costo cero
+        extern unsigned int (*g_skinRelojMs)();
+        extern int g_skinPerfMs, g_skinPerfSkins, g_skinPerfCompletos, g_skinUltimoCamino;
+        const unsigned int _skinT0 = g_skinRelojMs ? g_skinRelojMs() : 0;
         extern void SkinearMesh(Mesh*); SkinearMesh(this);
+        if (g_skinRelojMs) {
+            g_skinPerfMs += (int)(g_skinRelojMs() - _skinT0);
+            if (g_skinUltimoCamino >= 2) { g_skinPerfSkins++; if (g_skinUltimoCamino == 4) g_skinPerfCompletos++; }
+        }
         if (skinVertex) posBuf = skinVertex;
         if (skinConLuz && skinNormals) norBuf = skinNormals;
     }

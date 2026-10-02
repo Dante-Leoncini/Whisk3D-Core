@@ -4,6 +4,7 @@
 #include "w3dFilesystem.h"   // MaterializarEdicion relee la entrada del contenedor
 #include "objects/Mesh.h"
 #include "objects/MallaRecurso.h"   // MaterializarEdicion: la edicion de una malla que usa un recurso
+#include "base/w3dlog.h"            // w3dLogf (diagnostico del reagrupamiento de puntos)
 
 #include <algorithm>
 #include <map>
@@ -726,6 +727,79 @@ void AvisoMotivo(W3dMallaInfo* info, const std::string& motivo) {
 } // namespace
 
 // ============================================================================
+//  REAGRUPAR LA IDENTIDAD DE LOS PUNTOS (vertCtrlPoint) de una malla SKINNEADA cuyo .w3db
+//  trae ctrl = IDENTIDAD (cada render-vert su propio control-point). Muchos assets vienen
+//  como "sopa de triangulos" (tris*3 = render-verts, cero comparticion): el G-Man de la
+//  intro HL2 tiene 10170 render-verts pero SOLO 1695 posiciones unicas (6x). Sin agrupar,
+//  el skinning mezcla la matriz y la aplica 6 VECES por posicion -> en el N95 eran ~200 ms/
+//  frame (4 fps). El CSR del skinning (SkeletalAnimation.cpp) YA esta hecho para trabajar
+//  1 vez por control-point y escalear a los render-verts ("banana 6x"); solo le faltaba un
+//  vertCtrlPoint agrupado. Esto lo deja igual que una malla cargada por el loader de TEXTO
+//  (que ya agrupa con W3dMallaCalcularPuntos) -> LOSSLESS: la pose resultante es identica
+//  (los render-verts de un punto comparten posicion Y pesos Y deltas de forma por firma, asi
+//  que su skinning es el mismo). El render (triangulos/UV) no se toca: usa los arrays por
+//  render-vert. Si algun merge diera distinto peso/delta (no deberia, la firma lo separa),
+//  se ABORTA y la malla queda como estaba.
+// ============================================================================
+void W3dReagruparPuntosSkin(Mesh* m) {
+    if (!m || m->vertexSize <= 0) return;
+    if (m->vertexGroups.empty() && m->shapeKeys.empty()) return;   // sin skinning no vale la pena
+    const int nV = m->vertexSize;
+    if ((int)m->vertCtrlPoint.size() != nV) return;
+    W3dMallaPuntos P;
+    W3dMallaCalcularPuntos(m, P);
+    if (P.nP <= 0 || (int)P.rvAPunto.size() != nV) return;
+    const std::vector<int>& aPt = P.rvAPunto;   // render-vert -> punto nuevo
+    // nCtrl VIEJO (max vertCtrlPoint+1) y mapeo CP-viejo -> punto-nuevo. Los grupos/formas indexan por
+    // CP viejo (no por render-vert): como TODOS los render-verts de un CP comparten posicion+pesos, todos
+    // caen en el MISMO punto nuevo -> basta tomar el de cualquiera. Asi funciona desde un ctrl identidad
+    // O casi-identidad (el .w3db trae 10151 CP de 10170: ya agrupa unos pocos, pero no los 6x reales).
+    int nCpViejo = 0;
+    for (int ri = 0; ri < nV; ri++){ int c = m->vertCtrlPoint[(size_t)ri]; if (c + 1 > nCpViejo) nCpViejo = c + 1; }
+    if (nCpViejo <= 0 || P.nP >= nCpViejo) return;   // ya tan agrupado como se puede: no hay nada que ganar
+    std::vector<int> cpAPt((size_t)nCpViejo, -1);
+    for (int ri = 0; ri < nV; ri++){ int c = m->vertCtrlPoint[(size_t)ri]; if (c >= 0 && c < nCpViejo && cpAPt[(size_t)c] < 0) cpAPt[(size_t)c] = aPt[(size_t)ri]; }
+    // --- remapear grupos a temporales (dedup por punto nuevo); abortar si hay conflicto de peso ---
+    std::vector<std::vector<int> >   gV(m->vertexGroups.size());
+    std::vector<std::vector<float> > gW(m->vertexGroups.size());
+    for (size_t g = 0; g < m->vertexGroups.size(); g++) {
+        VertexGroup* vg = m->vertexGroups[g]; if (!vg) continue;
+        std::map<int,float> acc;
+        for (size_t k = 0; k < vg->verts.size() && k < vg->pesos.size(); k++) {
+            int viejo = vg->verts[k]; if (viejo < 0 || viejo >= nCpViejo) continue;   // fuera de rango: entrada huerfana (el skinning ya la ignora)
+            int np = cpAPt[(size_t)viejo]; if (np < 0 || np >= P.nP) continue;        // CP sin render-vert: peso huerfano -> saltear
+            float w = vg->pesos[k];
+            std::map<int,float>::iterator it = acc.find(np);
+            if (it == acc.end()) acc[np] = w;
+            else if (it->second != w) { float d = it->second - w; if (d < 0) d = -d; if (d > 1e-6f) return; }  // conflicto (no deberia: la firma separa) -> abortar sin tocar
+        }
+        gV[g].reserve(acc.size()); gW[g].reserve(acc.size());
+        for (std::map<int,float>::iterator it = acc.begin(); it != acc.end(); ++it) { gV[g].push_back(it->first); gW[g].push_back(it->second); }
+    }
+    // --- remapear shape keys a temporales (dedup por punto nuevo); abortar si hay conflicto de delta ---
+    std::vector<std::vector<int> >   kI(m->shapeKeys.size());
+    std::vector<std::vector<float> > kD(m->shapeKeys.size());
+    for (size_t s = 0; s < m->shapeKeys.size(); s++) {
+        const W3dShapeKey& sk = m->shapeKeys[s];
+        std::map<int, size_t> pos;   // punto nuevo -> indice en kI/kD (para comparar delta)
+        for (size_t j = 0; j < sk.idx.size() && j*3+2 < sk.d.size(); j++) {
+            int viejo = sk.idx[j]; if (viejo < 0 || viejo >= nCpViejo) continue;   // huerfana: saltear
+            int np = cpAPt[(size_t)viejo]; if (np < 0 || np >= P.nP) continue;      // CP sin render-vert: saltear
+            float dx = sk.d[j*3], dy = sk.d[j*3+1], dz = sk.d[j*3+2];
+            std::map<int,size_t>::iterator it = pos.find(np);
+            if (it == pos.end()) { pos[np] = kI[s].size(); kI[s].push_back(np); kD[s].push_back(dx); kD[s].push_back(dy); kD[s].push_back(dz); }
+            else { size_t o = it->second; float a0=kD[s][o*3]-dx, a1=kD[s][o*3+1]-dy, a2=kD[s][o*3+2]-dz;
+                   if (a0<0)a0=-a0; if(a1<0)a1=-a1; if(a2<0)a2=-a2; if (a0>1e-6f||a1>1e-6f||a2>1e-6f) return; }  // conflicto (no deberia) -> abortar sin tocar
+        }
+    }
+    // --- todo validado: COMMIT (nadie mas uso estos datos todavia; recien se cargo la malla) ---
+    for (size_t i = 0; i < aPt.size(); i++) m->vertCtrlPoint[i] = aPt[i];
+    m->posRep = m->vertCtrlPoint;
+    for (size_t g = 0; g < m->vertexGroups.size(); g++) { VertexGroup* vg = m->vertexGroups[g]; if (!vg) continue; vg->verts.swap(gV[g]); vg->pesos.swap(gW[g]); }
+    for (size_t s = 0; s < m->shapeKeys.size(); s++) { m->shapeKeys[s].idx.swap(kI[s]); m->shapeKeys[s].d.swap(kD[s]); }
+}
+
+// ============================================================================
 //                               L E C T U R A
 // ============================================================================
 
@@ -830,6 +904,9 @@ bool W3dMallaBinLeer(const unsigned char* d, size_t n, Mesh* m, W3dMallaInfo* in
     m->uvGrupoActivo = ActivoValido(I.uvGrupoActivo, (int)m->uvGroups.size());
     m->uv2dRest.clear();
     if (v.uvRest && nRV > 0) { m->uv2dRest.resize((size_t)nRV * 2); CopiarF32(v.uvRest, &m->uv2dRest[0], (size_t)nRV * 2); }
+
+    // (El agrupamiento de los puntos de skinning NO se hace aca: viene horneado en el .w3db de una malla
+    //  guardada como no-editable. Ver W3dMallaBinEscribir / W3dReagruparPuntosSkin.)
 
     // ---- AABB / centro / radio / posiciones unicas: HORNEADOS. Si el proyecto pide
     //      el OTRO modo (se guardo editable y ahora es escenario, o al reves) se
@@ -1278,9 +1355,16 @@ bool W3dMallaBinEscribir(const Mesh* m, const W3dMallaBinIndices* canon, std::st
         avisos->push_back(s);
     }
 
-    // ---- IDENTIDAD: cada render-vert -> el PRIMER render-vert de su punto ----
+    // ---- IDENTIDAD: cada render-vert -> su punto de control ----
+    //  EDITABLE: el PRIMER render-vert del punto (representante), porque la edicion (posRep/bordes) razona en
+    //    indices de render-vert. Deja nCtrl ~= nV (disperso) pero preserva toda la info de edicion.
+    //  NO-EDITABLE (malla de JUEGO): el INDICE DE PUNTO COMPACTO (0..nP-1). Asi al abrir, vertCtrlPoint ya viene
+    //    agrupado (nCtrl = nP) y el skinning NO recalcula nada en el telefono (el agrupamiento queda HORNEADO).
+    //    Para que cierre, los vertex groups y shape keys de abajo tambien se escriben POR PUNTO en este modo.
     std::vector<int> ctrl((size_t)(nV > 0 ? nV : 1), 0);
-    {
+    if (m->noEditable) {
+        for (int i = 0; i < nV; i++) { const int p = P.rvAPunto[(size_t)i]; ctrl[(size_t)i] = (p >= 0) ? p : i; }
+    } else {
         std::vector<int> repDePunto((size_t)(nP > 0 ? nP : 1), -1);
         for (int i = 0; i < nV; i++) {
             const int p = P.rvAPunto[(size_t)i];
@@ -1560,13 +1644,18 @@ bool W3dMallaBinEscribir(const Mesh* m, const W3dMallaBinIndices* canon, std::st
     }
     std::map<int, int> repDeCp;
     W3dMallaRepDeCp(m, repDeCp);
+    // EDITABLE: los pesos/deltas se reparten a TODOS los render-verts del punto (vg->verts = render-verts), que es
+    //   lo que el lector editable y el weight paint esperan. NO-EDITABLE: se escriben POR PUNTO (vg->verts = punto
+    //   compacto), en el MISMO espacio que el ctrl compacto -> el skinning los usa directo, sin repartir ni agrupar.
+    const bool compacto = m->noEditable;
     if (nVGsalen > 0) {
         pb = AbrirBloque(out, "RVGR", W3DB_GLOBAL, (unsigned)nVGsalen);
         for (size_t g = 0; g < m->vertexGroups.size(); g++) {
             std::vector<int> pi; std::vector<float> pw;
             if (!W3dMallaGrupoPorPunto(m, P, repDeCp, g, pi, pw, avisos)) continue;
             std::vector<int> ri; std::vector<float> rw;
-            for (size_t k = 0; k < pi.size(); k++) {
+            if (compacto) { ri = pi; rw = pw; }   // por punto compacto (0..nP-1)
+            else for (size_t k = 0; k < pi.size(); k++) {
                 const int p = pi[k];
                 for (int q = csrOff[(size_t)p]; q < csrOff[(size_t)p + 1]; q++) { ri.push_back(csrRv[(size_t)q]); rw.push_back(pw[k]); }
             }
@@ -1582,7 +1671,8 @@ bool W3dMallaBinEscribir(const Mesh* m, const W3dMallaBinIndices* canon, std::st
             std::vector<int> pi; std::vector<float> pd;
             W3dMallaFormaPorPunto(m, P, repDeCp, k, pi, pd);
             std::vector<int> ri; std::vector<float> rd;
-            for (size_t q = 0; q < pi.size(); q++) {
+            if (compacto) { ri = pi; rd = pd; }   // por punto compacto (0..nP-1)
+            else for (size_t q = 0; q < pi.size(); q++) {
                 const int p = pi[q];
                 for (int r = csrOff[(size_t)p]; r < csrOff[(size_t)p + 1]; r++) {
                     ri.push_back(csrRv[(size_t)r]);

@@ -111,6 +111,7 @@ namespace w3dEngine {
     void Rotatef(float angleDeg, float x, float y, float z); // rotacion sobre un eje
     void Scalef(float x, float y, float z);
     void MultMatrix(const float* m16);  // multiplica la matriz actual por m (column-major)
+    void GetMatrix(Matrix m, float* out16); // lee la matriz ACTUAL de ese stack (estado de matriz CPU-side, barato; ver TexMatrixMatcap)
     void LoadMatrix(const float* m16);   // carga m como matriz actual (ej: la vista de CameraBase)
 
     // proyecciones (cargan/multiplican la matriz PROJECTION activa)

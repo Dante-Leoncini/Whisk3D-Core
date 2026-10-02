@@ -63,6 +63,12 @@ void W3dSoundStop(int voice);        // para una voz por su id (no-op si ya term
 void W3dSoundStopFade(int voice, float fadeSeg);
 void W3dSoundStopAll();
 void W3dSoundSetVolume(int voice, float volume);
+// POSICION de reproduccion de una voz: segundos del SONIDO ya mezclados (el reloj real del
+// stream, el que escucha el usuario). Avanza en el hilo de audio aunque el render se trabe,
+// asi que sirve de reloj maestro para sincronizar una animacion con su audio (frameskip:
+// la animacion salta a donde va el sonido). < 0 = la voz no existe (termino / handle viejo).
+// Con pitch != 1 son segundos DEL SONIDO (posicion en el wav), no de pared.
+float W3dSoundPos(int voice);
 void W3dAudioMasterVolume(float v);  // volumen global 0..1 (master de usuario)
 void W3dAudioJuegoVolume(float v);   // volumen del JUEGO 0..1 (lo setea la tarjeta Juego; indep. del master)
 

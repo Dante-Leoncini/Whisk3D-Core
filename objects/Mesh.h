@@ -439,6 +439,24 @@ class Mesh : public Object {
                                  // en el MISMO frame) se re-skinnea aunque lastSkinFrame no cambie
         std::vector<GLfloat> skinBordesBuf; // contorno/overlay deformado (edges con skinVertex); cache por frame
         int       lastSkinBordesFrame;      // cache del contorno skinneado
+        // AUTOCULL por frustum: AABB LOCAL de la ULTIMA pose skinneada (lo actualiza SkinearMesh; para
+        // la malla sin esqueleto se usa aabbMin/aabbMax de siempre) + cuantos frames seguidos quedo
+        // fuera de camara (cada tanto se re-skinnea sin dibujar para refrescar el AABB). Ver RenderObject.
+        Vector3   skinAabbMin, skinAabbMax;
+        bool      skinAabbOk;
+        int       skinCullSeguidos;
+        // SKINNING INCREMENTAL (SkeletalAnimation.cpp): referencia de lo APLICADO + indices inversos
+        // para traducir "se movio el hueso B / la forma K" a la lista exacta de vertices a recalcular.
+        std::vector<float> skinPrevMat;    // 12f por hueso (rot 3x3 + traslacion) con los que se skinneo por ultima vez
+        std::vector<float> skinPrevPesos;  // pesos de shape keys ya aplicados en skinVertex
+        std::vector<int>   skinBoneCpOff;  // CSR inverso: hueso -> CPs que influye
+        std::vector<int>   skinBoneCp;
+        std::vector<int>   skinCpRvOff;    // CSR inverso: CP -> render-verts
+        std::vector<int>   skinCpRv;
+        std::vector<unsigned char> skinCpDirty; // bitmap temporal por CP (se limpia por lista, no con memset)
+        float     skinEpsPos, skinEpsRot;  // umbral sub-visible (escalado al tamaño de la malla)
+        bool      skinIncOk;               // hay referencia valida (un pase COMPLETO con este layout)
+        bool      skinPrevConLuz;          // el ultimo pase completo skinneo normales?
         unsigned  skinBordesPoseSerial;     // poseSerial con el que se calculo el contorno; si cambia (posar/elegir clip
                                             // en el mismo frame) se recalcula el borde (sino la silueta flota en bind)
         // CACHE CSR de pesos por CONTROL-POINT (no por render-vert): se arma UNA vez, no por frame. Un mesh de juego
