@@ -113,6 +113,12 @@ class Material {
         float depth_bias;  // unidades de glPolygonOffset (default 0 = sin offset). NEGATIVO = hacia el ojo.
                            // -4 anda en PC (z de 24 bits). En el N95 (z de 16 bits) hace falta -8..-16:
                            // el render lo multiplica x4 en Symbian, asi que el archivo guarda -4 igual.
+        // SESGO DE PROFUNDIDAD EN METROS (espacio de la camara): la malla se dibuja como si estuviera N metros mas LEJOS
+        // (positivo) o mas CERCA (negativo) para el z-buffer, sin moverse en pantalla. A diferencia de depth_bias
+        // (unidades del z-buffer, que valen distinto segun la distancia), esto pesa lo mismo cerca y lejos: un piso a
+        // +0.05 pierde los empates de 5 cm contra los autos y sombras que se apoyan en el (como un arcade sin z-buffer
+        // que dibuja el auto despues de la pista). 0 = nada.
+        float sesgo_metros;
         int  orden_pasada; // 0 = opaco, 1 = decal, 2 = transparente. Dentro de una MALLA los grupos de
                            // material se dibujan en este orden (opaco -> decal -> transparente). Entre
                            // objetos distintos el orden lo sigue decidiendo el arbol / la Collection.

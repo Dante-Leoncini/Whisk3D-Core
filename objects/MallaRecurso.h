@@ -126,6 +126,8 @@ struct MallaRecurso : public MallaDatos {
     W3dAjenos sello;                     // sello por dominio + bloques .w3db que no se entienden + REQ
 
     // VBO COMPARTIDOS (una subida para todos los usuarios): 0 = sin crear
+    void*        flujos;                 // los flujos de indices derivados por parte (MallaFlujos.h; NULL = sin armar)
+    int          refsRutina;             // pasos de Rutina que la dibujan (la mantienen cargada aunque no la use un objeto)
     unsigned int vboPos, vboNor, vboCol, vboUV, vboIdx;
     unsigned     vboVer;                 // 'version' con la que se subieron (0 = nunca)
 
@@ -296,6 +298,17 @@ const std::vector<GLfloat>*  W3dMallaBordesVista(const Mesh* m);
 // ---------------------------------------------------------------------------
 // sube (una vez por version) los arrays del recurso a sus VBO. false = sin VBO en esta plataforma.
 bool W3dMallaRecursoAsegurarVBO(MallaRecurso* r);
+// (la Rutina) una referencia PERMANENTE sobre el recurso: lo carga si hace falta y lo deja cargado aunque ningun
+// objeto lo use. true = cargado. Cada Retener se paga con un Soltar
+bool W3dMallaRecursoRetener(MallaRecurso* r);
+void W3dMallaRecursoSoltar(MallaRecurso* r);
+// el recurso sigue en el registro y no se borro (un puntero guardado por una rutina)
+bool W3dMallaRecursoVivo(const MallaRecurso* r);
+// sube cada vez que un recurso sale del registro (un puntero vivo sigue vivo mientras no cambie)
+unsigned W3dMallasGen();
+// sube con todo lo que puede cambiar lo que valida el editor de una RUTINA: sus pasos (Resolver, el panel, setPaso, la
+// animacion de pasos) y los datos de una malla (version). Jugando, una rutina se revalida solo si cambio (RutinaEditor)
+extern unsigned g_w3dRutinasGen;
 
 // ---------------------------------------------------------------------------
 //  EDICION PENDIENTE y MALLAS EDITADAS

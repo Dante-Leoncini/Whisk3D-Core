@@ -49,17 +49,56 @@ static std::set<const Object*>& ObjetosVivos() {
     if (!s) s = new std::set<const Object*>();
     return *s;
 }
+// la CACHE de la consulta: W3dObjetoVivo corre en CADA funcion de lua que recibe un objeto (cientos por cuadro en un
+// juego) y el set son ~12 saltos de puntero (en el N95, fallos de cache). Una entrada dice "o estaba vivo en la
+// generacion g": cualquier muerte sube la generacion y las invalida todas (los nacimientos no: un vivo sigue vivo).
+// Ceros estaticos: valen desde antes del primer constructor global (la generacion 0 no existe)
+struct W3dVivoCache { const Object* o; unsigned int gen; };
+static W3dVivoCache gVivoCache[256];
+static unsigned int gVivoGen = 1;
+static unsigned int gVivosCambios = 1;   // cualquier alta o baja del conjunto (W3dVivosDeTipo)
+static void ObjetoMuere(const Object* o) { ObjetosVivos().erase(o); gVivoGen++; gVivosCambios++; }
 bool W3dObjetoVivo(const Object* o) {
     if (!o) return false;
+    W3dVivoCache& c = gVivoCache[((unsigned int)(size_t)o * 2654435761u) >> 24];
+    if (c.o == o && c.gen == gVivoGen) return true;
     const std::set<const Object*>& v = ObjetosVivos();
-    return v.find(o) != v.end();
+    if (v.find(o) == v.end()) return false;
+    c.o = o; c.gen = gVivoGen;
+    return true;
+}
+unsigned W3dObjetosGen() { return gVivoGen; }
+
+// LOS VIVOS POR TIPO (ver Objects.h): se rearman del conjunto de vivos solo cuando cambio (nacio, murio o volvio
+// alguno); el tipo de un objeto no cambia nunca
+static const int kTiposN = (int)ObjectType::rutina + 1;
+const std::vector<Object*>& W3dVivosDeTipo(int tipo) {
+    static std::vector<Object*> listas[kTiposN];
+    static unsigned int armadas = 0;
+    static const std::vector<Object*> vacia;
+    if (tipo < 0 || tipo >= kTiposN) return vacia;
+    if (armadas != gVivosCambios) {
+        for (int k = 0; k < kTiposN; k++) listas[k].clear();
+        const std::set<const Object*>& v = ObjetosVivos();
+        for (std::set<const Object*>::const_iterator it = v.begin(); it != v.end(); ++it) {
+            Object* o = const_cast<Object*>(*it);
+            const int t = (int)o->getType();
+            if (t >= 0 && t < kTiposN) listas[t].push_back(o);
+        }
+        armadas = gVivosCambios;
+    }
+    return listas[tipo];
+}
+bool W3dColgadoDe(const Object* o, const Object* raiz) {
+    for (; o; o = o->Parent) if (o == raiz) return true;
+    return false;
 }
 bool W3dObjetoVivoSerial(const Object* o, unsigned int serial) {
     return W3dObjetoVivo(o) && o->serial == serial;
 }
 void W3dObjetoVivoMarcar(const Object* o, bool vivo) {
     if (!o) return;
-    if (vivo) ObjetosVivos().insert(o); else ObjetosVivos().erase(o);
+    if (vivo) { ObjetosVivos().insert(o); gVivosCambios++; } else ObjetoMuere(o);
 }
 
 // ganchos para desvincular tambien lo que NO cuelga del arbol vivo (ver Objects.h).
@@ -141,6 +180,7 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
       visible(true),
       renderizable(true),
       estatico(true),   // por defecto NO se mueve en runtime (convencion RenderWare); el juego marca dinamicos a Crash/enemigos
+      sinTransformacion(false),
       desplegado(true),
       showRelantionshipsLines(true),
       posadoPorCurvas(false),   // nace en reposo: nadie lo poso todavia
@@ -165,6 +205,7 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
 
     serial = W3dSerialProx++;    // identidad estable: se asigna al NACER y no se reusa jamas
     ObjetosVivos().insert(this); // (ver W3dObjetoVivo: lo que lua trae de vuelta se valida contra esto)
+    gVivosCambios++;
     constraintActivo = -1;       // stack de constraints vacio: no hay ninguno seleccionado
     consEval = false;            // guardia de reentrada de la evaluacion (ver Objects.h)
     rotMode = RotEulerXYZ;       // default: XYZ Euler
@@ -430,7 +471,7 @@ static void DesvincularDelArbol(Object* nodo, Object* borrado){
 }
 
 Object::~Object() {
-    ObjetosVivos().erase(this);               // deja de ser un objeto VIVO (ver W3dObjetoVivo)
+    ObjetoMuere(this);                        // deja de ser un objeto VIVO (ver W3dObjetoVivo)
     delete scriptDatos; scriptDatos = NULL;   // datos del script lua (si tenia)
     W3dRigidosOlvidar(this);                  // su cuerpo rigido runtime (si tenia)
     // ...y su colision de mallas (colSuelo/colPared) si alguna consulta la leyo: la cache es por
@@ -1235,12 +1276,32 @@ Matrix4 Object::BuildMatrix(const Vector3& pos, const Quaternion& rot, const Vec
 
 void Object::RenderObject(){}
 
+// algun hijo visible dibuja algo (el mismo o alguno de los suyos)
+static bool HijosDibujan(Object* o) {
+    for (size_t c = 0; c < o->Childrens.size(); c++) {
+        Object* h = o->Childrens[c];
+        if (h->visible && (h->DibujaAlgo() || HijosDibujan(h))) return true;
+    }
+    return false;
+}
+
 // Funcion recursiva para renderizar un objeto y sus hijos
 void Object::Render(){
     if (!visible) return;
     // LOCAL VIEW: si un viewport esta aislando, solo se traversa/dibuja lo que esta en el set (seleccion +
     // descendencia + cadena de padres para poder ALCANZAR a los seleccionados). Fuera del editor: false -> gratis.
     if (g_localViewActivo && g_localViewVisibles && !g_localViewVisibles->count(this)) return;
+    // nada que dibujar en todo el subarbol visible (los vacios que mueve un script y que dibuja una rutina, o con todo lo
+    // de adentro oculto): ni push, ni mult, ni pop
+    if (!DibujaAlgo() && !HijosDibujan(this)) return;
+    // sin transformacion propia (la Rutina): ni push, ni mult, ni pop (3 llamadas GL menos por objeto)
+    if (sinTransformacion) {
+        if (SaltarEsteCuadro()) return;
+        RenderObject();
+        if (!DibujaSusHijos()) RenderHijos();
+        DespuesDeRender();
+        return;
+    }
     // Guardar la matriz actual (por la abstraccion: glPushMatrix en desktop, stack propio en ES2/WebGL)
     w3dEngine::PushMatrix();
 
@@ -1318,6 +1379,7 @@ const char* W3dNombreTipo(ObjectType t){
         case ObjectType::hitbox:     return "hitbox";
         case ObjectType::prefab:     return "prefab";
         case ObjectType::proxy:      return "proxy";
+        case ObjectType::rutina:     return "rutina";
     }
     return "objeto";
 }

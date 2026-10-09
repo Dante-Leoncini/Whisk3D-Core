@@ -54,6 +54,7 @@ namespace w3dEngine {
     enum VArray { VertexArray, TexCoordArray, NormalArray, ColorArray };
     void EnableArray(VArray a);
     void DisableArray(VArray a);
+    int  ArrayEstado(VArray a);   // lo que sabe el cache: 1 prendido, 0 apagado, -1 no se sabe (el editor valida con esto)
 
     // --- buffers ---
     void ClearColor(float r, float g, float b, float a);
@@ -113,6 +114,9 @@ namespace w3dEngine {
     void MultMatrix(const float* m16);  // multiplica la matriz actual por m (column-major)
     void GetMatrix(Matrix m, float* out16); // lee la matriz ACTUAL de ese stack (estado de matriz CPU-side, barato; ver TexMatrixMatcap)
     void LoadMatrix(const float* m16);   // carga m como matriz actual (ej: la vista de CameraBase)
+    // el SESGO EN METROS: la proyeccion del pase con la profundidad corrida m metros de camara (+ aleja, - acerca) sin
+    // mover la geometria en pantalla. Estado como los demas: solo llama al driver si cambia (0 = la del pase)
+    void SesgoMetros(float m);
 
     // proyecciones (cargan/multiplican la matriz PROJECTION activa)
     void Ortho(float l, float r, float b, float t, float n, float f);
@@ -142,6 +146,9 @@ namespace w3dEngine {
     // del matcap por vertice. on=arma la matriz; off=la resetea a identidad. (Es el "normal del ojo", aprox del
     // GL_SPHERE_MAP exacto.) NO mezclar con TexGenSphere (los dos tocan la matriz de textura).
     void TexMatrixMatcap(bool on);
+    // la matriz de textura como DESPLAZAMIENTO y ESCALA de las UV (u' = u*su + du): mover un reflejo o una cinta sin
+    // reescribir las UV. (0,0,1,1) = identidad. Comparte el cache del matcap: TexMatrixMatcap(false) la resetea
+    void TexMatrixUV(float du, float dv, float su, float sv);
 
     // true si hay glTexGen (sphere-map EXACTO por hardware: PC). false en GLES1 (N95) -> ese modo cae a software.
     bool TieneTexGen();
@@ -181,6 +188,13 @@ namespace w3dEngine {
     enum LightF { LightConstantAtt, LightLinearAtt, LightQuadraticAtt };
     void Light0f(LightF p, float v);
     void SetLightEnabled(unsigned int glLightId, bool on); // habilita/apaga una luz por su id GL
+    // --- luces por NUMERO (0..LucesMax-1 = GL_LIGHT0..7): las usa la Rutina, que fija cada estado suelto. La
+    //     posicion se transforma con la modelview ACTIVA (como glLightfv): w = 0 direccional, 1 puntual. Fuera de
+    //     rango = nada. GLES2/WebGL: solo la 0 (el shader tiene una luz) y sin ambiente global. ---
+    enum { LucesMax = 8 };
+    void LightNfv(int i, LightFv p, const float* v);
+    void LightN(int i, bool on);                   // glEnable/glDisable(GL_LIGHTi) (la 0 pasa por el cache: Light0)
+    void LightModelAmbient(const float* rgba);     // glLightModelfv(GL_LIGHT_MODEL_AMBIENT)
 
     // query: usa el CACHE del motor (NO llama glIsEnabled, que flushea el GPU en el N95)
     bool IsEnabled(Cap c);
@@ -310,6 +324,14 @@ namespace w3dEngine {
     void DrawLinesClientIdx(int count, const MeshIndex* indices);
     void UnbindVBOs();                 // vuelve a client-side arrays (bind ARRAY/ELEMENT a 0)
 
+    // --- PRIMITIVAS de GL ES 1.1 (la Rutina: "dibujar elementos" con la primitiva que se elija). QUADS,
+    //     QUAD_STRIP y POLYGON no existen en GL ES: los SIMULA quien llama, pasando los indices ya convertidos a
+    //     triangulos (mas indices, mas lento). ---
+    enum Primitiva { PrimPuntos = 0, PrimLineas, PrimTiraLineas, PrimLazoLineas, PrimTriangulos, PrimTiraTriangulos,
+                     PrimAbanico };
+    void DrawElements(Primitiva p, int count, const MeshIndex* indices);   // indices en RAM (client-side)
+    void DrawElementsVBO(Primitiva p, int count, int firstIndex);          // del IBO bindeado (offset en indices)
+
     // dibuja triangulos indexados (indices ushort)
     void DrawTriangles(int count, const MeshIndex* indices); // index buffer 16/32 bits (ver crossplatform.h)
     void DrawTrianglesArray(int vertexCount); // glDrawArrays(GL_TRIANGLES): la UI 2D no indexa
@@ -338,6 +360,19 @@ namespace w3dEngine {
     // frame (antes del traversal), no por malla: nada de lo que corre adentro
     // del pase puede tocar GL crudo (lo vigila AuditarEstado en debug).
     void Invalidate();
+    // el estado de MATERIAL que la escena (una rutina, una malla) puede dejar puesto y lo que se dibuja despues
+    // (overlays, HUD, paneles) no repone: alpha test, sesgo de poligonos, matriz y modo de textura, sombreado, luz y
+    // color de vertice. Por el cache: si ya esta asi, no llama al driver. Lo llama el cierre del pase de escena
+    void EstadoBase();
+    // FOTO del estado cacheado (el CONSTRUCTOR de una Rutina en modo solo-juego corre UNA vez): Tomar guarda lo que
+    // el motor cree puesto (caps, textura, z, mezcla, texenv, alpha, arrays, material, color, polygon offset);
+    // Reponer lo vuelve a poner PASANDO POR EL CACHE: solo llama al driver por lo que algo cambio desde la foto
+    // (el HUD 2D de cada cuadro, por ejemplo). Los parametros que el cache no lleva (niebla, luces, clear color)
+    // siguen puestos si nadie los toca. EstadoFotoSoportada() = false en un backend sin cache (GLES2): ahi el
+    // constructor corre en cada cuadro.
+    bool EstadoFotoSoportada();
+    void EstadoFotoTomar();
+    void EstadoFotoReponer();
     // auditoria del cache (PC/debug): compara el cache contra GL real via
     // glIsEnabled/glGet (flush en tilers: JAMAS por frame en dispositivo).
     // Devuelve la cantidad de desincronizaciones (0 = coherente) y las loguea.
@@ -360,15 +395,49 @@ namespace w3dEngine {
     // cliente, depth func/mask, blend func, texenv, texgen/matriz de matcap, alpha
     // test). Los ahorrados por el cache NO cuentan: este numero ES el churn.
     extern int g_statStateChanges;
+    // llamadas al driver que los otros contadores NO ven: matrices (push/pop/mult/load/trasladar/rotar/escalar/
+    // modo), lecturas de matriz (glGet), punteros de arrays y binds de VBO. Solo el pipeline fijo (PC / N95)
+    extern int g_statOtras;
     extern int g_statUploadBytes;  // bytes subidos a buffer objects (VBO/IBO) este frame
     extern int g_statTrisOpacos;   // triangulos dibujados con Blend APAGADO
     extern int g_statTrisBlend;    // triangulos dibujados con Blend PRENDIDO
-    // desglose de drawcalls por CATEGORIA: el pase que dibuja declara la suya
-    // (StatsReset vuelve a Escena; el flush de particulas se marca solo).
-    enum StatCat { StatCatEscena = 0, StatCatParticulas, StatCatUI, StatCatCount_ };
-    extern int g_statDcCat[StatCatCount_];
+    // desglose por CATEGORIA: el pase que dibuja declara la suya (StatScope). El cuadro arranca en Editor (la interfaz
+    // del editor), el pase de escena es Escena, el flush de particulas se marca solo y el HUD del juego es UI.
+    enum StatCat { StatCatEscena = 0, StatCatParticulas, StatCatUI, StatCatEditor, StatCatCount_ };
+    extern int g_statDcCat[StatCatCount_];   // draws de triangulos por categoria
     void StatCategoria(StatCat c);
+    StatCat StatCategoriaActual();
+    struct StatScope {                       // cambia la categoria en un bloque y al salir la repone
+        StatCat antes;
+        explicit StatScope(StatCat c) : antes(StatCategoriaActual()) { StatCategoria(c); }
+        ~StatScope() { StatCategoria(antes); }
+    };
     void StatsReset();
+    // TODAS las llamadas al driver (cada gl* = 1, tambien las que los contadores de arriba no ven: clear, viewport,
+    // scissor, color, niebla, lineas...) por categoria, en el cuadro que esta corriendo. El GL crudo que queda fuera
+    // del motor (el layout de Symbian, el cursor) se suma con StatRaw
+    extern int g_statLlamadas[StatCatCount_];
+    void StatRaw(int n);
+    // la TRAZA (medir): con g_trazaGL cada llamada suma en su texto ("glBindTexture(...)"); TrazaGLVer la imprime
+    // ordenada de mas a menos y la vacia. Solo el backend de pipeline fijo
+    extern bool g_trazaGL;
+    void TrazaGL(const char* llamada);
+    void TrazaGLVer();
+    // GL CRUDO fuera del motor (las luces, el layout y el cursor de Symbian, el video): W3D_GL_CRUDO(glXxx(...)) la
+    // cuenta (mejor pasarlo por el motor: el cache de estado no lo ve)
+    #define W3D_GL_CRUDO(llamada) (w3dEngine::StatRaw(1), (llamada))
+    // el ULTIMO CUADRO completo (escena + HUD del juego + interfaz del editor): lo que muestran el overlay, statsvivo y
+    // el [PERF]. StatsCuadro() lo cierra (al empezar cada cuadro: W3dProfBegin, W3dGameRender)
+    struct StatsDeCuadro {
+        int llamadas[StatCatCount_];
+        int total, draws, binds, estados, tris;
+        unsigned cuadros;
+        StatsDeCuadro() : total(0), draws(0), binds(0), estados(0), tris(0), cuadros(0) {
+            for (int i = 0; i < StatCatCount_; i++) llamadas[i] = 0;
+        }
+    };
+    extern StatsDeCuadro g_statCuadro;
+    void StatsCuadro();
     void Finish();               // glFinish: drena el pipeline (medicion real de GPU en el bench)
 
     // Backend ES2/WebGL: la app lo llama UNA vez tras crear el contexto GL para cargar las

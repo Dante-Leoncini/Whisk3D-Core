@@ -12,6 +12,7 @@ float g_renderCamNear   = 0.1f;      // junto con W3dVistaBind; ver el .h). Defa
 float g_renderCamFar    = 1000.0f;   // los de CameraBase, para el que pregunta antes
 float g_renderCamAspect = 1.0f;      // del primer frame.
 bool  g_renderCamOrto   = false;     // vista ortografica: el Culling no corta (ver el .h)
+float g_renderImagenAltoPx = 0.0f;  // alto en PIXELES de la imagen que se dibuja (0 = aun no se sabe)
 bool g_vistaBindeada = false;        // se prende en el primer W3dVistaBind y no se apaga mas
 Vector3 g_renderLightPos(4, 5, 4); // luz principal en mundo (normal mapping); el viewport la actualiza por frame
 Vector3 g_renderLightColor(1, 1, 1); // color (diffuse) de la luz principal -> tiñe el normal map

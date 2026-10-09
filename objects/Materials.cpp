@@ -71,7 +71,7 @@ int MaterialesLiberarEscena() {
 Material::Material(const std::string& nombre, bool MaterialDefectoFlag, bool TieneVertexColor)
     : textureOn(true), filtrado(true), transparent(false), vertexColor(false), lighting(true), repeat(true),
       uv8bit(false), culling(true), depth_test(true), fondo(false),
-      depth_write(true), depth_bias(0.0f), orden_pasada(0), mezcla(0), alphaTest(0.0f),
+      depth_write(true), depth_bias(0.0f), sesgo_metros(0.0f), orden_pasada(0), mezcla(0), alphaTest(0.0f),
       rtRugosidad(0.5f), rtMetalico(0.0f),
       chrome(false), reflectMode(0),
       normalMap(false), normalTexture(NULL),

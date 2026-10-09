@@ -534,6 +534,10 @@ class Mesh : public Object {
                                        // false = es un asset CON NOMBRE compartido (SceneFlipbooks, NO se borra)
         FlipbookPlayer flipPlay;   // estado de reproduccion (fuera del registro global: la malla lo tickea)
         std::vector<GLfloat> flipUvBase;  // uv[] sin desplazar (2 floats por render-vert)
+        // desplazarUV() de Lua (reflejos que deslizan la textura: el parabrisas de Daytona): uv[] base
+        // capturada en la primera llamada + el desplazamiento aplicado (para ver si otro la reescribio)
+        std::vector<GLfloat> uvDesplBase;
+        GLfloat  uvDesplU, uvDesplV;
         int      flipAplicado;     // cuadro APLICADO en uv[] (-1 = uv[] esta en base)
         unsigned flipGeomVer;      // skinGeomVersion tras aplicar (detecta rebuilds ajenos)
         bool EsFlipbookMesh() const { return flipbook != 0; }
@@ -719,6 +723,10 @@ class Mesh : public Object {
         // que dibujar -> las caras se tintan ~25% verde EN EL MISMO draw (AplicarMaterial),
         // sin segunda pasada ni z-fighting. Lo computa RenderObject; solo editor con overlays.
         bool tintaNoEditable;
+        // (runtime) TINTE del objeto: multiplica el ambiente y el difuso de TODOS sus materiales (y el color plano de
+        // los que no tienen luz) sin tocar el material compartido. 1,1,1 = sin tinte. Lo pone lua setTinte(malla, r, g, b)
+        // (un auto que se oscurece al no estar elegido, un objeto que se apaga). No afecta el color por vertice.
+        float tinte[3];
 
         // NORMAL autoritativa POR CORNER (3 GLbyte/corner). El render la DERIVA (no al
         // reves): las edit-ops la ACARREAN (copiar/interpolar via los helpers de capas) ->
@@ -1312,7 +1320,24 @@ class Mesh : public Object {
         // aplicar el material de cada rango horneado (y despues re-bindea SUS
         // punteros: los de la malla que presto el material no valen para el lote).
         void AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetEdit = false);
+
+        // ---- DIBUJO CRUDO (lo usa el objeto Rutina): SOLO la geometria, con el estado GL que ya haya ----
+        // CrudoPreparar deja los atributos listos (VBO del recurso o propios; sin VBO, arrays de RAM). CrudoParte
+        // dibuja una parte (-1 = todas), con su material si conMaterial. CrudoRango dibuja los triangulos
+        // [primero, ultimo] del orden de dibujo (con materiales: un draw por cada parte que toca). CrudoTerminar
+        // vuelve a los arrays de cliente (lo que esperan las demas mallas). Sin chequeos: la Rutina los hace en el
+        // EDITOR.
+        void CrudoPreparar();
+        void CrudoParte(int parte, bool conMaterial);
+        void CrudoRango(int primero, int ultimo, bool conMaterial);
+        static void CrudoTerminar();
+        bool crudoVBO;
 };
+
+// TEXTURA FORZADA (la pone el paso "Bind texture" de una Rutina): mientras sea != 0, AplicarMaterial usa ESTA
+// textura en vez de la del material. Asi una malla compartida (la carroceria de 39 autos) se dibuja con la
+// textura de cada uno sin duplicar la malla ni sus materiales. 0 = cada material la suya (lo de siempre).
+extern unsigned int g_w3dTexturaForzada;
 
 // ============================================================================
 //  W3dMoverVerts: LA UNICA PUERTA PARA MOVER POSICIONES DE UNA MALLA

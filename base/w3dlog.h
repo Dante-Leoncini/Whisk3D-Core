@@ -18,6 +18,8 @@
 #endif
 
 #if W3D_DEV_LOG
+// NIVEL en tiempo de ejecucion: 3 = todo (default), 2 = avisos y errores, 1 = solo errores, 0 = nada
+extern int g_w3dLogNivel;
 void w3dLogReset();                   // trunca/abre el log (al iniciar la app)
 // Tres NIVELES. En desktop/Symbian van todas al archivo con su tag ([INFO]/[WARN]/[ERROR]);
 // en WebGL cada una llama a la funcion del browser: console.log / console.warn / console.error.

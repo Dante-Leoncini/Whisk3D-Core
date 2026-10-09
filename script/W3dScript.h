@@ -202,6 +202,7 @@ void W3dScriptSoltarTeclas();
 // y los botones; el .lua los lee con stick("izq") -> x,y y boton("a") -> bool
 void W3dScriptStick(int cual, float x, float y);        // 0 = izq, 1 = der
 void W3dScriptBotonPad(const char* nombre, bool v);     // "a" "b" "x" "y" "arriba"...
+void W3dScriptGatillo(int cual, float v);              // gatillo analogico 0..1 (0 = izq / LT, 1 = der / RT)
 // LO QUE EL SCRIPT VE ahora mismo (harness de pruebas y overlays de debug): el
 // mismo valor que devuelven stick("izq") y boton("a") adentro del .lua.
 void W3dScriptStickLeer(int cual, float* x, float* y);
@@ -220,6 +221,8 @@ void W3dScriptRatonCapturadoSet(bool v);                  // la plataforma avisa
 // varia entre ejecuciones sin llamar a esto. Si la plataforma quiere sumar mas entropia (ej time(0) del
 // desktop), llama a W3dScriptSemilla(s) ANTES de cargar los scripts; se mezcla en la semilla de cada state.
 void W3dScriptSemilla(unsigned s);
+// el harness: semillas FIJAS (dos corridas del mismo script juegan igual: las capturas se comparan). Reinicia la cuenta
+void W3dScriptSemillaFija(bool on);
 
 // el ultimo error de lua ("" si no hubo): para mostrarlo en el editor
 const char* W3dScriptUltimoError();

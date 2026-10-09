@@ -27,6 +27,11 @@ static char gRing[W3D_LOG_RING_MAX][W3D_LOG_RING_LEN];
 static int  gRingCabeza = 0;   // indice donde se escribe la PROXIMA linea
 static int  gRingCant   = 0;   // cuantas lineas validas hay (<= MAX)
 
+// NIVEL en tiempo de ejecucion (el editor lo cambia desde Properties > Logs): 3 = todo, 2 = avisos y errores,
+// 1 = solo errores, 0 = nada. Se mira ANTES de formatear: apagado, un log no cuesta ni el vsnprintf.
+int g_w3dLogNivel = 3;
+static inline bool LogNivelOk(int nivel) { return g_w3dLogNivel > 2 - nivel; }   // INFO=0 WARN=1 ERROR=2
+
 static void RingPush(int nivel, const char* aMsg) {
     char* dst = gRing[gRingCabeza];
     int n = 0;
@@ -94,9 +99,9 @@ static void EscribirSymbian(int nivel, const char* aMsg, bool aTruncar) {
     FsCloseCompat(fs);
 }
 void w3dLogReset() { EscribirSymbian(0, "=== Whisk3D DEV LOG: inicio de sesion ===", true); }
-void w3dLog(const char* aMsg)  { EscribirSymbian(0, aMsg, false); }
-void w3dLogW(const char* aMsg) { EscribirSymbian(1, aMsg, false); }
-void w3dLogE(const char* aMsg) { EscribirSymbian(2, aMsg, false); }
+void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirSymbian(0, aMsg, false); }
+void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirSymbian(1, aMsg, false); }
+void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirSymbian(2, aMsg, false); }
 
 #elif defined(__ANDROID__)
 // ---------------------------------------------------------------------------
@@ -112,9 +117,9 @@ static void EscribirAndroid(int nivel, const char* aMsg) {
     __android_log_write(pri, "Whisk3D", aMsg ? aMsg : "");
 }
 void w3dLogReset() { EscribirAndroid(0, "=== Whisk3D DEV LOG ==="); }
-void w3dLog(const char* aMsg)  { EscribirAndroid(0, aMsg); }
-void w3dLogW(const char* aMsg) { EscribirAndroid(1, aMsg); }
-void w3dLogE(const char* aMsg) { EscribirAndroid(2, aMsg); }
+void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirAndroid(0, aMsg); }
+void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirAndroid(1, aMsg); }
+void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirAndroid(2, aMsg); }
 
 #elif defined(__EMSCRIPTEN__)
 // ---------------------------------------------------------------------------
@@ -133,9 +138,9 @@ static void EscribirWeb(int nivel, const char* aMsg) {
     else                 emscripten_console_log(buf);
 }
 void w3dLogReset() { EscribirWeb(0, "=== Whisk3D DEV LOG ==="); }
-void w3dLog(const char* aMsg)  { EscribirWeb(0, aMsg); }
-void w3dLogW(const char* aMsg) { EscribirWeb(1, aMsg); }
-void w3dLogE(const char* aMsg) { EscribirWeb(2, aMsg); }
+void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirWeb(0, aMsg); }
+void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirWeb(1, aMsg); }
+void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirWeb(2, aMsg); }
 
 #else
 // ---------------------------------------------------------------------------
@@ -155,9 +160,9 @@ static void EscribirStdio(int nivel, const char* aMsg, bool aTruncar) {
     fclose(f);
 }
 void w3dLogReset() { EscribirStdio(0, "=== Whisk3D DEV LOG: inicio de sesion ===", true); }
-void w3dLog(const char* aMsg)  { EscribirStdio(0, aMsg, false); }
-void w3dLogW(const char* aMsg) { EscribirStdio(1, aMsg, false); }
-void w3dLogE(const char* aMsg) { EscribirStdio(2, aMsg, false); }
+void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirStdio(0, aMsg, false); }
+void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirStdio(1, aMsg, false); }
+void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirStdio(2, aMsg, false); }
 
 #endif
 
@@ -167,9 +172,9 @@ static void w3dLogfImpl(void (*sink)(const char*), const char* aFmt, va_list ap)
     vsnprintf(buf, sizeof(buf), aFmt ? aFmt : "", ap);
     sink(buf);
 }
-void w3dLogf(const char* aFmt, ...)  { va_list ap; va_start(ap, aFmt); w3dLogfImpl(w3dLog,  aFmt, ap); va_end(ap); }
-void w3dLogfW(const char* aFmt, ...) { va_list ap; va_start(ap, aFmt); w3dLogfImpl(w3dLogW, aFmt, ap); va_end(ap); }
-void w3dLogfE(const char* aFmt, ...) { va_list ap; va_start(ap, aFmt); w3dLogfImpl(w3dLogE, aFmt, ap); va_end(ap); }
+void w3dLogf(const char* aFmt, ...)  { if (!LogNivelOk(0)) return; va_list ap; va_start(ap, aFmt); w3dLogfImpl(w3dLog,  aFmt, ap); va_end(ap); }
+void w3dLogfW(const char* aFmt, ...) { if (!LogNivelOk(1)) return; va_list ap; va_start(ap, aFmt); w3dLogfImpl(w3dLogW, aFmt, ap); va_end(ap); }
+void w3dLogfE(const char* aFmt, ...) { if (!LogNivelOk(2)) return; va_list ap; va_start(ap, aFmt); w3dLogfImpl(w3dLogE, aFmt, ap); va_end(ap); }
 
 // ---- redirigir std::cout/std::cerr AL LOG (no la consola/terminal) ---------------------------------------
 // LogCoutBuf junta caracteres hasta el '\n' y emite UNA entrada de log (w3dLogf/w3dLogfW). Se instala al arrancar

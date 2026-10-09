@@ -544,10 +544,8 @@ static bool UsaCapas(const Armature* a){ return !a->capas.empty() && (g_animMix 
 //  EL RELOJ DE LOS ESQUELETOS EN EL JUEGO: avanza el cabezal de cada armature por su clip activo
 //  (FrameRate del clip * juegoVel), con loop o parando en el ultimo frame (juegoTermino).
 // ============================================================================
-static void W3dArmJuegoTickRec(Object* o, float dt){
-    if (!o) return;
-    if (o->getType() == ObjectType::armature) {
-        Armature* a = (Armature*)o;
+static void W3dArmJuegoTick(Armature* a, float dt){
+    {
         if (a->transRestante > 0.0f) { a->transRestante -= dt; if (a->transRestante < 0.0f) a->transRestante = 0.0f; }
         // CAPAS: cada una avanza con su propio cabezal
         for (size_t k = 0; k < a->capas.size(); k++) {
@@ -569,9 +567,16 @@ static void W3dArmJuegoTickRec(Object* o, float dt){
             else if (a->juegoFrame >= largo) { a->juegoFrame = largo; a->juegoTermino = true; }
         }
     }
-    for (size_t i = 0; i < o->Childrens.size(); i++) W3dArmJuegoTickRec(o->Childrens[i], dt);
 }
-void W3dArmaturesJuegoTick(float dt){ W3dArmJuegoTickRec(SceneCollection, dt); W3dMixEscenasTick(dt); }
+// (los esqueletos de la escena salen de W3dVivosDeTipo: recorrer el arbol entero por cuadro eran miles de nodos)
+void W3dArmaturesJuegoTick(float dt){
+    if (SceneCollection) {
+        const std::vector<Object*>& arms = W3dVivosDeTipo(ObjectType::armature);
+        for (size_t i = 0; i < arms.size(); i++)
+            if (W3dColgadoDe(arms[i], SceneCollection)) W3dArmJuegoTick((Armature*)arms[i], dt);
+    }
+    W3dMixEscenasTick(dt);
+}
 
 // clip por nombre (o "#N" / indice) desde el juego: reinicia el cabezal salvo que ya sea el mismo clip
 bool W3dArmaturePlayClip(Armature* a, int clip, bool loop, bool reiniciar){

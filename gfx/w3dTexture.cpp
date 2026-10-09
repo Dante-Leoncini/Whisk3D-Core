@@ -77,6 +77,12 @@ static void w3dAnisotropico() {}
 #define GL_CLAMP_TO_EDGE 0x812F
 #endif
 // GL_GENERATE_MIPMAP es GL 1.4+ / ES 1.1; el <GL/gl.h> 1.1 de Windows no lo declara.
+#ifndef GL_UNSIGNED_SHORT_5_6_5
+#define GL_UNSIGNED_SHORT_5_6_5 0x8363
+#endif
+#ifndef GL_UNSIGNED_SHORT_5_5_5_1
+#define GL_UNSIGNED_SHORT_5_5_5_1 0x8034
+#endif
 #ifndef GL_GENERATE_MIPMAP
 #define GL_GENERATE_MIPMAP 0x8191
 #endif
@@ -101,9 +107,20 @@ void SetMipmapsGlobal(bool on){ g_mipmapsGlobal = on; }
 
 // que texturas subieron PIRAMIDE: pedirle un min-filter mipmap a una textura sin
 // piramide la vuelve INCOMPLETA (negra), asi que TexFilter consulta aca antes.
+// (por id en un vector: GL da ids chicos y seguidos y esto se pregunta en cada bind; un id enorme -raro- va al set)
+static const unsigned int kTexIdsDirectos = 65536;
+static std::vector<unsigned char> g_texConMipsVec;
 static std::set<unsigned int> g_texConMips;
-bool TexTieneMips(unsigned int id) { return g_texConMips.count(id) != 0; }
+bool TexTieneMips(unsigned int id) {
+    if (id < kTexIdsDirectos) return id < g_texConMipsVec.size() && g_texConMipsVec[id] != 0;
+    return g_texConMips.count(id) != 0;
+}
 static void TexMipsRegistrar(unsigned int id, bool con) {
+    if (id < kTexIdsDirectos) {
+        if (id >= g_texConMipsVec.size()) { if (!con) return; g_texConMipsVec.resize(id + 1, 0); }
+        g_texConMipsVec[id] = con ? 1 : 0;
+        return;
+    }
     if (con) g_texConMips.insert(id); else g_texConMips.erase(id);
 }
 
@@ -122,30 +139,103 @@ struct TexParamEstado {
     signed char filtro, wrap;
     TexParamEstado() : filtro(-1), wrap(-1) {}
 };
-static std::map<unsigned int, TexParamEstado> g_texParams;
+static std::vector<TexParamEstado> g_texParamsVec;           // (por id, como g_texConMipsVec)
+static std::map<unsigned int, TexParamEstado> g_texParams;   // los ids enormes
+static TexParamEstado& TexParams(unsigned int id) {
+    if (id < kTexIdsDirectos) {
+        if (id >= g_texParamsVec.size()) g_texParamsVec.resize(id + 1);
+        return g_texParamsVec[id];
+    }
+    return g_texParams[id];
+}
 
 bool TexFiltroCambia(unsigned int id, int firma) {
-    TexParamEstado& e = g_texParams[id];
+    TexParamEstado& e = TexParams(id);
     if (e.filtro == (signed char)firma) return false;
     e.filtro = (signed char)firma;
     return true;
 }
 bool TexWrapCambia(unsigned int id, int firma) {
-    TexParamEstado& e = g_texParams[id];
+    TexParamEstado& e = TexParams(id);
     if (e.wrap == (signed char)firma) return false;
     e.wrap = (signed char)firma;
     return true;
 }
 void TexParamsRegistrar(unsigned int id, int firmaFiltro, int firmaWrap) {
-    TexParamEstado& e = g_texParams[id];
+    TexParamEstado& e = TexParams(id);
     e.filtro = (signed char)firmaFiltro;
     e.wrap = (signed char)firmaWrap;
 }
-void TexParamsOlvidar(unsigned int id) { g_texParams.erase(id); }
+void TexParamsOlvidar(unsigned int id) {
+    if (id < kTexIdsDirectos) { if (id < g_texParamsVec.size()) g_texParamsVec[id] = TexParamEstado(); }
+    else g_texParams.erase(id);
+}
 
 // dimensiones de cada textura subida (id GL -> w,h). Lo llena UploadRGBA, por la que pasan TODOS los
 // uploads (PC stb + Symbian ICL + procedural) -> el UV editor lee el aspect ratio sin tocar la struct Texture.
 static std::map<unsigned int, std::pair<int,int> > g_texSizes;
+// la MEMORIA de cada textura subida (bytes con mips) y si es de 16 bits: TexturasMemoria
+struct TexMem { long bytes, bytes32, bytesPot; bool de16; };
+static std::map<unsigned int, TexMem> g_texMem;
+static int PotSig(int v) { int p = 1; while (p < v && p < 1024) p <<= 1; return p; }
+// 'mipsPot': si en el N95 llevaria piramide (ahi todas quedan potencia de dos: los materiales si, la UI 2D no)
+static void TexMemAnotar(unsigned int id, int w, int h, int bpp, bool mips, bool mipsPot) {
+    long b = (long)w * h * bpp, b32 = (long)w * h * 4;
+    // como en el N95: cada textura remuestreada a la POTENCIA DE DOS siguiente (tope 1024)
+    long bp = (long)PotSig(w) * PotSig(h) * bpp;
+    if (mips) { b += b / 3; b32 += b32 / 3; }
+    if (mipsPot) bp += bp / 3;
+    TexMem m; m.bytes = b; m.bytes32 = b32; m.bytesPot = bp; m.de16 = (bpp == 2);
+    g_texMem[id] = m;
+}
+MemoriaTexturas TexturasMemoria() {
+    MemoriaTexturas r; r.bytes = 0; r.bytes32 = 0; r.bytesPot = 0; r.cantidad = 0; r.de16 = 0;
+    for (std::map<unsigned int, TexMem>::const_iterator it = g_texMem.begin(); it != g_texMem.end(); ++it) {
+        r.bytes += it->second.bytes; r.bytes32 += it->second.bytes32; r.bytesPot += it->second.bytesPot;
+        r.cantidad++; if (it->second.de16) r.de16++;
+    }
+    return r;
+}
+// 16 BITS SIN PERDIDA VISIBLE: cada canal se cuantiza (5 o 6 bits) y se vuelve a expandir; si TODOS quedan a <= 2/255
+// de su valor (la imagen ya era de pocos niveles: las texturas de la ROM, de 15 bits; la UI de colores planos) se
+// empaca. Opaca -> 565; alfa de un bit (0 o 255) -> 5551 (el color de un texel transparente no se mira). Devuelve el
+// tipo GL (0 = no entra: se sube RGBA de 8 bits) y el formato (GL_RGB / GL_RGBA)
+static inline bool Canal(int v, int bits, int& q) {
+    const int maxq = (1 << bits) - 1;
+    q = (v * maxq + 127) / 255;
+    const int back = (q * 255 + maxq / 2) / maxq;
+    const int d = back - v;
+    return d <= 2 && d >= -2;
+}
+static bool g_tex16Siempre = false;
+bool Texturas16Siempre() { return g_tex16Siempre; }
+void SetTexturas16Siempre(bool on) { g_tex16Siempre = on; }
+static GLenum Empacar16(const unsigned char* rgba, int w, int h, std::vector<unsigned short>& out, GLenum& formato) {
+    const bool siempre = g_tex16Siempre;   // (el proyecto acepta el error de cuantizar)
+    const size_t n = (size_t)w * h;
+    bool opaca = true;
+    for (size_t i = 0; i < n; i++) {
+        const int a = rgba[i * 4 + 3];
+        if (a != 255) { opaca = false; if (a != 0) return 0; }
+    }
+    out.resize(n);
+    int r, g, b;
+    for (size_t i = 0; i < n; i++) {
+        const unsigned char* p = rgba + i * 4;
+        if (opaca) {
+            const bool ok = Canal(p[0], 5, r) & Canal(p[1], 6, g) & Canal(p[2], 5, b);
+            if (!ok && !siempre) return 0;
+            out[i] = (unsigned short)((r << 11) | (g << 5) | b);
+        } else {
+            const bool ve = p[3] != 0;
+            const bool ok = Canal(p[0], 5, r) & Canal(p[1], 5, g) & Canal(p[2], 5, b);
+            if (!ok && ve && !siempre) return 0;
+            out[i] = (unsigned short)((r << 11) | (g << 6) | (b << 1) | (ve ? 1 : 0));
+        }
+    }
+    formato = opaca ? GL_RGB : GL_RGBA;
+    return opaca ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_SHORT_5_5_5_1;
+}
 bool TextureSize(unsigned int id, int& w, int& h) {
     std::map<unsigned int, std::pair<int,int> >::iterator it = g_texSizes.find(id);
     if (it == g_texSizes.end()) return false;
@@ -157,7 +247,8 @@ bool TextureSize(unsigned int id, int& w, int& h) {
 // texturas de UI que ya vienen como pixeles (cursor, atlas, etc.). Comun a
 // todos los backends GL/GLES.
 // ----------------------------------------------------------------------------
-unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, bool conMips, bool forzarPOT) {
+unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, bool conMips, bool forzarPOT,
+                        bool permitir16) {
     if (!rgba || w <= 0 || h <= 0) {
         return 0;
     }
@@ -205,18 +296,29 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
     // MIPMAPS (solo POT: NPOT + piramide es incompleta en ES1/WebGL1). Por aca pasan
     // TODAS las texturas del N95 (el ICL de Symbian decodifica y sube con UploadRGBA).
     const bool mips = conMips && pot && MipmapsGlobal();
+    // 16 bits (la mitad de memoria) si la imagen entra sin perdida visible
+    static std::vector<unsigned short> px16;
+    GLenum formato = GL_RGBA, tipo = GL_UNSIGNED_BYTE;
+    const void* datos = rgba;
+    if (permitir16) {
+        GLenum f16 = GL_RGBA;
+        const GLenum t16 = Empacar16(rgba, w, h, px16, f16);
+        if (t16) { formato = f16; tipo = t16; datos = &px16[0]; }
+    }
+    const bool de16 = (tipo != GL_UNSIGNED_BYTE);
+    if (de16) glPixelStorei(GL_UNPACK_ALIGNMENT, 2);   // (filas de 2 bytes por texel)
 #if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0, formato, tipo, datos);
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
 #else
     // PC (GL 1.4+) y Symbian (ES 1.1): la piramide la genera el driver al subir
     if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_TRUE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0, formato, tipo, datos);
     if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_FALSE);
 #endif
+    if (de16) glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     TexMipsRegistrar(id, mips);
+    TexMemAnotar(id, w, h, de16 ? 2 : 4, mips, conMips && MipmapsGlobal());
 
     const GLint filtro = filtrado ? GL_LINEAR : GL_NEAREST;
     const GLint filtroMin = !mips ? filtro
@@ -255,6 +357,7 @@ void DeleteTexture(unsigned int id) {
     TexMipsRegistrar(id, false); // GL recicla ids: que el nuevo no herede "tiene mips"
     TexParamsOlvidar(id);        // idem su firma de filtro/wrap
     g_texSizes.erase(id);
+    g_texMem.erase(id);
 }
 
 // stb + su consumidor (CargarPixeles/DecodeImage/DecodeThumbnail) NO existe en Symbian: el N95 decodifica
@@ -348,8 +451,16 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
     // RE-EMPACA el buffer ya-RGBA a RGB apretado y se sube GL_RGB -> 25% menos de
     // memoria de GPU en las texturas opacas (idea del dueno: atlas opaco 8,8,8).
     // OJO: NO pedir reqComp=0 (una imagen gris entrega 1-2 bpp y GL_RGB sobre-lee).
-    GLenum formato = GL_RGBA;
-    if (canales > 0 && canales <= 3) {
+    GLenum formato = GL_RGBA, tipo = GL_UNSIGNED_BYTE;
+    // 16 BITS si entra sin perdida visible (lo mismo que sube el N95 por UploadRGBA: el editor ve lo que vera el
+    // telefono y la memoria se mide igual)
+    static std::vector<unsigned short> px16;
+    {
+        GLenum f16 = GL_RGBA;
+        const GLenum t16 = Empacar16(data, w, h, px16, f16);
+        if (t16) { formato = f16; tipo = t16; }
+    }
+    if (tipo == GL_UNSIGNED_BYTE && canales > 0 && canales <= 3) {
         stbi_uc* p = data;                              // in-place: RGB queda adelante
         for (int i = 0; i < w * h; i++) {
             p[i*3]   = p[i*4];
@@ -375,16 +486,20 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
     const GLint filtroMin = !mips ? filtroPix
                           : (pix ? GL_NEAREST_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_LINEAR);
 #ifdef __ANDROID__
+    if (tipo != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
     glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0,
-                 formato, GL_UNSIGNED_BYTE, data);
+                 formato, tipo, tipo != GL_UNSIGNED_BYTE ? (const void*)&px16[0] : (const void*)data);
+    if (tipo != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtroPix);
 #elif defined(__EMSCRIPTEN__)
     // WebGL: POT -> piramide con glGenerateMipmap; NPOT -> sin mips + CLAMP (WebGL1
     // pide POT para mipmaps/REPEAT).
+    if (tipo != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
     glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0,
-                 formato, GL_UNSIGNED_BYTE, data);
+                 formato, tipo, tipo != GL_UNSIGNED_BYTE ? (const void*)&px16[0] : (const void*)data);
+    if (tipo != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtroPix);
@@ -394,7 +509,14 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtroPix);
     if (mips && !pix) w3dAnisotropico();
-    if (mips) {
+    if (tipo != GL_UNSIGNED_BYTE) {
+        // 16 bits: la piramide la arma el driver (GL 1.4+), como en UploadRGBA
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+        if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_TRUE);
+        glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0, formato, tipo, &px16[0]);
+        if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_FALSE);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    } else if (mips) {
         gluBuild2DMipmaps(GL_TEXTURE_2D, formato, w, h,
                           formato, GL_UNSIGNED_BYTE, data);
     } else {
@@ -411,6 +533,7 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
     // (devolvia false) para TODA textura de material en PC -> no habia forma de
     // contar la memoria de texturas del proyecto. Ahora tambien pasa por aca.
     g_texSizes[id] = std::make_pair(w, h);
+    TexMemAnotar(id, w, h, tipo != GL_UNSIGNED_BYTE ? 2 : (formato == GL_RGB ? 3 : 4), mips, w3dEngine::MipmapsGlobal());
 
     outId = id;
     if (outW) { *outW = w; }

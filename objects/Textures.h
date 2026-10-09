@@ -44,6 +44,8 @@ class Texture {
 // vector global COMPARTIDO (PC lo define en Textures.cpp; Symbian en
 // platform/symbian/src/w3dtexload.cpp)
 extern std::vector<Texture*> Textures;
+// sube cada vez que una textura sale de Textures (quien cachea "esta viva" la compara)
+extern unsigned g_w3dTexturasGen;
 
 // ============================================================================
 //  CACHE DE TEXTURAS POR RUTA  (TexturaCache.cpp, se compila en los 4 OS)

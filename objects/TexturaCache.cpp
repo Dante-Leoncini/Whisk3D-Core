@@ -98,7 +98,7 @@ static bool LiberarDeVerdad(Texture* t) {
 
     if (t->iID) w3dEngine::DeleteTexture((unsigned int)t->iID);
     for (size_t i = gBase; i < Textures.size(); i++)
-        if (Textures[i] == t) { Textures.erase(Textures.begin() + (long)i); break; }
+        if (Textures[i] == t) { Textures.erase(Textures.begin() + (long)i); g_w3dTexturasGen++; break; }
     delete t;
     return true;
 }
@@ -261,7 +261,7 @@ bool TexturaPurgar(Texture* t) {
         if (Textures[i] == t) return false;                  // de la UI: jamas
     bool estaba = false;
     for (size_t i = gBase; i < Textures.size(); i++)
-        if (Textures[i] == t) { Textures.erase(Textures.begin() + (long)i); estaba = true; break; }
+        if (Textures[i] == t) { Textures.erase(Textures.begin() + (long)i); g_w3dTexturasGen++; estaba = true; break; }
     if (!estaba) return false;
     // la GPU se libera YA (es lo que pesa); el objeto queda para los punteros viejos
     if (t->iID) w3dEngine::DeleteTexture((unsigned int)t->iID);

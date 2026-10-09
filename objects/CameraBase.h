@@ -64,6 +64,10 @@ extern float g_renderCamAspect;
 // visible. El Culling en ese caso NO corta (dibuja todo): mentir un frustum en
 // perspectiva cortaria cosas que SI se ven.
 extern bool g_renderCamOrto;
+// alto en PIXELES REALES de la imagen 3D que se esta dibujando (el encuadre adentro del viewport): para
+// decidir detalle por tamaño en pantalla (un LOD que en una ventana de 1080 px se ve como en la de 384 del
+// arcade). 0 = todavia no se dibujo nada.
+extern float g_renderImagenAltoPx;
 
 // false = todavia nadie llamo a W3dVistaBind en este proceso, o sea que los globales de arriba son el
 // default y NO la vista de nadie. El que dependa de la vista tiene que poder distinguir "la camara mira

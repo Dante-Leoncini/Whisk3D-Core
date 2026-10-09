@@ -74,9 +74,11 @@ struct ObjectType {
         hitbox,         // HITBOX: caja de deteccion (entrar/quedarse/salir) con eventos lua (physics/W3dHitbox.h)
         prefab,         // INSTANCIA DE PREFAB: sus hijos se GENERAN desde la definicion del prefab (no se guardan);
                         // es FRONTERA del espacio de nombres (ver W3dEsFronteraScope y main/objects/InstanciaPrefab.h)
-        proxy           // PROXY W3D: una instancia de un prefab o de una escena de una LIBRERIA externa (otro .w3d de
+        proxy,          // PROXY W3D: una instancia de un prefab o de una escena de una LIBRERIA externa (otro .w3d de
                         // solo lectura). Genera sus hijos como una instancia de prefab (misma maquinaria, misma frontera
                         // de scope) pero nada de lo generado se edita ni se guarda (main/objects/ProxyW3d.h)
+        rutina          // RUTINA (objeto avanzado): una LISTA DE PASOS del render (apilar, trasladar, textura, luz,
+                        // dibujar una malla...) sin transformacion propia (main/objects/Rutina.h)
     };
     Enum v;
     ObjectType(Enum e) : v(e) {}
@@ -161,6 +163,8 @@ class Object {
         // celda se cachea (escenario, cajas); false = DINAMICO (Crash, enemigos), se re-evalua su celda por
         // frame. Solo importa cuando el objeto cuelga de un GridCull (afuera se ignora). Default true.
         bool estatico;
+        // SIN TRANSFORMACION: el recorrido no apila ni multiplica su matriz (la Rutina: solo ejecuta sus pasos)
+        bool sinTransformacion;
         bool desplegado;
         bool showRelantionshipsLines;
         // EL PLAYHEAD POSO A ESTE OBJETO alguna vez en esta sesion (lo prende W3dAplicarCurvasEnFrame
@@ -408,6 +412,15 @@ class Object {
         // RenderObject porque la decision es sobre los hijos, no sobre el dibujo
         // propio (mismo motivo por el que 'visible' vive en Render()).
         virtual void RenderHijos();
+        // un objeto SIN TRANSFORMACION que dibuja a sus hijos el mismo en algun punto de su render (la Rutina con
+        // el paso "Draw children"): true = el recorrido NO los vuelve a dibujar despues de RenderObject
+        virtual bool DibujaSusHijos() { return false; }
+        // un objeto sin transformacion que este cuadro NO se recorre (la Rutina CONSTRUCTOR en modo solo-juego,
+        // que ya corrio) y el aviso de que termino su recorrido (con sus hijos)
+        virtual bool SaltarEsteCuadro() { return false; }
+        virtual void DespuesDeRender() {}
+        // false = no dibuja nada propio (un vacio sin su cruz): sin hijos visibles, el recorrido ni lo apila
+        virtual bool DibujaAlgo() { return true; }
 
         // ====================================================================
         //  CONSTRAINTS: propiedades de ESTE objeto, no objetos aparte
@@ -598,6 +611,14 @@ Object* W3dBuscarNombreDesde(Object* desde, const std::string& nombre, Object* r
 // ============================================================================
 bool W3dObjetoVivo(const Object* o);
 bool W3dObjetoVivoSerial(const Object* o, unsigned int serial);
+// sube cada vez que un objeto deja de estar vivo: un puntero que estaba vivo sigue vivo mientras no cambie
+unsigned W3dObjetosGen();
+// LOS VIVOS DE UN TIPO (ObjectType): para lo que buscaba un tipo recorriendo TODO el arbol en cada cuadro (las camaras
+// con riel, los esqueletos: miles de nodos para encontrar unos pocos). Trae tambien a los que no cuelgan de la escena
+// (otra escena, una definicion de prefab): quien la usa se fija con W3dColgadoDe. El orden no es el del arbol
+const std::vector<Object*>& W3dVivosDeTipo(int tipo);
+// o esta en el subarbol de raiz (subiendo por los padres)
+bool W3dColgadoDe(const Object* o, const Object* raiz);
 // el Play del editor NO libera lo del usuario que un script destruye: lo descuelga hasta el Stop. Mientras tanto,
 // para lua es un objeto que ya no existe (como en el juego compilado, donde si se libera): vivo=false lo saca del
 // conjunto y vivo=true lo devuelve (solo ese objeto; ~Object igual lo saca para siempre)

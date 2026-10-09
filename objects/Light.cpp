@@ -125,19 +125,19 @@ void Light::RenderObject() {
     // misma logica de luz que PC: la luz de ESCENA se enciende aca (bajo la matriz del objeto: position local =
     // origen del objeto). El icono lo dibuja render.cpp (RenderIcons3D).
     if (aplicar) {
-        glEnable(LightID);
+        W3D_GL_CRUDO(glEnable(LightID));
         float pos[4];
         if (direccional) {                                  // DIRECCIONAL: la direccion la da la ROTACION de la
             // lampara (no su posicion). Local (0,1,0)="arriba" -> la matriz del objeto (su rotacion) lo orienta:
             // a 0° la luz viene de ARRIBA = la lampara apunta ABAJO; al rotarla, la luz rota con ella.
             pos[0] = 0.0f; pos[1] = 1.0f; pos[2] = 0.0f; pos[3] = 0.0f;
         } else { pos[0] = position[0]; pos[1] = position[1]; pos[2] = position[2]; pos[3] = 1.0f; }
-        glLightfv(LightID, GL_POSITION, pos);
-        glLightfv(LightID, GL_DIFFUSE,  diffuse);
-        glLightfv(LightID, GL_AMBIENT,  ambient);
-        glLightfv(LightID, GL_SPECULAR, specular);
-        glLightf(LightID, GL_CONSTANT_ATTENUATION, attConstant);
-        glLightf(LightID, GL_LINEAR_ATTENUATION,   attLinear);
+        W3D_GL_CRUDO(glLightfv(LightID, GL_POSITION, pos));
+        W3D_GL_CRUDO(glLightfv(LightID, GL_DIFFUSE,  diffuse));
+        W3D_GL_CRUDO(glLightfv(LightID, GL_AMBIENT,  ambient));
+        W3D_GL_CRUDO(glLightfv(LightID, GL_SPECULAR, specular));
+        W3D_GL_CRUDO(glLightf(LightID, GL_CONSTANT_ATTENUATION, attConstant));
+        W3D_GL_CRUDO(glLightf(LightID, GL_LINEAR_ATTENUATION,   attLinear));
         // QUADRATIC + SPOT: SOLO en PC. El GLES1 del N95 nunca los ejecuto (el bloque viejo no los tenia) y
         // parecen colgar el driver -> los dejamos afuera de Symbian (la luz queda puntual/direccional, sin cono).
     }
@@ -166,7 +166,7 @@ void Light::RenderObject() {
 #else
 
     if (aplicar){
-        glEnable(LightID);
+        W3D_GL_CRUDO(glEnable(LightID));
         float pos[4];
         if (direccional) {
             // DIRECCIONAL (sol): la direccion la da la ROTACION de la
@@ -174,19 +174,19 @@ void Light::RenderObject() {
             // de ARRIBA = la lampara apunta ABAJO; al rotar la lampara, la luz rota con ella.
             pos[0] = 0.0f; pos[1] = 1.0f; pos[2] = 0.0f; pos[3] = 0.0f;
         } else { pos[0] = position[0]; pos[1] = position[1]; pos[2] = position[2]; pos[3] = 1.0f; }
-        glLightfv(LightID, GL_POSITION, pos);
-        glLightfv(LightID, GL_DIFFUSE,  diffuse);
-        glLightfv(LightID, GL_AMBIENT,  ambient);
-        glLightfv(LightID, GL_SPECULAR, specular);
+        W3D_GL_CRUDO(glLightfv(LightID, GL_POSITION, pos));
+        W3D_GL_CRUDO(glLightfv(LightID, GL_DIFFUSE,  diffuse));
+        W3D_GL_CRUDO(glLightfv(LightID, GL_AMBIENT,  ambient));
+        W3D_GL_CRUDO(glLightfv(LightID, GL_SPECULAR, specular));
         // atenuacion editable (solo afecta a la puntual/spot; la direccional la ignora OpenGL)
-        glLightf(LightID, GL_CONSTANT_ATTENUATION,  attConstant);
-        glLightf(LightID, GL_LINEAR_ATTENUATION,    attLinear);
-        glLightf(LightID, GL_QUADRATIC_ATTENUATION, attQuadratic);
+        W3D_GL_CRUDO(glLightf(LightID, GL_CONSTANT_ATTENUATION,  attConstant));
+        W3D_GL_CRUDO(glLightf(LightID, GL_LINEAR_ATTENUATION,    attLinear));
+        W3D_GL_CRUDO(glLightf(LightID, GL_QUADRATIC_ATTENUATION, attQuadratic));
         // SPOT: cono + concentracion + direccion = el "forward" local del objeto (0,0,-1 bajo su matriz)
-        glLightf(LightID, GL_SPOT_CUTOFF,   direccional ? 180.0f : spotCutoff); // 180 = sin cono (punto)
-        glLightf(LightID, GL_SPOT_EXPONENT, spotExponent);
+        W3D_GL_CRUDO(glLightf(LightID, GL_SPOT_CUTOFF,   direccional ? 180.0f : spotCutoff)); // 180 = sin cono (punto)
+        W3D_GL_CRUDO(glLightf(LightID, GL_SPOT_EXPONENT, spotExponent));
         float sdir[3] = {0.0f, 0.0f, -1.0f};
-        glLightfv(LightID, GL_SPOT_DIRECTION, sdir);
+        W3D_GL_CRUDO(glLightfv(LightID, GL_SPOT_DIRECTION, sdir));
     }
 
     // GIZMO de la luz (linea + color de seleccion): overlay del EDITOR, lo dibuja el hook (render.cpp),

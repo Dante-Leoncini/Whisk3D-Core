@@ -67,7 +67,10 @@ extern unsigned int lastRenderTime;
 //   AnimCamActiva: la pista "CAMARA ACTIVA" de una animacion de ESCENA (SceneAnimation::camPista). El valor de
 //                  cada keyframe es un INDICE en SceneAnimation::camNombres; interpolacion CONSTANTE (un corte).
 enum { AnimPosition, AnimRotation, AnimScale, AnimVisible, AnimRender, AnimVertex, AnimFov, AnimColor,
-       AnimClip, AnimAmbient, AnimSpecular, AnimAtten, AnimSpot, AnimLightMisc, AnimCamActiva, AnimShape };
+       AnimClip, AnimAmbient, AnimSpecular, AnimAtten, AnimSpot, AnimLightMisc, AnimCamActiva, AnimShape, AnimPaso };
+//   AnimPaso: un PASO de una RUTINA (main/objects/Rutina.h); el COMPONENTE es id del paso * 8 + campo (0..4 = sus
+//             numeros, 5 = on/off): mover el paso no lo cambia (el id es suyo). Lo aplica el gancho g_animPasoHook.
+enum { AnimPasoCampos = 8, AnimPasoOn = 5 };
 //   AnimShape: PESO de una SHAPE KEY de una malla (Mesh::shapeKeys); el COMPONENTE es el indice de la forma (0..n-1,
 //              no solo X/Y/Z). Ej: la cara que habla en una cinematica.
 // AnimVertex: NO es una curva de canal (no vive en AnimProperty). Es el id que usa el
@@ -225,8 +228,10 @@ void W3dCamActivaAplicar(int escena, int frame);
 // los registra main/: el Core no conoce la clase Camera ni CameraActive
 extern void (*g_camaraActivaHook)(const char* nombre);
 extern void (*g_animFovHook)(Object* camara, float fov);   // curva AnimFov en el JUEGO (cinematicas)
-// aplica las curvas AnimShape de una lista a la malla (los pesos de sus shape keys). Lo usan el juego y el editor.
+// aplica las curvas INDEXADAS de una lista: AnimShape a la malla (los pesos de sus shape keys) y AnimPaso a la rutina
+// (g_animPasoHook: el Core no conoce la clase Rutina). Lo usan el juego y el editor.
 void W3dAplicarFormas(Object* o, std::vector<AnimProperty>& props, int frame);
+extern void (*g_animPasoHook)(Object* rutina, int componente, float valor);
 extern std::vector<SceneAnimation*> SceneAnimations; // lista global de animaciones de escena
 extern int SceneAnimActiva;                          // indice de la escena activa (sus curvas estan en AnimationObjects)
 

@@ -14,7 +14,11 @@
 //       * Symbian (N95)                    -> CMdaAudioOutputStream (W3dAudioSymbian.cpp)
 //
 //  Un sonido se carga a memoria, se RESAMPLEA al rate del mixer y se guarda como
-//  stereo 16-bit; reproducirlo = agregar una "voz". Sirve para EFECTOS y para MUSICA
+//  stereo 16-bit; reproducirlo = agregar una "voz". El mixer acumula las voces en 32 bits
+//  con interpolacion LINEAL entre muestras (pitch fraccional sin el "grano" del nearest) y
+//  pasa la suma por un LIMITADOR de picos (ataque instantaneo, recuperacion ~0.3 s) antes
+//  de bajar a 16 bits: muchas voces a la vez (un secuenciador de musica) ya no saturan ni
+//  distorsionan como con el recorte duro de antes. Sirve para EFECTOS y para MUSICA
 //  (loop=true). Los bytes pueden venir de un archivo o de un .w3dpack cifrado
 //  (io/W3dPack.h) -> tambien podes proteger el audio.
 //
@@ -48,6 +52,10 @@ int  W3dSoundPlay(W3dSound* s, float volume, bool loop);
 // (rate_Hz = pitch/4096*11025 en el PSX -> factor pitch/1024 aca). Sin filtro: nearest,
 // suficiente para efectos (mismo caracter lo-fi que el original).
 int  W3dSoundPlayPitch(W3dSound* s, float volume, bool loop, float pitch);
+// Igual, con PANEO: pan -1 (todo a la izquierda) .. 0 (centro) .. 1 (derecha). Ganancias
+// gL = 1 - max(pan, 0), gR = 1 + min(pan, 0) (el lado fuerte queda a 1; el otro se atenua
+// linealmente), que es como panea una placa de arcade tipo MultiPCM (pan por slot en dB).
+int  W3dSoundPlayPitchPan(W3dSound* s, float volume, bool loop, float pitch, float pan);
 void W3dSoundStop(int voice);        // para una voz por su id (no-op si ya termino)
 // Corta la voz con una RAMPA lineal de 'fadeSeg' segundos (<= 0 -> ~5 ms, el minimo
 // anti-click). La rampa corre en el MIXER, por muestra, y al llegar a cero la voz se
@@ -59,10 +67,26 @@ void W3dSoundStop(int voice);        // para una voz por su id (no-op si ya term
 //        pararSonido(h, 0.25)                 -- o con un release de 250 ms
 // El handle es el id (> 0) que devuelven W3dSoundPlay/W3dSoundPlayPitch; en lua,
 // sonido() devuelve nil si la voz NO sono (mute global, mixer cerrado, WAV faltante
-// o las 32 voces ocupadas) y pararSonido(nil) es un no-op seguro.
+// o las 64 voces ocupadas) y pararSonido(nil) es un no-op seguro.
 void W3dSoundStopFade(int voice, float fadeSeg);
+// AGENDA en el RELOJ DEL MIXER (segundos de audio mezclado desde que abrio, sin contar la pausa): la voz arranca /
+// empieza su rampa de salida en la MUESTRA exacta de 'enSeg' (<= 0 = ya). Un secuenciador de musica las dispara con
+// anticipacion (W3dAudioReloj() + unos ms) y el ritmo no depende de cuando corre el frame del juego.
+//   lua: t = relojAudio(); h = sonido(wav, vol, pitch, loop, pan, t + 0.05); pararSonido(h, rampa, t + 0.05 + dur)
+double W3dAudioReloj();
+int  W3dSoundPlayAt(W3dSound* s, float volume, bool loop, float pitch, float pan, double enSeg);
+void W3dSoundStopFadeAt(int voice, float fadeSeg, double enSeg);
 void W3dSoundStopAll();
+// PAUSA global del mixer: con true las voces se congelan (el mixer saca silencio y NO avanza ninguna
+// posicion); con false siguen donde estaban. Para el "Pausa" del editor / del juego: la musica se
+// detiene de verdad y retoma del mismo punto. W3dSoundStopAll es el "Parar": corta todo.
+void W3dAudioPause(bool pausa);
+bool W3dAudioPaused();
 void W3dSoundSetVolume(int voice, float volume);
+// cambia el PITCH de una voz que ya suena (sin re-dispararla: sigue desde donde iba). Para sonidos
+// continuos cuyo tono sigue a algo del juego: el motor de un auto (como hace la placa del arcade,
+// que reescribe el registro de tono del slot sin key-on). pitch 0.05..8 como en W3dSoundPlayPitch.
+void W3dSoundSetPitch(int voice, float pitch);
 // POSICION de reproduccion de una voz: segundos del SONIDO ya mezclados (el reloj real del
 // stream, el que escucha el usuario). Avanza en el hilo de audio aunque el render se trabe,
 // asi que sirve de reloj maestro para sincronizar una animacion con su audio (frameskip:

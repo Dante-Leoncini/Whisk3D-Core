@@ -629,8 +629,17 @@ void W3dAnimEscenaFijar(float frame) {
 }
 
 // ---- SHAPE KEYS animadas: canal AnimShape, componente = indice de la forma ----
+void (*g_animPasoHook)(Object* rutina, int componente, float valor) = 0;
 void W3dAplicarFormas(Object* o, std::vector<AnimProperty>& props, int frame) {
-    if (!o || o->getType() != ObjectType::mesh) return;
+    if (!o) return;
+    if (o->getType() == ObjectType::rutina) {   // los PASOS de una rutina (AnimPaso)
+        if (g_animPasoHook)
+            for (size_t p = 0; p < props.size(); p++)
+                if (props[p].Property == AnimPaso && !props[p].keyframes.empty())
+                    g_animPasoHook(o, props[p].component, props[p].Eval(frame, 0.0f));
+        return;
+    }
+    if (o->getType() != ObjectType::mesh) return;
     Mesh* m = (Mesh*)o;
     for (size_t p = 0; p < props.size(); p++)
         if (props[p].Property == AnimShape && !props[p].keyframes.empty())

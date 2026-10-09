@@ -8,6 +8,7 @@
 //  C++03. Motor generico: aca no hay nombres de ningun juego.
 // ============================================================================
 #include "MallaRecurso.h"
+#include "MallaFlujos.h"   // los flujos de indices derivados (se sueltan con el recurso)
 #include "io/W3dRecursos.h"
 #include "io/W3dMalla.h"        // W3dMallaInfo
 #include "w3dFilesystem.h"      // la entrada del contenedor montado
@@ -29,6 +30,8 @@ static std::vector<MallaRecurso*> gRegistro;
 // las mallas de las LIBRERIAS externas (MallaRecurso::libreria): aparte del registro del proyecto (no se listan,
 // no se guardan ni se purgan), vivas hasta que su libreria se cierra
 static std::vector<MallaRecurso*> gLibMallas;
+// sube cada vez que un recurso sale de gRegistro o de gLibMallas (ver W3dMallaRecursoVivo)
+static unsigned gMallasGen = 1;
 // recursos que al cerrar el proyecto todavia tenian usuarios (no deberia pasar): se dejan
 // vivos para que ningun puntero quede colgando
 static std::vector<MallaRecurso*> gRetenidos;
@@ -52,7 +55,7 @@ MallaRecurso::MallaRecurso()
       suave(false), primTipo(-1), primTam(2.0f), primTam2(0.0f), primAlto(0.0f), primVerts(8), primVerts2(8),
       extrasEnRecurso(false), firmaFormas(0), firmaUVRest(0),
       grupoActivo(-1), uvGrupoActivo(-1), radio(0.0f), aabbOk(false), vertsAgrupados(0), statsNoEditable(false),
-      vboPos(0), vboNor(0), vboCol(0), vboUV(0), vboIdx(0), vboVer(0), topoEstado(0) {
+      flujos(0), refsRutina(0), vboPos(0), vboNor(0), vboCol(0), vboUV(0), vboIdx(0), vboVer(0), topoEstado(0) {
     esRecurso = true;
     for (int k = 0; k < 3; k++) { aabbMin[k] = aabbMax[k] = centro[k] = 0.0f; }
 }
@@ -66,6 +69,7 @@ static void BorrarVBO(MallaRecurso* r) {
 }
 
 MallaRecurso::~MallaRecurso() {
+    W3dMallaFlujosBorrar(this);
     BorrarVBO(this);
     // los arrays los libera ~MallaDatos
 }
@@ -178,6 +182,7 @@ void W3dMallasLibLimpiar(const std::string& libreria) {
         MallaRecurso* r = gLibMallas[i];
         if (!libreria.empty() && r->libreria != libreria) continue;
         gLibMallas.erase(gLibMallas.begin() + (long)i);
+        gMallasGen++;
         CerrarRecurso(r);
     }
 }
@@ -213,6 +218,7 @@ void W3dMallasRegistroLimpiar() {
     }
     gRegistro.clear();
     gEditadas.clear();
+    gMallasGen++;
 }
 
 void W3dMallaRecursoUndoRetener(MallaRecurso* r) { if (r) r->refsUndo++; }
@@ -225,7 +231,7 @@ int W3dMallasPurgarSinUso() {
         // usado (tambien por una malla detachada que un undo puede devolver) o nombrado por un paso de
         // undo: se queda. Del archivo (huerfano del proyecto) o un huerfano PEDIDO: se queda, salvo que
         // el usuario lo haya BORRADO (ya no es del proyecto: se va apenas nadie lo nombra)
-        if (!r->usuarios.empty() || r->refsUndo > 0) { i++; continue; }
+        if (!r->usuarios.empty() || r->refsUndo > 0 || r->refsRutina > 0) { i++; continue; }
         if (!r->borrado && (!r->entrada.empty() || r->conservar)) { i++; continue; }
         if (r->rec) {
             // cargado sin usuarios: solo si nadie mas lo referencia (una ListaCarga no nombra
@@ -234,6 +240,7 @@ int W3dMallasPurgarSinUso() {
             r->rec = 0;
         }
         gRegistro.erase(gRegistro.begin() + (long)i);
+        gMallasGen++;
         delete r;
         n++;
     }
@@ -252,6 +259,7 @@ bool W3dMallaRecursoBorrar(MallaRecurso* r) {
         r->rec = 0;
     }
     gRegistro.erase(gRegistro.begin() + (long)i);
+    gMallasGen++;
     delete r;
     return true;
 }
@@ -453,6 +461,7 @@ void W3dMallaRecursoPonerBytes(MallaRecurso* r, const std::string& bytes) {
     r->modificado = true;
     r->bytesDeTexto = false;
     r->version++;
+    g_w3dRutinasGen++;
     TirarTopo(r);
     // cargado sin usuarios (una referencia de ListaCarga): los arrays se rehacen de los bytes nuevos
     if (r->rec && r->usuarios.empty() && !bytes.empty()) {
@@ -817,6 +826,37 @@ static W3dRecurso* AdquirirMalla(MallaRecurso* r) {
     return 0;
 }
 
+bool W3dMallaRecursoRetener(MallaRecurso* r) {
+    if (!r) return false;
+    W3dRecurso* d = AdquirirMalla(r);
+    if (!d) return false;
+    r->rec = d;
+    r->refsRutina++;
+    return true;
+}
+void W3dMallaRecursoSoltar(MallaRecurso* r) {
+    if (!r || r->refsRutina <= 0) return;
+    r->refsRutina--;
+    if (r->rec) W3dRecursoSoltar(r->rec, W3DREC_PERMANENTE);   // la ultima -> OpLiberarMalla descarga
+}
+// (con una cache como W3dObjetoVivo: la validacion de las rutinas pregunta por cada paso y recorrer los registros
+// era lineal. Una entrada dice "r estaba registrado en la generacion g"; sacar cualquiera del registro la sube)
+unsigned W3dMallasGen() { return gMallasGen; }
+unsigned g_w3dRutinasGen = 1;
+struct MallaVivaCache { const MallaRecurso* r; unsigned gen; };
+static MallaVivaCache gMallaViva[64];
+bool W3dMallaRecursoVivo(const MallaRecurso* r) {
+    if (!r) return false;
+    MallaVivaCache& c = gMallaViva[((unsigned)(size_t)r * 2654435761u) >> 26];
+    if (c.r == r && c.gen == gMallasGen) return !r->borrado;
+    bool esta = false;
+    for (size_t i = 0; i < gRegistro.size() && !esta; i++) esta = gRegistro[i] == r;
+    for (size_t i = 0; i < gLibMallas.size() && !esta; i++) esta = gLibMallas[i] == r;
+    if (!esta) return false;
+    c.r = r; c.gen = gMallasGen;
+    return !r->borrado;
+}
+
 bool W3dMallaVincular(Mesh* m, MallaRecurso* r, bool conservarEdicion) {
     if (!m || !r) return false;
     // la referencia NUEVA antes de soltar la vieja (si es el mismo recurso, no se descarga en el medio)
@@ -984,6 +1024,7 @@ bool W3dMallaRecursoAplicarBytes(MallaRecurso* r, const std::string& bytes, cons
     r->modificado = true;
     r->bytesDeTexto = false;
     r->version++;
+    g_w3dRutinasGen++;
     BorrarVBO(r);   // se vuelven a subir con los arrays nuevos (en el proximo dibujo)
     TirarTopo(r);   // las aristas/caras compartidas eran de la malla vieja
     // TODOS los usuarios (tambien los detachados por el undo) pasan a los arrays nuevos

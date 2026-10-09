@@ -31,9 +31,22 @@ namespace w3dEngine {
     // en Symbian: GLES 1.1 del N95 rechaza las texturas NPOT y el billboard sale
     // sin textura). El camino de material ya lo hace (w3dtexload ReescalarPOT); el
     // de particulas/UI-2D (Textura2D) se lo saltaba. No-op en el resto de OSes.
+    // 'permitir16': si la imagen ENTRA en 16 bits sin perdida visible (cada canal a menos de 2/255 de su valor
+    // cuantizado: las texturas de la ROM, la UI de pocos colores), sube 565 (opaca) o 5551 (alfa de un bit): la MITAD
+    // de memoria. Solo para las que nunca se reescriben (UpdateRGBA manda RGBA de 8 bits y GLES exige el mismo
+    // formato): los materiales y las imagenes de la UI, no la pintura ni el video
     unsigned int UploadRGBA(const unsigned char* rgba, int w, int h,
                             bool filtrado = true, bool conMips = true,
-                            bool forzarPOT = false);
+                            bool forzarPOT = false, bool permitir16 = false);
+    // TEXTURAS DE 16 BITS del PROYECTO ("texturas16" en el .w3d): false (defecto) = solo las que entran sin perdida
+    // visible; true = SIEMPRE 565 / 5551 (opacas y de alfa de un bit; hasta 4/255 de error por canal: la mitad de
+    // memoria). Las de alfa con niveles quedan en 8 bits. Gobierna las cargas nuevas
+    bool Texturas16Siempre();
+    void SetTexturas16Siempre(bool on);
+    // la MEMORIA de las texturas subidas (bytes, con su piramide de mips) y cuantas hay / cuantas en 16 bits
+    // bytes32: lo que serian todas en RGBA8; bytesPot: lo que ocupan en el N95 (remuestreadas a potencia de dos)
+    struct MemoriaTexturas { long bytes, bytes32, bytesPot; int cantidad, de16; };
+    MemoriaTexturas TexturasMemoria();
 
     // actualiza un RECTANGULO (x,y,w,h) de una textura ya subida con w*h pixeles RGBA (pintura en vivo)
     bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect);

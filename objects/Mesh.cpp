@@ -61,10 +61,12 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     chromeExpPos = NULL; chromeExpUV = NULL; chromeExpCount = 0; chromeUVValid = false; chromeCacheEq = true; // reflejo (lazy)
     genChromeExpPos = NULL; genChromeExpUV = NULL; genChromeCount = 0; genChromeValid = false; // reflejo de la malla generada (lazy)
     tangents = NULL; nmColors = NULL; tangentsValid = false; // normal mapping (lazy)
-    vboPos = vboNor = vboCol = vboUV = vboIdx = 0; vboGeomVer = 0; vboSkinFrame = -999999; vboSkinFramePrev = -999999; vboPoseSerial = 0; vboPoseSerialPrev = 0; vboVertN = 0; vboIdxN = 0; vboRenderActivo = false; vboPoseSkinneada = false; // VBOs (lazy)
+    vboPos = vboNor = vboCol = vboUV = vboIdx = 0; vboGeomVer = 0; vboSkinFrame = -999999; vboSkinFramePrev = -999999; vboPoseSerial = 0; vboPoseSerialPrev = 0; vboVertN = 0; vboIdxN = 0; vboRenderActivo = false; vboPoseSkinneada = false; crudoVBO = false; // VBOs (lazy)
     pvsFaces = NULL; pvsFacesSize = 0; pvsVersion = 0; vboPvsVer = 0; pvsOrdenado = false; // sin override PVS (malla completa; vboPvsVer retirado por P3, ver Mesh.h)
     enLoteEstatico = 0; // (P4) sin sello: la malla se dibuja sola
+    uvDesplU = uvDesplV = 0.0f; // desplazarUV: sin base capturada (uvDesplBase vacia)
     noEditable = false; tintaNoEditable = false; // malla editable (el import con noEditable / el boton de la card Mesh lo prenden)
+    tinte[0] = tinte[1] = tinte[2] = 1.0f;
     datosRec = NULL; datosComp = 0; // geometria propia hasta que el importador la comparta (MallaDatos.h)
     malla = NULL; vboCompartidas = 0; vboUVEnUso = 0; // sin recurso (MallaRecurso.h) hasta que el lector la vincule
     dedupPorContenido = false; // una malla NUEVA no se junta con las iguales al guardar (ver Mesh.h)
@@ -613,10 +615,17 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     // ALPHA (copias locales: el material REAL no se toca), asi vale igual en Solid, Material y
     // Rendered sin duplicar cada camino de dibujo.
     const float xrayA = g_xray ? 0.5f : 1.0f;
-    const float amb[4] = { mat->ambient[0],  mat->ambient[1],  mat->ambient[2],  mat->ambient[3]  * xrayA };
-    const float dif[4] = { mat->diffuse[0],  mat->diffuse[1],  mat->diffuse[2],  mat->diffuse[3]  * xrayA };
+    // TINTE del objeto (setTinte de lua): escala el ambiente y el difuso (y abajo el color plano); el material
+    // compartido no se toca, asi otra malla con el mismo material se sigue viendo normal
+    const float* tn = tinte;
+    const float amb[4] = { mat->ambient[0] * tn[0],  mat->ambient[1] * tn[1],  mat->ambient[2] * tn[2],  mat->ambient[3]  * xrayA };
+    const float dif[4] = { mat->diffuse[0] * tn[0],  mat->diffuse[1] * tn[1],  mat->diffuse[2] * tn[2],  mat->diffuse[3]  * xrayA };
     const float emi[4] = { mat->emission[0], mat->emission[1], mat->emission[2], mat->emission[3] * xrayA };
     gfx::SmoothShading(true); // el look suave/plano lo dan las NORMALES de la malla, no el material
+    // sin color por vertice, COLOR_MATERIAL se apaga ANTES del material: prendido, GL pisa el ambiente y el difuso con el
+    // color actual (y al apagarlo quedan asi: el ambiente dependia de lo que se dibujo antes)
+    const bool colorVertice = !tintaNoEditable && mat->vertexColor && vertexColor;
+    if (!colorVertice) gfx::Disable(gfx::ColorMaterial);
     gfx::Material(gfx::MatAmbient,  amb);
     gfx::Material(gfx::MatDiffuse,  dif);
     gfx::Material(gfx::MatSpecular, mat->specular);
@@ -632,8 +641,7 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         gfx::Material(gfx::MatDiffuse, td);
         gfx::Color4f(td[0], td[1], td[2], td[3]);
         gfx::DisableArray(gfx::ColorArray);
-        gfx::Disable(gfx::ColorMaterial);
-    } else if (mat->vertexColor && vertexColor) {
+    } else if (colorVertice) {
         gfx::Color4f(0.0f, 0.0f, 0.0f, 1.0f); // el color real lo pone el array
         gfx::EnableArray(gfx::ColorArray);
         gfx::Enable(gfx::ColorMaterial);
@@ -643,15 +651,14 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
             gfx::Color4f(mat->diffuse[0]*g_renderLightColor.x, mat->diffuse[1]*g_renderLightColor.y,
                          mat->diffuse[2]*g_renderLightColor.z, dif[3]);
         else
-            gfx::Color4f(mat->diffuse[0], mat->diffuse[1], mat->diffuse[2], dif[3]);
+            gfx::Color4f(dif[0], dif[1], dif[2], dif[3]);
         gfx::DisableArray(gfx::ColorArray);
-        gfx::Disable(gfx::ColorMaterial);
     }
 
     // textura (nunca en Solid; respeta el checkbox textureOn del material)
     if (!solido && mat->texture && mat->textureOn) {
         gfx::Enable(gfx::Texture2D);
-        gfx::BindTexture(mat->texture->iID);
+        gfx::BindTexture(g_w3dTexturaForzada ? g_w3dTexturaForzada : mat->texture->iID);
         gfx::TexFilter(!gfx::PixeladoGlobal() && mat->filtrado);
         gfx::TexWrap(mat->repeat);
         // REFLECTION 3 modos (mat->reflectMode):
@@ -741,13 +748,19 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         gfx::DepthMask(false);
         gFondoActivo = true;
     }
+    // SESGO EN METROS: la fila de profundidad de la proyeccion corrida (z_clip = P10*z + P14: como si la malla estuviera
+    // mas lejos/cerca en z de camara, sin moverla en pantalla; vale igual en perspectiva y en ortografica)
+    gfx::SesgoMetros(mat->sesgo_metros);   // (estado de gfx: solo llama al driver si cambia)
     if (mat->depth_bias != 0.0f) {
         float unidades = mat->depth_bias;
 #ifdef W3D_SYMBIAN
         unidades *= 4.0f; // z de 16 bits (N95): el mismo sesgo necesita ~4x mas unidades (-4 -> -16)
 #endif
+        // con SIGNO: negativo = hacia la camara (una calcomania que gana contra la superficie de abajo); positivo = se
+        // ALEJA (un piso que pierde los empates contra lo que se apoya en el: autos, sombras). El factor de pendiente
+        // va con el mismo signo (antes era -1 fijo: un sesgo positivo empujaba para un lado y la pendiente para el otro)
         gfx::Enable(gfx::PolygonOffsetFill);
-        gfx::PolygonOffset(-1.0f, unidades);
+        gfx::PolygonOffset(unidades < 0.0f ? -1.0f : 1.0f, unidades);
     } else if (offsetEdit) {
         gfx::Enable(gfx::PolygonOffsetFill);
         gfx::PolygonOffset(2.0f, 4.0f);
@@ -1424,6 +1437,81 @@ static void W3dDibujarLineasMat(const MeshIndex* idx, int count, float grosor) {
     gfx::DrawLinesClientIdx((int)lineas.size(), &lineas[0]);
     gfx::DepthFunc(gfx::DepthLess);
     gfx::LineWidth(1.0f);
+}
+
+// ===========================================================================
+//  DIBUJO CRUDO (objeto Rutina): la geometria de la malla con el estado que ya haya puesto la rutina. Una malla
+//  compartida por 20 autos se prepara UNA vez (punteros + VBO) y despues cada auto cuesta su matriz y su draw.
+//  Una malla con esqueleto se dibuja en la ultima pose calculada (por arrays de RAM: la pose cambia por frame).
+// ===========================================================================
+unsigned int g_w3dTexturaForzada = 0;
+
+void Mesh::CrudoPreparar() {
+    namespace gfx = w3dEngine;
+    crudoVBO = false;
+    GLfloat* posBuf = (skinArmature && skinVertex) ? skinVertex : vertex;
+    GLbyte*  norBuf = (skinArmature && skinNormals) ? skinNormals : normals;
+    if (gfx::VBOSoportado() && !skinArmature && posBuf && faces && facesSize >= 3) {
+        unsigned comp = 0;
+        if (malla && datosComp) { comp = datosComp; if (!W3dMallaRecursoAsegurarVBO(malla)) comp = 0; }
+        vboCompartidas = (unsigned char)comp;
+        const bool posPropio = !(comp & W3DMD_POS);
+        if (vboGeomVer != skinGeomVersion || vboVertN != vertexSize || (posPropio && !vboPos)) { SubirVBO(posBuf, norBuf, false); vboGeomVer = skinGeomVersion; }
+        const unsigned hPos = (comp & W3DMD_POS)   ? malla->vboPos : vboPos;
+        const unsigned hNor = (comp & W3DMD_NOR)   ? malla->vboNor : vboNor;
+        const unsigned hCol = (comp & W3DMD_COL)   ? malla->vboCol : vboCol;
+        const unsigned hUV  = (comp & W3DMD_UV)    ? malla->vboUV  : vboUV;
+        const unsigned hIdx = (comp & W3DMD_FACES) ? malla->vboIdx : vboIdx;
+        if (hPos && hIdx) {
+            gfx::VertexVBO(hPos);
+            if (norBuf && hNor)      gfx::NormalVBO(hNor);
+            if (vertexColor && hCol) gfx::ColorVBO(hCol);
+            if (uv && hUV)           gfx::TexCoordVBO(hUV);
+            gfx::BindIndexVBO(hIdx);
+            crudoVBO = true; vboUVEnUso = hUV;
+        }
+    }
+    if (!crudoVBO) {
+        gfx::VertexPointer3f(0, posBuf);
+        if (norBuf)      gfx::NormalPointer3b(norBuf);
+        if (vertexColor) gfx::ColorPointer4ub(vertexColor);
+        if (uv)          gfx::TexCoordPointer2f(0, uv);
+    }
+    vboRenderActivo = crudoVBO;
+}
+void Mesh::CrudoParte(int parte, bool conMaterial) {
+    namespace gfx = w3dEngine;
+    const size_t n = materialsGroup.size();
+    const size_t g0 = (parte < 0) ? 0 : (size_t)parte, g1 = (parte < 0) ? n : (size_t)parte + 1;
+    for (size_t g = g0; g < g1; g++) {
+        const MaterialGroup& grp = materialsGroup[g];
+        if (grp.indicesDrawnCount <= 0) continue;
+        if (conMaterial && grp.material) AplicarMaterial(grp.material, !w3dRenderSinLuz, w3dRenderSolido);
+        if (crudoVBO) gfx::DrawTrianglesVBO(grp.indicesDrawnCount, grp.startDrawn);
+        else          gfx::DrawTriangles(grp.indicesDrawnCount, &faces[grp.startDrawn]);
+    }
+}
+void Mesh::CrudoRango(int primero, int ultimo, bool conMaterial) {
+    namespace gfx = w3dEngine;
+    const int i0 = primero * 3, i1 = (ultimo + 1) * 3;     // [i0, i1) en indices
+    if (i1 <= i0) return;
+    if (!conMaterial) {
+        if (crudoVBO) gfx::DrawTrianglesVBO(i1 - i0, i0);
+        else          gfx::DrawTriangles(i1 - i0, &faces[i0]);
+        return;
+    }
+    for (size_t g = 0; g < materialsGroup.size(); g++) {
+        const MaterialGroup& grp = materialsGroup[g];
+        const int a = grp.startDrawn > i0 ? grp.startDrawn : i0;
+        const int b = (grp.startDrawn + grp.indicesDrawnCount) < i1 ? (grp.startDrawn + grp.indicesDrawnCount) : i1;
+        if (b <= a) continue;
+        if (grp.material) AplicarMaterial(grp.material, !w3dRenderSinLuz, w3dRenderSolido);
+        if (crudoVBO) gfx::DrawTrianglesVBO(b - a, a);
+        else          gfx::DrawTriangles(b - a, &faces[a]);
+    }
+}
+void Mesh::CrudoTerminar() {
+    w3dEngine::UnbindVBOs();
 }
 
 void Mesh::RenderObject() {
