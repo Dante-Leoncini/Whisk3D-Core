@@ -210,6 +210,40 @@ static inline bool Canal(int v, int bits, int& q) {
 static bool g_tex16Siempre = false;
 bool Texturas16Siempre() { return g_tex16Siempre; }
 void SetTexturas16Siempre(bool on) { g_tex16Siempre = on; }
+
+static int g_texMitadDesde = 0;
+int TexturasMitadDesde() { return g_texMitadDesde; }
+void SetTexturasMitadDesde(int lado) { g_texMitadDesde = lado > 0 ? lado : 0; }
+// promedio de cada 2x2 (un lado impar repite su ultima fila/columna). El COLOR pesado por el alfa: un texel
+// transparente (su color no se ve: suele ser negro) no oscurece el borde. Si el alfa era de un bit (0 / 255) sigue de
+// un bit (corte en la mitad, como el alfa test): asi entra en 5551 y no pasa a 8 bits por los bordes promediados
+unsigned char* ReducirMitadRGBA(const unsigned char* rgba, int w, int h, int& ow, int& oh) {
+    if (!rgba || w <= 0 || h <= 0) return NULL;
+    ow = (w + 1) / 2; oh = (h + 1) / 2;
+    bool alfaBit = true;
+    for (size_t i = 0, n = (size_t)w * h; i < n && alfaBit; i++) alfaBit = rgba[i * 4 + 3] == 0 || rgba[i * 4 + 3] == 255;
+    unsigned char* out = new unsigned char[(size_t)ow * oh * 4];
+    if (!out) return NULL;
+    for (int y = 0; y < oh; y++) {
+        const int y0 = 2 * y, y1 = (2 * y + 1 < h) ? 2 * y + 1 : 2 * y;
+        for (int x = 0; x < ow; x++) {
+            const int x0 = 2 * x, x1 = (2 * x + 1 < w) ? 2 * x + 1 : 2 * x;
+            const unsigned char* q[4] = { rgba + ((size_t)y0 * w + x0) * 4, rgba + ((size_t)y0 * w + x1) * 4,
+                                          rgba + ((size_t)y1 * w + x0) * 4, rgba + ((size_t)y1 * w + x1) * 4 };
+            int a = 0, r = 0, g = 0, b = 0;
+            for (int k = 0; k < 4; k++) { a += q[k][3]; r += q[k][0] * q[k][3]; g += q[k][1] * q[k][3]; b += q[k][2] * q[k][3]; }
+            unsigned char* o = out + ((size_t)y * ow + x) * 4;
+            if (a > 0) { o[0] = (unsigned char)(r / a); o[1] = (unsigned char)(g / a); o[2] = (unsigned char)(b / a); }
+            else {
+                o[0] = (unsigned char)((q[0][0] + q[1][0] + q[2][0] + q[3][0]) / 4);
+                o[1] = (unsigned char)((q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4);
+                o[2] = (unsigned char)((q[0][2] + q[1][2] + q[2][2] + q[3][2]) / 4);
+            }
+            o[3] = alfaBit ? (unsigned char)(a >= 2 * 255 ? 255 : 0) : (unsigned char)((a + 2) / 4);
+        }
+    }
+    return out;
+}
 static GLenum Empacar16(const unsigned char* rgba, int w, int h, std::vector<unsigned short>& out, GLenum& formato) {
     const bool siempre = g_tex16Siempre;   // (el proyecto acepta el error de cuantizar)
     const size_t n = (size_t)w * h;

@@ -1288,6 +1288,9 @@ static bool HijosDibujan(Object* o) {
 // Funcion recursiva para renderizar un objeto y sus hijos
 void Object::Render(){
     if (!visible) return;
+#ifndef W3D_SYMBIAN
+    if (w3dEngine::g_trazaGLSec) printf("      [glsec] -- %s\n", name.c_str());   // (harness) la traza en orden: de quien es cada llamada
+#endif
     // LOCAL VIEW: si un viewport esta aislando, solo se traversa/dibuja lo que esta en el set (seleccion +
     // descendencia + cadena de padres para poder ALCANZAR a los seleccionados). Fuera del editor: false -> gratis.
     if (g_localViewActivo && g_localViewVisibles && !g_localViewVisibles->count(this)) return;

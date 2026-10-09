@@ -112,7 +112,10 @@ namespace w3dEngine {
     void Rotatef(float angleDeg, float x, float y, float z); // rotacion sobre un eje
     void Scalef(float x, float y, float z);
     void MultMatrix(const float* m16);  // multiplica la matriz actual por m (column-major)
-    void GetMatrix(Matrix m, float* out16); // lee la matriz ACTUAL de ese stack (estado de matriz CPU-side, barato; ver TexMatrixMatcap)
+    void GetMatrix(Matrix m, float* out16); // la matriz ACTUAL de ese stack: de la SOMBRA en la CPU (sin glGet, que en el N95 espera al GPU)
+    extern bool g_invalidarPorMalla;        // Invalidate() en cada malla (el editor de Symbian; ver Mesh::RenderObject)
+    extern bool g_matrizAuditar;            // (harness 'matrizaudit') cada GetMatrix compara la sombra con GL...
+    extern int  g_matrizDesyncs;            // ...y cuenta las que no dan igual
     void LoadMatrix(const float* m16);   // carga m como matriz actual (ej: la vista de CameraBase)
     // el SESGO EN METROS: la proyeccion del pase con la profundidad corrida m metros de camara (+ aleja, - acerca) sin
     // mover la geometria en pantalla. Estado como los demas: solo llama al driver si cambia (0 = la del pase)
@@ -421,6 +424,7 @@ namespace w3dEngine {
     // la TRAZA (medir): con g_trazaGL cada llamada suma en su texto ("glBindTexture(...)"); TrazaGLVer la imprime
     // ordenada de mas a menos y la vacia. Solo el backend de pipeline fijo
     extern bool g_trazaGL;
+    extern bool g_trazaGLSec;
     void TrazaGL(const char* llamada);
     void TrazaGLVer();
     // GL CRUDO fuera del motor (las luces, el layout y el cursor de Symbian, el video): W3D_GL_CRUDO(glXxx(...)) la

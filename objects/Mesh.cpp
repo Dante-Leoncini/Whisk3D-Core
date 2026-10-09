@@ -1592,12 +1592,10 @@ void Mesh::RenderObject() {
     // al driver. El resync ahora es UNA vez por frame, antes del traversal de la
     // escena (ViewPort3D), y NADA del pase de escena puede tocar GL crudo (lo
     // vigila gfx::AuditarEstado en el harness 'glaudit').
-#ifdef W3D_SYMBIAN
-    // El loop de Symbian todavia tiene llamadas GL crudas alrededor de las mallas
-    // (Light::RenderObject y el render propio de la plataforma): ahi el resync por
-    // malla SIGUE hasta que ese loop tenga su Invalidate por frame. En PC no corre.
-    gfx::Invalidate();
-#endif
+    // El editor de Symbian todavia tiene llamadas GL crudas alrededor de las mallas (el render propio de la
+    // plataforma): ahi el resync por malla SIGUE (g_invalidarPorMalla). En el MODO JUEGO PURO no hay nada de eso
+    // (el recorrido es el mismo de PC) y la plataforma lo apaga: cada malla re-mandaba todo su estado al driver
+    if (gfx::g_invalidarPorMalla) gfx::Invalidate();
 
     // SKINNING: si hay esqueleto asignado, deformar a la pose (posBuf = skinVertex). Posiciones + normales rotadas.
     GLfloat* posBuf = vertex;

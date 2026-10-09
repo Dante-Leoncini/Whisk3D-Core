@@ -106,9 +106,11 @@ int g_statLlamadas[StatCatCount_] = { 0 };
 static int gStatCat = StatCatEditor;   // categoria del que esta dibujando (el cuadro arranca en Editor)
 #define W3D_GLC(llamada) (g_statLlamadas[gStatCat]++, g_trazaGL ? TrazaGL(#llamada) : (void)0, (llamada))
 bool g_trazaGL = false;
+bool g_trazaGLSec = false;           // ademas, cada llamada EN ORDEN (con su categoria): de donde sale cada una
 static const char* gTrazaTxt[512];   // (un lugar del codigo = un texto: se compara el puntero)
 static int gTrazaN[512], gTrazaCant = 0;
 void TrazaGL(const char* l) {
+    if (g_trazaGLSec) printf("      [glsec] %d %s\n", gStatCat, l);
     for (int i = 0; i < gTrazaCant; i++) if (gTrazaTxt[i] == l) { gTrazaN[i]++; return; }
     if (gTrazaCant < 512) { gTrazaTxt[gTrazaCant] = l; gTrazaN[gTrazaCant++] = 1; }
 }
@@ -356,29 +358,112 @@ static float gProyBase[16];
 static bool  gProyBaseOk = false;
 static float gSesgoPuesto = 0.0f;
 static void ProyCambio() { if (gMatMode != (int)ModelView) { gProyBaseOk = false; gSesgoPuesto = 0.0f; } }
+
+// ---- la SOMBRA de las matrices: la modelview y la proyeccion llevadas en la CPU ----
+// GetMatrix las lee de aca y no de GL: en el N95 (tiler MBX) un glGet espera al GPU, y se leian ~20 por cuadro (el
+// autocull de cada malla, la base de cada rutina). Cada operacion de matriz del motor la lleva al dia (GL es column-
+// major: M = M * X). Lo que no sabe (una pila mas honda que la sombra) queda marcado y esa lectura va a GL una vez.
+// Sin modo conocido (despues de Invalidate) es la modelview: lo mismo que supone el recorrido de la escena
+enum { kSombraHondo = 32 };
+static float gSombra[2][kSombraHondo][16];        // [0] modelview, [1] proyeccion (la de textura no se lee nunca)
+static bool  gSombraOk[2][kSombraHondo];
+static int   gSombraNivel[2] = { 0, 0 };           // (puede pasar de kSombraHondo: esos niveles no se saben)
+bool g_matrizAuditar = false;                      // (harness 'matrizaudit') compara cada lectura con GL
+#ifdef W3D_SYMBIAN
+bool g_invalidarPorMalla = true;                   // (la plataforma lo apaga en el modo juego puro)
+#else
+bool g_invalidarPorMalla = false;
+#endif
+int  g_matrizDesyncs = 0;
+static int SombraPila() { return gMatMode == (int)Projection ? 1 : (gMatMode == (int)TextureMatrix ? -1 : 0); }
+static float* SombraTope(int s) {
+    const int n = gSombraNivel[s];
+    return (n < kSombraHondo && gSombraOk[s][n]) ? gSombra[s][n] : 0;
+}
+static void SombraCargar(const float* m) {
+    const int s = SombraPila(); if (s < 0) return;
+    const int n = gSombraNivel[s]; if (n >= kSombraHondo) return;
+    for (int i = 0; i < 16; i++) gSombra[s][n][i] = m[i];
+    gSombraOk[s][n] = true;
+}
+static void SombraMult(const float* b) {
+    const int s = SombraPila(); if (s < 0) return;
+    float* a = SombraTope(s); if (!a) return;
+    float r[16];
+    for (int c = 0; c < 4; c++)
+        for (int f = 0; f < 4; f++)
+            r[c * 4 + f] = a[f] * b[c * 4] + a[4 + f] * b[c * 4 + 1] + a[8 + f] * b[c * 4 + 2] + a[12 + f] * b[c * 4 + 3];
+    for (int i = 0; i < 16; i++) a[i] = r[i];
+}
+static void SombraPush() {
+    const int s = SombraPila(); if (s < 0) return;
+    const int n = gSombraNivel[s]++;
+    if (n + 1 >= kSombraHondo) return;
+    gSombraOk[s][n + 1] = n < kSombraHondo && gSombraOk[s][n];
+    if (gSombraOk[s][n + 1]) for (int i = 0; i < 16; i++) gSombra[s][n + 1][i] = gSombra[s][n][i];
+}
+static void SombraPop() {
+    const int s = SombraPila(); if (s < 0) return;
+    if (gSombraNivel[s] > 0) gSombraNivel[s]--;
+    else gSombraOk[s][0] = false;          // (un pop de mas: lo que quedo en GL no se sabe)
+}
+static const float kIdentidad[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+
 void MatrixMode(Matrix m) { if (gMatMode == (int)m) return; gMatMode = (int)m; g_statOtras++; W3D_GLC(glMatrixMode(MatGL(m))); }
-void LoadIdentity()       { ProyCambio(); g_statOtras++; W3D_GLC(glLoadIdentity()); }
-void PushMatrix()                          { g_statOtras++; W3D_GLC(glPushMatrix()); }
-void PopMatrix()                           { ProyCambio(); g_statOtras++; W3D_GLC(glPopMatrix()); }
-void Translatef(float x, float y, float z) { ProyCambio(); g_statOtras++; W3D_GLC(glTranslatef(x, y, z)); }
-void Rotatef(float a, float x, float y, float z) { ProyCambio(); g_statOtras++; W3D_GLC(glRotatef(a, x, y, z)); }
-void Scalef(float x, float y, float z)           { ProyCambio(); g_statOtras++; W3D_GLC(glScalef(x, y, z)); }
-void MultMatrix(const float* m)                  { ProyCambio(); g_statOtras++; W3D_GLC(glMultMatrixf(m)); }
-void LoadMatrix(const float* m)                  { ProyCambio(); g_statOtras++; W3D_GLC(glLoadMatrixf(m)); }
+void LoadIdentity()       { ProyCambio(); g_statOtras++; W3D_GLC(glLoadIdentity()); SombraCargar(kIdentidad); }
+void PushMatrix()                          { g_statOtras++; W3D_GLC(glPushMatrix()); SombraPush(); }
+void PopMatrix()                           { ProyCambio(); g_statOtras++; W3D_GLC(glPopMatrix()); SombraPop(); }
+void Translatef(float x, float y, float z) {
+    ProyCambio(); g_statOtras++; W3D_GLC(glTranslatef(x, y, z));
+    const float t[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1 };
+    SombraMult(t);
+}
+void Rotatef(float a, float x, float y, float z) {
+    ProyCambio(); g_statOtras++; W3D_GLC(glRotatef(a, x, y, z));
+    const float l = sqrtf(x * x + y * y + z * z);
+    if (l <= 0.0f) return;
+    x /= l; y /= l; z /= l;
+    const float r = a * 3.14159265f / 180.0f, c = cosf(r), sn = sinf(r), k = 1.0f - c;
+    const float m[16] = { x * x * k + c,     y * x * k + z * sn, x * z * k - y * sn, 0,
+                          x * y * k - z * sn, y * y * k + c,     y * z * k + x * sn, 0,
+                          x * z * k + y * sn, y * z * k - x * sn, z * z * k + c,     0,
+                          0, 0, 0, 1 };
+    SombraMult(m);
+}
+void Scalef(float x, float y, float z) {
+    ProyCambio(); g_statOtras++; W3D_GLC(glScalef(x, y, z));
+    const float m[16] = { x,0,0,0, 0,y,0,0, 0,0,z,0, 0,0,0,1 };
+    SombraMult(m);
+}
+void MultMatrix(const float* m)                  { ProyCambio(); g_statOtras++; W3D_GLC(glMultMatrixf(m)); SombraMult(m); }
+void LoadMatrix(const float* m)                  { ProyCambio(); g_statOtras++; W3D_GLC(glLoadMatrixf(m)); SombraCargar(m); }
 void SesgoMetros(float m) {
     if (m == gSesgoPuesto) return;   // (sin base conocida el sesgo es 0: la proyeccion puesta es la del pase)
-    if (!gProyBaseOk) { W3D_GLC(glGetFloatv(GL_PROJECTION_MATRIX, gProyBase)); gProyBaseOk = true; }
+    if (!gProyBaseOk) { GetMatrix(Projection, gProyBase); gProyBaseOk = true; }
     float P[16];
     for (int i = 0; i < 16; i++) P[i] = gProyBase[i];
     P[14] -= P[10] * m;   // z de camara corrida m metros (+ aleja, - acerca) sin mover la geometria en pantalla
     MatrixMode(Projection);
     W3D_GLC(glLoadMatrixf(P));
+    SombraCargar(P);
     MatrixMode(ModelView);
     gSesgoPuesto = m;
 }
 void GetMatrix(Matrix m, float* out16) {
+    const int s = (m == Projection) ? 1 : (m == TextureMatrix ? -1 : 0);
+    const float* sombra = (s >= 0) ? SombraTope(s) : 0;
+    if (sombra && !g_matrizAuditar) { for (int i = 0; i < 16; i++) out16[i] = sombra[i]; return; }
     g_statOtras++;
     W3D_GLC(glGetFloatv(m == Projection ? GL_PROJECTION_MATRIX : m == TextureMatrix ? GL_TEXTURE_MATRIX : GL_MODELVIEW_MATRIX, out16));
+    if (s < 0) return;
+    if (sombra) {
+        // (auditoria) la sombra tiene que dar lo mismo que GL
+        for (int i = 0; i < 16; i++)
+            if (fabsf(sombra[i] - out16[i]) > 1e-3f * (1.0f + fabsf(out16[i]))) { g_matrizDesyncs++; break; }
+        return;
+    }
+    const int n = gSombraNivel[s];
+    if (n < kSombraHondo) { for (int i = 0; i < 16; i++) gSombra[s][n][i] = out16[i]; gSombraOk[s][n] = true; }
 }
 void Ortho(float l, float r, float b, float t, float n, float f) {
     ProyCambio();
@@ -387,6 +472,9 @@ void Ortho(float l, float r, float b, float t, float n, float f) {
     #else
         W3D_GLC(glOrtho(l, r, b, t, n, f));
     #endif
+    const float m[16] = { 2.0f / (r - l), 0, 0, 0,  0, 2.0f / (t - b), 0, 0,  0, 0, -2.0f / (f - n), 0,
+                          -(r + l) / (r - l), -(t + b) / (t - b), -(f + n) / (f - n), 1 };
+    SombraMult(m);
 }
 
 void Frustum(float l, float r, float b, float t, float n, float f) {
@@ -396,6 +484,9 @@ void Frustum(float l, float r, float b, float t, float n, float f) {
     #else
         W3D_GLC(glFrustum(l, r, b, t, n, f));
     #endif
+    const float m[16] = { 2.0f * n / (r - l), 0, 0, 0,  0, 2.0f * n / (t - b), 0, 0,
+                          (r + l) / (r - l), (t + b) / (t - b), -(f + n) / (f - n), -1,  0, 0, -2.0f * f * n / (f - n), 0 };
+    SombraMult(m);
 }
 
 // perspectiva via Frustum (no usa GLU): mismo resultado que gluPerspective
@@ -530,7 +621,7 @@ void TexMatrixMatcap(bool on) {
     MatrixMode(TextureMatrix);
     if (on) {
         GLfloat mv[16];
-        W3D_GLC(glGetFloatv(GL_MODELVIEW_MATRIX, mv)); // estado de matriz (CPU-side, barato; no es un readback de GPU)
+        GetMatrix(ModelView, mv);   // (de la sombra: sin glGet)
         const GLfloat s = 0.5f / 127.0f;
         GLfloat T[16];
         // column-major. fila0 -> u = s*(MV*N).x + 0.5 ; fila1 -> v = 0.5 - s*(MV*N).y (flip-V)
@@ -700,7 +791,13 @@ static GLenum LightFGL(LightF p) {
     return GL_CONSTANT_ATTENUATION;
 }
 void Light0f(LightF p, float v) { W3D_GLC(glLightf(GL_LIGHT0, LightFGL(p), v)); }
-void SetLightEnabled(unsigned int id, bool on) { if (on) W3D_GLC(glEnable(id)); else W3D_GLC(glDisable(id)); }
+// (las luces 1..7 con su cache: el pase de escena apaga las 8 en cada cuadro -por si una luz cambio de numero- y casi
+// siempre ya estan apagadas. La 0 es una Cap con el cache de siempre)
+static signed char gLuzOn[LucesMax] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+void SetLightEnabled(unsigned int id, bool on) {
+    if (id >= (unsigned int)GL_LIGHT0 && id < (unsigned int)GL_LIGHT0 + LucesMax) { LightN((int)(id - GL_LIGHT0), on); return; }
+    if (on) W3D_GLC(glEnable(id)); else W3D_GLC(glDisable(id));
+}
 void LightNfv(int i, LightFv p, const float* v) {
     if (i < 0 || i >= LucesMax) return;
     g_statOtras++;
@@ -709,6 +806,8 @@ void LightNfv(int i, LightFv p, const float* v) {
 void LightN(int i, bool on) {
     if (i == 0) { if (on) Enable(Light0); else Disable(Light0); return; }   // (la 0 tiene cache)
     if (i < 0 || i >= LucesMax) return;
+    if (gLuzOn[i] == (on ? 1 : 0)) return;
+    gLuzOn[i] = on ? 1 : 0;
     g_statStateChanges++;
     if (on) W3D_GLC(glEnable(GL_LIGHT0 + (GLenum)i)); else W3D_GLC(glDisable(GL_LIGHT0 + (GLenum)i));
 }
@@ -1153,6 +1252,7 @@ void Invalidate() {
     // un pase ajeno no lo cambia (y quien borra texturas pasa por DeleteTexture,
     // que olvida su entrada).
     for (int i = 0; i < 4; i++) gMatKnown[i] = false;
+    for (int i = 0; i < LucesMax; i++) gLuzOn[i] = -1;
     gShinCache = -1e9f;
     gColKnown = false;
     gPolyOffF = gPolyOffU = -1e9f;

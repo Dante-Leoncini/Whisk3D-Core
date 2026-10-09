@@ -43,6 +43,16 @@ namespace w3dEngine {
     // memoria). Las de alfa con niveles quedan en 8 bits. Gobierna las cargas nuevas
     bool Texturas16Siempre();
     void SetTexturas16Siempre(bool on);
+    // TEXTURAS A LA MITAD EN EL N95 ("texturasMitadDesde" en el .w3d; 0 = no, el defecto): cada textura del PROYECTO
+    // (las de los materiales y las imagenes de la UI; no las del editor ni las fuentes) con un lado MAYOR a ese se sube
+    // a la mitad de resolucion. Un proyecto pensado para PC no entra en la memoria del telefono (Daytona: ~35 MB de
+    // texturas, el N95 se cae a los ~20) y en 320x240 la mitad casi no se nota. Las UV no cambian (van de 0 a 1) y lo
+    // que se informa como tamano de la imagen es el original. Solo en Symbian; en el resto se ignora. Gobierna las
+    // cargas nuevas
+    int TexturasMitadDesde();
+    void SetTexturasMitadDesde(int lado);
+    // la imagen RGBA a la MITAD (cada 2x2 promediado): un buffer nuevo que se libera con FreeImage; NULL sin memoria
+    unsigned char* ReducirMitadRGBA(const unsigned char* rgba, int w, int h, int& ow, int& oh);
     // la MEMORIA de las texturas subidas (bytes, con su piramide de mips) y cuantas hay / cuantas en 16 bits
     // bytes32: lo que serian todas en RGBA8; bytesPot: lo que ocupan en el N95 (remuestreadas a potencia de dos)
     struct MemoriaTexturas { long bytes, bytes32, bytesPot; int cantidad, de16; };

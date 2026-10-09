@@ -125,7 +125,7 @@ void Light::RenderObject() {
     // misma logica de luz que PC: la luz de ESCENA se enciende aca (bajo la matriz del objeto: position local =
     // origen del objeto). El icono lo dibuja render.cpp (RenderIcons3D).
     if (aplicar) {
-        W3D_GL_CRUDO(glEnable(LightID));
+        w3dEngine::SetLightEnabled(LightID, true);   // (por el motor: lleva el cache de las luces)
         float pos[4];
         if (direccional) {                                  // DIRECCIONAL: la direccion la da la ROTACION de la
             // lampara (no su posicion). Local (0,1,0)="arriba" -> la matriz del objeto (su rotacion) lo orienta:
@@ -166,7 +166,7 @@ void Light::RenderObject() {
 #else
 
     if (aplicar){
-        W3D_GL_CRUDO(glEnable(LightID));
+        w3dEngine::SetLightEnabled(LightID, true);   // (por el motor: lleva el cache de las luces)
         float pos[4];
         if (direccional) {
             // DIRECCIONAL (sol): la direccion la da la ROTACION de la
