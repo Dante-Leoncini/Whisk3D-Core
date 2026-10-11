@@ -73,7 +73,9 @@ public:
     bool Valido() const { return !grupos.empty() && !caras.empty(); }
     // parsea la seccion de geometria del .w3dbsp v2 desde 'off' (lo que sigue a la parte de visibilidad que leyo
     // VisBsp). 'bsp' da la cantidad de nodos y hojas que la geometria tiene que respetar. false + err = invalido
-    bool Cargar(const unsigned char* bytes, size_t n, size_t off, const VisBsp& bsp, std::string* err = 0);
+    // 'subirAlCargar': cada grupo va a la GPU apenas se parsea (hay contexto: se carga desde el render) y su RAM se
+    // suelta; false = se sube al primer dibujo (pruebas sin contexto)
+    bool Cargar(const unsigned char* bytes, size_t n, size_t off, const VisBsp& bsp, std::string* err = 0, bool subirAlCargar = true);
     void Limpiar();      // suelta todo (VBOs incluidos)
     size_t Bytes() const;   // RAM que ocupa el dato (sin los VBOs)
 
@@ -100,7 +102,7 @@ private:
 
     void Marcar(const VisBsp& bsp, int cluster, const std::vector<unsigned char>& fila);
     void DibujarTocados(int fase);
-    void SubirGrupo(Grupo& g);
+    bool SubirGrupo(Grupo& g, int indice);
     void PunterosGrupo(Grupo& g);
     void EstadoMaterial(const Material& m, const Grupo& g);
     MundoBsp(const MundoBsp&);

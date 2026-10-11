@@ -539,6 +539,7 @@ bool MezclaTexturasActiva(){ return false; }
 void MezclaTexturasUV(const float*){}
 void MezclaTexturasUVVBO(unsigned int){}
 void MezclaTexturaBorrada(unsigned int){}
+unsigned int ErrorGL(){ return 0u; }
 void TexGenSphere(bool){}      // TODO: matcap por shader (UV = reflejo del normal en eye-space)
 void TexMatrixMatcap(bool){}   // TODO: idem, via matriz de textura -> UV del normal
 void TexMatrixUV(float,float,float,float){}   // TODO: uniform de la matriz de textura en el uber-shader

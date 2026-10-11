@@ -190,6 +190,9 @@ namespace w3dEngine {
     void MezclaTexturasUVVBO(unsigned int h);
     // (DeleteTexture la llama: GL desbindea lo borrado de todas las unidades y el cache de la 1 lo tiene que saber)
     void MezclaTexturaBorrada(unsigned int id);
+    // el ultimo error de GL (glGetError; 0 = ninguno). Lo usa quien sube buffers grandes (MundoBsp) para saber si el
+    // driver los acepto: en el N95 un glBufferData que no entra falla EN SILENCIO y el VBO queda vacio
+    unsigned int ErrorGL();
 
     // --- color uniforme del pipeline fijo (cuando NO hay array de color) ---
     void Color4f(float r, float g, float b, float a);

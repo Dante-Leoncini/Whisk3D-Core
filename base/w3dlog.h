@@ -44,6 +44,13 @@ void w3dRedirigirCoutAlLog();
 // reloj monotono en MILISEGUNDOS para medir fases (p.ej. cuanto tarda cargar un .w3d en el N95).
 // Symbian: tick del nanokernel; resto: clock(). Suficiente para medir fases de segundos.
 unsigned long w3dTickMs();
+
+// MEMORIA en KB, lo que la plataforma sepa medir (-1 = no se mide aca). Symbian: el heap de la app (en uso y el
+// tamano de su chunk) y la RAM libre del telefono; glibc: el heap en uso y el reservado. NO reserva memoria: se
+// puede llamar con el heap agotado (el aviso de "sin memoria" del operator new de Symbian la usa).
+void w3dMemoriaKB(long& heapUsado, long& heapTam, long& ramLibre);
+// una linea "[mem] <etiqueta>: ..." con esos numeros: los hitos de una carga grande (abrir, cada prefab)
+void w3dLogMemoria(const char* etiqueta);
 #else
 inline void w3dLogReset() {}
 inline void w3dLog(const char*) {}
@@ -56,4 +63,6 @@ inline int         w3dLogRingCount() { return 0; }
 inline const char* w3dLogRingLinea(int) { return ""; }
 inline void        w3dRedirigirCoutAlLog() {}
 inline unsigned long w3dTickMs() { return 0; }
+inline void w3dMemoriaKB(long& u, long& t, long& l) { u = t = l = -1; }
+inline void w3dLogMemoria(const char*) {}
 #endif

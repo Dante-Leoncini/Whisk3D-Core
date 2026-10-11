@@ -574,6 +574,7 @@ static long MemoriaDe(const W3dAnimSet* s) {
 static std::string gMotivoCarga;
 
 static void* OpCargarAnimSet(const std::string& id, long* bytes) {
+    { const std::string hito = "cargando el animset " + id; w3dLogMemoria(hito.c_str()); }
     std::vector<unsigned char> d;
     if (!w3dFileSystem::ReadFileBytes(id, d) || d.empty()) {
         gMotivoCarga = "no encuentro la entrada '" + id + "'";

@@ -6,7 +6,9 @@
 #include "objects/MundoBsp.h"
 #include "objects/VisBsp.h"
 #include "w3dGraphics.h"
+#include "w3dlog.h"       // que paso con cada grupo (el N95 no tiene consola)
 #include <string.h>
+#include <stdlib.h>   // getenv: W3D_MUNDOBSP_RAM=1 fuerza el camino sin VBO (probarlo en PC)
 #include <algorithm>
 
 namespace gfx = w3dEngine;
@@ -52,7 +54,7 @@ size_t MundoBsp::Bytes() const {
 //   u32 nCaras x { u16 grupo; u16 material; u32 primero; u32 cantidad }
 //   u32 nHojas; (nHojas + 1) x u32 offsets; u32 nHojaCaras; u32 x nHojaCaras
 //   cajas: nNodos x 6 f32; nHojas x 6 f32; [u8 1; nCaras x 6 f32]  (las de las caras: opcionales)
-bool MundoBsp::Cargar(const unsigned char* d, size_t n, size_t p, const VisBsp& bsp, std::string* err) {
+bool MundoBsp::Cargar(const unsigned char* d, size_t n, size_t p, const VisBsp& bsp, std::string* err, bool subirAlCargar) {
     Limpiar();
     const size_t nNodos = bsp.nodos.size(), nHojas = bsp.hojaCluster.size();
     if (p + 8 > n || memcmp(d + p, "GEOM", 4) != 0) { if (err) *err = "sin seccion de geometria"; return false; }
@@ -75,6 +77,7 @@ bool MundoBsp::Cargar(const unsigned char* d, size_t n, size_t p, const VisBsp& 
     const unsigned nGrupos = LeeU32(d + p); p += 4;
     if (nGrupos > 65535u) { if (err) *err = "cantidad de grupos absurda"; Limpiar(); return false; }
     grupos.resize(nGrupos);
+    int enVbo = 0, enRam = 0;
     for (unsigned gi = 0; gi < nGrupos; gi++) {
         Grupo& g = grupos[gi];
         if (p + 5 > n) { if (err) *err = "cortado en los grupos"; Limpiar(); return false; }
@@ -97,7 +100,11 @@ bool MundoBsp::Cargar(const unsigned char* d, size_t n, size_t p, const VisBsp& 
             if (v >= g.nVerts) { if (err) *err = "indice fuera del grupo"; Limpiar(); return false; }
             g.idx[k] = (unsigned short)v;
         }
+        // a la GPU ya (el contexto esta: se carga desde el render): la RAM del grupo se suelta antes de parsear el que
+        // sigue, asi el pico de memoria es el archivo + UN grupo, no el archivo + todo el mundo
+        if (subirAlCargar) { if (SubirGrupo(g, (int)gi)) enVbo++; else enRam++; }
     }
+    if (subirAlCargar) w3dLogf("[MundoBsp] %u grupos: %d en VBO, %d en RAM", nGrupos, enVbo, enRam);
     if (p + 4 > n) { if (err) *err = "cortado en las caras"; Limpiar(); return false; }
     const unsigned nCaras = LeeU32(d + p); p += 4;
     if (nCaras > 50000000u || p + (size_t)nCaras * 12 > n) { if (err) *err = "cortado en las caras"; Limpiar(); return false; }
@@ -187,23 +194,39 @@ static bool CajaEnPlanos(const float* p, const float* caja) {
     return true;
 }
 
-void MundoBsp::SubirGrupo(Grupo& g) {
+// sube los atributos de un grupo a VBOs y, si el driver los acepto (un glBufferData que no entra -el MBX del N95- falla
+// en silencio: se pregunta ErrorGL despues), suelta su RAM. Si no entro, se borran los buffers y el grupo se dibuja
+// desde RAM (mas lento, pero se ve). Devuelve si quedo en VBO
+bool MundoBsp::SubirGrupo(Grupo& g, int indice) {
     g.subido = true;
-    if (!gfx::VBOSoportado()) return;   // (se dibuja desde RAM)
+    static const bool forzarRam = getenv("W3D_MUNDOBSP_RAM") != NULL && getenv("W3D_MUNDOBSP_RAM")[0] != 0;
+    if (!gfx::VBOSoportado() || forzarRam) { w3dLogfW("[MundoBsp] grupo %d: %s -> RAM", indice, forzarRam ? "W3D_MUNDOBSP_RAM" : "sin VBO en este driver"); return false; }
+    gfx::ErrorGL();   // (vaciar lo que hubiera)
     g.vboPos = gfx::GenBuffer(); gfx::ArrayBufferData(g.vboPos, &g.pos[0], (int)(g.pos.size() * sizeof(float)));
     g.vboUV  = gfx::GenBuffer(); gfx::ArrayBufferData(g.vboUV,  &g.uv[0],  (int)(g.uv.size() * sizeof(float)));
     g.vboCol = gfx::GenBuffer(); gfx::ArrayBufferData(g.vboCol, &g.col[0], (int)g.col.size());
     if (!g.lm.empty()) { g.vboLm = gfx::GenBuffer(); gfx::ArrayBufferData(g.vboLm, &g.lm[0], (int)(g.lm.size() * sizeof(float))); }
-    if (g.vboPos && g.vboUV && g.vboCol) {
-        // la RAM de los atributos ya no hace falta (el telefono tiene poca): quedan en la GPU. Los indices si (viajan)
-        std::vector<float>().swap(g.pos); std::vector<float>().swap(g.uv);
-        if (g.vboLm) std::vector<float>().swap(g.lm);
-        std::vector<unsigned char>().swap(g.col);
+    const unsigned err = gfx::ErrorGL();
+    const bool ok = err == 0 && g.vboPos && g.vboUV && g.vboCol && (g.lm.empty() || g.vboLm);
+    if (!ok) {
+        w3dLogfW("[MundoBsp] grupo %d (%u vertices, %u KB): el driver no lo acepto (glError 0x%x) -> se dibuja desde RAM",
+                 indice, g.nVerts, (unsigned)((g.pos.size() + g.uv.size() + g.lm.size()) * 4 + g.col.size()) / 1024u, err);
+        if (g.vboPos) gfx::DeleteBuffer(g.vboPos);
+        if (g.vboUV)  gfx::DeleteBuffer(g.vboUV);
+        if (g.vboCol) gfx::DeleteBuffer(g.vboCol);
+        if (g.vboLm)  gfx::DeleteBuffer(g.vboLm);
+        g.vboPos = g.vboUV = g.vboCol = g.vboLm = 0;
+        return false;
     }
+    // la RAM de los atributos ya no hace falta (el telefono tiene poca): quedan en la GPU. Los indices si (viajan)
+    std::vector<float>().swap(g.pos); std::vector<float>().swap(g.uv);
+    if (g.vboLm) std::vector<float>().swap(g.lm);
+    std::vector<unsigned char>().swap(g.col);
+    return true;
 }
 
 void MundoBsp::PunterosGrupo(Grupo& g) {
-    if (!g.subido) SubirGrupo(g);
+    if (!g.subido) SubirGrupo(g, (int)(&g - &grupos[0]));
     if (g.vboPos) { gfx::VertexVBO(g.vboPos); gfx::TexCoordVBO(g.vboUV); gfx::ColorVBO(g.vboCol); }
     else {
         gfx::UnbindVBOs();

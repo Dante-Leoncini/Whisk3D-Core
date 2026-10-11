@@ -1,5 +1,6 @@
 #include "VisBsp.h"
 #include <cstring>
+#include <stdio.h>   // snprintf (el aviso de version)
 
 // ---- lectura LE sin alineacion ----
 static unsigned LeeU32(const unsigned char* p) {
@@ -17,7 +18,11 @@ bool VisBsp::Cargar(const unsigned char* d, size_t n, std::string* err) {
     if (n < 24 || memcmp(d, "W3BS", 4) != 0) { if (err) *err = "no es un .w3dbsp"; return false; }
     const unsigned version = (unsigned)d[4] | ((unsigned)d[5] << 8);
     const unsigned flags   = (unsigned)d[6] | ((unsigned)d[7] << 8);
-    if (version != 1 && version != 2) { if (err) *err = "version de .w3dbsp desconocida"; return false; }
+    if (version != 1 && version != 2) {
+        // (con el numero: un binario viejo que no lee la 2 lo dice en el log y se sabe que hay que recompilar)
+        if (err) { char b[96]; snprintf(b, sizeof b, "version de .w3dbsp desconocida: %u (este motor lee 1 y 2)", version); *err = b; }
+        return false;
+    }
     this->version = version;
     const unsigned nNodos = LeeU32(d + 8), nHojas = LeeU32(d + 12), nCl = LeeU32(d + 16), nHijos = LeeU32(d + 20);
     if (nNodos > 4000000u || nHojas > 4000000u || nCl > 1000000u || nHijos > 1000000u) { if (err) *err = "cabecera absurda"; return false; }

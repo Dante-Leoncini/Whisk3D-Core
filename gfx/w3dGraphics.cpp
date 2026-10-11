@@ -1296,6 +1296,9 @@ void MezclaTexturasOff() {
 void MezclaTexturaBorrada(unsigned int id) {
     if (id && gMezclaTexId == id) gMezclaTexId = 0xFFFFFFFFu;
 }
+// el ultimo error de GL (0 = ninguno): vacia la cola de errores. Quien sube buffers grandes (MundoBsp) pregunta despues
+// de cada glBufferData: en el N95 uno que no entra falla en silencio y el VBO queda vacio
+unsigned int ErrorGL() { return (unsigned int)glGetError(); }
 void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int modo) {
     if (!idB || !MezclaTexturasSoportada()) { MezclaTexturasOff(); return; }
     if (k < 0.0f) k = 0.0f;
@@ -1837,6 +1840,7 @@ int AuditarEstado() {
 #include "w3dBase.h"
 void w3dSetColor(const ColorType c[4]) {
     w3dEngine::Color4f(c[0], c[1], c[2], c[3]);
+
 }
 
 // estado de render (lo setea el editor desde su RenderType/view antes de dibujar la escena)

@@ -229,4 +229,35 @@ unsigned long w3dTickMs() {
 #endif
 }
 
+// ---- memoria (ver w3dlog.h) -------------------------------------------------------------------------------
+#if defined(W3D_SYMBIAN)
+#include <hal.h>      // HAL::Get(EMemoryRAMFree): la RAM libre del telefono (hal.lib)
+#elif defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
+#include <malloc.h>   // mallinfo2: el heap EN USO (no lo que el allocator retiene)
+#define W3D_LOG_MALLINFO2 1
+#endif
+void w3dMemoriaKB(long& heapUsado, long& heapTam, long& ramLibre) {
+    heapUsado = heapTam = ramLibre = -1;
+#if defined(W3D_SYMBIAN)
+    TInt total = 0;
+    User::AllocSize(total);                          // lo pedido y no devuelto en el heap de la app
+    heapUsado = (long)(total / 1024);
+    heapTam = (long)(User::Heap().Size() / 1024);    // lo que el chunk del heap ya tomo del telefono
+    TInt libre = 0;
+    if (HAL::Get(HALData::EMemoryRAMFree, libre) == KErrNone) ramLibre = (long)(libre / 1024);
+#elif defined(W3D_LOG_MALLINFO2)
+    const struct mallinfo2 mi = mallinfo2();
+    heapUsado = (long)((mi.uordblks + mi.hblkhd) / 1024u);
+    heapTam = (long)((mi.arena + mi.hblkhd) / 1024u);
+#endif
+}
+void w3dLogMemoria(const char* etiqueta) {
+    if (!LogNivelOk(0)) return;
+    long u, t, l;
+    w3dMemoriaKB(u, t, l);
+    if (u < 0) return;   // (la plataforma no lo mide: no hay nada que decir)
+    if (l >= 0) w3dLogf("[mem] %s: heap %ld KB en uso (%ld KB tomados), RAM libre %ld KB", etiqueta ? etiqueta : "", u, t, l);
+    else        w3dLogf("[mem] %s: heap %ld KB en uso (%ld KB tomados)", etiqueta ? etiqueta : "", u, t);
+}
+
 #endif // W3D_DEV_LOG
