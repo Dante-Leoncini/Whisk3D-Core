@@ -112,7 +112,29 @@ struct Cursor {
 //  mismos bytes). El caso de las animaciones horneadas (un key por frame, todo
 //  lineal, handles en cero) queda en 4 bytes por keyframe: solo el valor.
 // ---------------------------------------------------------------------------
+// Una curva COMPACTA en memoria (W3dClaves, Animation.h) se escribe SIN expandirla y con los mismos bytes que
+// daria expandida: sus claves son justo las de los modos regulares + uno para todos + handles en cero (n >= 2,
+// paso > 0 y el ultimo frame entra en un int, asi que las diferencias que mira el camino de abajo son el paso).
+// Lo prueba prueba_claves_compactas.w3s (guardar sin editar da el archivo identico).
+void PonCurvaCompacta(std::string& s, const AnimProperty& ap, const W3dClavesCompactas& c) {
+    PonI32(s, ap.Property);
+    PonI32(s, ap.component);
+    PonU32(s, c.n);
+    char modos[4];
+    modos[0] = (char)KF_FRAMES_REGULARES;
+    modos[1] = (char)KF_INT_UNO;
+    modos[2] = (char)KF_INT_UNO;
+    modos[3] = (char)KF_HANDLES_CERO;
+    s.append(modos, 4);
+    PonI32(s, c.primero); PonI32(s, c.paso);
+    const float* v = c.Valores();
+    for (unsigned i = 0; i < c.n; i++) PonF32(s, v[i]);
+    PonI32(s, c.interp);
+    PonI32(s, c.tipoH);
+}
+
 void PonCurva(std::string& s, const AnimProperty& ap) {
+    if (const W3dClavesCompactas* cc = ap.keyframes.DatosCompactos()) { PonCurvaCompacta(s, ap, *cc); return; }
     const std::vector<keyFrame>& k = ap.keyframes;
     const size_t n = k.size();
     PonI32(s, ap.Property);
@@ -173,8 +195,21 @@ bool LeerCurva(Cursor& c, AnimProperty& ap, std::string& motivo) {
     nec += (mT == KF_INT_UNO) ? 4 : (size_t)n * 4;
     if (mH == KF_HANDLES_TODOS) nec += (size_t)n * 16;
     if (!c.Hay(nec)) { motivo = "curva cortada"; return false; }
-    ap.keyframes.resize(n);
-    std::vector<keyFrame>& k = ap.keyframes;
+    // HORNEADA (frames regulares, una interpolacion y un tipo de handle para todas, handles en cero): queda
+    // COMPACTA en memoria, solo los valores (W3dClaves, Animation.h). La interpolacion y el tipo de handle vienen
+    // DESPUES de los valores: se miran antes (ya se sabe que estan: c.Hay(nec)) para leer los valores directo.
+    if (mF == KF_FRAMES_REGULARES && mI == KF_INT_UNO && mT == KF_INT_UNO && mH == KF_HANDLES_CERO) {
+        const int f0 = (int)LeeU32(c.p), paso = (int)LeeU32(c.p + 4);
+        const int interp = (int)LeeU32(c.p + 8 + (size_t)n * 4), tipoH = (int)LeeU32(c.p + 12 + (size_t)n * 4);
+        if (W3dClaves::CompactaPosible(n, f0, paso)) {
+            c.I32(); c.I32();
+            float* v = ap.keyframes.CompactaCrear(n, f0, paso, interp, tipoH);
+            for (unsigned i = 0; i < n; i++) v[i] = c.F32();
+            c.I32(); c.I32();
+            return c.ok;
+        }
+    }
+    std::vector<keyFrame> k(n);
     if (mF == KF_FRAMES_REGULARES) {
         int f = c.I32(); const int paso = c.I32();
         for (unsigned i = 0; i < n; i++) { k[i].frame = f; if (i + 1 < n) f += paso; }
@@ -189,6 +224,7 @@ bool LeerCurva(Cursor& c, AnimProperty& ap, std::string& motivo) {
             k[i].inDF = c.F32(); k[i].inDV = c.F32(); k[i].outDF = c.F32(); k[i].outDV = c.F32();
         }
     else for (unsigned i = 0; i < n; i++) { k[i].inDF = 0.0f; k[i].inDV = 0.0f; k[i].outDF = 0.0f; k[i].outDV = 0.0f; }
+    ap.keyframes.swap(k);
     return c.ok;
 }
 
@@ -503,7 +539,7 @@ long W3dAnimSetClipBytes(const SkeletalAnimation* c, long* keys) {
         const BoneTrack& tr = c->tracks[t];
         b += (long)(tr.Propertys.capacity() * sizeof(AnimProperty));
         for (size_t p = 0; p < tr.Propertys.size(); p++) {
-            b += (long)(tr.Propertys[p].keyframes.capacity() * sizeof(keyFrame));
+            b += tr.Propertys[p].keyframes.BytesMemoria();   // (vector o bloque compacto: medir no expande)
             k += (long)tr.Propertys[p].keyframes.size();
         }
     }
@@ -520,7 +556,7 @@ static long ClipJerBytes(const W3dClipJer* c, long* keys) {
         const W3dPistaJer& p = c->pistas[t];
         b += (long)p.ruta.capacity() + (long)(p.props.capacity() * sizeof(AnimProperty));
         for (size_t q = 0; q < p.props.size(); q++) {
-            b += (long)(p.props[q].keyframes.capacity() * sizeof(keyFrame));
+            b += p.props[q].keyframes.BytesMemoria();
             k += (long)p.props[q].keyframes.size();
         }
     }

@@ -28,6 +28,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     //MUCHAS de estas definiciones se van a borrar. ya que NO son la base y son cosas mas relacionadas al editor 3d....
     //ejemplo: "edit" o "modificadorActivo" etc... eso es del Editor de Whisk3D
 
+    capaUnidad1 = -1;
     skinArmature = NULL; skinVertex = NULL; skinNormals = NULL; skinVertexCap = 0; skinConLuz = true; lastSkinFrame = -999999; skinPoseSerial = 0; lastSkinBordesFrame = -999999; skinBordesPoseSerial = 0; skinFlatSig = 0; skinNCtrl = 0; skinGeomVersion = 1; bordesGeomVersion = 0; vtxAnimRecipeBase = 0; // skinning apagado por defecto
     skinAabbMin = Vector3(0,0,0); skinAabbMax = Vector3(0,0,0); skinAabbOk = false; skinCullSeguidos = 0; // autocull
     skinEpsPos = 0.0f; skinEpsRot = 0.0f; skinIncOk = false; skinPrevConLuz = false; // skinning incremental
@@ -661,6 +662,25 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         gfx::BindTexture(g_w3dTexturaForzada ? g_w3dTexturaForzada : mat->texture->iID);
         gfx::TexFilter(!gfx::PixeladoGlobal() && mat->filtrado);
         gfx::TexWrap(mat->repeat);
+        // MEZCLA DE TEXTURAS (Material::texturaB / mezclaB): la unidad 1 interpola B con lo de arriba, en la MISMA pasada
+        // (no con el reflejo ni el normal map: esos ya usan el combiner / la matriz de textura)
+        capaUnidad1 = -1;
+        if (mat->texturaB && mat->texturaB->iID && mat->mezclaB > 0.0f && !mat->chrome && !mat->normalMap)
+            gfx::MezclaTexturas(mat->texturaB->iID, mat->mezclaB, !gfx::PixeladoGlobal() && mat->filtrado, mat->repeat);
+        else if (mat->capas.size() == 1 && mat->capas[0].on && mat->capas[0].tex && mat->capas[0].tex->iID && uv &&
+                 !mat->chrome && !mat->normalMap && !solido &&
+                 (mat->capas[0].blend == W3D_CAPA_MULTIPLY || mat->capas[0].blend == W3D_CAPA_MULTIPLY2X) &&
+                 gfx::MezclaTexturasSoportada()) {
+            // UN LIGHTMAP EN LA MISMA PASADA: la unica capa Multiply / Multiply 2x del material va en la unidad 1 con su
+            // propia UV (el unwrap del lightmap) en vez de una segunda pasada: la mitad de los draws (y del relleno) del
+            // mundo de un mapa con lightmaps. El pase de capas de abajo la saltea (capaUnidad1)
+            const TexLayer& cap = mat->capas[0];
+            const GLfloat* cuv = UVDeCapa(cap.uvMapa);
+            gfx::MezclaTexturas(cap.tex->iID, 1.0f, !gfx::PixeladoGlobal() && mat->filtrado, mat->repeat,
+                                cap.blend == W3D_CAPA_MULTIPLY2X ? 2 : 1);
+            gfx::MezclaTexturasUV(cuv ? cuv : NULL);
+            capaUnidad1 = 0;
+        } else gfx::MezclaTexturasOff();
         // REFLECTION 3 modos (mat->reflectMode):
         //  0 MATCAP   = normal-del-ojo por MATRIZ DE TEXTURA -> HARDWARE en PC Y N95 (rapido). Normales como texcoords.
         //  1 SPHEREMAP= GL_SPHERE_MAP exacto -> HARDWARE en PC (texgen); en N95 (sin texgen) cae a SOFTWARE.
@@ -683,6 +703,7 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         else if (uv) { if (vboRenderActivo && vboUVEnUso) gfx::TexCoordVBO(vboUVEnUso); else gfx::TexCoordPointer2f(0, uv); } // UV del modelo (VBO o RAM)
     } else {
         gfx::Disable(gfx::Texture2D);
+        gfx::MezclaTexturasOff();
         gfx::TexMatrixMatcap(false);
         gfx::TexGenSphere(false);
         gfx::TexEnvReplace(false);
@@ -1514,6 +1535,15 @@ void Mesh::CrudoTerminar() {
     w3dEngine::UnbindVBOs();
 }
 
+// los punteros de RAM de una malla (el camino de arrays de cliente); uvp NULL = sin el de UV
+static void PunterosRAM(const GLfloat* pos, const GLbyte* nor, const GLubyte* col, const GLfloat* uvp) {
+    namespace gfx = w3dEngine;
+    gfx::VertexPointer3f(0, pos);
+    if (nor) gfx::NormalPointer3b(nor);
+    if (col) gfx::ColorPointer4ub(col);
+    if (uvp) gfx::TexCoordPointer2f(0, uvp);
+}
+
 void Mesh::RenderObject() {
     // en el render FINAL un objeto no-renderizable no sale (en el viewport si)
     if (w3dEngine::w3dRenderFinal && !renderizable) return;
@@ -1620,11 +1650,17 @@ void Mesh::RenderObject() {
         if (skinConLuz && skinNormals) norBuf = skinNormals;
     }
 
-    // punteros de los datos de la malla (una sola vez)
-    gfx::VertexPointer3f(0, posBuf);
-    if (norBuf)      gfx::NormalPointer3b(norBuf);
-    if (vertexColor) gfx::ColorPointer4ub(vertexColor);
-    if (uv) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer2f(0, uv); }
+    // punteros de los datos de la malla (una sola vez). Si el relleno va a ir por los VBO (el caso comun) NO: el camino del
+    // VBO los pisaba enseguida (los punteros de RAM y su bind 0, de mas en cada dibujo). Ahi los pone ese camino (de
+    // RAM los arrays sin VBO) o, si al final no va por VBO (un esqueleto animando), PunterosRAM despues del bloque del VBO
+    bool anyFancy = false;   // (chrome / normal map / capas: re-apuntan arrays por pasada, van de RAM)
+    if (!w3dRenderSolido) for (size_t gg = 0; gg < materialsGroup.size(); gg++){ Material* mt = materialsGroup[gg].material;
+        if (mt && (mt->chrome || mt->normalMap || !mt->capas.empty())) { anyFancy = true; break; } }
+    const bool talVezVBO = gfx::g_punterosCache && gfx::VBOSoportado() && !hayGen && !weightPaintOn && !vertexPaintOn &&
+                           !editActiva && !w3dRenderWireframe && !w3dRenderNormalColor && !w3dRenderSinLuz && !w3dRenderAlpha &&
+                           !anyFancy && faces && facesSize >= 3;
+    if (!talVezVBO) PunterosRAM(posBuf, norBuf, vertexColor, NULL);
+    if (uv) { gfx::EnableArray(gfx::TexCoordArray); if (!talVezVBO) gfx::TexCoordPointer2f(0, uv); }
 
     // WEIGHT PAINT: la malla se dibuja SOLIDA con el degradado de peso por vertice (negro->amarillo->rojo), sin luz
     // ni textura. Es un inspector visual del peso del grupo activo (editar viene despues). Reemplaza el render normal.
@@ -1851,9 +1887,7 @@ void Mesh::RenderObject() {
         // y se bindean los VBOs (override de los punteros client). Cubre Solid Y Material Preview con materiales SIMPLES
         // (sin chrome/normalmap/capas, que re-bindean arrays por-corner -> esos quedan client-side). Bordes/overlays/gen
         // tambien siguen client-side. Fallback total si el driver no tiene VBOs (VBOSoportado()==false).
-        bool anyFancy = false;
-        if (!solido) for (size_t gg = 0; gg < materialsGroup.size(); gg++){ Material* mt = materialsGroup[gg].material;
-            if (mt && (mt->chrome || mt->normalMap || !mt->capas.empty())) { anyFancy = true; break; } }
+        // (anyFancy: arriba, con los punteros)
         // (P3) W3D_OVERRIDE de visibilidad por triangulo ACTIVO: se decide ACA (antes del
         // setup del VBO) porque cambia el camino de los indices: los del subconjunto
         // van como INDICES DE CLIENTE sobre los atributos del VBO estatico. El IBO
@@ -1913,10 +1947,14 @@ void Mesh::RenderObject() {
             const unsigned hUV  = (comp & W3DMD_UV)    ? malla->vboUV  : vboUV;
             const unsigned hIdx = (comp & W3DMD_FACES) ? malla->vboIdx : vboIdx;
             if (hPos && hIdx && poseEnVBO) {
+                // (un array sin su VBO va de RAM: lo que antes quedaba de los punteros de arriba)
                 gfx::VertexVBO(hPos);
                 if (norBuf && hNor)      gfx::NormalVBO(hNor);
+                else if (norBuf && talVezVBO) gfx::NormalPointer3b(norBuf);
                 if (vertexColor && hCol) gfx::ColorVBO(hCol);
+                else if (vertexColor && talVezVBO) gfx::ColorPointer4ub(vertexColor);
                 if (uv && hUV)           gfx::TexCoordVBO(hUV);
+                else if (uv && talVezVBO) gfx::TexCoordPointer2f(0, uv);
                 // (P3) con visibilidad activa el IBO estatico NO se bindea: los
                 // indices del subconjunto van de CLIENTE (DrawTrianglesClientIdx)
                 if (!usePvs) gfx::BindIndexVBO(hIdx);
@@ -1927,6 +1965,7 @@ void Mesh::RenderObject() {
             // si !poseEnVBO (malla skinneada animando): drawVBO=false -> cae al path CLIENT-ARRAY (pos/nor/col/uv/idx de
             // RAM, ya seteados arriba con VertexPointer3f(posBuf) etc). Sin re-spec del VBO -> sin stall del tiler.
         }
+        if (talVezVBO && !drawVBO) PunterosRAM(posBuf, norBuf, vertexColor, uv);   // (no fue por VBO: los de RAM ahora)
         vboRenderActivo = drawVBO; // AplicarMaterial bindea el uv VBO (no client-uv) mientras esto este activo
 
         // override PVS/Vis (modificador Culling por triangulo): dibuja SOLO los indices
@@ -2066,17 +2105,18 @@ void Mesh::RenderObject() {
             // UV (TexLayer::uvMapa -> UVDeCapa: la base o una capa extra del render, ej. el unwrap de un lightmap) y
             // se dibuja PURA: sin luz ni color de vertice (eso ya lo aplico la base). GL 1.1 -> PC y N95 igual.
             // Con capas la malla dibuja de client arrays (anyFancy): el TexCoordPointer se puede re-apuntar.
-            if (!solido && !mat->capas.empty() && uv) {
+            if (!solido && !mat->capas.empty() && uv && !(capaUnidad1 == 0 && mat->capas.size() == 1)) {   // (la unica capa ya fue en la unidad 1)
                 gfx::Enable(gfx::Blend);
                 gfx::DepthFunc(gfx::DepthEqual); gfx::DepthMask(false); // misma superficie, NO re-escribe z
                 gfx::Disable(gfx::Lighting); gfx::DisableArray(gfx::NormalArray);
                 gfx::Disable(gfx::ColorMaterial); gfx::DisableArray(gfx::ColorArray);
                 gfx::Color4f(1.0f, 1.0f, 1.0f, 1.0f);
                 gfx::TexEnvReplace(false);
+                gfx::MezclaTexturasOff();   // (las capas van con una unidad: la mezcla de texturas es de la base)
                 bool uvAjeno = false;
                 for (size_t c = 0; c < mat->capas.size(); c++) {
                     const TexLayer& cap = mat->capas[c];
-                    if (!cap.on || !cap.tex) continue;
+                    if (!cap.on || !cap.tex || (int)c == capaUnidad1) continue;
                     gfx::Enable(gfx::Texture2D);
                     gfx::BindTexture(cap.tex->iID);
                     gfx::TexFilter(!gfx::PixeladoGlobal() && mat->filtrado); gfx::TexWrap(mat->repeat);
@@ -2118,6 +2158,7 @@ void Mesh::RenderObject() {
         gfx::PolygonOffset(0.0f, 0.0f);
         gfx::Disable(gfx::PolygonOffsetFill);
         gfx::AlphaTest(0.0f);   // el recorte por alfa de un material (rejas) no leakea a la UI ni a la proxima malla
+        gfx::MezclaTexturasOff();   // (idem la unidad 1 de un material con mezcla de texturas)
         // el estado que puede haber dejado un material DECAL / ADITIVO: si no se restaura,
         // la proxima malla (o la UI) hereda "no escribas z" o "sumale al fondo".
         gfx::DepthMask(!gfx::w3dPaseEspejoSinZ);

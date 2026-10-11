@@ -55,7 +55,8 @@ MallaRecurso::MallaRecurso()
       suave(false), primTipo(-1), primTam(2.0f), primTam2(0.0f), primAlto(0.0f), primVerts(8), primVerts2(8),
       extrasEnRecurso(false), firmaFormas(0), firmaUVRest(0),
       grupoActivo(-1), uvGrupoActivo(-1), radio(0.0f), aabbOk(false), vertsAgrupados(0), statsNoEditable(false),
-      flujos(0), refsRutina(0), vboPos(0), vboNor(0), vboCol(0), vboUV(0), vboIdx(0), vboVer(0), topoEstado(0) {
+      flujos(0), refsRutina(0), vboPos(0), vboNor(0), vboCol(0), vboUV(0), vboIdx(0), vboVer(0), topoEstado(0),
+      soloGPU(false), ramFija(false), soltarPend(false), arraysHay(0), bytesSoltados(0) {
     esRecurso = true;
     for (int k = 0; k < 3; k++) { aabbMin[k] = aabbMax[k] = centro[k] = 0.0f; }
 }
@@ -64,11 +65,15 @@ MallaRecurso::MallaRecurso()
 static void BorrarVBO(MallaRecurso* r) {
     gfx::DeleteBuffer(r->vboPos); gfx::DeleteBuffer(r->vboNor); gfx::DeleteBuffer(r->vboCol);
     gfx::DeleteBuffer(r->vboUV);  gfx::DeleteBuffer(r->vboIdx);
+    for (size_t k = 0; k < r->vboUVx.size(); k++) gfx::DeleteBuffer(r->vboUVx[k]);
+    r->vboUVx.clear();
     r->vboPos = r->vboNor = r->vboCol = r->vboUV = r->vboIdx = 0;
     r->vboVer = 0;
 }
 
+static void QuitarPendienteSoloGPU(MallaRecurso* r);
 MallaRecurso::~MallaRecurso() {
+    QuitarPendienteSoloGPU(this);   // (anotada para soltar su RAM: la lista no puede quedar con un puntero muerto)
     W3dMallaFlujosBorrar(this);
     BorrarVBO(this);
     // los arrays los libera ~MallaDatos
@@ -453,6 +458,8 @@ static void LiberarArrays(MallaRecurso* r) {
     r->vertex = 0; r->normals = 0; r->uv = 0; r->vertexColor = 0; r->faces = 0;
     r->uvExtra.clear();
     r->vertexSize = 0; r->facesSize = 0;
+    // (una malla soloGPU ya no tenia arrays: lo que sigue la deja sin geometria, como cualquier otra)
+    r->soloGPU = false; r->arraysHay = 0; r->capasUVHay.clear(); r->bytesSoltados = 0;
 }
 
 void W3dMallaRecursoPonerBytes(MallaRecurso* r, const std::string& bytes) {
@@ -540,6 +547,8 @@ static bool OpLiberarMalla(void* dato) {
     if (d->esRecurso) {
         // el recurso NO se borra (es del registro): se descargan sus arrays y sus VBO
         MallaRecurso* r = static_cast<MallaRecurso*>(d);
+        QuitarPendienteSoloGPU(r);
+        r->ramFija = false;   // (lo vuelve a pedir el paso que la lee de RAM, si la malla se vuelve a cargar)
         LiberarArrays(r);
         BorrarVBO(r);
         TirarTopo(r);
@@ -863,6 +872,8 @@ bool W3dMallaVincular(Mesh* m, MallaRecurso* r, bool conservarEdicion) {
     W3dRecurso* d = AdquirirMalla(r);
     if (!d) return false;
     r->rec = d;
+    // una malla que solto su RAM (soloGPU) la recupera de sus bytes: un objeto apunta ADENTRO de sus arrays
+    if (r->soloGPU && !W3dMallaRecursoAsegurarRAM(r)) { W3dRecursoSoltar(d, W3DREC_PERMANENTE); return false; }
     const bool posada = m->posadaPorAnim;   // la pose de la sesion vuelve al final (RePosar)
     // lo que la malla tenia: lo COMPARTIDO se suelta (queda NULL) y lo PROPIO se libera
     m->SoltarDatosCompartidos();
@@ -885,6 +896,8 @@ bool W3dMallaMudar(Mesh* m, MallaRecurso* r) {
     W3dRecurso* d = AdquirirMalla(r);
     if (!d) return false;
     r->rec = d;
+    // (un usuario: el recurso vuelve a RAM, como en W3dMallaVincular; lo leen W3dMallaLimpia y el guardado)
+    if (r->soloGPU && !W3dMallaRecursoAsegurarRAM(r)) { W3dRecursoSoltar(d, W3DREC_PERMANENTE); return false; }
     m->DesinstanciarDatos(W3DMD_TODO, true);   // lo que compartia con el recurso viejo, propio
     const std::string pend = m->edicionPendiente;
     if (m->malla) W3dMallaDesvincular(m);
@@ -1020,6 +1033,8 @@ bool W3dMallaRecursoAplicarBytes(MallaRecurso* r, const std::string& bytes, cons
         return false;
     }
     if (mats && mats->size() == r->partes.size()) r->materiales = *mats;
+    // (una malla soloGPU tenia los arrays en NULL: ahora tiene los nuevos, como cualquier otra)
+    r->soloGPU = false; r->arraysHay = 0; r->capasUVHay.clear(); r->bytesSoltados = 0;
     r->bytes = bytes;
     r->modificado = true;
     r->bytesDeTexto = false;
@@ -1066,22 +1081,184 @@ void W3dMallaRecursoCambiarMaterial(MallaRecurso* r, int k, Material* mat) {
 // ============================================================================
 //  VBO COMPARTIDOS
 // ============================================================================
+static void AnotarSoltable(MallaRecurso* r);
 bool W3dMallaRecursoAsegurarVBO(MallaRecurso* r) {
-    if (!r || !gfx::VBOSoportado() || !r->vertex || r->vertexSize <= 0) return false;
-    if (r->vboPos && r->vboVer == r->version) return true;
+    if (!r || !gfx::VBOSoportado() || (!r->vertex && !r->soloGPU) || r->vertexSize <= 0) return false;
+    if (r->vboPos && r->vboVer == r->version) { AnotarSoltable(r); return true; }
+    // una malla soloGPU con el VBO perdido (contexto GL nuevo): sus arrays de vuelta para subirlos
+    if (!r->vertex && !W3dMallaRecursoAsegurarRAM(r)) return false;
     const int nv = r->vertexSize;
     if (!r->vboPos) r->vboPos = gfx::GenBuffer();
     gfx::ArrayBufferData(r->vboPos, r->vertex, nv * 3 * (int)sizeof(GLfloat));
     if (r->normals)     { if (!r->vboNor) r->vboNor = gfx::GenBuffer(); gfx::ArrayBufferData(r->vboNor, r->normals, nv * 3 * (int)sizeof(GLbyte)); }
     if (r->vertexColor) { if (!r->vboCol) r->vboCol = gfx::GenBuffer(); gfx::ArrayBufferData(r->vboCol, r->vertexColor, nv * 4 * (int)sizeof(GLubyte)); }
     if (r->uv)          { if (!r->vboUV)  r->vboUV  = gfx::GenBuffer(); gfx::ArrayBufferData(r->vboUV,  r->uv, nv * 2 * (int)sizeof(GLfloat)); }
+    // las capas UV extra (el puntero de UV de una rutina puede apuntar a una: Rutina.cpp, Puntero)
+    if (r->vboUVx.size() < r->uvExtra.size()) r->vboUVx.resize(r->uvExtra.size(), 0u);
+    for (size_t k = 1; k < r->uvExtra.size(); k++) {
+        if (r->uvExtra[k].size() < (size_t)nv * 2) continue;
+        if (!r->vboUVx[k]) r->vboUVx[k] = gfx::GenBuffer();
+        gfx::ArrayBufferData(r->vboUVx[k], &r->uvExtra[k][0], nv * 2 * (int)sizeof(GLfloat));
+    }
     if (r->faces && r->facesSize > 0) {
         if (!r->vboIdx) r->vboIdx = gfx::GenBuffer();
         gfx::IndexBufferData(r->vboIdx, r->faces, r->facesSize * (int)sizeof(MeshIndex));
     }
     r->vboVer = r->version;
+    AnotarSoltable(r);
     return true;
 }
+
+// ============================================================================
+//  SOLO EN GPU (ver el .h)
+// ============================================================================
+static bool gSoloGPU = false;
+static std::vector<MallaRecurso*> gSoltarPend;   // anotadas por AsegurarVBO; se sueltan al cerrar la corrida
+static int gSoloGPURecargas = 0;
+
+static void QuitarPendienteSoloGPU(MallaRecurso* r) {
+    if (!r || !r->soltarPend) return;
+    r->soltarPend = false;
+    for (size_t i = 0; i < gSoltarPend.size(); i++)
+        if (gSoltarPend[i] == r) { gSoltarPend.erase(gSoltarPend.begin() + (long)i); return; }
+}
+// la malla puede soltar su RAM al cerrar la corrida? (lo barato primero: es por cada AsegurarVBO)
+static void AnotarSoltable(MallaRecurso* r) {
+    if (!gSoloGPU || r->soloGPU || r->soltarPend || r->ramFija || r->refsRutina <= 0 || !r->usuarios.empty()) return;
+    r->soltarPend = true;
+    gSoltarPend.push_back(r);
+}
+
+void W3dMallasSoloGPUActivar(bool on) {
+    if (gSoloGPU == on) return;
+    gSoloGPU = on;
+    if (on) return;   // (las que puedan se sueltan en la proxima corrida de rutinas, al asegurar su VBO)
+    // apagada: todo como siempre (las sueltas vuelven a RAM; las anotadas ya no se sueltan)
+    for (size_t i = 0; i < gSoltarPend.size(); i++) gSoltarPend[i]->soltarPend = false;
+    gSoltarPend.clear();
+    for (int l = 0; l < 2; l++) {
+        const std::vector<MallaRecurso*>& v = l ? gLibMallas : gRegistro;
+        for (size_t i = 0; i < v.size(); i++) if (v[i]->soloGPU) W3dMallaRecursoAsegurarRAM(v[i]);
+    }
+}
+bool W3dMallasSoloGPUActiva() { return gSoloGPU; }
+
+bool W3dMallaRecursoTieneArray(const MallaRecurso* r, unsigned mascara) {
+    if (!r) return false;
+    if (r->soloGPU) return (r->arraysHay & mascara) == mascara;
+    return (!(mascara & W3DMD_POS) || r->vertex) && (!(mascara & W3DMD_NOR) || r->normals) &&
+           (!(mascara & W3DMD_UV) || r->uv) && (!(mascara & W3DMD_COL) || r->vertexColor) &&
+           (!(mascara & W3DMD_FACES) || r->faces);
+}
+bool W3dMallaRecursoTieneCapaUV(const MallaRecurso* r, int capa) {
+    if (!r || capa <= 0) return false;
+    if (r->soloGPU) return capa < (int)r->capasUVHay.size() && r->capasUVHay[(size_t)capa] != 0;
+    return capa < (int)r->uvExtra.size() && r->uvExtra[(size_t)capa].size() >= (size_t)r->vertexSize * 2;
+}
+
+bool W3dMallaRecursoSoltarRAM(MallaRecurso* r) {
+    if (!r || !gSoloGPU || r->soloGPU || r->ramFija || !r->rec || r->refsRutina <= 0 || !r->usuarios.empty()) return false;
+    const size_t nv = r->vertexSize > 0 ? (size_t)r->vertexSize : 0;
+    if (!r->vertex || !nv || !r->vboPos || r->vboVer != r->version || !gfx::VBOSoportado()) return false;
+    // TODO lo que tiene tiene que estar en un VBO (un GenBuffer que fallo: se queda en RAM). Una capa UV que no
+    // llega a una UV por vertice no se sube (el puntero la tomaria de RAM): con una asi, tambien se queda
+    if ((r->normals && !r->vboNor) || (r->vertexColor && !r->vboCol) || (r->uv && !r->vboUV) ||
+        (r->faces && r->facesSize > 0 && !r->vboIdx)) return false;
+    for (size_t k = 1; k < r->uvExtra.size(); k++)
+        if (!r->uvExtra[k].empty() && (k >= r->vboUVx.size() || !r->vboUVx[k] || r->uvExtra[k].size() < nv * 2)) return false;
+    // lo que despues se leeria de RAM: la caja y el indice maximo de cada parte y de toda la malla (el rango de
+    // cada parte, vertexSize y facesSize se quedan en el recurso)
+    W3dMallaFlujosPrecalcular(r);
+    unsigned hay = W3DMD_POS;
+    if (r->normals)     hay |= W3DMD_NOR;
+    if (r->uv)          hay |= W3DMD_UV;
+    if (r->vertexColor) hay |= W3DMD_COL;
+    if (r->faces)       hay |= W3DMD_FACES;
+    r->arraysHay = (unsigned char)hay;
+    r->capasUVHay.assign(r->uvExtra.size(), (unsigned char)0);
+    long b = r->Bytes();
+    for (size_t k = 0; k < r->uvExtra.size(); k++) {
+        b += (long)(r->uvExtra[k].size() * sizeof(GLfloat));
+        if (k > 0 && r->uvExtra[k].size() >= nv * 2) r->capasUVHay[k] = 1;
+    }
+    if (r->extrasEnRecurso) {
+        b += (long)(r->ctrl.size() * sizeof(int) + r->uvRest.size() * sizeof(float));
+        for (size_t g = 0; g < r->grupos.size(); g++)
+            b += (long)(r->grupos[g].idx.size() * sizeof(int) + r->grupos[g].pesos.size() * sizeof(float));
+        for (size_t g = 0; g < r->uvGrupos.size(); g++)
+            b += (long)(r->uvGrupos[g].idx.size() * sizeof(int) + r->uvGrupos[g].pesos.size() * sizeof(float));
+    }
+    if (r->bytesDeTexto) b += (long)r->bytes.size();
+    // los arrays se van; vertexSize y facesSize se quedan (son lo que dibujan los VBO)
+    delete[] r->vertex; delete[] r->normals; delete[] r->uv; delete[] r->vertexColor; delete[] r->faces;
+    r->vertex = 0; r->normals = 0; r->uv = 0; r->vertexColor = 0; r->faces = 0;
+    std::vector< std::vector<GLfloat> >().swap(r->uvExtra);
+    SoltarExtras(r);   // (sin usuarios: el proximo que se vincule los relee con la malla)
+    TirarTopo(r);
+    // la conversion de una entrada de TEXTO es cache (se rehace al releer); los bytes EDITADOS son la malla: se quedan
+    if (r->bytesDeTexto) { std::string().swap(r->bytes); r->bytesDeTexto = false; }
+    r->soloGPU = true;
+    r->bytesSoltados = b;
+    // (el cache de cajas y flujos sigue valiendo: mismo contenido; prueba_mallas_solo_gpu.w3s: mismo cuadro y llamadas GL)
+    W3dMallaFlujosReapuntar(r);
+    r->rec->bytes = r->Bytes();
+    return true;
+}
+
+void W3dMallasSoloGPUSoltarPendientes() {
+    if (gSoltarPend.empty()) return;
+    std::vector<MallaRecurso*> v;
+    v.swap(gSoltarPend);
+    for (size_t i = 0; i < v.size(); i++) {
+        v[i]->soltarPend = false;
+        W3dMallaRecursoSoltarRAM(v[i]);
+    }
+}
+
+bool W3dMallaRecursoAsegurarRAM(MallaRecurso* r) {
+    if (!r) return false;
+    if (!r->soloGPU) return true;
+    const int nv = r->vertexSize, ni = r->facesSize;
+    std::string b;
+    if (!W3dMallaRecursoLeerBytes(r, b) || b.empty() ||
+        !LlenarDesdeBytes(r, (const unsigned char*)b.data(), b.size())) {
+        w3dLogfE("[mallas] '%s' estaba solo en la GPU y no pude releerla de sus bytes", r->nombre.c_str());
+        return false;
+    }
+    r->soloGPU = false; r->arraysHay = 0; r->capasUVHay.clear(); r->bytesSoltados = 0;
+    // (los bytes son los mismos con los que se subio el VBO; si no midieran lo mismo, se vuelve a subir)
+    if (r->vertexSize != nv || r->facesSize != ni) r->vboVer = 0;
+    if (r->rec) r->rec->bytes = r->Bytes();
+    W3dMallaFlujosReapuntar(r);
+    gSoloGPURecargas++;
+    w3dLogf("[mallas] '%s' vuelve a RAM (estaba solo en la GPU)", r->nombre.c_str());
+    return true;
+}
+
+void W3dMallasVBOPerdidos() {
+    for (int l = 0; l < 2; l++) {
+        const std::vector<MallaRecurso*>& v = l ? gLibMallas : gRegistro;
+        for (size_t i = 0; i < v.size(); i++) {
+            MallaRecurso* r = v[i];
+            // (sin glDelete: esos nombres eran del contexto que ya no existe)
+            r->vboPos = r->vboNor = r->vboCol = r->vboUV = r->vboIdx = 0;
+            r->vboUVx.clear();
+            r->vboVer = 0;
+            W3dMallaFlujosGLPerdido(r);
+        }
+    }
+}
+
+int W3dMallasSoloGPUCantidad(long* bytesAhorrados) {
+    int n = 0; long b = 0;
+    for (int l = 0; l < 2; l++) {
+        const std::vector<MallaRecurso*>& v = l ? gLibMallas : gRegistro;
+        for (size_t i = 0; i < v.size(); i++) if (v[i]->soloGPU) { n++; b += v[i]->bytesSoltados; }
+    }
+    if (bytesAhorrados) *bytesAhorrados = b;
+    return n;
+}
+int W3dMallasSoloGPURecargas() { return gSoloGPURecargas; }
 
 // ============================================================================
 //  MALLAS EDITADAS
@@ -1119,6 +1296,7 @@ long W3dMallasVBOBytes() {
         if (r->vboNor) b += nv * 3L;
         if (r->vboCol) b += nv * 4L;
         if (r->vboUV)  b += nv * 2L * (long)sizeof(GLfloat);
+        for (size_t k = 0; k < r->vboUVx.size(); k++) if (r->vboUVx[k]) b += nv * 2L * (long)sizeof(GLfloat);
         if (r->vboIdx) b += (long)r->facesSize * (long)sizeof(MeshIndex);
     }
     return b;

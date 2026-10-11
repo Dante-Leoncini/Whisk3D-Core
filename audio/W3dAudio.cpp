@@ -19,17 +19,21 @@ namespace w3dEngine {
 // el contrato con el backend de salida vive en W3dAudioBackend.h (lo incluyen los dos lados)
 
 // ---------------------------------------------------------------------------
-//  Sonido = PCM stereo 16-bit ya al rate del mixer.
+//  Sonido = PCM 16-bit en SU rate y con SUS canales (1 o 2): el mixer lo lleva al suyo al mezclar (avanza 'paso'
+//  muestras del sonido por muestra de salida). Antes se guardaba ya convertido a estereo al rate del mixer: un wav
+//  mono de 22 kHz ocupaba el doble en un telefono a 22 kHz y 4 veces en una PC a 44,1 kHz.
 // ---------------------------------------------------------------------------
 class W3dSound {
 public:
-    short* pcm;   // interleaved L,R,L,R...
+    short* pcm;   // interleaved (L,R,L,R... si canales = 2)
     int    frames;
+    int    canales;   // 1 o 2
+    int    rate;      // Hz del sonido (la voz avanza rate / rate del mixer muestras por muestra de salida)
     // PUNTOS DE LOOP del WAV (chunk 'smpl', el estandar de los editores de audio y de los streams de consola):
     // con loop, al pasar loopFin la voz vuelve a loopIni (la INTRO de una musica suena una sola vez). En frames
-    // del mixer; loopFin <= 0 = sin puntos (el loop es el archivo entero, como siempre).
+    // del sonido; loopFin <= 0 = sin puntos (el loop es el archivo entero, como siempre).
     int    loopIni, loopFin;
-    W3dSound() : pcm(0), frames(0), loopIni(0), loopFin(0) {}
+    W3dSound() : pcm(0), frames(0), canales(2), rate(44100), loopIni(0), loopFin(0) {}
     ~W3dSound() { delete[] pcm; }
 };
 
@@ -64,6 +68,8 @@ struct Voice {
 static const int MAX_VOICES = 64;
 static Voice s_voices[MAX_VOICES];
 static int   s_rate      = 44100;
+// muestras del sonido que avanza la voz por muestra de salida (su rate llevado al del mixer, por el pitch)
+static float PasoDe(const W3dSound* s, float pitch) { return pitch * (float)s->rate / (float)s_rate; }
 static float s_master    = 1.0f;
 static int   s_nextId    = 1;
 static bool  s_ready     = false;
@@ -76,7 +82,7 @@ static bool  s_pausa     = false;   // W3dAudioPause: el mixer saca silencio sin
 static unsigned long long s_reloj = 0;   // frames MEZCLADOS (sin contar la pausa): el reloj de las agendas
 
 // ---------------------------------------------------------------------------
-//  WAV: parseo desde memoria -> resample/convert a stereo 16-bit al rate del mixer.
+//  WAV: parseo desde memoria -> PCM 16-bit con sus canales (mas de 2: los dos primeros) y su rate.
 // ---------------------------------------------------------------------------
 static unsigned int rdU32(const unsigned char* p) { return p[0] | (p[1]<<8) | (p[2]<<16) | ((unsigned)p[3]<<24); }
 static unsigned int rdU16(const unsigned char* p) { return p[0] | (p[1]<<8); }
@@ -119,26 +125,15 @@ static W3dSound* decodeWav(const unsigned char* b, size_t len) {
 
     int srcFrames = (int)(dataLen / ((size_t)channels * (bits / 8)));
     if (srcFrames < 1) return 0;
-    // resample lineal a s_rate + a stereo 16-bit
-    long outFrames = (long)((double)srcFrames * s_rate / srcRate);
-    if (outFrames < 1) outFrames = 1;
-    short* out = new short[(size_t)outFrames * 2];
-    for (long i = 0; i < outFrames; i++) {
-        double t  = (double)i * srcRate / s_rate;
-        int    i0 = (int)t;
-        double fr = t - i0;
-        for (int c = 0; c < 2; c++) {
-            short a = srcSample(data, srcFrames, channels, bits, i0,     c);
-            short bb = srcSample(data, srcFrames, channels, bits, i0 + 1, c);
-            out[i * 2 + c] = (short)(a + (short)((bb - a) * fr));
-        }
-    }
+    const int can = channels >= 2 ? 2 : 1;
+    short* out = new short[(size_t)srcFrames * can];
+    for (int i = 0; i < srcFrames; i++)
+        for (int c = 0; c < can; c++) out[(size_t)i * can + c] = srcSample(data, srcFrames, channels, bits, i, c);
     W3dSound* s = new W3dSound();
-    s->pcm = out; s->frames = (int)outFrames;
+    s->pcm = out; s->frames = srcFrames; s->canales = can; s->rate = srcRate;
     if (smplIni >= 0 && smplFin > smplIni && smplFin < srcFrames) {
-        s->loopIni = (int)((double)smplIni * s_rate / srcRate);
-        s->loopFin = (int)((double)(smplFin + 1) * s_rate / srcRate);   // exclusivo
-        if (s->loopFin > s->frames) s->loopFin = s->frames;
+        s->loopIni = (int)smplIni;
+        s->loopFin = (int)(smplFin + 1);   // exclusivo
         if (s->loopIni >= s->loopFin) { s->loopIni = 0; s->loopFin = 0; }
     }
     return s;
@@ -185,8 +180,8 @@ W3dSound* W3dSoundBeep(float freq, int ms, float vol) {
     int frames = (int)((long)ms * s_rate / 1000);
     if (frames < 1) frames = 1;
     W3dSound* s = new W3dSound();
-    s->pcm = new short[frames * 2];
-    s->frames = frames;
+    s->pcm = new short[frames];
+    s->frames = frames; s->canales = 1; s->rate = s_rate;
     float periodo = (float)s_rate / freq;      // muestras por ciclo
     int fade = s_rate / 200; if (fade < 1) fade = 1;   // ~5 ms
     for (int i = 0; i < frames; i++) {
@@ -196,7 +191,7 @@ W3dSound* W3dSoundBeep(float freq, int ms, float vol) {
         if (i < fade) g *= (float)i / (float)fade;                       // fade in
         if (i > frames - fade) g *= (float)(frames - i) / (float)fade;   // fade out
         short v = (short)(sq * g * 9000.0f);   // ~0.27 de escala: fuerte pero no satura al mezclar voces
-        s->pcm[i*2] = v; s->pcm[i*2+1] = v;
+        s->pcm[i] = v;
     }
     return s;
 }
@@ -257,7 +252,7 @@ int W3dSoundPlayAt(W3dSound* s, float volume, bool loop, float pitch, float pan,
     for (int i = 0; i < MAX_VOICES; i++) {
         if (!s_voices[i].active) {
             Voice& v = s_voices[i];
-            v.s = s; v.pos = 0.0f; v.step = pitch; v.vol = volume; v.loop = loop; v.active = true;
+            v.s = s; v.pos = 0.0f; v.step = PasoDe(s, pitch); v.vol = volume; v.loop = loop; v.active = true;
             v.fadeGain = 1.0f; v.fadeStep = 0.0f;   // sin rampa: la voz suena a su volumen
             v.gL = pan > 0.0f ? 1.0f - pan : 1.0f;  // el lado fuerte a 1, el otro atenuado
             v.gR = pan < 0.0f ? 1.0f + pan : 1.0f;
@@ -343,19 +338,18 @@ void W3dSoundSetPitch(int voice, float pitch) {
     if (pitch < 0.05f) pitch = 0.05f; if (pitch > 8.0f) pitch = 8.0f;
     W3dAudioBackendLock();
     for (int i = 0; i < MAX_VOICES; i++)
-        if (s_voices[i].active && s_voices[i].id == voice) s_voices[i].step = pitch;
+        if (s_voices[i].active && s_voices[i].id == voice) s_voices[i].step = PasoDe(s_voices[i].s, pitch);
     W3dAudioBackendUnlock();
 }
 
 // la posicion de la voz en segundos del sonido (ver W3dAudio.h): el reloj maestro para
-// sincronizar animacion con audio. pos esta en frames del sonido AL RATE DEL MIXER
-// (decodeWav ya resampleo), asi que pos / s_rate = segundos del wav reproducidos.
+// sincronizar animacion con audio. pos esta en frames DEL SONIDO, asi que pos / su rate = segundos del wav.
 float W3dSoundPos(int voice) {
     if (!s_ready || voice <= 0) return -1.0f;
     float seg = -1.0f;
     W3dAudioBackendLock();
     for (int i = 0; i < MAX_VOICES; i++)
-        if (s_voices[i].active && s_voices[i].id == voice) { seg = s_voices[i].pos / (float)s_rate; break; }
+        if (s_voices[i].active && s_voices[i].id == voice) { seg = s_voices[i].pos / (float)s_voices[i].s->rate; break; }
     W3dAudioBackendUnlock();
     return seg;
 }
@@ -386,6 +380,7 @@ void W3dAudioMix(short* out, int frames) {
         if (!v.active) continue;
         float g = v.vol * s_master * s_juego;
         const short* p = v.s->pcm;
+        const bool mono = v.s->canales == 1;
         int fr = v.s->frames;
         // con puntos de loop (smpl): la voz en loop termina su vuelta en loopFin y vuelve a loopIni
         const bool conPuntos = v.loop && v.s->loopFin > 0;
@@ -419,8 +414,12 @@ void W3dAudioMix(short* out, int frames) {
             // avanza POR MUESTRA -> el corte baja a cero suave, sin click, aunque el buffer del backend
             // sea grande. Sin fade pedido, fadeStep es 0 y esto es * 1.0.
             const float gg = g * v.fadeGain;
-            const float l0 = (float)p[pos * 2],     l1 = (float)p[pos1 * 2];
-            const float r0 = (float)p[pos * 2 + 1], r1 = (float)p[pos1 * 2 + 1];
+            float l0, l1, r0, r1;
+            if (mono) { l0 = r0 = (float)p[pos]; l1 = r1 = (float)p[pos1]; }
+            else {
+                l0 = (float)p[pos * 2];     l1 = (float)p[pos1 * 2];
+                r0 = (float)p[pos * 2 + 1]; r1 = (float)p[pos1 * 2 + 1];
+            }
             acc[i * 2]     += (int)((l0 + (l1 - l0) * fr1) * gg * v.gL);
             acc[i * 2 + 1] += (int)((r0 + (r1 - r0) * fr1) * gg * v.gR);
             fpos += v.step;   // paso fraccional = pitch (1.0 en W3dSoundPlay clasico)

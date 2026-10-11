@@ -9,7 +9,7 @@ static float LeeF32(const unsigned char* p) { unsigned u = LeeU32(p); float f; m
 
 void VisBsp::Limpiar() {
     nodos.clear(); hojaCluster.clear(); pvsOff.clear(); pvs.clear(); hijos.clear();
-    nClusters = 0; bytesFila = 0; rle = false;
+    nClusters = 0; bytesFila = 0; rle = false; version = 0; geomOff = 0;
 }
 
 bool VisBsp::Cargar(const unsigned char* d, size_t n, std::string* err) {
@@ -17,7 +17,8 @@ bool VisBsp::Cargar(const unsigned char* d, size_t n, std::string* err) {
     if (n < 24 || memcmp(d, "W3BS", 4) != 0) { if (err) *err = "no es un .w3dbsp"; return false; }
     const unsigned version = (unsigned)d[4] | ((unsigned)d[5] << 8);
     const unsigned flags   = (unsigned)d[6] | ((unsigned)d[7] << 8);
-    if (version != 1) { if (err) *err = "version de .w3dbsp desconocida"; return false; }
+    if (version != 1 && version != 2) { if (err) *err = "version de .w3dbsp desconocida"; return false; }
+    this->version = version;
     const unsigned nNodos = LeeU32(d + 8), nHojas = LeeU32(d + 12), nCl = LeeU32(d + 16), nHijos = LeeU32(d + 20);
     if (nNodos > 4000000u || nHojas > 4000000u || nCl > 1000000u || nHijos > 1000000u) { if (err) *err = "cabecera absurda"; return false; }
     size_t p = 24;
@@ -58,6 +59,8 @@ bool VisBsp::Cargar(const unsigned char* d, size_t n, std::string* err) {
         hijos[i].bits.assign(d + p, d + p + nb); p += nb;
         hijos[i].bits.resize((size_t)bytesFila, 0);   // mismo largo que una fila (AND directo)
     }
+    // version 2: lo que sigue es la geometria del mundo (MundoBsp la lee desde aca)
+    if (version == 2 && p < n) geomOff = p;
     return true;
 }
 
@@ -108,4 +111,31 @@ bool VisBsp::Interseca(const std::vector<unsigned char>& fila, const std::vector
 int VisBsp::IndiceHijo(const std::string& nombre) const {
     for (size_t i = 0; i < hijos.size(); i++) if (hijos[i].nombre == nombre) return (int)i;
     return -1;
+}
+
+bool VisBsp::ClustersDeCaja(const float* mn, const float* mx, std::vector<unsigned char>& bits) const {
+    bits.assign((size_t)bytesFila, 0);
+    if (nodos.empty() || nClusters <= 0) return false;
+    // bajada con pila: en cada plano va por el lado del vertice mas positivo y, si la caja lo cruza, por los dos
+    std::vector<int> pila;
+    pila.reserve(64);
+    pila.push_back(0);
+    while (!pila.empty()) {
+        const int i = pila.back(); pila.pop_back();
+        if (i < 0) {
+            const int h = -i - 1;
+            if (h < (int)hojaCluster.size()) {
+                const int c = hojaCluster[(size_t)h];
+                if (c >= 0 && c < nClusters) bits[(size_t)c >> 3] |= (unsigned char)(1u << (c & 7));
+            }
+            continue;
+        }
+        const Nodo& nd = nodos[(size_t)i];
+        const float sMax = nd.a * (nd.a >= 0 ? mx[0] : mn[0]) + nd.b * (nd.b >= 0 ? mx[1] : mn[1]) + nd.c * (nd.c >= 0 ? mx[2] : mn[2]) - nd.d;
+        const float sMin = nd.a * (nd.a >= 0 ? mn[0] : mx[0]) + nd.b * (nd.b >= 0 ? mn[1] : mx[1]) + nd.c * (nd.c >= 0 ? mn[2] : mx[2]) - nd.d;
+        if (sMax >= 0.0f) pila.push_back(nd.hijo0);
+        if (sMin < 0.0f)  pila.push_back(nd.hijo1);
+        if (pila.size() > 100000) break;   // (un archivo con ciclos)
+    }
+    return true;
 }

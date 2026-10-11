@@ -121,13 +121,154 @@ public:
                  inDF(0.0f), inDV(0.0f), outDF(0.0f), outDV(0.0f) {}
 };
 
+// ============================================================================
+//  LAS CLAVES DE UNA CURVA (AnimProperty::keyframes). Por fuera es un std::vector<keyFrame> (la misma API que
+//  usa todo el editor); por dentro puede estar COMPACTA: una curva HORNEADA (frames regulares, la misma
+//  interpolacion y el mismo tipo de handle en todas, handles guardados en cero: lo que trae un glTF, un keyframe
+//  por frame; los handles automaticos se calculan de los vecinos) se guarda como primer frame + paso + UN float
+//  por clave, ~4 B por clave en vez de los 32 de un keyFrame. La crea el lector del .w3da (W3dAnimSet.cpp) y se
+//  copia compacta (variantes, copy-on-write, undo).
+//    - SIN expandir: size/empty, Frame/Valor/Interp/TipoH/Clave(i), PrimerFrame/UltimoFrame, la evaluacion
+//      (AnimProperty::Eval/EvalF/HandleEfectivo: el juego y la reproduccion), el escritor del .w3da, copiar y
+//      comparar.
+//    - lo demas de la API de vector (operator[], at, begin/end, push_back, insert, erase...) la EXPANDE primero,
+//      tambien en un acceso const: desde ahi es una curva comun (el editor, el dope sheet y el undo, como siempre).
+//  La evaluacion es UNA sola funcion para las dos (lee con Frame/Valor/...): dan los mismos bits (lo compara en
+//  todos los frames, enteros y fraccionarios, tools/pruebas/prueba_claves_compactas.w3s).
+// ============================================================================
+// el bloque de una curva compacta: esta cabecera y, en la MISMA reserva, sus n valores
+struct W3dClavesCompactas {
+    int primero;     // frame de la clave 0
+    int paso;        // frame de la clave i = primero + paso * i (paso > 0; el ultimo entra en un int)
+    int interp;      // la interpolacion de TODAS
+    int tipoH;       // el tipo de handle de todas (los guardados son cero: HFree/HAligned quedan en cero)
+    unsigned n;      // cantidad de claves (>= 2)
+    float*       Valores()       { return reinterpret_cast<float*>(this + 1); }
+    const float* Valores() const { return reinterpret_cast<const float*>(this + 1); }
+    // frame de la clave i, en aritmetica sin signo: el mismo resultado que sumar el paso clave a clave (el lector)
+    int Frame(unsigned i) const { return (int)((unsigned)primero + (unsigned)paso * i); }
+};
+
+class W3dClaves {
+public:
+    typedef std::vector<keyFrame> Vec;
+    typedef Vec::value_type value_type;
+    typedef Vec::size_type size_type;
+    typedef Vec::difference_type difference_type;
+    typedef Vec::reference reference;
+    typedef Vec::const_reference const_reference;
+    typedef Vec::pointer pointer;
+    typedef Vec::const_pointer const_pointer;
+    typedef Vec::iterator iterator;
+    typedef Vec::const_iterator const_iterator;
+    typedef Vec::reverse_iterator reverse_iterator;
+    typedef Vec::const_reverse_iterator const_reverse_iterator;
+
+    W3dClaves() : c_(0) {}
+    W3dClaves(const W3dClaves& o);
+    ~W3dClaves();
+    W3dClaves& operator=(const W3dClaves& o);
+    W3dClaves& operator=(const Vec& v);
+#if defined(__cplusplus) && __cplusplus >= 201103L
+    // (C++11 o mas: MOVER no copia las claves -un vector<AnimProperty> que crece las mueve, como cuando era un
+    //  std::vector-; en C++03 se copian, como siempre)
+    W3dClaves(W3dClaves&& o) noexcept : c_(0) { swap(o); }
+    W3dClaves& operator=(W3dClaves&& o) noexcept { swap(o); return *this; }
+#endif
+
+    // ---- SIN EXPANDIR ----
+    size_type size() const { return c_ ? (size_type)c_->n : v_.size(); }
+    bool empty() const { return c_ ? false : v_.empty(); }        // (una compacta tiene 2 claves o mas)
+    bool Compacta() const { return c_ != 0; }
+    const W3dClavesCompactas* DatosCompactos() const { return c_; }   // NULL = curva comun
+    int   Frame(size_type i) const { return c_ ? c_->Frame((unsigned)i) : v_[i].frame; }
+    float Valor(size_type i) const { return c_ ? c_->Valores()[i] : v_[i].value; }
+    int   Interp(size_type i) const { return c_ ? c_->interp : v_[i].Interpolation; }
+    int   TipoH(size_type i) const { return c_ ? c_->tipoH : v_[i].handleType; }
+    // el handle GUARDADO de la clave i (offset en frames / en valor), el de salida o el de entrada
+    float HandleDF(size_type i, bool salida) const { return c_ ? 0.0f : (salida ? v_[i].outDF : v_[i].inDF); }
+    float HandleDV(size_type i, bool salida) const { return c_ ? 0.0f : (salida ? v_[i].outDV : v_[i].inDV); }
+    keyFrame Clave(size_type i) const;            // la clave i entera, POR VALOR (handles en cero si es compacta)
+    int PrimerFrame() const { return Frame(0); }  // (con claves: !empty())
+    int UltimoFrame() const { return Frame(size() - 1); }
+    long BytesMemoria() const;                    // lo que ocupan sus claves en el heap (vector o bloque compacto)
+    // igual clave a clave: frame, interpolacion y tipo de handle; valor y handles BIT a BIT (un -0.0 no es 0.0)
+    bool MismosBits(const W3dClaves& o) const;
+    // ---- el lector del .w3da ----
+    // n claves con frames primero + paso * i se pueden guardar compactas? (2 o mas, paso > 0, el ultimo en un int)
+    static bool CompactaPosible(size_type n, int primero, int paso);
+    // la deja COMPACTA (descarta lo que tuviera) y devuelve donde van sus n valores. Antes: CompactaPosible.
+    float* CompactaCrear(size_type n, int primero, int paso, int interp, int tipoH);
+
+    // ---- la API de std::vector<keyFrame>: EXPANDEN (una compacta pasa a ser una curva comun) ----
+    reference       operator[](size_type i)       { Expandir(); return v_[i]; }
+    const_reference operator[](size_type i) const { Expandir(); return v_[i]; }
+    reference       at(size_type i)       { Expandir(); return v_.at(i); }
+    const_reference at(size_type i) const { Expandir(); return v_.at(i); }
+    reference       front()       { Expandir(); return v_.front(); }
+    const_reference front() const { Expandir(); return v_.front(); }
+    reference       back()       { Expandir(); return v_.back(); }
+    const_reference back() const { Expandir(); return v_.back(); }
+    iterator       begin()       { Expandir(); return v_.begin(); }
+    const_iterator begin() const { Expandir(); return v_.begin(); }
+    iterator       end()       { Expandir(); return v_.end(); }
+    const_iterator end() const { Expandir(); return v_.end(); }
+    reverse_iterator       rbegin()       { Expandir(); return v_.rbegin(); }
+    const_reverse_iterator rbegin() const { Expandir(); return v_.rbegin(); }
+    reverse_iterator       rend()       { Expandir(); return v_.rend(); }
+    const_reverse_iterator rend() const { Expandir(); return v_.rend(); }
+    size_type capacity() const { Expandir(); return v_.capacity(); }
+    size_type max_size() const { return v_.max_size(); }
+    void push_back(const keyFrame& k);
+    void pop_back() { Expandir(); v_.pop_back(); }
+    iterator insert(iterator pos, const keyFrame& k);
+    void insert(iterator pos, size_type n, const keyFrame& k);
+    template <class It> void insert(iterator pos, It a, It b) {
+        Expandir(); const size_type antes = v_.capacity(); v_.insert(pos, a, b); ContarCapacidad(antes);
+    }
+    iterator erase(iterator pos) { Expandir(); return v_.erase(pos); }
+    iterator erase(iterator a, iterator b) { Expandir(); return v_.erase(a, b); }
+    void clear();                                 // (una compacta se suelta: queda una curva comun vacia)
+    void resize(size_type n, const keyFrame& k = keyFrame());
+    void reserve(size_type n);
+    void assign(size_type n, const keyFrame& k);
+    template <class It> void assign(It a, It b) {
+        SoltarCompacta(); const size_type antes = v_.capacity(); v_.assign(a, b); ContarCapacidad(antes);
+    }
+    void swap(W3dClaves& o);
+    void swap(Vec& v);
+    // las claves como el vector de siempre (const: para leer). Expande.
+    operator const Vec&() const { Expandir(); return v_; }
+
+private:
+    mutable Vec v_;                    // la curva comun (vacio mientras es compacta)
+    mutable W3dClavesCompactas* c_;    // la compacta (NULL = comun)
+    void Expandir() const { if (c_) ExpandirAhora(); }
+    void ExpandirAhora() const;
+    void SoltarCompacta();
+    void ContarCapacidad(size_type antes);
+};
+
+// MEDICION (meminfo): las claves de TODAS las curvas vivas. 'bytes' cuenta los vectores (su capacidad) y los
+// bloques compactos; 'expansiones', las curvas compactas que pasaron a comunes desde el arranque (jugar no
+// expande ninguna: prueba_claves_compactas.w3s).
+struct W3dClavesStats {
+    long bytes;              // bytes de claves vivos (vectores + bloques compactos)
+    long compactas;          // curvas compactas vivas
+    long clavesCompactas;    // sus claves
+    long bytesCompactas;     // sus bloques
+    long expansiones;        // compacta -> comun, desde el arranque
+    W3dClavesStats() : bytes(0), compactas(0), clavesCompactas(0), bytesCompactas(0), expansiones(0) {}
+};
+void W3dClavesEstadisticas(W3dClavesStats& st);
+
 // Una CURVA de animacion = (Property, component). Ej: (AnimPosition, AnimX) = "X Location".
 // Cada componente tiene SUS PROPIOS keyframes -> se puede mover/borrar/curvar X sin tocar Y ni Z.
 class AnimProperty {
 public:
     int Property;   // AnimPosition / AnimRotation / AnimScale
     int component;  // AnimX / AnimY / AnimZ
-    std::vector<keyFrame> keyframes;
+    W3dClaves keyframes;   // por fuera, un std::vector<keyFrame>; por dentro puede estar compacta (W3dClaves)
 
     AnimProperty() : Property(AnimPosition), component(AnimX) {}
     void SortKeyFrames();

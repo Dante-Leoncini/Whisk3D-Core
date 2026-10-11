@@ -2077,8 +2077,12 @@ void W3dScriptResolverValor(Object* duenio, int idx, const std::string& prop, co
 }
 
 // llama una funcion global sin argumentos o con dt; false si no existe o fallo
+// las llamadas del motor a lua (inicio/actualizar): el perfil por muestreo (perfilLua, script/BindsJuego.cpp) tira la
+// primera muestra de cada una, que trae el tiempo de afuera de lua (el render del cuadro anterior)
+unsigned g_w3dScriptLlamadas = 0;
 static bool Llamar(W3dScriptInst* inst, const char* fn, bool conDt, float dt) {
     lua_State* L = inst->L;
+    g_w3dScriptLlamadas++;
     lua_getglobal(L, fn);
     if (!lua_isfunction(L, -1)) { lua_pop(L, 1); return false; }
     if (conDt) lua_pushnumber(L, dt);
@@ -2127,6 +2131,7 @@ static bool LlamarEvento(W3dScriptInst* inst, const char* fn, int idx, Object* c
                          const float* nums, int nNums) {
     if (idx >= 0 && inst->eventos[idx] == 0) return false;   // ya se sabe que no lo define
     lua_State* L = inst->L;
+    g_w3dScriptLlamadas++;
     lua_getglobal(L, fn);
     if (!lua_isfunction(L, -1)) {
         lua_pop(L, 1);

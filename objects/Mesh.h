@@ -1327,6 +1327,9 @@ class Mesh : public Object {
         // [primero, ultimo] del orden de dibujo (con materiales: un draw por cada parte que toca). CrudoTerminar
         // vuelve a los arrays de cliente (lo que esperan las demas mallas). Sin chequeos: la Rutina los hace en el
         // EDITOR.
+        // la capa de textura que AplicarMaterial mando a la UNIDAD 1 (un lightmap Multiply / 2x en la misma pasada,
+        // gfx::MezclaTexturas); -1 = ninguna: el pase de capas la saltea
+        int capaUnidad1;
         void CrudoPreparar();
         void CrudoParte(int parte, bool conMaterial);
         void CrudoRango(int primero, int ultimo, bool conMaterial);

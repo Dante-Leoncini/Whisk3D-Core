@@ -1354,7 +1354,7 @@ bool MotionTrailHuesoNodo(Armature* a, int bone, std::vector<Vector3>& pts, std:
         for (size_t p2 = 0; p2 < P.size(); p2++){
             if (P[p2].Property != AnimPosition) continue;
             for (size_t k = 0; k < P[p2].keyframes.size(); k++){
-                int f = P[p2].keyframes[k].frame;
+                int f = P[p2].keyframes.Frame(k);   // (Frame: mirar el trail no expande una curva compacta)
                 if (f < mn) mn = f; if (f > mx) mx = f;
                 bool ya = false; for (size_t j = 0; j < keys.size(); j++) if (keys[j] == f){ ya = true; break; }
                 if (!ya) keys.push_back(f);

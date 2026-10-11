@@ -139,6 +139,13 @@ class Material {
         bool normalMap;   // NORMAL MAPPING (DOT3): la textura 'normalTexture' perturba la normal por pixel.
                           // Multi-pass: base * (N.L). Excluyente con chrome (mismo combiner). Portable PC+N95.
         Texture* normalTexture; // el normal map (RGB = normal en tangent-space)
+        // MEZCLA DE TEXTURAS en una pasada (gfx::MezclaTexturas, multitextura): 'texturaB' se interpola con la textura
+        // base en el combiner de la unidad 1: fragmento = B * mezclaB + base (con su luz) * (1 - mezclaB). B sale plana
+        // (sin luz). Claves del .w3d: "texturaB" (ruta, como "normalTextura") y "mezclaB" (0..1; con 0 la unidad 1 ni
+        // se prende). Lua: setTexturaB / setMezclaTextura / mezclaTextura; panel: "Texture B" / "Texture mix";
+        // rutinas: el paso "Texture mix". No se combina con el reflejo ni con el normal map (van por el combiner)
+        Texture* texturaB;
+        float    mezclaB;
         // ---- LINEAS (aristas de la malla dibujadas encima del relleno) ----
         // Con lineas = true, cada grupo que use este material dibuja ADEMAS sus
         // ARISTAS (los 3 lados de cada triangulo, deduplicados) con glLineWidth

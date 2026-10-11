@@ -125,7 +125,28 @@ namespace w3dEngine {
 // dibuja. Aca no hay cache de estado: un draw cuesta ~45 llamadas (uniforms, atributos, programa)
 int g_statLlamadas[StatCatCount_] = { 0 };
 static int gStatCat = StatCatEditor;
-#define W3D_GLC(llamada) (g_statLlamadas[gStatCat]++, (llamada))
+// la TRAZA (medir), misma que el backend GLES 1.1: con g_trazaGL cada llamada suma en su texto ("glBindTexture(...)")
+// y TrazaGLVer la imprime ordenada; con g_trazaGLSec ademas sale cada llamada en orden, con su categoria
+bool g_trazaGL = false;
+bool g_trazaGLSec = false;
+static const char* gTrazaTxt[512];   // (un lugar del codigo = un texto: se compara el puntero)
+static int gTrazaN[512], gTrazaCant = 0;
+void TrazaGL(const char* l) {
+    if (g_trazaGLSec) printf("      [glsec] %d %s\n", gStatCat, l);
+    for (int i = 0; i < gTrazaCant; i++) if (gTrazaTxt[i] == l) { gTrazaN[i]++; return; }
+    if (gTrazaCant < 512) { gTrazaTxt[gTrazaCant] = l; gTrazaN[gTrazaCant++] = 1; }
+}
+void TrazaGLVer() {
+    for (int k = 0; k < gTrazaCant; k++) {
+        int m = k;
+        for (int i = k + 1; i < gTrazaCant; i++) if (gTrazaN[i] > gTrazaN[m]) m = i;
+        const char* t = gTrazaTxt[k]; gTrazaTxt[k] = gTrazaTxt[m]; gTrazaTxt[m] = t;
+        int n = gTrazaN[k]; gTrazaN[k] = gTrazaN[m]; gTrazaN[m] = n;
+        printf("      [gltraza] %6d  %s\n", gTrazaN[k], gTrazaTxt[k]);
+    }
+    gTrazaCant = 0;
+}
+#define W3D_GLC(llamada) (g_statLlamadas[gStatCat]++, g_trazaGL ? TrazaGL(#llamada) : (void)0, (llamada))
 
 // ============================================================================
 //  Estado emulado del pipeline fijo
@@ -509,6 +530,15 @@ void TexWrap(bool repeat){ W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP
 void TexEnvDot3(bool on){ dot3On=on; }
 void TexEnvReplace(bool on){ replaceOn=on; }
 void TexEnvAlphaOnly(bool){}   // TODO ES2: modo alpha-only en el uber-shader (pase alpha en WebGL)
+// MEZCLA DE TEXTURAS (unidad 1 con INTERPOLATE en GL1): TODO ES2: segunda textura + k en el uber-shader. Mientras
+// tanto no hay mezcla: se dibuja la textura base sola (el material queda igual que sin texturaB)
+bool MezclaTexturasSoportada(){ return false; }
+void MezclaTexturas(unsigned int, float, bool, bool, int){}
+void MezclaTexturasOff(){}
+bool MezclaTexturasActiva(){ return false; }
+void MezclaTexturasUV(const float*){}
+void MezclaTexturasUVVBO(unsigned int){}
+void MezclaTexturaBorrada(unsigned int){}
 void TexGenSphere(bool){}      // TODO: matcap por shader (UV = reflejo del normal en eye-space)
 void TexMatrixMatcap(bool){}   // TODO: idem, via matriz de textura -> UV del normal
 void TexMatrixUV(float,float,float,float){}   // TODO: uniform de la matriz de textura en el uber-shader
@@ -701,6 +731,15 @@ void Finish() { W3D_GLC(glFinish()); }
 bool g_auditarEscena = false;
 int  g_auditDesyncs  = 0;
 int  AuditarEstado() { return 0; }      // en dispositivo no se audita (glGet = flush del tiler)
+// MATRICES: en este backend las tres pilas ya viven en la CPU (curProj/curMV/curTex), asi que GetMatrix es una copia
+// directa, sin glGet y sin una sombra aparte que pueda desincronizarse: la auditoria no tiene nada que comparar.
+bool g_matrizAuditar = false;
+int  g_matrizDesyncs = 0;
+bool g_invalidarPorMalla = false;      // el Invalidate por malla es del editor de Symbian (GLES 1.1); aca no aplica
+void GetMatrix(Matrix m, float* out16) {
+    const Matrix4& M = (m == Projection) ? curProj : (m == TextureMatrix ? curTex : curMV);
+    for (int i = 0; i < 16; i++) out16[i] = M.m[i];
+}
 void TexBaseLevel(int nivel) { (void)nivel; }   // ES2 no tiene GL_TEXTURE_BASE_LEVEL (PC solamente)
 // BUFFER OBJECTS: por ahora STUBS -> VBOSoportado()=false, asi Mesh cae al camino client-side de este backend (que
 // ya sube sus arrays a un VBO dinamico por draw). Los VBOs PERSISTENTES en el pipeline de atributos (glVertexAttrib
@@ -717,6 +756,11 @@ void TexCoordVBO(unsigned int){}
 void BindIndexVBO(unsigned int){}
 void DrawTrianglesVBO(int, int){}
 void UnbindVBOs(){}
+// la pila perezosa y el cache de punteros son del pipeline fijo: aca la pila ya vive en la CPU y va al shader por
+// uniforms en cada draw (perezosa de por si) y los punteros se leen recien al dibujar. Las opciones existen para el harness
+bool g_matricesPerezosas = true;
+bool g_punterosCache = true;
+void MatricesSincronizar() {}
 
 void DrawTrianglesArray(int vertexCount){ if(!ready||vertexCount<=0) return; setupState(vertexCount); g_statDrawTris++; g_statIndices += vertexCount; g_statDcCat[gStatCat]++; W3D_GLC(glDrawArrays(GL_TRIANGLES,0,vertexCount)); }
 void DrawTrianglesArrayFrom(int first,int count){ if(!ready||count<=0) return; setupState(first+count); g_statDrawTris++; g_statIndices += count; g_statDcCat[gStatCat]++; W3D_GLC(glDrawArrays(GL_TRIANGLES,first,count)); }

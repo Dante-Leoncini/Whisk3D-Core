@@ -10,7 +10,8 @@
 //  externo (el de HL2 lo saca del .bsp del juego) o, a futuro, un horneador del
 //  editor; el motor NO sabe de donde salio.
 //
-//  Formato en disco: `.w3dbsp` (binario LE, spec en formato/w3dbsp.md, version 1).
+//  Formato en disco: `.w3dbsp` (binario LE, spec en formato/w3dbsp.md, version 1 o 2: la 2 trae ademas la
+//  GEOMETRIA del mundo, que lee MundoBsp a partir de 'geomOff').
 //  C++03 / Symbian-safe. Sin nada de ningun juego.
 // ============================================================================
 #include <vector>
@@ -29,6 +30,8 @@ public:
     std::vector<unsigned>      pvsOff;   // por cluster: offset de su fila en 'pvs'
     std::vector<unsigned char> pvs;      // el stream de filas
     std::vector<Hijo> hijos;
+    unsigned          version;       // 1 o 2
+    size_t            geomOff;       // version 2: donde empieza la seccion de geometria (0 = no trae)
 
     VisBsp() { Limpiar(); }
     void Limpiar();
@@ -46,6 +49,9 @@ public:
     static bool Interseca(const std::vector<unsigned char>& fila, const std::vector<unsigned char>& bits);
     // indice en 'hijos' del nombre (-1 = no esta: ese hijo se dibuja siempre)
     int IndiceHijo(const std::string& nombre) const;
+    // los clusters de todas las hojas que toca la caja [mn, mx] (un objeto DINAMICO: se mide por cuadro), como
+    // bitset de bytesFila bytes. false = dato invalido
+    bool ClustersDeCaja(const float* mn, const float* mx, std::vector<unsigned char>& bits) const;
 };
 
 #endif

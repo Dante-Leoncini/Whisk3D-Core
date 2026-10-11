@@ -117,6 +117,15 @@ namespace w3dEngine {
     extern bool g_matrizAuditar;            // (harness 'matrizaudit') cada GetMatrix compara la sombra con GL...
     extern int  g_matrizDesyncs;            // ...y cuenta las que no dan igual
     void LoadMatrix(const float* m16);   // carga m como matriz actual (ej: la vista de CameraBase)
+    // PILA PEREZOSA de la MODELVIEW (pipeline fijo): Push/Pop/Mult/Load/LoadIdentity/Translatef/Rotatef/Scalef solo
+    // cambian la SOMBRA en la CPU; la matriz llega a GL (UN glLoadMatrixf, si cambio) recien antes de lo que la usa:
+    // los Draw*, la posicion de las luces (Light0fv/LightNfv) y los planos de recorte. Un objeto que no dibuja (su malla
+    // quedo afuera del autocull) no cuesta ninguna llamada; uno que dibuja, 1 en vez de 3. Sin la matriz en la sombra
+    // (una pila mas honda que la sombra) vuelve a lo inmediato. GL CRUDO que use la modelview (glLightfv de la posicion,
+    // un glDraw*, un glGet de la matriz): MatricesSincronizar() antes. GLES2/WebGL ya era perezoso (su pila vive en la
+    // CPU y va por uniforms en cada draw): ahi Sincronizar no hace nada
+    extern bool g_matricesPerezosas;     // default true; false = cada operacion va a GL como antes (A/B: harness 'perezosas')
+    void MatricesSincronizar();
     // el SESGO EN METROS: la proyeccion del pase con la profundidad corrida m metros de camara (+ aleja, - acerca) sin
     // mover la geometria en pantalla. Estado como los demas: solo llama al driver si cambia (0 = la del pase)
     void SesgoMetros(float m);
@@ -161,6 +170,26 @@ namespace w3dEngine {
     void TexEnvReplace(bool on);
     void TexEnvDot3(bool on); // DOT3 normal mapping: combiner N.L (textura=N, color=L). Reset=MODULATE
     void TexEnvAlphaOnly(bool on); // pases planos: RGB=color de vertice, ALPHA=alpha de la textura. Reset=MODULATE
+
+    // MEZCLA DE TEXTURAS en UNA pasada (multitextura): la unidad 1 interpola SU textura (B) con lo que salio de la
+    // unidad 0 (la textura del material con su luz / color / modo): fragmento = B * k + unidad0 * (1 - k). k (0..1)
+    // es el alfa del color constante del combiner (GL_INTERPOLATE): cambiarlo por cuadro es un glTexEnv, sin tocar
+    // la geometria ni dibujar dos veces. B sale PLANA (la luz entra por la unidad 0). La unidad 1 usa las MISMAS UV
+    // que la 0 (los punteros y el array de UV se replican mientras esta prendida) y toma el filtro / la repeticion
+    // que se le pasan. GL 1.3 / GL ES 1.1 (2 unidades garantizadas: el N95 las tiene); sin soporte no hace nada.
+    // Off = vuelve a una unidad (lo llaman AplicarMaterial, el fin del dibujo de la malla y EstadoBase).
+    // 'modo': 0 = INTERPOLATE (B * k + unidad0 * (1 - k)); 1 = MULTIPLY (unidad0 * B: un lightmap en la misma
+    // pasada, k no se usa); 2 = MULTIPLY 2x (unidad0 * B * 2: el lightmap con overbright, GL_RGB_SCALE).
+    bool MezclaTexturasSoportada();
+    void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int modo = 0);
+    void MezclaTexturasOff();
+    bool MezclaTexturasActiva();
+    // la unidad 1 con SUS PROPIAS UV (el unwrap de un lightmap) en vez de replicar las de la unidad 0: un puntero de RAM
+    // (2 floats por vertice) o un VBO. NULL / 0 = vuelve a las mismas UV que la unidad 0. Off las olvida.
+    void MezclaTexturasUV(const float* p);
+    void MezclaTexturasUVVBO(unsigned int h);
+    // (DeleteTexture la llama: GL desbindea lo borrado de todas las unidades y el cache de la 1 lo tiene que saber)
+    void MezclaTexturaBorrada(unsigned int id);
 
     // --- color uniforme del pipeline fijo (cuando NO hay array de color) ---
     void Color4f(float r, float g, float b, float a);
@@ -325,7 +354,13 @@ namespace w3dEngine {
     // el gemelo en GL_LINES: aristas de un material con `lineas` sobre los
     // atributos que esten bindeados (VBO o client arrays; mismo contrato).
     void DrawLinesClientIdx(int count, const MeshIndex* indices);
-    void UnbindVBOs();                 // vuelve a client-side arrays (bind ARRAY/ELEMENT a 0)
+    void UnbindVBOs();                 // vuelve a client-side arrays (bind ARRAY/ELEMENT a 0; perezoso con g_punterosCache)
+    // CACHE DE PUNTEROS Y DE BINDS (pipeline fijo): un puntero (RAM o VBO) igual al que GL ya tiene no llama al driver
+    // (ni al bind que lo precede: GL guarda con cada puntero el buffer que estaba bindeado), BindIndexVBO del IBO ya
+    // bindeado tampoco, y UnbindVBOs no hace nada: el 0 se bindea recien antes de un puntero de RAM (ARRAY_BUFFER) o de
+    // un draw con indices de cliente (ELEMENT_ARRAY_BUFFER). Todo puntero y todo bind de buffer tiene que pasar por
+    // aca (el GL crudo no se ve); Invalidate y DeleteBuffer olvidan lo que corresponde
+    extern bool g_punterosCache;       // default true; false = como antes (A/B: harness 'punteroscache')
 
     // --- PRIMITIVAS de GL ES 1.1 (la Rutina: "dibujar elementos" con la primitiva que se elija). QUADS,
     //     QUAD_STRIP y POLYGON no existen en GL ES: los SIMULA quien llama, pasando los indices ya convertidos a

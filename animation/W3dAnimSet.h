@@ -23,7 +23,10 @@
 //  clips (Armature::animations son punteros ADENTRO del recurso, igual que los
 //  arrays de render de una malla compartida). Los clips son datos INMUTABLES; el
 //  estado de reproduccion (clip activo, cabezal, capas, transicion) es de cada
-//  armature, como siempre.
+//  armature, como siempre. Las curvas HORNEADAS (frames regulares, una
+//  interpolacion y un tipo de handle para todas, handles en cero) quedan
+//  COMPACTAS: ~4 B por keyframe (W3dClaves, Animation.h; formato/w3da.md, "En
+//  memoria"). Jugar no las expande; el escritor las escribe sin expandirlas.
 //
 //  LOS HUESOS VAN POR NOMBRE: el animset trae su tabla de huesos (HUES) y cada
 //  pista del clip dice su hueso por indice EN ESA TABLA. Al asignarlo a un armature

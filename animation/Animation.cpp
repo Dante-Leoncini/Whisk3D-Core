@@ -282,6 +282,162 @@ unsigned int lastAnimTime = w3dGetTicks();
 unsigned int lastRenderTime = w3dGetTicks();
 
 
+// ============================================================================
+//  W3dClaves: las claves de una curva, comunes o COMPACTAS (ver Animation.h)
+// ============================================================================
+namespace {
+long gClavesBytes = 0;             // bytes de claves vivos: capacidad de los vectores + bloques compactos
+long gClavesCompactas = 0;         // curvas compactas vivas, sus claves y sus bloques
+long gClavesCompactasN = 0;
+long gClavesCompactasBytes = 0;
+long gClavesExpansiones = 0;       // compacta -> comun, desde el arranque
+
+size_t BytesBloque(unsigned n) { return sizeof(W3dClavesCompactas) + (size_t)n * sizeof(float); }
+W3dClavesCompactas* BloqueNuevo(unsigned n) {
+    W3dClavesCompactas* c = static_cast<W3dClavesCompactas*>(::operator new(BytesBloque(n)));
+    c->primero = 0; c->paso = 1; c->interp = KfLinear; c->tipoH = HAuto; c->n = n;
+    gClavesCompactas++; gClavesCompactasN += (long)n;
+    gClavesCompactasBytes += (long)BytesBloque(n); gClavesBytes += (long)BytesBloque(n);
+    return c;
+}
+void BloqueSoltar(W3dClavesCompactas* c) {
+    gClavesCompactas--; gClavesCompactasN -= (long)c->n;
+    gClavesCompactasBytes -= (long)BytesBloque(c->n); gClavesBytes -= (long)BytesBloque(c->n);
+    ::operator delete(c);
+}
+W3dClavesCompactas* BloqueCopia(const W3dClavesCompactas* o) {
+    W3dClavesCompactas* c = BloqueNuevo(o->n);
+    memcpy(c, o, BytesBloque(o->n));   // (cabecera + valores: datos planos, los bits tal cual)
+    return c;
+}
+long BytesVec(size_t capacidad) { return (long)(capacidad * sizeof(keyFrame)); }
+} // namespace
+
+void W3dClavesEstadisticas(W3dClavesStats& st) {
+    st.bytes = gClavesBytes; st.compactas = gClavesCompactas; st.clavesCompactas = gClavesCompactasN;
+    st.bytesCompactas = gClavesCompactasBytes; st.expansiones = gClavesExpansiones;
+}
+
+W3dClaves::W3dClaves(const W3dClaves& o) : v_(o.v_), c_(o.c_ ? BloqueCopia(o.c_) : 0) {
+    gClavesBytes += BytesVec(v_.capacity());
+}
+W3dClaves::~W3dClaves() {
+    gClavesBytes -= BytesVec(v_.capacity());
+    if (c_) BloqueSoltar(c_);
+}
+W3dClaves& W3dClaves::operator=(const W3dClaves& o) {
+    if (this == &o) return *this;
+    if (o.c_) {
+        // una compacta se copia compacta, y el vector que hubiera se suelta (no queda reservado a 32 B por clave)
+        W3dClavesCompactas* c = BloqueCopia(o.c_);
+        SoltarCompacta();
+        gClavesBytes -= BytesVec(v_.capacity());
+        Vec().swap(v_);
+        c_ = c;
+    } else {
+        SoltarCompacta();
+        const size_type antes = v_.capacity();
+        v_ = o.v_;
+        ContarCapacidad(antes);
+    }
+    return *this;
+}
+W3dClaves& W3dClaves::operator=(const Vec& v) {
+    SoltarCompacta();
+    const size_type antes = v_.capacity();
+    v_ = v;
+    ContarCapacidad(antes);
+    return *this;
+}
+void W3dClaves::SoltarCompacta() {
+    if (c_) { BloqueSoltar(c_); c_ = 0; }
+}
+void W3dClaves::ContarCapacidad(size_type antes) {
+    gClavesBytes += BytesVec(v_.capacity()) - BytesVec(antes);
+}
+// la compacta pasa a ser una curva comun con las MISMAS claves: lo que leeria el .w3da sin compactar (frames
+// sumando el paso, la interpolacion y el tipo de handle de todas, handles 0.0f)
+void W3dClaves::ExpandirAhora() const {
+    const W3dClavesCompactas* c = c_;
+    Vec tmp(c->n);
+    const float* val = c->Valores();
+    for (unsigned i = 0; i < c->n; i++) {
+        keyFrame& k = tmp[i];
+        k.frame = c->Frame(i); k.value = val[i]; k.Interpolation = c->interp; k.handleType = c->tipoH;
+    }
+    const size_type antes = v_.capacity();   // (0: vacio mientras era compacta)
+    v_.swap(tmp);
+    gClavesBytes += BytesVec(v_.capacity()) - BytesVec(antes);
+    BloqueSoltar(c_);
+    c_ = 0;
+    gClavesExpansiones++;
+}
+keyFrame W3dClaves::Clave(size_type i) const {
+    if (!c_) return v_[i];
+    keyFrame k;
+    k.frame = c_->Frame((unsigned)i); k.value = c_->Valores()[i];
+    k.Interpolation = c_->interp; k.handleType = c_->tipoH;
+    return k;
+}
+long W3dClaves::BytesMemoria() const {
+    return c_ ? (long)BytesBloque(c_->n) : BytesVec(v_.capacity());
+}
+bool W3dClaves::MismosBits(const W3dClaves& o) const {
+    const size_type n = size();
+    if (n != o.size()) return false;
+    if (c_ && o.c_)   // (las mismas claves = la misma cabecera: frames regulares, interp y tipo de handle de todas)
+        return c_->primero == o.c_->primero && c_->paso == o.c_->paso && c_->interp == o.c_->interp &&
+               c_->tipoH == o.c_->tipoH && memcmp(c_->Valores(), o.c_->Valores(), n * sizeof(float)) == 0;
+    for (size_type i = 0; i < n; i++) {
+        const keyFrame x = Clave(i), y = o.Clave(i);
+        if (x.frame != y.frame || x.Interpolation != y.Interpolation || x.handleType != y.handleType) return false;
+        if (memcmp(&x.value, &y.value, sizeof(float)) || memcmp(&x.inDF, &y.inDF, sizeof(float)) ||
+            memcmp(&x.inDV, &y.inDV, sizeof(float)) || memcmp(&x.outDF, &y.outDF, sizeof(float)) ||
+            memcmp(&x.outDV, &y.outDV, sizeof(float))) return false;
+    }
+    return true;
+}
+bool W3dClaves::CompactaPosible(size_type n, int primero, int paso) {
+    // (el ultimo frame tiene que entrar en un int: es el que el lector obtiene sumando el paso)
+    return n >= 2 && n <= 0xFFFFFFFFu && paso > 0 &&
+           (double)primero + (double)paso * (double)(n - 1) <= 2147483647.0;
+}
+float* W3dClaves::CompactaCrear(size_type n, int primero, int paso, int interp, int tipoH) {
+    SoltarCompacta();
+    gClavesBytes -= BytesVec(v_.capacity());
+    Vec().swap(v_);
+    c_ = BloqueNuevo((unsigned)n);
+    c_->primero = primero; c_->paso = paso; c_->interp = interp; c_->tipoH = tipoH;
+    return c_->Valores();
+}
+void W3dClaves::push_back(const keyFrame& k) {
+    Expandir(); const size_type antes = v_.capacity(); v_.push_back(k); ContarCapacidad(antes);
+}
+W3dClaves::iterator W3dClaves::insert(iterator pos, const keyFrame& k) {
+    Expandir(); const size_type antes = v_.capacity(); iterator r = v_.insert(pos, k); ContarCapacidad(antes);
+    return r;
+}
+void W3dClaves::insert(iterator pos, size_type n, const keyFrame& k) {
+    Expandir(); const size_type antes = v_.capacity(); v_.insert(pos, n, k); ContarCapacidad(antes);
+}
+void W3dClaves::clear() { SoltarCompacta(); v_.clear(); }
+void W3dClaves::resize(size_type n, const keyFrame& k) {
+    Expandir(); const size_type antes = v_.capacity(); v_.resize(n, k); ContarCapacidad(antes);
+}
+void W3dClaves::reserve(size_type n) {
+    Expandir(); const size_type antes = v_.capacity(); v_.reserve(n); ContarCapacidad(antes);
+}
+void W3dClaves::assign(size_type n, const keyFrame& k) {
+    SoltarCompacta(); const size_type antes = v_.capacity(); v_.assign(n, k); ContarCapacidad(antes);
+}
+void W3dClaves::swap(W3dClaves& o) {   // (los bytes vivos no cambian: solo cambian de duenio)
+    W3dClavesCompactas* c = c_; c_ = o.c_; o.c_ = c;
+    v_.swap(o.v_);
+}
+void W3dClaves::swap(Vec& v) {
+    Expandir(); const size_type antes = v_.capacity(); v_.swap(v); ContarCapacidad(antes);
+}
+
 // orden por numero de frame (para std::sort)
 static bool compareKeyFrames(const keyFrame& a, const keyFrame& b) {
     return a.frame < b.frame;
@@ -289,6 +445,7 @@ static bool compareKeyFrames(const keyFrame& a, const keyFrame& b) {
 
 // AnimProperty
 void AnimProperty::SortKeyFrames() {
+    if (keyframes.Compacta()) return;   // (frames primero + paso * i con paso > 0: ya esta ordenada)
     std::sort(keyframes.begin(), keyframes.end(), compareKeyFrames);
 }
 
@@ -297,9 +454,14 @@ void AnimProperty::SortKeyFrames() {
 //  llaman aca, asi que agregar bezier/easing se hace en un solo sitio (y el editor de curvas lo hereda).
 // ============================================================================
 // Handle EFECTIVO del keyframe i (offset dF/dV desde el). Ver el enum H* en Animation.h.
+// (Lee las claves con Frame/Valor/TipoH/HandleDF/DV de W3dClaves: no expande una curva COMPACTA y es el MISMO
+//  codigo para las dos, asi que dan los mismos bits)
 void AnimProperty::HandleEfectivo(size_t i, bool salida, float& dF, float& dV) const {
-    const size_t n = keyframes.size();
-    const keyFrame& k = keyframes[i];
+    const W3dClaves& K = keyframes;
+    const size_t n = K.size();
+    const int kFrame = K.Frame(i);
+    const float kValue = K.Valor(i);
+    const int kTipo = K.TipoH(i);
     dF = 0.0f; dV = 0.0f;
     if (n < 2) return;
 
@@ -307,77 +469,101 @@ void AnimProperty::HandleEfectivo(size_t i, bool salida, float& dF, float& dV) c
     size_t vec = salida ? (i + 1 < n ? i + 1 : (i > 0 ? i - 1 : i))
                         : (i > 0 ? i - 1 : (i + 1 < n ? i + 1 : i));
     // largo por defecto: un tercio del tramo de este lado, con el signo del lado
-    float largo = (float)(keyframes[vec].frame - k.frame) / 3.0f;
+    float largo = (float)(K.Frame(vec) - kFrame) / 3.0f;
     if (salida  && largo <= 0.0f) largo =  -largo;   // en la punta derecha el vecino esta a la IZQUIERDA
     if (!salida && largo >= 0.0f) largo =  -largo;
     if (largo == 0.0f) largo = salida ? 1.0f : -1.0f;
 
-    if (k.handleType == HFree || k.handleType == HAligned){
-        dF = salida ? k.outDF : k.inDF;
-        dV = salida ? k.outDV : k.inDV;
+    if (kTipo == HFree || kTipo == HAligned){
+        dF = K.HandleDF(i, salida);
+        dV = K.HandleDV(i, salida);
         return;
     }
-    if (k.handleType == HVector){
+    if (kTipo == HVector){
         // apunta al vecino: el tramo de este lado sale RECTO
-        int df = keyframes[vec].frame - k.frame;
+        int df = K.Frame(vec) - kFrame;
         if (df == 0){ dF = largo; dV = 0.0f; return; }
         float t = largo / (float)df;                        // fraccion hacia el vecino (1/3, con el signo del lado)
         dF = largo;
-        dV = (keyframes[vec].value - k.value) * t;
+        dV = (K.Valor(vec) - kValue) * t;
         return;
     }
     // HAuto / HAutoClamped: pendiente suave (Catmull-Rom) por los dos vecinos
     size_t a = (i == 0) ? 0 : i - 1;
     size_t b = (i + 1 >= n) ? n - 1 : i + 1;
-    int spanAB = keyframes[b].frame - keyframes[a].frame;
-    float m = (spanAB != 0) ? (keyframes[b].value - keyframes[a].value) / (float)spanAB : 0.0f;
-    if (k.handleType == HAutoClamped && i > 0 && i + 1 < n){
+    int spanAB = K.Frame(b) - K.Frame(a);
+    float m = (spanAB != 0) ? (K.Valor(b) - K.Valor(a)) / (float)spanAB : 0.0f;
+    if (kTipo == HAutoClamped && i > 0 && i + 1 < n){
         // PICO: si los dos vecinos caen del mismo lado, este keyframe es un maximo/minimo local -> handle PLANO,
         // asi la curva no se pasa de largo (que es justo lo que arruina una animacion: un rebote que se hunde
         // por debajo del piso).
-        float dPrev = keyframes[i-1].value - k.value;
-        float dNext = keyframes[i+1].value - k.value;
+        float dPrev = K.Valor(i-1) - kValue;
+        float dNext = K.Valor(i+1) - kValue;
         if ((dPrev > 0.0f && dNext > 0.0f) || (dPrev < 0.0f && dNext < 0.0f)) m = 0.0f;
     }
     dF = largo;
     dV = m * largo;
-    if (k.handleType == HAutoClamped){
+    if (kTipo == HAutoClamped){
         // ...y ademas el punto de control no puede irse mas alla del valor del VECINO. Aplanar solo los picos no
         // alcanza: el handle de un keyframe que NO es pico igual puede empujar la curva por encima del vecino
         // (una bezier vive dentro de la cascara de sus puntos de control, asi que acotando el control se acota la
         // curva). Esto es lo que hace que "clamped" de verdad no se pase.
-        float vv = keyframes[vec].value;
-        float lo = (k.value < vv) ? k.value : vv;
-        float hi = (k.value > vv) ? k.value : vv;
-        float cp = k.value + dV;
-        if (cp < lo) dV = lo - k.value;
-        else if (cp > hi) dV = hi - k.value;
+        float vv = K.Valor(vec);
+        float lo = (kValue < vv) ? kValue : vv;
+        float hi = (kValue > vv) ? kValue : vv;
+        float cp = kValue + dV;
+        if (cp < lo) dV = lo - kValue;
+        else if (cp > hi) dV = hi - kValue;
     }
 }
 
 float AnimProperty::Eval(int frame, float def) const { return EvalF((float)frame, def); }
 
-float AnimProperty::EvalF(float frame, float def) const {
-    const size_t n = keyframes.size();
-    if (n == 0) return def;                                  // canal sin keyframes -> su valor de reposo
-    if (frame <= (float)keyframes[0].frame)     return keyframes[0].value;      // antes del 1ro: clamp
-    if (frame >= (float)keyframes[n-1].frame)   return keyframes[n-1].value;    // despues del ultimo: clamp
-    for (size_t i = 1; i < n; i++) {
-        if ((float)keyframes[i].frame < frame) continue;
-        const keyFrame& a = keyframes[i-1];
-        const keyFrame& b = keyframes[i];
-        // ESCALON: mantiene a.value hasta el proximo key... pero EN el frame de b ya vale b.value. El bucle corta
-        // con keyframes[i].frame >= frame, asi que aca 'frame' puede ser EXACTAMENTE b.frame: sin este chequeo el
-        // escalon caia un frame tarde (y el editor lo dibuja en b, con lo cual lo que veias no era lo que corria).
-        if (a.Interpolation == KfConstant) return (frame >= (float)b.frame) ? b.value : a.value;
-        int span = b.frame - a.frame;
-        if (span <= 0) return b.value;
-        float t = (frame - (float)a.frame) / (float)span;
-        if (a.Interpolation != KfBezier)
-            return a.value + (b.value - a.value) * t;         // lineal
-        return EvalBezier(i, frame);
+// el primer i >= 1 cuyo frame (en float) es >= 'frame', con Frame(0) < frame < Frame(n-1) (los dos clamps de
+// EvalF ya pasaron): el tramo [i-1, i] que se evalua. La curva comun la RECORRE (como siempre: no supone que
+// este ordenada). La COMPACTA (frames primero + paso * i, crecientes) llega al MISMO i sin recorrer: lo estima
+// con una division y lo corrige con las mismas comparaciones en float (un frame enorme no es exacto en float).
+static size_t TramoDe(const W3dClaves& K, float frame) {
+    const size_t n = K.size();
+    const W3dClavesCompactas* c = K.DatosCompactos();
+    if (!c) {
+        size_t i = 1;
+        while (i < n && (float)K.Frame(i) < frame) i++;
+        return i;
     }
-    return keyframes[n-1].value;
+    size_t i = 1;
+    if (frame == frame) {   // (NaN: la curva comun se queda en el primer tramo; aca tambien)
+        const double x = ceil(((double)frame - (double)c->primero) / (double)c->paso);
+        if (x > 1.0) i = (x >= (double)(n - 1)) ? n - 1 : (size_t)x;
+    }
+    while (i > 1 && (float)K.Frame(i - 1) >= frame) i--;
+    while (i < n - 1 && (float)K.Frame(i) < frame) i++;
+    return i;
+}
+
+// Una sola funcion para la curva comun y la COMPACTA (W3dClaves: Frame/Valor/Interp no expanden): despues de
+// elegir el tramo, la cuenta es el mismo codigo, asi que las dos dan los mismos bits (prueba_claves_compactas.w3s).
+float AnimProperty::EvalF(float frame, float def) const {
+    const W3dClaves& K = keyframes;
+    const size_t n = K.size();
+    if (n == 0) return def;                                         // canal sin keyframes -> su valor de reposo
+    if (frame <= (float)K.Frame(0))     return K.Valor(0);          // antes del 1ro: clamp
+    if (frame >= (float)K.Frame(n-1))   return K.Valor(n-1);        // despues del ultimo: clamp
+    const size_t i = TramoDe(K, frame);
+    if (i >= n) return K.Valor(n-1);                                // (curva desordenada: como siempre)
+    const int interp = K.Interp(i-1);
+    const int fa = K.Frame(i-1), fb = K.Frame(i);
+    const float va = K.Valor(i-1), vb = K.Valor(i);
+    // ESCALON: mantiene va hasta el proximo key... pero EN el frame de b ya vale vb. El tramo se elige con
+    // frame de b >= frame, asi que aca 'frame' puede ser EXACTAMENTE fb: sin este chequeo el escalon caia un
+    // frame tarde (y el editor lo dibuja en b, con lo cual lo que veias no era lo que corria).
+    if (interp == KfConstant) return (frame >= (float)fb) ? vb : va;
+    int span = fb - fa;
+    if (span <= 0) return vb;
+    float t = (frame - (float)fa) / (float)span;
+    if (interp != KfBezier)
+        return va + (vb - va) * t;                                  // lineal
+    return EvalBezier(i, frame);
 }
 
 // Valor del tramo BEZIER [i-1, i] en 'frame'. Los handles son PUNTOS, asi que el tramo es una bezier cubica en
@@ -385,11 +571,11 @@ float AnimProperty::EvalF(float frame, float def) const {
 // alcanza con meter t = fraccion del tramo, porque los handles corren el x. Es lo mismo que hace una curva de
 // easing: el eje del tiempo tambien esta curvado.
 float AnimProperty::EvalBezier(size_t i, float frame) const {
-    const keyFrame& a = keyframes[i-1];
-    const keyFrame& b = keyframes[i];
-    const float x0 = (float)a.frame, x3 = (float)b.frame;
+    const W3dClaves& K = keyframes;   // (Frame/Valor: no expande una curva compacta)
+    const float aValue = K.Valor(i-1), bValue = K.Valor(i);
+    const float x0 = (float)K.Frame(i-1), x3 = (float)K.Frame(i);
     const float span = x3 - x0;
-    if (span <= 0.0f) return b.value;
+    if (span <= 0.0f) return bValue;
 
     float aDF, aDV, bDF, bDV;
     HandleEfectivo(i-1, true,  aDF, aDV);   // handle de SALIDA del izquierdo
@@ -399,7 +585,7 @@ float AnimProperty::EvalBezier(size_t i, float frame) const {
     // tendria dos valores). Los puntos de control se clampean al tramo: es lo mismo que hace cualquier editor.
     if (x1 < x0) x1 = x0; if (x1 > x3) x1 = x3;
     if (x2 < x0) x2 = x0; if (x2 > x3) x2 = x3;
-    const float y0 = a.value, y1 = a.value + aDV, y2 = b.value + bDV, y3 = b.value;
+    const float y0 = aValue, y1 = aValue + aDV, y2 = bValue + bDV, y3 = bValue;
 
     // despejar t / x(t) = frame, por biseccion. x(t) es monotona creciente (recien clampeada), asi que converge
     // siempre; 24 pasos dan 1/16M del tramo, de sobra para un frame.
@@ -481,7 +667,8 @@ static void FitHandles(AnimProperty& ap, size_t iA, size_t iC, const std::vector
 void BorrarKeyframeManteniendoForma(AnimProperty& ap, int frame){
     size_t n = ap.keyframes.size();
     size_t i = n;
-    for (size_t k = 0; k < n; k++) if (ap.keyframes[k].frame == frame){ i = k; break; }
+    // (Frame(k): una curva compacta que no tiene clave en 'frame' no se expande para nada)
+    for (size_t k = 0; k < n; k++) if (ap.keyframes.Frame(k) == frame){ i = k; break; }
     if (i >= n) return;
     // sin vecinos de los dos lados, o el tramo no es bezier -> borrado comun (no hay forma que mantener)
     bool bez = (i > 0 && i + 1 < n) &&
@@ -547,15 +734,13 @@ void SetKeyCurva(AnimProperty& ap, int frame, float value) {
 void AnimationObject::UpdateFirstLastFrame() {
     FirstKeyFrame = 100000000;
     LastKeyFrame = 0;
-    for(size_t pr = 0; pr < Propertys.size(); pr++) {    
-        for(size_t kf = 0; kf < Propertys[pr].keyframes.size(); kf++) {    
-            if (Propertys[pr].keyframes[kf].frame > LastKeyFrame){
-                LastKeyFrame = Propertys[pr].keyframes[kf].frame;    
-            }
-            if (Propertys[pr].keyframes[kf].frame < FirstKeyFrame){
-                FirstKeyFrame = Propertys[pr].keyframes[kf].frame;    
-            }
-        }    
+    for(size_t pr = 0; pr < Propertys.size(); pr++) {
+        const W3dClaves& k = Propertys[pr].keyframes;   // (Frame(i): mirar no expande una curva compacta)
+        for(size_t kf = 0; kf < k.size(); kf++) {
+            const int f = k.Frame(kf);
+            if (f > LastKeyFrame)  LastKeyFrame = f;
+            if (f < FirstKeyFrame) FirstKeyFrame = f;
+        }
     }
 }
 
@@ -683,10 +868,10 @@ void W3dCamKey(int escena, int frame, const std::string& nombre) {
 const char* W3dCamEnFrame(int escena, int frame) {
     SceneAnimation* e = EscenaIdx(escena);
     if (!e || e->camPista.empty() || e->camPista[0].keyframes.empty()) return NULL;
-    const std::vector<keyFrame>& k = e->camPista[0].keyframes;
+    const W3dClaves& k = e->camPista[0].keyframes;   // (Frame/Valor: el juego no expande la pista)
     size_t j = 0;
-    for (size_t i = 0; i < k.size(); i++) { if (k[i].frame <= frame) j = i; else break; }
-    const int idx = (int)(k[j].value + 0.5f);
+    for (size_t i = 0; i < k.size(); i++) { if (k.Frame(i) <= frame) j = i; else break; }
+    const int idx = (int)(k.Valor(j) + 0.5f);
     return (idx >= 0 && idx < (int)e->camNombres.size()) ? e->camNombres[idx].c_str() : NULL;
 }
 
@@ -863,17 +1048,8 @@ static void CorrerCurva(AnimProperty& ap, const SceneAnimation* e, int signo) {
     if (d == 0.0f) return;
     for (size_t k = 0; k < ap.keyframes.size(); k++) ap.keyframes[k].value = signo > 0 ? ap.keyframes[k].value + d : ap.keyframes[k].value - d;
 }
-static bool KeysIguales(const std::vector<keyFrame>& a, const std::vector<keyFrame>& b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); i++) {
-        const keyFrame& x = a[i]; const keyFrame& y = b[i];
-        if (x.frame != y.frame || x.Interpolation != y.Interpolation || x.handleType != y.handleType) return false;
-        if (memcmp(&x.value, &y.value, sizeof(float)) || memcmp(&x.inDF, &y.inDF, sizeof(float)) ||
-            memcmp(&x.inDV, &y.inDV, sizeof(float)) || memcmp(&x.outDF, &y.outDF, sizeof(float)) ||
-            memcmp(&x.outDV, &y.outDV, sizeof(float))) return false;
-    }
-    return true;
-}
+// (clave a clave, valores y handles bit a bit; sin expandir una curva compacta: W3dClaves::MismosBits)
+static bool KeysIguales(const W3dClaves& a, const W3dClaves& b) { return a.MismosBits(b); }
 static bool PropsIguales(const std::vector<AnimProperty>& a, const std::vector<AnimProperty>& b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); i++)

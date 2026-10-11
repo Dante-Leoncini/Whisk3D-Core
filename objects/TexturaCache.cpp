@@ -335,6 +335,7 @@ int TexturasLiberarEscena() {
         if (!m) continue;
         if (m->texture       && seVan.count(m->texture))       m->texture = NULL;
         if (m->normalTexture && seVan.count(m->normalTexture)) m->normalTexture = NULL;
+        if (m->texturaB && seVan.count(m->texturaB)) m->texturaB = NULL;
         for (size_t c = 0; c < m->capas.size(); c++)
             if (m->capas[c].tex && seVan.count(m->capas[c].tex)) m->capas[c].tex = NULL;
     }
@@ -346,6 +347,7 @@ int TexturasLiberarEscena() {
         if (!m) continue;
         if (m->texture       && seVan.count(m->texture))       m->texture = NULL;
         if (m->normalTexture && seVan.count(m->normalTexture)) m->normalTexture = NULL;
+        if (m->texturaB && seVan.count(m->texturaB)) m->texturaB = NULL;
         for (size_t c = 0; c < m->capas.size(); c++)
             if (m->capas[c].tex && seVan.count(m->capas[c].tex)) m->capas[c].tex = NULL;
     }

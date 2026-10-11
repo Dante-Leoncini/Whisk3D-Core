@@ -1,6 +1,7 @@
 #include "MallaFlujos.h"
 #include "MallaRecurso.h"
 #include "w3dGraphics.h"
+#include "w3dlog.h"
 #include <algorithm>
 #include <string.h>
 
@@ -121,7 +122,8 @@ struct FlujoDerivado {
     std::vector<MeshIndex> idx;
     unsigned int ibo;
     bool listo;
-    FlujoDerivado() : ibo(0), listo(false) {}
+    bool iboPerdido;                   // tenia IBO y el contexto GL se perdio: se vuelve a subir de 'idx' al usarlo
+    FlujoDerivado() : ibo(0), listo(false), iboPerdido(false) {}
 };
 struct CacheFlujos {
     unsigned version;
@@ -132,6 +134,8 @@ struct CacheFlujos {
     std::vector<float> cajas;          // (nPartes + 1) * 6
     std::vector<int> maxIdx;           // (nPartes + 1), -2 = sin calcular
     std::vector<char> cajaLista;
+    bool avisoSinRAM;                  // (soloGPU) ya se aviso que un flujo derivado no se puede armar sin la RAM
+    CacheFlujos() : version(0), fuente(0), nIndices(0), nPartes(0), avisoSinRAM(false) {}
 };
 
 static void BorrarCache(CacheFlujos* c) {
@@ -225,17 +229,37 @@ static int PrimGL(int prim) {
 }
 
 bool W3dMallaFlujo(MallaRecurso* r, int parte, int prim, W3dFlujo& f) {
-    if (!r || !r->faces || r->facesSize <= 0) return false;
+    // (soloGPU: sin r->faces, los indices estan en el IBO de la malla. Sin IBO -un contexto GL perdido que todavia
+    // no se volvio a subir- el flujo igual dice cuantos indices son: f.ibo 0 y f.idx NULL = no hay que mandar)
+    if (!r || r->facesSize <= 0 || (!r->faces && !r->soloGPU)) return false;
     int ini, cant; size_t slot;
     Rango(r, parte, ini, cant, slot);
     f.primGL = PrimGL(prim);
     const int clase = ClaseDe(prim);
     if (clase < 0) {
-        f.idx = r->faces + ini; f.cantidad = cant; f.ibo = r->vboIdx; f.primero = ini;
+        f.idx = r->faces ? r->faces + ini : 0; f.cantidad = cant; f.ibo = r->vboIdx; f.primero = ini;
         return true;
     }
     CacheFlujos* c = Cache(r);
     FlujoDerivado& d = c->f[slot * kClases + (size_t)clase];
+    if (d.listo && d.iboPerdido) {
+        // (el contexto GL se perdio: el IBO del flujo se vuelve a subir de su copia, una vez)
+        d.iboPerdido = false;
+        if (r->vboIdx && !d.idx.empty()) {
+            d.ibo = gfx::GenBuffer();
+            if (d.ibo) gfx::IndexBufferData(d.ibo, &d.idx[0], (int)(d.idx.size() * sizeof(MeshIndex)));
+        }
+    }
+    if (!d.listo && !r->faces) {
+        // la malla solto su RAM (soloGPU) y este flujo nunca se armo: no se puede armar sin releerla
+        if (!c->avisoSinRAM) {
+            c->avisoSinRAM = true;
+            w3dLogfW("[mallas] '%s' esta solo en la GPU: el flujo de la primitiva %d de la parte %d no estaba armado "
+                     "(no se dibuja; el editor o la precarga de la rutina lo arman releyendo la malla)",
+                     r->nombre.c_str(), prim, parte);
+        }
+        return false;
+    }
     if (!d.listo) {
         ArmarDerivado(r, ini, cant, clase, d.idx);
         d.listo = true;
@@ -255,12 +279,13 @@ int W3dMallaFlujoIndices(MallaRecurso* r, int parte, int prim) {
 }
 
 bool W3dMallaParteCaja(MallaRecurso* r, int parte, float mn[3], float mx[3]) {
-    if (!r || !r->faces || !r->vertex || r->facesSize <= 0) return false;
+    if (!r || r->facesSize <= 0 || ((!r->faces || !r->vertex) && !r->soloGPU)) return false;
     int ini, cant; size_t slot;
     Rango(r, parte, ini, cant, slot);
     CacheFlujos* c = Cache(r);
     float* k = &c->cajas[slot * 6];
     if (!c->cajaLista[slot]) {
+        if (!r->faces || !r->vertex) return false;   // (soloGPU sin la caja cacheada: W3dMallaFlujosPrecalcular la deja)
         for (int e = 0; e < 3; e++) { k[e] = 1e30f; k[3 + e] = -1e30f; }
         for (int i = ini; i < ini + cant; i++) {
             const float* v = &r->vertex[(size_t)r->faces[i] * 3];
@@ -273,14 +298,49 @@ bool W3dMallaParteCaja(MallaRecurso* r, int parte, float mn[3], float mx[3]) {
 }
 
 int W3dMallaParteMaxIndice(MallaRecurso* r, int parte) {
-    if (!r || !r->faces || r->facesSize <= 0) return -1;
+    if (!r || r->facesSize <= 0 || (!r->faces && !r->soloGPU)) return -1;
     int ini, cant; size_t slot;
     Rango(r, parte, ini, cant, slot);
     CacheFlujos* c = Cache(r);
     if (c->maxIdx[slot] == -2) {
+        if (!r->faces) return -1;   // (soloGPU sin el indice cacheado: W3dMallaFlujosPrecalcular lo deja)
         int m = -1;
         for (int i = ini; i < ini + cant; i++) if ((int)r->faces[i] > m) m = (int)r->faces[i];
         c->maxIdx[slot] = m;
     }
     return c->maxIdx[slot];
+}
+
+bool W3dMallaFlujoListo(MallaRecurso* r, int parte, int prim) {
+    if (!r || r->facesSize <= 0) return false;
+    const int clase = ClaseDe(prim);
+    if (clase < 0) return r->faces || r->vboIdx;   // el index buffer tal cual
+    CacheFlujos* c = (CacheFlujos*)r->flujos;
+    if (!c || c->version != r->version || c->fuente != r->faces || c->nIndices != r->facesSize ||
+        c->nPartes != r->partes.size()) return false;
+    int ini, cant; size_t slot;
+    Rango(r, parte, ini, cant, slot);
+    return c->f[slot * kClases + (size_t)clase].listo;
+}
+
+void W3dMallaFlujosPrecalcular(MallaRecurso* r) {
+    if (!r || !r->faces || !r->vertex || r->facesSize <= 0) return;
+    float mn[3], mx[3];
+    for (int k = -1; k < (int)r->partes.size(); k++) {
+        W3dMallaParteCaja(r, k, mn, mx);
+        W3dMallaParteMaxIndice(r, k);
+    }
+}
+
+void W3dMallaFlujosReapuntar(MallaRecurso* r) {
+    CacheFlujos* c = r ? (CacheFlujos*)r->flujos : 0;
+    // (solo si es el cache de ESTA version: uno viejo lo tira Cache() en el proximo uso)
+    if (c && c->version == r->version && c->nIndices == r->facesSize && c->nPartes == r->partes.size()) c->fuente = r->faces;
+}
+
+void W3dMallaFlujosGLPerdido(MallaRecurso* r) {
+    CacheFlujos* c = r ? (CacheFlujos*)r->flujos : 0;
+    if (!c) return;
+    for (size_t i = 0; i < c->f.size(); i++)
+        if (c->f[i].ibo) { c->f[i].ibo = 0; c->f[i].iboPerdido = true; }
 }

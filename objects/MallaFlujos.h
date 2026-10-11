@@ -55,6 +55,16 @@ bool W3dMallaParteCaja(MallaRecurso* r, int parte, float mn[3], float mx[3]);
 int  W3dMallaParteMaxIndice(MallaRecurso* r, int parte);
 // (MallaRecurso) suelta todo (IBOs incluidos)
 void W3dMallaFlujosBorrar(MallaRecurso* r);
+// ---- la malla SOLO EN GPU (MallaRecurso.h): sin r->faces / r->vertex, los triangulos salen del IBO de la malla y
+//      la caja y el indice maximo del cache; un flujo derivado (tira, aristas...) solo si ya estaba armado ----
+// el flujo de esa parte y primitiva ya se puede mandar sin la RAM de la malla (los triangulos siempre)
+bool W3dMallaFlujoListo(MallaRecurso* r, int parte, int prim);
+// deja en el cache la caja y el indice maximo de CADA parte y de toda la malla (antes de soltar la RAM)
+void W3dMallaFlujosPrecalcular(MallaRecurso* r);
+// los arrays cambiaron de lugar con el MISMO contenido (se soltaron o se releyeron de los bytes): el cache sigue
+void W3dMallaFlujosReapuntar(MallaRecurso* r);
+// el contexto GL se perdio: los IBO de los flujos se olvidan (sin glDelete) y se vuelven a subir de su copia al usarlos
+void W3dMallaFlujosGLPerdido(MallaRecurso* r);
 
 // las tiras de una lista de triangulos, cosidas en un solo flujo (lo usa tambien el harness)
 void W3dTirasDeTriangulos(const MeshIndex* tri, int nIndices, std::vector<MeshIndex>& out);

@@ -57,6 +57,8 @@ namespace w3dEngine {
     // bytes32: lo que serian todas en RGBA8; bytesPot: lo que ocupan en el N95 (remuestreadas a potencia de dos)
     struct MemoriaTexturas { long bytes, bytes32, bytesPot; int cantidad, de16; };
     MemoriaTexturas TexturasMemoria();
+    // la de UNA textura subida (false si ese id no se subio por aca)
+    bool TexturaMemoriaDe(unsigned int id, long& bytes, long& bytesPot, bool& de16);
 
     // actualiza un RECTANGULO (x,y,w,h) de una textura ya subida con w*h pixeles RGBA (pintura en vivo)
     bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect);

@@ -145,6 +145,7 @@ class Armature : public Object {
 
         ObjectType getType() W3D_OVERRIDE { return ObjectType::armature; }
         void RenderObject() W3D_OVERRIDE; // huesos como lineas AZULES, siempre encima (sin z-test)
+        bool DibujaAlgo() W3D_OVERRIDE { return false; }   // (RenderObject no dibuja: lo suyo son los hijos)
         // encuadre ('.'/frame selected): envuelve TODOS los huesos (poseHead/poseTail), no solo el origen
         Vector3 PuntoFoco() const W3D_OVERRIDE;
         float   RadioFoco() const W3D_OVERRIDE;

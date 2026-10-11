@@ -188,6 +188,12 @@ static void TexMemAnotar(unsigned int id, int w, int h, int bpp, bool mips, bool
     TexMem m; m.bytes = b; m.bytes32 = b32; m.bytesPot = bp; m.de16 = (bpp == 2);
     g_texMem[id] = m;
 }
+bool TexturaMemoriaDe(unsigned int id, long& bytes, long& bytesPot, bool& de16) {
+    std::map<unsigned int, TexMem>::const_iterator it = g_texMem.find(id);
+    if (it == g_texMem.end()) return false;
+    bytes = it->second.bytes; bytesPot = it->second.bytesPot; de16 = it->second.de16;
+    return true;
+}
 MemoriaTexturas TexturasMemoria() {
     MemoriaTexturas r; r.bytes = 0; r.bytes32 = 0; r.bytesPot = 0; r.cantidad = 0; r.de16 = 0;
     for (std::map<unsigned int, TexMem>::const_iterator it = g_texMem.begin(); it != g_texMem.end(); ++it) {
@@ -388,6 +394,7 @@ void DeleteTexture(unsigned int id) {
     GLuint g = (GLuint)id;
     glDeleteTextures(1, &g);
     w3dEngine::BindTexture(0);   // GL desbindea lo borrado; el cache del motor tiene que saberlo
+    w3dEngine::MezclaTexturaBorrada(id);   // (idem la unidad 1)
     TexMipsRegistrar(id, false); // GL recicla ids: que el nuevo no herede "tiene mips"
     TexParamsOlvidar(id);        // idem su firma de filtro/wrap
     g_texSizes.erase(id);

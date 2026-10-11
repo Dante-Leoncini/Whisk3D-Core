@@ -132,6 +132,7 @@ void Light::RenderObject() {
             // a 0° la luz viene de ARRIBA = la lampara apunta ABAJO; al rotarla, la luz rota con ella.
             pos[0] = 0.0f; pos[1] = 1.0f; pos[2] = 0.0f; pos[3] = 0.0f;
         } else { pos[0] = position[0]; pos[1] = position[1]; pos[2] = position[2]; pos[3] = 1.0f; }
+        w3dEngine::MatricesSincronizar();   // (GL transforma la posicion con SU modelview: la perezosa tiene que estar)
         W3D_GL_CRUDO(glLightfv(LightID, GL_POSITION, pos));
         W3D_GL_CRUDO(glLightfv(LightID, GL_DIFFUSE,  diffuse));
         W3D_GL_CRUDO(glLightfv(LightID, GL_AMBIENT,  ambient));
@@ -174,6 +175,8 @@ void Light::RenderObject() {
             // de ARRIBA = la lampara apunta ABAJO; al rotar la lampara, la luz rota con ella.
             pos[0] = 0.0f; pos[1] = 1.0f; pos[2] = 0.0f; pos[3] = 0.0f;
         } else { pos[0] = position[0]; pos[1] = position[1]; pos[2] = position[2]; pos[3] = 1.0f; }
+        // GL transforma la posicion y la direccion del spot con SU modelview: la perezosa tiene que estar en GL
+        w3dEngine::MatricesSincronizar();
         W3D_GL_CRUDO(glLightfv(LightID, GL_POSITION, pos));
         W3D_GL_CRUDO(glLightfv(LightID, GL_DIFFUSE,  diffuse));
         W3D_GL_CRUDO(glLightfv(LightID, GL_AMBIENT,  ambient));

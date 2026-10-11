@@ -129,6 +129,7 @@ struct MallaRecurso : public MallaDatos {
     void*        flujos;                 // los flujos de indices derivados por parte (MallaFlujos.h; NULL = sin armar)
     int          refsRutina;             // pasos de Rutina que la dibujan (la mantienen cargada aunque no la use un objeto)
     unsigned int vboPos, vboNor, vboCol, vboUV, vboIdx;
+    std::vector<unsigned int> vboUVx;    // las capas UV extra (uvExtra[k]; la 0 es la activa: su VBO es vboUV)
     unsigned     vboVer;                 // 'version' con la que se subieron (0 = nunca)
 
     // LA TOPOLOGIA COMPARTIDA para MIRAR a los usuarios con la edicion PENDIENTE (wireframe,
@@ -145,6 +146,16 @@ struct MallaRecurso : public MallaDatos {
     // edita. Su nombre lleva el prefijo ("Personajes/Cuerpo") y su entrada la ruta de la libreria
     // ("lib:Personajes/mallas/cuerpo.w3db"), asi que dos librerias no chocan y N proxies la comparten.
     std::string           libreria;
+    // SOLO EN GPU (la opcion de proyecto "mallasSoloGPU", ver W3dMallasSoloGPUActivar): una malla que solo dibujan
+    // RUTINAS (sin usuarios Mesh) suelta sus arrays de RAM cuando sus VBO quedaron subidos; vertexSize, facesSize,
+    // las partes, el AABB y el cache de cajas/indice maximo (MallaFlujos) se quedan. Se relee de sus bytes si algo
+    // pide la RAM (W3dMallaRecursoAsegurarRAM): un objeto que pasa a usarla, el editor, un contexto GL perdido.
+    bool                  soloGPU;       // los arrays de RAM se soltaron (vertex/normals/uv/vertexColor/faces = NULL)
+    bool                  ramFija;       // un paso la lee de RAM en cada cuadro (el matcap): no se suelta
+    bool                  soltarPend;    // anotada para soltarse al cerrar la corrida de rutinas
+    unsigned char         arraysHay;     // (soloGPU) los arrays que tenia: mascara W3DMD_* (Mesh.h)
+    std::vector<unsigned char> capasUVHay; // (soloGPU) la capa UV extra k tenia una UV por vertice (subida a vboUVx[k])
+    long                  bytesSoltados; // (soloGPU) la RAM que libero (arrays, capas UV, extras y la conversion de texto)
 
     MallaRecurso();
     ~MallaRecurso();
@@ -297,7 +308,38 @@ const std::vector<GLfloat>*  W3dMallaBordesVista(const Mesh* m);
 //  RENDER: los VBO compartidos
 // ---------------------------------------------------------------------------
 // sube (una vez por version) los arrays del recurso a sus VBO. false = sin VBO en esta plataforma.
+// Una malla soloGPU con el VBO al dia da true sin RAM; con el VBO perdido se relee de sus bytes para subirlo.
+// Con la opcion soloGPU, una que puede soltar su RAM queda anotada (se suelta al cerrar la corrida de rutinas).
 bool W3dMallaRecursoAsegurarVBO(MallaRecurso* r);
+// ---------------------------------------------------------------------------
+//  SOLO EN GPU (opcion de PROYECTO, proyecto.json "mallasSoloGPU": true; default false = todo como siempre).
+//  En el N95 el VBO vive en la misma RAM que el heap: una malla unida del mundo estaba DOS veces. Con la opcion,
+//  una malla cargada SIN usuarios Mesh y retenida por rutinas, con TODOS sus arrays ya en VBO, suelta su RAM al
+//  cerrar la corrida de rutinas en la que se subio (no antes: esa corrida todavia arma flujos y cajas). Lo que
+//  necesite la RAM despues la relee de los BYTES (como al cargarla) y la malla vuelve a ser como cualquier otra;
+//  si sigue sin usuarios, se vuelve a soltar en la proxima corrida. Prueba: tools/pruebas/prueba_mallas_solo_gpu.w3s
+//  (el cuadro y sus llamadas GL son los mismos con la opcion prendida y apagada). Doc: docs/rutinas.md.
+// ---------------------------------------------------------------------------
+void W3dMallasSoloGPUActivar(bool on);       // off = las sueltas vuelven a RAM
+bool W3dMallasSoloGPUActiva();
+// los arrays de RAM de vuelta (relee los bytes si estaba soloGPU). true = estan (o la malla no tiene geometria)
+bool W3dMallaRecursoAsegurarRAM(MallaRecurso* r);
+// suelta la RAM si se puede (opcion prendida, sin usuarios, retenida por una rutina, VBO al dia, no fija):
+// antes deja cacheadas las cajas y el indice maximo de cada parte. true = la solto
+bool W3dMallaRecursoSoltarRAM(MallaRecurso* r);
+// (la Rutina, al cerrar la corrida) suelta las anotadas por W3dMallaRecursoAsegurarVBO
+void W3dMallasSoloGPUSoltarPendientes();
+// el recurso TIENE ese array (mascara W3DMD_*): en RAM o, si esta soloGPU, en su VBO
+bool W3dMallaRecursoTieneArray(const MallaRecurso* r, unsigned mascara);
+// la capa UV extra k (> 0) con una UV por vertice: en RAM o, si esta soloGPU, la que subio a su VBO
+bool W3dMallaRecursoTieneCapaUV(const MallaRecurso* r, int capa);
+// EL CONTEXTO GL SE PERDIO: los VBO/IBO de los recursos ya no existen (se olvidan sin glDelete) y se vuelven a
+// subir al dibujar; una malla soloGPU se relee de sus bytes para eso
+void W3dMallasVBOPerdidos();
+// (meminfo) cuantas estan soloGPU y la RAM que liberaron; cuantas veces se releyo una
+int  W3dMallasSoloGPUCantidad(long* bytesAhorrados);
+int  W3dMallasSoloGPURecargas();
+
 // (la Rutina) una referencia PERMANENTE sobre el recurso: lo carga si hace falta y lo deja cargado aunque ningun
 // objeto lo use. true = cargado. Cada Retener se paga con un Soltar
 bool W3dMallaRecursoRetener(MallaRecurso* r);
