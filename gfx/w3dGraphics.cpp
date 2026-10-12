@@ -698,6 +698,9 @@ static inline void StatDrawTri(int nIndices) {
     g_statDcCat[gStatCat]++;
     if (gCapOn[Blend]) g_statTrisBlend  += nIndices / 3;
     else               g_statTrisOpacos += nIndices / 3;
+#ifndef W3D_SYMBIAN
+    if (g_trazaGLSec) printf("      [glsec] tris %d\n", nIndices / 3);   // (harness) de quien es cada triangulo
+#endif
     PostDrawColor();   // todo draw de triangulos pasa por aca
 }
 void StatsReset() {

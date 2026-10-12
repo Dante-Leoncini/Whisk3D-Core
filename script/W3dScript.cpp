@@ -1309,12 +1309,27 @@ static int LRotacion(lua_State* L) {
 }
 // setRotacion(o, x, y, z): orientacion ABSOLUTA en grados (euler XYZ). Usa SetRotEuler para que el
 // euler mande y el quaternion se derive: asi no se pierden las vueltas ni se desincroniza el panel.
+// setRotacion(o, x, y, z, "YXZ"): los mismos angulos (x sobre el eje X, y sobre Y, z sobre Z) compuestos en
+// ese ORDEN (R = Ry * Rx * Rz: un vehiculo que rola y cabecea en su marco y despues apunta a su rumbo). El
+// motor arma el quaternion directo y deriva el euler XYZ del panel; antes el script armaba la matriz y la
+// descomponia con trigonometria en lua (en el N95, lo caro).
 static int LSetRotacion(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     if (o) {
-        o->SetRotEuler(Vector3((float)luaL_checknumber(L, 2),
-                               (float)luaL_checknumber(L, 3),
-                               (float)luaL_checknumber(L, 4)));
+        const float x = (float)luaL_checknumber(L, 2), y = (float)luaL_checknumber(L, 3), z = (float)luaL_checknumber(L, 4);
+        const char* orden = lua_type(L, 5) == LUA_TSTRING ? lua_tostring(L, 5) : NULL;
+        if (!orden || strcmp(orden, "XYZ") == 0 || strlen(orden) != 3) {
+            o->SetRotEuler(Vector3(x, y, z));
+        } else {
+            Quaternion q;   // (identidad)
+            for (int k = 0; k < 3; k++) {
+                const char c = orden[k];
+                if (c == 'X' || c == 'x')      q = q * Quaternion::FromAxisAngle(1, 0, 0, x);
+                else if (c == 'Y' || c == 'y') q = q * Quaternion::FromAxisAngle(0, 1, 0, y);
+                else if (c == 'Z' || c == 'z') q = q * Quaternion::FromAxisAngle(0, 0, 1, z);
+            }
+            o->SetRot(q);
+        }
         Redibujar();
     }
     return 0;

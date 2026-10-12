@@ -613,6 +613,7 @@ bool W3dObjetoVivo(const Object* o);
 bool W3dObjetoVivoSerial(const Object* o, unsigned int serial);
 // sube cada vez que un objeto deja de estar vivo: un puntero que estaba vivo sigue vivo mientras no cambie
 unsigned W3dObjetosGen();
+unsigned W3dVivosCambios();   // sube con cualquier alta o baja de objetos vivos (nace, muere o vuelve uno)
 // LOS VIVOS DE UN TIPO (ObjectType): para lo que buscaba un tipo recorriendo TODO el arbol en cada cuadro (las camaras
 // con riel, los esqueletos: miles de nodos para encontrar unos pocos). Trae tambien a los que no cuelgan de la escena
 // (otra escena, una definicion de prefab): quien la usa se fija con W3dColgadoDe. El orden no es el del arbol

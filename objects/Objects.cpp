@@ -68,6 +68,7 @@ bool W3dObjetoVivo(const Object* o) {
     return true;
 }
 unsigned W3dObjetosGen() { return gVivoGen; }
+unsigned W3dVivosCambios() { return gVivosCambios; }
 
 // LOS VIVOS POR TIPO (ver Objects.h): se rearman del conjunto de vivos solo cuando cambio (nacio, murio o volvio
 // alguno); el tipo de un objeto no cambia nunca

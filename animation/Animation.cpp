@@ -587,14 +587,23 @@ float AnimProperty::EvalBezier(size_t i, float frame) const {
     if (x2 < x0) x2 = x0; if (x2 > x3) x2 = x3;
     const float y0 = aValue, y1 = aValue + aDV, y2 = bValue + bDV, y3 = bValue;
 
-    // despejar t / x(t) = frame, por biseccion. x(t) es monotona creciente (recien clampeada), asi que converge
-    // siempre; 24 pasos dan 1/16M del tramo, de sobra para un frame.
-    float lo = 0.0f, hi = 1.0f, t = 0.5f;
-    for (int it = 0; it < 24; it++){
-        t = (lo + hi) * 0.5f;
-        float u = 1.0f - t;
-        float x = u*u*u*x0 + 3.0f*u*u*t*x1 + 3.0f*u*t*t*x2 + t*t*t*x3;
-        if (x < frame) lo = t; else hi = t;
+    // despejar t / x(t) = frame. Con los handles a UN TERCIO del tramo en x (los automaticos y los vector: todo lo
+    // horneado, una clave por frame) x(t) es una RECTA: t sale directo. Si no, por biseccion: x(t) es monotona
+    // creciente (recien clampeada), asi que converge siempre; 24 pasos dan 1/16M del tramo, de sobra para un frame.
+    // (La biseccion era lo mas caro de posar un esqueleto: 24 cubicas por curva por cuadro.)
+    float t;
+    if (aDF == span / 3.0f && bDF == -span / 3.0f) {
+        t = (frame - x0) / span;
+        if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
+    } else {
+        float lo = 0.0f, hi = 1.0f;
+        t = 0.5f;
+        for (int it = 0; it < 24; it++){
+            t = (lo + hi) * 0.5f;
+            float u = 1.0f - t;
+            float x = u*u*u*x0 + 3.0f*u*u*t*x1 + 3.0f*u*t*t*x2 + t*t*t*x3;
+            if (x < frame) lo = t; else hi = t;
+        }
     }
     float u = 1.0f - t;
     return u*u*u*y0 + 3.0f*u*u*t*y1 + 3.0f*u*t*t*y2 + t*t*t*y3;

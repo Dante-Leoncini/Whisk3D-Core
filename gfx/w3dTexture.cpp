@@ -687,10 +687,10 @@ static unsigned char* w3dEncodePNGImpl(const unsigned char* rgba, int w, int h, 
     return png;
 }
 // actualiza un RECTANGULO de una textura ya subida (pintura en vivo): 'rgbaRect' = w*h pixeles del rect
-bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect) {
+bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect, bool regenerarMips) {
     if (!id || !rgbaRect || w <= 0 || h <= 0) return false;
     w3dEngine::BindTexture(id);
-    const bool mips = TexTieneMips(id);
+    const bool mips = regenerarMips && TexTieneMips(id);
 #if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
     glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgbaRect);
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
@@ -701,6 +701,19 @@ bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char
 #endif
     w3dEngine::BindTexture(0);
     return true;
+}
+void RegenerarMips(unsigned int id, int x, int y, const unsigned char* px1) {
+    if (!id || !px1 || !TexTieneMips(id)) return;
+    w3dEngine::BindTexture(id);
+#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+    (void)x; (void)y;
+    glGenerateMipmap(GL_TEXTURE_2D);
+#else
+    glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_TRUE);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px1);
+    glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_FALSE);
+#endif
+    w3dEngine::BindTexture(0);
 }
 unsigned char* EncodePNG(const unsigned char* rgba, int w, int h, bool flipY, int* outLen){ return w3dEncodePNGImpl(rgba, w, h, flipY, outLen, false); }
 unsigned char* EncodePNGRGBA(const unsigned char* rgba, int w, int h, bool flipY, int* outLen){ return w3dEncodePNGImpl(rgba, w, h, flipY, outLen, true); }

@@ -61,7 +61,11 @@ namespace w3dEngine {
     bool TexturaMemoriaDe(unsigned int id, long& bytes, long& bytesPot, bool& de16);
 
     // actualiza un RECTANGULO (x,y,w,h) de una textura ya subida con w*h pixeles RGBA (pintura en vivo)
-    bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect);
+    // regenerarMips=false: no rehace la piramide (en GLES2 eso es la textura ENTERA cada vez); para la pintura en vivo,
+    // que la rehace una sola vez al soltar con RegenerarMips. px1 = un pixel cualquiera de la textura (en GLES1/PC la
+    // piramide se rehace re-subiendo ese pixel con GL_GENERATE_MIPMAP).
+    bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect, bool regenerarMips = true);
+    void RegenerarMips(unsigned int id, int x, int y, const unsigned char* px1);
     // dimensiones con que se subio una textura (para el aspect ratio). false si no se conoce.
     bool TextureSize(unsigned int id, int& w, int& h);
 
