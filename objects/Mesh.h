@@ -816,6 +816,16 @@ class Mesh : public Object {
         void CalcularTangentes();                       // T por vertice desde pos+UV (cache)
         void ActualizarNormalMapColors(const Vector3& luzLocal); // L en tangent-space -> nmColors (por frame)
 
+        // SOMBREADO TOON (Material::toon): la coordenada de la rampa por vertice de render, (s, fila) con
+        // s = 0.5 + 0.5 * (normal . hacia la luz) en el espacio de la malla, desde las normales YA posadas (skinning).
+        // (la fila = la v de la segunda capa UV si la hay: un atlas de rampas; si no, 0.5).
+        // Se rellena cada vez que se dibuja (la pose, la luz y el objeto se mueven) y la lee la unidad 1 de textura
+        // desde la RAM (sin VBO). Vacio = la malla no tiene material toon o no hay normales.
+        std::vector<GLfloat> toonUV;
+        void ActualizarToonUV(const GLbyte* nor);
+        // CONTORNO (Material::contorno): las posiciones infladas sobre las normales posadas para el casco invertido
+        std::vector<GLfloat> contornoPos;
+
         int facesSize;
         MeshIndex* faces; // index buffer GPU: 16 bits N95 / 32 bits escritorio (ver crossplatform.h)
         std::vector<MaterialGroup> materialsGroup;

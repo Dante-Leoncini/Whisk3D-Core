@@ -146,6 +146,19 @@ class Material {
         // rutinas: el paso "Texture mix". No se combina con el reflejo ni con el normal map (van por el combiner)
         Texture* texturaB;
         float    mezclaB;
+        // SOMBREADO TOON (dibujo animado) sin shaders: la 'texturaB' pasa a ser una RAMPA de una fila y la unidad 1
+        // la lee con una coordenada calculada por vertice en la CPU, s = 0.5 + 0.5 * (normal . hacia la luz) (0 = de
+        // espaldas a la luz, 1 = de frente), despues del skinning. 0 = apagado; 1 = la rampa se RESTA del color
+        // (base - rampa: el color de la rampa es cuanto se oscurece); 2 = la rampa MULTIPLICA (base * rampa). Con
+        // toon la luz de GL se apaga (la "luz" la pone la rampa). La luz es la primera direccional de la escena (o la
+        // primera luz). Clave del .w3d: "toon" (con "texturaB" = la rampa); glTF: extras w3d_toon (uri de la rampa)
+        // + w3d_toonMezcla ("restar" / "multiplicar"). Corre igual en PC y en el N95 (GLES 1.1, dos unidades).
+        int      toon;
+        // CONTORNO del dibujo animado (casco invertido): > 0 = la malla se dibuja otra vez inflada sobre sus normales
+        // posadas, en negro y mostrando solo las caras de atras, y asoma como un borde alrededor de la figura. El valor
+        // es el grosor como fraccion de la distancia a la camara (ancho parejo en pantalla: 0.004 ~ 1 px en 240 lineas
+        // con fov 55). Duplica los triangulos de la malla. Clave del .w3d: "contorno"; glTF: extras w3d_contorno.
+        float    contorno;
         // ---- LINEAS (aristas de la malla dibujadas encima del relleno) ----
         // Con lineas = true, cada grupo que use este material dibuja ADEMAS sus
         // ARISTAS (los 3 lados de cada triangulo, deduplicados) con glLineWidth

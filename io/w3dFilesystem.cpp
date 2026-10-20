@@ -277,6 +277,15 @@ namespace w3dFileSystem {
             if (RutaExiste(portable)) return portable;
         }
         #if !defined(_WIN32)
+            // instalacion con PREFIJO, relativa al binario: <prefijo>/bin/whisk3d -> <prefijo>/share/Whisk3d/res. Cubre
+            // el .deb instalado, /usr/local, ~/.local y el .deb DESCOMPRIMIDO sin instalar (data/usr/bin/whisk3d). Antes
+            // solo se miraba /usr/share: descomprimido, el editor abria sin texturas ni iconos (cuadrados blancos).
+            if (!exeDir.empty()) {
+                std::string prefijo = exeDir + "/../share/Whisk3d/res";
+                if (RutaExiste(prefijo)) return prefijo;
+            }
+        #endif
+        #if !defined(_WIN32)
             // instalacion del sistema (Linux)
             const char* xdg = std::getenv("XDG_DATA_DIRS");
             std::string dirs = xdg ? xdg : "/usr/local/share:/usr/share";

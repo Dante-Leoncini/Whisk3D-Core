@@ -755,7 +755,8 @@ static int LRatonRel(lua_State* L) {
     gRatonDX = 0; gRatonDY = 0;
     return 2;
 }
-// capturarRaton(true/false): pide (o suelta) la captura del mouse para mirar estilo FPS. Solo hace algo en PC.
+// capturarRaton(true/false): pide (o suelta) la captura del mouse para mirar estilo FPS. En PC y en el navegador
+// (pointer lock, ver main.cpp); en Symbian y Android no hace nada.
 static int LCapturarRaton(lua_State* L) { gRatonCapturar = lua_toboolean(L, 1) != 0; return 0; }
 // ratonCapturado() -> true si la plataforma tiene el mouse capturado AHORA (para que el script no mire tambien
 // con el arrastre del dedo mientras el cursor esta clavado al centro). En Symbian siempre false.
@@ -1393,9 +1394,25 @@ static int LVisible(lua_State* L) {
 // setVisible(o, bool): prende/apaga el dibujado. Sirve para cualquier objeto (una luz apagada es
 // una luz invisible: Object::Render corta antes de subirla a GL). mostrar() es el alias 2D historico
 // de esto (vive en BindsJuego.cpp y hace exactamente lo mismo).
+// las mallas skinneadas del subarbol olvidan la caja de su ultima pose (la del autocull por frustum de
+// Mesh::RenderObject): hasta el proximo skinneo no se cullean. Un juego que REUSA personajes de un pool
+// (prenderlos en otro lugar con otro clip) los veia aparecer tarde: la caja vieja era la del uso anterior,
+// fuera de camara, y el autocull solo la refresca tras 30 cuadros culleada.
+static void OlvidarCajaSkin(Object* o) {
+    if (!o) return;
+    if (o->getType() == ObjectType::mesh) {
+        Mesh* m = (Mesh*)o;
+        if (m->skinArmature) { m->skinAabbOk = false; m->skinCullSeguidos = 0; }
+    }
+    for (size_t i = 0; i < o->Childrens.size(); i++) OlvidarCajaSkin(o->Childrens[i]);
+}
 static int LSetVisible(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
-    if (o) { o->visible = lua_toboolean(L, 2) != 0; Redibujar(); }
+    if (o) {
+        const bool v = lua_toboolean(L, 2) != 0;
+        if (v && !o->visible) OlvidarCajaSkin(o);   // se prende: su pose puede ser otra (ver arriba)
+        o->visible = v; Redibujar();
+    }
     return 0;
 }
 
@@ -1419,6 +1436,7 @@ static int LAnimClip(lua_State* L) {
     int c = a ? ClipArg(L, a, 2) : -1;
     bool loop = lua_isnoneornil(L, 3) ? true : (lua_toboolean(L, 3) != 0);
     bool reiniciar = lua_toboolean(L, 4) != 0;
+    if (a && (c != a->animActiva || reiniciar)) OlvidarCajaSkin(a);   // otro clip: la caja de la pose vieja no vale
     lua_pushboolean(L, W3dArmaturePlayClip(a, c, loop, reiniciar) ? 1 : 0);
     return 1;
 }

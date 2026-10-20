@@ -894,6 +894,7 @@ void TexEnvAlphaOnly(bool on) {
 
 // ---- color uniforme ----
 void FrontFace(bool ccw) { W3D_GLC(glFrontFace(ccw ? GL_CCW : GL_CW)); }
+void CullCarasFrontales(bool on) { W3D_GLC(glCullFace(on ? GL_FRONT : GL_BACK)); g_statStateChanges++; }
 void ColorMask(bool r, bool g, bool b, bool a) { W3D_GLC(glColorMask(r, g, b, a)); }
 void PointSpriteCoordReplace(bool on) { W3D_GLC(glTexEnvi(GL_POINT_SPRITE, GL_COORD_REPLACE, on ? GL_TRUE : GL_FALSE)); }
 
@@ -950,6 +951,19 @@ void LightNfv(int i, LightFv p, const float* v) {
     if (p == LightPosition) MatricesSincronizar();
     g_statOtras++;
     W3D_GLC(glLightfv(GL_LIGHT0 + (GLenum)i, LightFvGL(p), v));
+}
+void LightNf(int i, LightF p, float v) {
+    if (i < 0 || i >= LucesMax) return;
+    g_statOtras++;
+    W3D_GLC(glLightf(GL_LIGHT0 + (GLenum)i, LightFGL(p), v));
+}
+void LightNSpot(int i, float corte, float exponente, const float* dir3) {
+    if (i < 0 || i >= LucesMax) return;
+    MatricesSincronizar();   // (GL transforma la direccion con SU modelview)
+    g_statOtras += 3;
+    W3D_GLC(glLightf(GL_LIGHT0 + (GLenum)i, GL_SPOT_CUTOFF, corte));
+    W3D_GLC(glLightf(GL_LIGHT0 + (GLenum)i, GL_SPOT_EXPONENT, exponente));
+    W3D_GLC(glLightfv(GL_LIGHT0 + (GLenum)i, GL_SPOT_DIRECTION, dir3));
 }
 void LightN(int i, bool on) {
     if (i == 0) { if (on) Enable(Light0); else Disable(Light0); return; }   // (la 0 tiene cache)
@@ -1232,6 +1246,9 @@ static void SinIBO() {
 #ifndef GL_RGB_SCALE
 #define GL_RGB_SCALE          0x8573
 #endif
+#ifndef GL_SUBTRACT
+#define GL_SUBTRACT           0x84E7
+#endif
 bool MezclaTexturasSoportada() {
     if (gMezclaSoportada < 0) {
         w3d_CargarVBO();   // (Windows: carga tambien glActiveTexture / glClientActiveTexture)
@@ -1306,7 +1323,7 @@ void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int 
     if (!idB || !MezclaTexturasSoportada()) { MezclaTexturasOff(); return; }
     if (k < 0.0f) k = 0.0f;
     if (k > 1.0f) k = 1.0f;
-    if (modo < 0 || modo > 2) modo = 0;
+    if (modo < 0 || modo > 3) modo = 0;
     if (gMezclaTexOn < 0) { gMezclaTexId = 0xFFFFFFFFu; gMezclaTexK = -1.0f; gMezclaTexModo = -1; gUV1PuestoTipo = -1; }   // (desconocido)
     const bool prender = gMezclaTexOn != 1;
     const bool bind    = gMezclaTexId != idB;
@@ -1341,6 +1358,20 @@ void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int 
             W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_ALPHA, GL_SRC_ALPHA));
             W3D_GLC(glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE,      1.0f));
             g_statStateChanges += 12;
+        } else if (modo == 3) {
+            // SUBTRACT: unidad0 - B (GL ES 1.1 lo tiene en el combiner). El sombreado toon de la rampa: B es cuanto se
+            // oscurece cada punto segun su (normal . luz); el alfa sigue siendo el de la unidad 0
+            W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE));
+            W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB,    GL_SUBTRACT));
+            W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_SRC0_RGB,       GL_PREVIOUS));     // arg0 = lo que salio de la unidad 0
+            W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB,   GL_SRC_COLOR));
+            W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_SRC1_RGB,       GL_TEXTURE));      // arg1 = B (la rampa)
+            W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_RGB,   GL_SRC_COLOR));
+            W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA,  GL_REPLACE));
+            W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_SRC0_ALPHA,     GL_PREVIOUS));
+            W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_ALPHA, GL_SRC_ALPHA));
+            W3D_GLC(glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE,      1.0f));
+            g_statStateChanges += 10;
         } else {
             // MULTIPLY: unidad0 * B (x2 con GL_RGB_SCALE, que solo vale con el env en COMBINE): un lightmap en la misma pasada
             W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE));

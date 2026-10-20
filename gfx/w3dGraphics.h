@@ -141,6 +141,8 @@ namespace w3dEngine {
     void SmoothShading(bool suave);    // GL_SMOOTH (true) / GL_FLAT (false)
     void FastPerspective();            // hint de correccion de perspectiva rapida
     void FrontFace(bool ccw);          // winding de la cara frontal (true=CCW)
+    void CullCarasFrontales(bool on);  // descartar las caras FRONTALES (glCullFace(GL_FRONT)) en vez de las traseras: el
+                                       // contorno de casco invertido (Material::contorno). Vale con cualquier winding
     void ColorMask(bool r, bool g, bool b, bool a); // permitir/bloquear canales de color
     void PointSpriteCoordReplace(bool on); // genera coords de textura por punto (point sprites)
 
@@ -179,7 +181,8 @@ namespace w3dEngine {
     // que se le pasan. GL 1.3 / GL ES 1.1 (2 unidades garantizadas: el N95 las tiene); sin soporte no hace nada.
     // Off = vuelve a una unidad (lo llaman AplicarMaterial, el fin del dibujo de la malla y EstadoBase).
     // 'modo': 0 = INTERPOLATE (B * k + unidad0 * (1 - k)); 1 = MULTIPLY (unidad0 * B: un lightmap en la misma
-    // pasada, k no se usa); 2 = MULTIPLY 2x (unidad0 * B * 2: el lightmap con overbright, GL_RGB_SCALE).
+    // pasada, k no se usa); 2 = MULTIPLY 2x (unidad0 * B * 2: el lightmap con overbright, GL_RGB_SCALE); 3 = SUBTRACT
+    // (unidad0 - B: la rampa del sombreado toon, Material::toon).
     bool MezclaTexturasSoportada();
     void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int modo = 0);
     void MezclaTexturasOff();
@@ -225,9 +228,13 @@ namespace w3dEngine {
     void SetLightEnabled(unsigned int glLightId, bool on); // habilita/apaga una luz por su id GL
     // --- luces por NUMERO (0..LucesMax-1 = GL_LIGHT0..7): las usa la Rutina, que fija cada estado suelto. La
     //     posicion se transforma con la modelview ACTIVA (como glLightfv): w = 0 direccional, 1 puntual. Fuera de
-    //     rango = nada. GLES2/WebGL: solo la 0 (el shader tiene una luz) y sin ambiente global. ---
+    //     rango = nada. GLES2/WebGL las emula en el shader con la misma cuenta del pipeline fijo (por vertice). ---
     enum { LucesMax = 8 };
     void LightNfv(int i, LightFv p, const float* v);
+    void LightNf(int i, LightF p, float v);        // atenuacion de la luz i (glLightf)
+    // cono de la luz i: corte en grados (180 = sin cono), exponente de concentracion y direccion (en la modelview
+    // ACTIVA, como glLightfv(GL_SPOT_DIRECTION))
+    void LightNSpot(int i, float corte, float exponente, const float* dir3);
     void LightN(int i, bool on);                   // glEnable/glDisable(GL_LIGHTi) (la 0 pasa por el cache: Light0)
     void LightModelAmbient(const float* rgba);     // glLightModelfv(GL_LIGHT_MODEL_AMBIENT)
 

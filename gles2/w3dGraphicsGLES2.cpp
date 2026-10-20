@@ -3,16 +3,21 @@
 //
 //  ES2/WebGL NO tiene pipeline fijo: todo es shaders. Este backend EMULA el pipeline
 //  fijo que usa el Core (la MISMA API que w3dGraphics.cpp, el backend fijo) con:
-//    - stack de matrices POR SOFTWARE (Matrix4) -> uniforms (MVP + modelview + normal)
-//    - un uber-shader: transform + luz (ambient+diffuse) + textura + DOT3 + fog
+//    - stack de matrices POR SOFTWARE (Matrix4) -> uniforms (MVP + modelview + normal + textura)
+//    - un uber-shader que hace LAS MISMAS CUENTAS que OpenGL ES 1.1, para que web/Android se vean como el
+//      PC y el N95: luz POR VERTICE (hasta 8 luces, ambiente global, atenuacion, cono, especular sin
+//      observador local, el color recortado a [0,1] antes de la textura), matriz de textura, sphere-map y
+//      matcap, el combiner (modulate / replace / DOT3 / solo alfa), la segunda unidad (mezcla de
+//      texturas) y la niebla
 //    - los vertex arrays client-side -> VBOs (WebGL no acepta punteros client-side)
 //
 //  Se elige en compile-time con W3D_WEBGL (en vez de w3dGraphics.cpp). En desktop las
 //  funciones GL2.0 se cargan con GLES2Init(getProc = SDL_GL_GetProcAddress); en Emscripten
-//  van directas. Mismo codigo -> se verifica en PC (GL 2.1) y compila a WebGL con emcc.
+//  van directas. Mismo codigo -> se verifica en PC (GL 2.1, cmake -DW3D_PC_GLES2=ON) y compila
+//  a WebGL con emcc.
 //
-//  Lo que ES2 NO tiene fijo (matcap/texgen por HW, wireframe/glPolygonMode) queda como
-//  stub honesto marcado TODO: son features de shader a completar, no rompen el link.
+//  Lo que sigue sin equivalente: el sombreado PLANO (GLSL ES 1.00 no tiene 'flat') y el
+//  wireframe por glPolygonMode.
 // ============================================================================
 #include "w3dGraphics.h"
 #include "math/Matrix4.h"
@@ -77,6 +82,7 @@
     typedef void   (APIENTRY* PFdisableVAA)(GLuint);
     typedef void   (APIENTRY* PFvertexAttrib4fv)(GLuint, const GLfloat*);
     typedef void   (APIENTRY* PFactiveTexture)(GLenum);
+    typedef void   (APIENTRY* PFbindAttribLocation)(GLuint, GLuint, const GLchar*);
     static PFcreateShader        glCreateShader;
     static PFshaderSource        glShaderSource;
     static PFcompileShader       glCompileShader;
@@ -102,7 +108,19 @@
     static PFenableVAA           glEnableVertexAttribArray;
     static PFdisableVAA          glDisableVertexAttribArray;
     static PFvertexAttrib4fv     glVertexAttrib4fv;
+    // (el <GL/gl.h> de Mesa ya declara glActiveTexture -GL 1.3-: el puntero va con otro nombre)
+    #define glActiveTexture w3dGlActiveTexture
     static PFactiveTexture       glActiveTexture;
+    static PFbindAttribLocation  glBindAttribLocation;
+    #ifndef GL_TEXTURE1
+        #define GL_TEXTURE1         0x84C1
+    #endif
+    #ifndef GL_VERTEX_PROGRAM_POINT_SIZE
+        #define GL_VERTEX_PROGRAM_POINT_SIZE 0x8642   // gl_PointSize del shader (en ES2 siempre vale)
+    #endif
+    #ifndef GL_POINT_SPRITE
+        #define GL_POINT_SPRITE     0x8861            // gl_PointCoord (en ES2 siempre vale)
+    #endif
 #endif
 
 // estado de render compartido (lo setea el editor antes de dibujar la escena; el Core lo LEE).
@@ -155,65 +173,142 @@ static bool cap_depth=false, cap_cull=false, cap_tex=false, cap_light=false, cap
 static bool cap_colormat=false; // GL_COLOR_MATERIAL: el color del VERTICE reemplaza el diffuse/ambient del material
 static int  matMode = 1; // 0=Projection, 1=ModelView, 2=Texture
 static Matrix4 curProj, curMV;
-static Matrix4 curTex;     // matriz de TEXTURA propia: escribirla NO pisa la modelview (el shader aun no la usa)
-static std::vector<Matrix4> stkProj, stkMV;
-static float lightPos[4]  = {0,0,1,0};
-static float lightDiff[4] = {1,1,1,1};
-static float lightAmb[4]  = {0.2f,0.2f,0.2f,1};
+static Matrix4 curTex;     // matriz de TEXTURA de la unidad 0 (TexMatrixUV / matcap / el flip-V del sphere-map)
+static std::vector<Matrix4> stkProj, stkMV, stkTex;
+// LAS LUCES del pipeline fijo, con sus valores de fabrica de GL: la 0 difusa y especular blancas, las otras negras;
+// el ambiente de cada luz negro; sin atenuacion; sin cono. La posicion y la direccion del cono se guardan en OJO
+// (transformadas con la modelview del momento, como glLightfv).
+struct Luz { bool on; float pos[4], amb[4], dif[4], spec[4], att[3], dir[3], corteCos, expo; };
+static Luz luces[LucesMax];
+static float ambGlobal[4] = {0.2f,0.2f,0.2f,1};   // GL_LIGHT_MODEL_AMBIENT
+static bool  lucesSucias = true;                    // hay que volver a mandar las luces al shader
+static void LucesDeFabrica(){
+    for(int i=0;i<LucesMax;i++){
+        Luz& L=luces[i];
+        L.on=false;
+        L.pos[0]=0; L.pos[1]=0; L.pos[2]=1; L.pos[3]=0;
+        for(int k=0;k<4;k++){ L.amb[k]=(k==3)?1.0f:0.0f; L.dif[k]=(i==0||k==3)?1.0f:0.0f; L.spec[k]=L.dif[k]; }
+        L.att[0]=1; L.att[1]=0; L.att[2]=0;
+        L.dir[0]=0; L.dir[1]=0; L.dir[2]=-1;
+        L.corteCos=-1.0f; L.expo=0.0f;   // corte 180 = sin cono
+    }
+    lucesSucias=true;
+}
 static float matDiff[4]   = {0.8f,0.8f,0.8f,1};
 static float matAmb[4]    = {0.2f,0.2f,0.2f,1};
-static float matSpec[4]   = {0,0,0,1};   // specular del material (negro = apagado -> no se calcula el highlight)
-static float matEmis[4]   = {0,0,0,1};   // emissive del material (negro = apagado)
-static float matShine     = 0.0f;        // exponente specular (0 = sin highlight)
-static float lightSpec[4] = {1,1,1,1};   // specular de la luz (GL_LIGHT0 default = blanco)
+static float matSpec[4]   = {0,0,0,1};
+static float matEmis[4]   = {0,0,0,1};
+static float matShine     = 0.0f;
 static float curColor[4]  = {1,1,1,1};   // color uniforme (Color4*) cuando NO hay array de color
 static float fogColor[4]  = {0,0,0,1};
 static float fogStart=0, fogEnd=1;
 static int   fogModo=0;       // 0 lineal / 1 exp / 2 exp2 (el objeto Niebla), igual que GL_FOG_MODE
 static float fogDens=1.0f;
-static bool  dot3On=false, replaceOn=false;
+static int   texEnv=0;        // el combiner de la unidad 0: 0 modulate, 1 replace, 2 DOT3, 3 solo alfa
+static bool  texGenEsfera=false;   // GL_SPHERE_MAP: las UV salen del reflejo (en el shader)
+// LA MATRIZ DE TEXTURA la tocan tres cosas (sphere-map, matcap, desplazamiento de UV) con los MISMOS caches que el
+// backend fijo: asi se reinicia exactamente en los mismos momentos (un "apagar" de lo que ya estaba apagado no la toca)
+static int texGenCache = -1;   // 0/1
+static int matcapCache = -1;   // 0 identidad / 1 matcap / 2 desplazamiento de UV
+static float uvMat[4] = { 0, 0, 1, 1 };
 static bool  pointSprite=false; // point sprite: samplear la textura con gl_PointCoord (iconos: cursor/origen/luz)
 static float pointSize=1.0f;
+static float vpActual[4]={0,0,1,1};   // el glViewport actual (el sprite saca su centro en pixeles de ventana)
 static unsigned boundTex=0;
+// LA UNIDAD 1 (mezcla de texturas): la textura B, como se combina y sus UV (propias o las de la unidad 0)
+static bool     mezclaOn=false;
+static unsigned mezclaTex=0;
+static int      mezclaModo=0;   // 0 interpolar con k, 1 multiplicar, 2 multiplicar x2, 3 restar
+static float    mezclaK=1.0f;
+static const float* mezclaUV=0; // UV propias de la unidad 1 (0 = las mismas de la unidad 0)
 struct Arr { bool on; int size; unsigned type; int stride; const void* ptr; };
 static Arr aPos={false,3,0,0,0}, aNrm={false,3,0,0,0}, aUV={false,2,0,0,0}, aCol={false,4,0,0,0};
 
 // ---- objetos GL + locations ----
-static GLuint prog=0, vboP=0, vboN=0, vboT=0, vboC=0, ibo=0;
-static GLint uMVP,uMV,uNMat,uUseTex,uTex,uLightOn,uDot3On,uReplaceOn,uFogOn,uPointSize,uPointSprite,uColorMat,uBlurY,uAlphaRef,uAlfaAbajo;
+static GLuint prog=0, vboP=0, vboN=0, vboT=0, vboC=0, vboT1=0, ibo=0;
+static GLint uMVP,uMV,uNMat,uTexM,uTexGen,uUseTex,uTex,uTex1,uEnv,uLightOn,uFogOn,uPointSize,uPointSprite,uColorMat,uBlurY,uAlphaRef,uAlfaAbajo;
+static GLint uMezcla,uMezclaK,uViewport;
 static GLint uClipN,uClip[5];   // planos de recorte (ver PlanosRecorte): equivalente al GL_CLIP_PLANEi del pipeline fijo
 static float blurY = 0.0f;
 static float alphaRef = 0.0f;
 static int   alfaAbajo = 0;
-static GLint uLPos,uLDiff,uLAmb,uMDiff,uMAmb,uFogColor,uFogStart,uFogEnd,uFogModo,uFogDens;
-static GLint uMSpec,uMEmis,uShine,uLSpec; // specular + emissive del material/luz
-static GLint aLpos,aLnrm,aLuv,aLcol;
+static GLint uMDiff,uMAmb,uMSpec,uMEmis,uShine,uAmbGlobal,uNLuces,uLPos,uLAmb,uLDif,uLSpec,uLAtt,uLCono;
+static GLint uFogColor,uFogStart,uFogEnd,uFogModo,uFogDens;
+static GLint aLpos,aLnrm,aLuv,aLcol,aLuv1;
 static bool ready=false;
 
 // ============================================================================
-//  Shaders (GLSL ES 1.00)
+//  Shaders (GLSL ES 1.00). La ILUMINACION va en el VERTEX shader, con la cuenta de OpenGL ES 1.1 (es lo que
+//  hace el pipeline fijo: Gouraud), asi una malla se ve igual que en el PC y el N95:
+//    color = emision + ambiente_global * amb_mat
+//          + suma por luz de atenuacion * cono * ( amb_luz * amb_mat + (N.L) * dif_luz * dif_mat
+//                                                 + (N.L > 0 ? (N.H)^brillo * esp_luz * esp_mat : 0) )
+//  con H = L + (0,0,1) (sin observador local) y el resultado recortado a [0,1] ANTES de la textura.
 // ============================================================================
 static const char* VS =
-"uniform mat4 uMVP; uniform mat4 uMV; uniform mat3 uNMat; uniform float uPointSize;\n"
-"attribute vec3 aPos; attribute vec3 aNrm; attribute vec2 aUV; attribute vec4 aCol;\n"
-"varying vec3 vN; varying vec3 vP; varying vec2 vT; varying vec4 vC; varying float vFogZ;\n"
-"void main(){ vec4 eye=uMV*vec4(aPos,1.0); gl_Position=uMVP*vec4(aPos,1.0);\n"
-"  vN=uNMat*aNrm; vP=eye.xyz; vT=aUV; vC=aCol; vFogZ=-eye.z; gl_PointSize=uPointSize; }\n";
+"uniform mat4 uMVP; uniform mat4 uMV; uniform mat3 uNMat; uniform mat4 uTexM; uniform float uPointSize;\n"
+"uniform int uTexGen; uniform int uLightOn; uniform int uColorMat; uniform vec4 uViewport;\n"
+"uniform vec4 uMDiff; uniform vec4 uMAmb; uniform vec4 uMSpec; uniform vec4 uMEmis; uniform float uShine; uniform vec4 uAmbGlobal;\n"
+"uniform int uNLuces; uniform vec4 uLPos[8]; uniform vec4 uLAmb[8]; uniform vec4 uLDif[8]; uniform vec4 uLSpec[8];\n"
+"uniform vec4 uLAtt[8];\n"    // constante, lineal, cuadratica, exponente del cono
+"uniform vec4 uLCono[8];\n"   // direccion del cono (ojo) + coseno del corte (-1 = sin cono)
+"attribute vec3 aPos; attribute vec3 aNrm; attribute vec4 aUV; attribute vec4 aCol; attribute vec2 aUV1;\n"
+"varying vec3 vP; varying vec2 vT; varying vec2 vT1; varying vec4 vC; varying float vFogZ;\n"
+"varying vec2 vCentro; varying float vTam;\n"   // el centro y el tamanio del punto en pixeles de ventana (para el sprite)
+"void main(){\n"
+"  vec4 eye=uMV*vec4(aPos,1.0); gl_Position=uMVP*vec4(aPos,1.0);\n"
+"  vCentro=(gl_Position.xy/gl_Position.w*0.5+0.5)*uViewport.zw+uViewport.xy; vTam=uPointSize;\n"
+"  vP=eye.xyz; vFogZ=-eye.z; gl_PointSize=uPointSize; vT1=aUV1;\n"
+"  vec3 n=uNMat*aNrm; float nl=length(n); vec3 N=(nl>0.0)?n/nl:vec3(0.0,0.0,1.0);\n"   // GL_NORMALIZE
+"  vec4 uv=aUV;\n"
+"  if(uTexGen==1){\n"   // GL_SPHERE_MAP: el reflejo de la vista en la normal (en ojo)
+"    vec3 r=reflect(normalize(eye.xyz),N); float m=2.0*sqrt(r.x*r.x+r.y*r.y+(r.z+1.0)*(r.z+1.0));\n"
+"    uv=vec4(r.x/m+0.5,r.y/m+0.5,0.0,1.0);\n"
+"  }\n"
+"  vec4 t=uTexM*uv; vT=t.xy/t.w;\n"
+"  vec4 c=aCol;\n"
+"  if(uLightOn==1){\n"
+"    vec4 md=(uColorMat==1)?aCol:uMDiff; vec4 ma=(uColorMat==1)?aCol:uMAmb;\n"   // COLOR_MATERIAL = AMBIENT_AND_DIFFUSE
+"    vec3 acc=uMEmis.rgb+ma.rgb*uAmbGlobal.rgb;\n"
+"    for(int i=0;i<8;i++){\n"
+"      if(i>=uNLuces) break;\n"
+"      vec3 L; float at=1.0;\n"
+"      if(uLPos[i].w!=0.0){ vec3 d=uLPos[i].xyz/uLPos[i].w-eye.xyz; float dist=length(d); L=d/max(dist,1e-6);\n"
+"        at=1.0/max(uLAtt[i].x+uLAtt[i].y*dist+uLAtt[i].z*dist*dist,1e-6); }\n"
+"      else L=normalize(uLPos[i].xyz);\n"
+"      if(uLCono[i].w>-0.5){ float sd=dot(-L,normalize(uLCono[i].xyz)); at*=(sd>=uLCono[i].w)?pow(max(sd,0.0),uLAtt[i].w):0.0; }\n"
+"      float ndl=max(dot(N,L),0.0);\n"
+"      vec3 col=ma.rgb*uLAmb[i].rgb+md.rgb*uLDif[i].rgb*ndl;\n"
+"      if(ndl>0.0){ float nh=max(dot(N,normalize(L+vec3(0.0,0.0,1.0))),0.0);\n"
+"        col+=uMSpec.rgb*uLSpec[i].rgb*((uShine>0.0)?pow(nh,uShine):1.0); }\n"
+"      acc+=at*col;\n"
+"    }\n"
+"    c=vec4(acc,md.a);\n"
+"  }\n"
+"  vC=clamp(c,0.0,1.0);\n"
+"}\n";
 static const char* FS =
+"#ifdef GL_ES\n"
 "precision mediump float;\n"
 "precision mediump int;\n"
-"uniform int uUseTex; uniform int uLightOn; uniform int uDot3On; uniform int uReplaceOn; uniform int uFogOn;\n"
+"#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+"#define W3D_ALTA highp\n"
+"#else\n"
+"#define W3D_ALTA mediump\n"
+"#endif\n"
+"#else\n"
+"#define W3D_ALTA\n"
+"#endif\n"
+"uniform int uUseTex; uniform int uEnv; uniform int uFogOn;\n"
 "uniform float uBlurY;\n"   // blur vertical (0 = apagado)
 "uniform float uAlphaRef;\n" // descarte por alpha (0 = apagado)
 "uniform int uAlfaAbajo;\n"  // 1 = el ALPHA viene en la mitad de ABAJO de la textura
-"uniform int uColorMat;\n" // COLOR_MATERIAL: usar el color del vertice (vC) como diffuse/ambient del material
 "uniform int uPointSprite;\n"
-"uniform sampler2D uTex;\n"
-"uniform vec4 uLPos; uniform vec4 uLDiff; uniform vec4 uLAmb; uniform vec4 uMDiff; uniform vec4 uMAmb;\n"
-"uniform vec4 uMSpec; uniform vec4 uMEmis; uniform vec4 uLSpec; uniform float uShine;\n"
+"uniform sampler2D uTex; uniform sampler2D uTex1; uniform int uMezcla; uniform float uMezclaK;\n"
 "uniform vec4 uFogColor; uniform float uFogStart; uniform float uFogEnd; uniform int uFogModo; uniform float uFogDens;\n"
 "uniform int uClipN; uniform vec4 uClip0,uClip1,uClip2,uClip3,uClip4;\n"   // planos de recorte, en OJO
-"varying vec3 vN; varying vec3 vP; varying vec2 vT; varying vec4 vC; varying float vFogZ;\n"
+"varying vec3 vP; varying vec2 vT; varying vec2 vT1; varying vec4 vC; varying float vFogZ;\n"
+"varying W3D_ALTA vec2 vCentro; varying W3D_ALTA float vTam;\n"
 "void main(){\n"
 "  vec4 Pe = vec4(vP,1.0);\n"   // recorte por planos (desenrollado: GLSL ES 1.00 no indexa uniforms por variable)
 "  if(uClipN>0 && dot(Pe,uClip0)<0.0) discard;\n"
@@ -221,9 +316,14 @@ static const char* FS =
 "  if(uClipN>2 && dot(Pe,uClip2)<0.0) discard;\n"
 "  if(uClipN>3 && dot(Pe,uClip3)<0.0) discard;\n"
 "  if(uClipN>4 && dot(Pe,uClip4)<0.0) discard;\n"
-"  vec2 uv = (uPointSprite==1) ? gl_PointCoord : vT;\n" // point sprite: coord por-fragmento (iconos)
-"  vec4 tex = vec4(1.0);\n"
+"  vec2 uv = vT;\n"
+// POINT SPRITE (iconos: luz, origen, cursor 3D): la coordenada adentro del punto sale de la posicion del pixel respecto
+// del centro del punto, no de gl_PointCoord: el driver iris de Mesa (Intel, Linux) la entrega en 0,0 -tambien a traves de
+// Chrome- y el icono salia invisible (se leia siempre la esquina transparente). gl_FragCoord anda en todos los drivers.
+"  if(uPointSprite==1){ W3D_ALTA vec2 d=(gl_FragCoord.xy-vCentro)/vTam; uv=vec2(0.5+d.x,0.5-d.y); }\n"
+"  vec4 col = vC;\n"   // sin textura: el color primario (la luz, o el color del vertice)
 "  if(uUseTex==1){\n"
+"    vec4 tex;\n"
 "    if(uBlurY > 0.0){\n"                       // 9 muestras a lo largo de V (motion blur)
 "      vec4 acc = vec4(0.0);\n"
 "      for(int i=-4;i<=4;i++){\n"
@@ -238,17 +338,15 @@ static const char* FS =
 "                                             \n"  // queda en la mitad de ABAJO y la mascara arriba.
 "      tex.a = texture2D(uTex, vec2(uv.x, uv.y - 0.5)).r;\n"  // la mascara, media textura mas abajo
 "    }\n"
+"    if(uEnv==1) col=tex;\n"                                                         // GL_REPLACE
+"    else if(uEnv==2) col=vec4(vec3(clamp(dot(tex.rgb*2.0-1.0,vC.rgb*2.0-1.0),0.0,1.0)),tex.a*vC.a);\n" // GL_DOT3_RGB
+"    else if(uEnv==3) col=vec4(vC.rgb,tex.a);\n"                                   // solo alfa
+"    else col=vC*tex;\n"                                                            // GL_MODULATE
 "  }\n"
-"  vec4 col;\n"
-"  if(uDot3On==1){ vec3 N=normalize(tex.rgb*2.0-1.0); vec3 L=normalize(vC.rgb*2.0-1.0); col=vec4(vec3(max(dot(N,L),0.0)),1.0); }\n"
-"  else if(uReplaceOn==1){ col=tex; }\n"
-"  else if(uLightOn==1){ vec3 N=normalize(vN); vec3 L=normalize(uLPos.xyz-vP); float ndl=max(dot(N,L),0.0);\n"
-"    vec4 md=(uColorMat==1)?vC:uMDiff; vec4 ma=(uColorMat==1)?vC:uMAmb;\n" // COLOR_MATERIAL: el vertex color reemplaza diffuse+ambient
-"    col=ma*uLAmb + md*uLDiff*ndl; col*=tex; col.a=md.a*tex.a;\n"
-"    if(uShine>0.0 && ndl>0.0){ vec3 V=normalize(-vP); vec3 H=normalize(L+V);\n" // specular Blinn-Phong (solo si hay brillo)
-"      col.rgb += uMSpec.rgb*uLSpec.rgb*pow(max(dot(N,H),0.0),uShine); }\n"
-"    col.rgb += uMEmis.rgb; }\n"                                                  // emissive (negro = no suma nada)
-"  else { col=vC*tex; }\n"
+"  if(uMezcla>=0){ vec4 b=texture2D(uTex1,vT1);\n"   // la unidad 1 sobre lo que salio de la 0 (el alfa no cambia)
+"    if(uMezcla==0) col.rgb=mix(col.rgb,b.rgb,uMezclaK);\n"
+"    else if(uMezcla==3) col.rgb=max(col.rgb-b.rgb,0.0);\n"
+"    else col.rgb=min(col.rgb*b.rgb*((uMezcla==2)?2.0:1.0),1.0); }\n"
 "  if(uFogOn==1){ float f;\n"
 "    if(uFogModo==1) f=exp(-uFogDens*vFogZ);\n"                                   // GL_EXP
 "    else if(uFogModo==2){ float e=uFogDens*vFogZ; f=exp(-e*e); }\n"            // GL_EXP2
@@ -297,19 +395,34 @@ static Matrix4& cur(){ return matMode==0 ? curProj : (matMode==2 ? curTex : curM
 //  Compilar / linkear el programa
 // ============================================================================
 static GLuint compile(GLenum tipo,const char* src){
-    GLuint s=W3D_GLC(glCreateShader(tipo)); W3D_GLC(glShaderSource(s,1,&src,0)); W3D_GLC(glCompileShader(s));
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__)
+    const char* partes[1] = { src };
+    const int n = 1;
+#else
+    // PC (GL 2.1, -DW3D_PC_GLES2): GLSL 1.20 (gl_PointCoord) en vez del GLSL ES 1.00 implicito
+    const char* partes[2] = { "#version 120\n", src };
+    const int n = 2;
+#endif
+    GLuint s=W3D_GLC(glCreateShader(tipo)); W3D_GLC(glShaderSource(s,n,partes,0)); W3D_GLC(glCompileShader(s));
     GLint ok=0; W3D_GLC(glGetShaderiv(s,GL_COMPILE_STATUS,&ok));
-    if(!ok){ char log[512]; log[0]=0; W3D_GLC(glGetShaderInfoLog(s,512,0,log)); fprintf(stderr,"[w3dGLES2] shader compile error: %s\n",log); }
+    if(!ok){ char log[1024]; log[0]=0; W3D_GLC(glGetShaderInfoLog(s,1024,0,log)); fprintf(stderr,"[w3dGLES2] shader compile error: %s\n",log); }
     return s;
 }
 static void buildProgram(){
     GLuint vs=compile(GL_VERTEX_SHADER,VS), fs=compile(GL_FRAGMENT_SHADER,FS);
-    prog=W3D_GLC(glCreateProgram()); W3D_GLC(glAttachShader(prog,vs)); W3D_GLC(glAttachShader(prog,fs)); W3D_GLC(glLinkProgram(prog));
+    prog=W3D_GLC(glCreateProgram()); W3D_GLC(glAttachShader(prog,vs)); W3D_GLC(glAttachShader(prog,fs));
+    W3D_GLC(glBindAttribLocation(prog,0,"aPos"));   // la posicion en el atributo 0 (GL de escritorio lo pide)
+    W3D_GLC(glLinkProgram(prog));
     GLint ok=0; W3D_GLC(glGetProgramiv(prog,GL_LINK_STATUS,&ok));
-    if(!ok){ char log[512]; log[0]=0; W3D_GLC(glGetProgramInfoLog(prog,512,0,log)); fprintf(stderr,"[w3dGLES2] link error: %s\n",log); }
+    if(!ok){ char log[1024]; log[0]=0; W3D_GLC(glGetProgramInfoLog(prog,1024,0,log)); fprintf(stderr,"[w3dGLES2] link error: %s\n",log); }
+    W3D_GLC(glUseProgram(prog));
     uMVP=W3D_GLC(glGetUniformLocation(prog,"uMVP")); uMV=W3D_GLC(glGetUniformLocation(prog,"uMV")); uNMat=W3D_GLC(glGetUniformLocation(prog,"uNMat"));
+    uTexM=W3D_GLC(glGetUniformLocation(prog,"uTexM")); uTexGen=W3D_GLC(glGetUniformLocation(prog,"uTexGen"));
     uUseTex=W3D_GLC(glGetUniformLocation(prog,"uUseTex")); uTex=W3D_GLC(glGetUniformLocation(prog,"uTex"));
-    uLightOn=W3D_GLC(glGetUniformLocation(prog,"uLightOn")); uDot3On=W3D_GLC(glGetUniformLocation(prog,"uDot3On")); uReplaceOn=W3D_GLC(glGetUniformLocation(prog,"uReplaceOn"));
+    uTex1=W3D_GLC(glGetUniformLocation(prog,"uTex1")); uEnv=W3D_GLC(glGetUniformLocation(prog,"uEnv"));
+    uMezcla=W3D_GLC(glGetUniformLocation(prog,"uMezcla")); uMezclaK=W3D_GLC(glGetUniformLocation(prog,"uMezclaK"));
+    uViewport=W3D_GLC(glGetUniformLocation(prog,"uViewport"));
+    uLightOn=W3D_GLC(glGetUniformLocation(prog,"uLightOn"));
     uColorMat=W3D_GLC(glGetUniformLocation(prog,"uColorMat"));
     uBlurY=W3D_GLC(glGetUniformLocation(prog,"uBlurY"));
     uAlphaRef=W3D_GLC(glGetUniformLocation(prog,"uAlphaRef"));
@@ -321,15 +434,21 @@ static void buildProgram(){
     W3D_GLC(glUniform1i(uClipN, 0));
     uFogOn=W3D_GLC(glGetUniformLocation(prog,"uFogOn")); uPointSize=W3D_GLC(glGetUniformLocation(prog,"uPointSize"));
     uPointSprite=W3D_GLC(glGetUniformLocation(prog,"uPointSprite"));
-    uLPos=W3D_GLC(glGetUniformLocation(prog,"uLPos")); uLDiff=W3D_GLC(glGetUniformLocation(prog,"uLDiff")); uLAmb=W3D_GLC(glGetUniformLocation(prog,"uLAmb"));
     uMDiff=W3D_GLC(glGetUniformLocation(prog,"uMDiff")); uMAmb=W3D_GLC(glGetUniformLocation(prog,"uMAmb"));
     uMSpec=W3D_GLC(glGetUniformLocation(prog,"uMSpec")); uMEmis=W3D_GLC(glGetUniformLocation(prog,"uMEmis"));
-    uLSpec=W3D_GLC(glGetUniformLocation(prog,"uLSpec")); uShine=W3D_GLC(glGetUniformLocation(prog,"uShine"));
+    uShine=W3D_GLC(glGetUniformLocation(prog,"uShine")); uAmbGlobal=W3D_GLC(glGetUniformLocation(prog,"uAmbGlobal"));
+    uNLuces=W3D_GLC(glGetUniformLocation(prog,"uNLuces"));
+    uLPos=W3D_GLC(glGetUniformLocation(prog,"uLPos")); uLAmb=W3D_GLC(glGetUniformLocation(prog,"uLAmb"));
+    uLDif=W3D_GLC(glGetUniformLocation(prog,"uLDif")); uLSpec=W3D_GLC(glGetUniformLocation(prog,"uLSpec"));
+    uLAtt=W3D_GLC(glGetUniformLocation(prog,"uLAtt")); uLCono=W3D_GLC(glGetUniformLocation(prog,"uLCono"));
     uFogColor=W3D_GLC(glGetUniformLocation(prog,"uFogColor")); uFogStart=W3D_GLC(glGetUniformLocation(prog,"uFogStart")); uFogEnd=W3D_GLC(glGetUniformLocation(prog,"uFogEnd"));
     uFogModo=W3D_GLC(glGetUniformLocation(prog,"uFogModo")); uFogDens=W3D_GLC(glGetUniformLocation(prog,"uFogDens"));
     aLpos=W3D_GLC(glGetAttribLocation(prog,"aPos")); aLnrm=W3D_GLC(glGetAttribLocation(prog,"aNrm"));
     aLuv=W3D_GLC(glGetAttribLocation(prog,"aUV")); aLcol=W3D_GLC(glGetAttribLocation(prog,"aCol"));
-    W3D_GLC(glGenBuffers(1,&vboP)); W3D_GLC(glGenBuffers(1,&vboN)); W3D_GLC(glGenBuffers(1,&vboT)); W3D_GLC(glGenBuffers(1,&vboC)); W3D_GLC(glGenBuffers(1,&ibo));
+    aLuv1=W3D_GLC(glGetAttribLocation(prog,"aUV1"));
+    W3D_GLC(glGenBuffers(1,&vboP)); W3D_GLC(glGenBuffers(1,&vboN)); W3D_GLC(glGenBuffers(1,&vboT)); W3D_GLC(glGenBuffers(1,&vboC));
+    W3D_GLC(glGenBuffers(1,&vboT1)); W3D_GLC(glGenBuffers(1,&ibo));
+    LucesDeFabrica();
     ready=true;
 }
 
@@ -348,7 +467,8 @@ void Enable(Cap c){
         case PolygonOffsetFill: W3D_GLC(glEnable(GL_POLYGON_OFFSET_FILL)); break; // pick de CARAS: empuja la malla de
                        // oclusion atras para que los triangulos-ID pasen el depth test (sino no se seleccionan)
         case ColorMaterial: cap_colormat=true; break; // el shader usa el vertex color como diffuse/ambient
-        case Light0: case Normalize:
+        case Light0: if(!luces[0].on){ luces[0].on=true; lucesSucias=true; } break;
+        case Normalize:
         case PointSprite: case Dither: case Multisample: break; // no aplican / el shader ya normaliza
     }
 }
@@ -362,6 +482,7 @@ void Disable(Cap c){
         case Lighting:  cap_light=false; break;
         case Fog:       cap_fog=false;   break;
         case ColorMaterial: cap_colormat=false; break;
+        case Light0: if(luces[0].on){ luces[0].on=false; lucesSucias=true; } break;
         case PolygonOffsetFill: W3D_GLC(glDisable(GL_POLYGON_OFFSET_FILL)); break;
         default: break;
     }
@@ -370,7 +491,7 @@ bool IsEnabled(Cap c){
     switch(c){
         case DepthTest: return cap_depth; case CullFace: return cap_cull; case Blend: return cap_blend;
         case ScissorTest: return cap_scissor; case Texture2D: return cap_tex; case Lighting: return cap_light;
-        case Fog: return cap_fog; case ColorMaterial: return cap_colormat;
+        case Fog: return cap_fog; case ColorMaterial: return cap_colormat; case Light0: return luces[0].on;
         default: return false;
     }
 }
@@ -380,8 +501,9 @@ bool IsEnabled(Cap c){
 // ============================================================================
 void MatrixMode(Matrix m){ matMode = (m==Projection)?0:(m==TextureMatrix?2:1); }
 void LoadIdentity(){ cur().Identity(); }
-void PushMatrix(){ if(matMode==0) stkProj.push_back(curProj); else stkMV.push_back(curMV); }
+void PushMatrix(){ if(matMode==0) stkProj.push_back(curProj); else if(matMode==2) stkTex.push_back(curTex); else stkMV.push_back(curMV); }
 void PopMatrix(){ if(matMode==0){ if(!stkProj.empty()){ curProj=stkProj.back(); stkProj.pop_back(); } }
+                  else if(matMode==2){ if(!stkTex.empty()){ curTex=stkTex.back(); stkTex.pop_back(); } }
                   else          { if(!stkMV.empty()){ curMV=stkMV.back(); stkMV.pop_back(); } } }
 void Translatef(float x,float y,float z){ cur() = cur() * mTranslate(x,y,z); }
 void Rotatef(float a,float x,float y,float z){ cur() = cur() * mRotate(a,x,y,z); }
@@ -426,7 +548,7 @@ void EstencilLimpiar(int v){ W3D_GLC(glClearStencil(v)); W3D_GLC(glStencilMask(0
 void EstencilMarcar(int v){ W3D_GLC(glEnable(GL_STENCIL_TEST)); W3D_GLC(glStencilMask(0xFFu)); W3D_GLC(glStencilFunc(GL_ALWAYS,v,0xFFu)); W3D_GLC(glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE)); }
 void EstencilDentro(int v){ W3D_GLC(glEnable(GL_STENCIL_TEST)); W3D_GLC(glStencilMask(0x00u)); W3D_GLC(glStencilFunc(GL_EQUAL,v,0xFFu)); W3D_GLC(glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP)); }
 void EstencilApagar(){ W3D_GLC(glStencilMask(0xFFu)); W3D_GLC(glDisable(GL_STENCIL_TEST)); }
-void Viewport(int x,int y,int w,int h){ if(w<0)w=0; if(h<0)h=0; W3D_GLC(glViewport(x,y,w,h)); }
+void Viewport(int x,int y,int w,int h){ if(w<0)w=0; if(h<0)h=0; W3D_GLC(glViewport(x,y,w,h)); vpActual[0]=(float)x; vpActual[1]=(float)y; vpActual[2]=(float)w; vpActual[3]=(float)h; }
 // clamp de w/h a >=0: un ancho/alto negativo (viewport muy angosto - iconos/margenes en el outliner)
 // es GL_INVALID_VALUE en WebGL y deja el scissor en mal estado. Clampeando no rompe el clipping.
 void Scissor(int x,int y,int w,int h){ if(w<0)w=0; if(h<0)h=0; W3D_GLC(glScissor(x,y,w,h)); }
@@ -438,6 +560,7 @@ void DepthMask(bool w){ W3D_GLC(glDepthMask(w?GL_TRUE:GL_FALSE)); }
 void ColorMask(bool r,bool g,bool b,bool a){ W3D_GLC(glColorMask(r,g,b,a)); }
 void LineWidth(float px){ W3D_GLC(glLineWidth(px)); }
 void FrontFace(bool ccw){ W3D_GLC(glFrontFace(ccw?GL_CCW:GL_CW)); }
+void CullCarasFrontales(bool on){ W3D_GLC(glCullFace(on?GL_FRONT:GL_BACK)); }
 void PolygonOffset(float factor,float units){ W3D_GLC(glPolygonOffset(factor,units)); }
 void DepthRange(float n,float f){
 #if defined(__EMSCRIPTEN__) || defined(__ANDROID__)
@@ -477,7 +600,7 @@ void SetMezcla(int m){
 }
 void SmoothShading(bool){}   // ES2 siempre interpola (smooth); FLAT seria un shader aparte -> TODO
 void FastPerspective(){}     // ES2 corrige perspectiva siempre
-void Invalidate(){}          // este backend no cachea estado GL
+void Invalidate(){ texGenCache = -1; matcapCache = -1; }   // (solo los caches de la matriz de textura, como el fijo)
 void SesgoMetros(float m){   // (sin cache de la proyeccion: EstadoBase la vuelve a 0 en cada cuadro)
     static float base[16]; static float puesto = 0.0f;
     if (m == puesto) return;
@@ -495,24 +618,50 @@ void EstadoFotoReponer(){}
 // ============================================================================
 //  Luz / material
 // ============================================================================
-void Light0fv(LightFv p,const float* v){
-    if(p==LightPosition){ // se guarda en EYE space (como glLightfv): x la modelview actual
-        if(v[3]!=0.0f){ Vector3 e=curMV*Vector3(v[0],v[1],v[2]); lightPos[0]=e.x; lightPos[1]=e.y; lightPos[2]=e.z; lightPos[3]=1; }
-        else { // direccional: solo rota (sin traslacion)
-            lightPos[0]=curMV.m[0]*v[0]+curMV.m[4]*v[1]+curMV.m[8]*v[2];
-            lightPos[1]=curMV.m[1]*v[0]+curMV.m[5]*v[1]+curMV.m[9]*v[2];
-            lightPos[2]=curMV.m[2]*v[0]+curMV.m[6]*v[1]+curMV.m[10]*v[2]; lightPos[3]=0;
-        }
-    }
-    else if(p==LightDiffuse)  for(int i=0;i<4;i++) lightDiff[i]=v[i];
-    else if(p==LightAmbient)  for(int i=0;i<4;i++) lightAmb[i]=v[i];
-    else if(p==LightSpecular) for(int i=0;i<4;i++) lightSpec[i]=v[i];
+// ---- luces: se guardan como las guarda GL (posicion y direccion del cono ya en OJO, con la modelview de AHORA)
+static void EnOjoPunto(const float* v, float* out){   // posicion: w 0 = direccional (solo rota), 1 = puntual
+    const float* m=curMV.m;
+    for(int k=0;k<3;k++) out[k]=m[k]*v[0]+m[4+k]*v[1]+m[8+k]*v[2]+m[12+k]*v[3];
+    out[3]=v[3];
 }
-void Light0f(LightF,float){}          // atenuacion: TODO en el shader
-void SetLightEnabled(unsigned int,bool){} // 1 sola luz en el shader; multi-luz: TODO
-void LightNfv(int i,LightFv p,const float* v){ if(i==0) Light0fv(p,v); }   // el shader tiene UNA luz
-void LightN(int,bool){}                       // (como SetLightEnabled: la luz del shader no se apaga sola)
-void LightModelAmbient(const float*){}        // sin ambiente global en el shader: TODO
+void LightNfv(int i,LightFv p,const float* v){
+    if(i<0 || i>=LucesMax) return;
+    Luz& L=luces[i];
+    if(p==LightPosition)     EnOjoPunto(v,L.pos);
+    else if(p==LightDiffuse)  for(int k=0;k<4;k++) L.dif[k]=v[k];
+    else if(p==LightAmbient)  for(int k=0;k<4;k++) L.amb[k]=v[k];
+    else if(p==LightSpecular) for(int k=0;k<4;k++) L.spec[k]=v[k];
+    lucesSucias=true;
+}
+void LightNf(int i,LightF p,float v){
+    if(i<0 || i>=LucesMax) return;
+    luces[i].att[p==LightConstantAtt ? 0 : (p==LightLinearAtt ? 1 : 2)]=v;
+    lucesSucias=true;
+}
+void LightNSpot(int i,float corte,float exponente,const float* dir3){
+    if(i<0 || i>=LucesMax) return;
+    Luz& L=luces[i];
+    const float* m=curMV.m;   // la direccion solo rota
+    for(int k=0;k<3;k++) L.dir[k]=m[k]*dir3[0]+m[4+k]*dir3[1]+m[8+k]*dir3[2];
+    L.corteCos=(corte>=180.0f) ? -1.0f : cosf(corte*0.01745329252f);
+    L.expo=exponente;
+    lucesSucias=true;
+}
+void LightN(int i,bool on){
+    if(i<0 || i>=LucesMax || luces[i].on==on) return;
+    luces[i].on=on; lucesSucias=true;
+}
+void Light0fv(LightFv p,const float* v){ LightNfv(0,p,v); }
+void Light0f(LightF p,float v){ LightNf(0,p,v); }
+void SetLightEnabled(unsigned int id,bool on){
+#ifdef GL_LIGHT0
+    const unsigned int l0=(unsigned int)GL_LIGHT0;
+#else
+    const unsigned int l0=0x4000u;
+#endif
+    if(id>=l0 && id<l0+(unsigned int)LucesMax) LightN((int)(id-l0),on);
+}
+void LightModelAmbient(const float* c){ for(int k=0;k<4;k++) ambGlobal[k]=c[k]; }
 void Material(MatParam p,const float* rgba){
     if(p==MatDiffuse)       for(int i=0;i<4;i++) matDiff[i]=rgba[i];
     else if(p==MatAmbient)  for(int i=0;i<4;i++) matAmb[i]=rgba[i];
@@ -525,25 +674,76 @@ void MaterialShininess(float s){ matShine=s; } // exponente specular (0..128)
 //  Textura / texenv
 // ============================================================================
 void BindTexture(unsigned int id){ boundTex=id; W3D_GLC(glBindTexture(GL_TEXTURE_2D,id)); }
-void TexFilter(bool linear){ W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,linear?GL_LINEAR:GL_NEAREST)); W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,linear?GL_LINEAR:GL_NEAREST)); }
+// el min-filter con la PIRAMIDE si la textura la subio y los mipmaps estan prendidos (como el backend fijo): sin esto lo
+// lejano se veia con serrucho y titilaba en web/Android y no en el PC
+static GLint FiltroMin(unsigned int id, bool linear){
+    if(MipmapsGlobal() && TexTieneMips(id)) return linear ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR;
+    return linear ? GL_LINEAR : GL_NEAREST;
+}
+void TexFilter(bool linear){ W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,FiltroMin(boundTex,linear))); W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,linear?GL_LINEAR:GL_NEAREST)); }
 void TexWrap(bool repeat){ W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,repeat?GL_REPEAT:GL_CLAMP_TO_EDGE)); W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,repeat?GL_REPEAT:GL_CLAMP_TO_EDGE)); }
-void TexEnvDot3(bool on){ dot3On=on; }
-void TexEnvReplace(bool on){ replaceOn=on; }
-void TexEnvAlphaOnly(bool){}   // TODO ES2: modo alpha-only en el uber-shader (pase alpha en WebGL)
-// MEZCLA DE TEXTURAS (unidad 1 con INTERPOLATE en GL1): TODO ES2: segunda textura + k en el uber-shader. Mientras
-// tanto no hay mezcla: se dibuja la textura base sola (el material queda igual que sin texturaB)
-bool MezclaTexturasSoportada(){ return false; }
-void MezclaTexturas(unsigned int, float, bool, bool, int){}
-void MezclaTexturasOff(){}
-bool MezclaTexturasActiva(){ return false; }
-void MezclaTexturasUV(const float*){}
-void MezclaTexturasUVVBO(unsigned int){}
-void MezclaTexturaBorrada(unsigned int){}
+// el combiner de la unidad 0, como glTexEnv: apagar cualquiera de los modos vuelve a GL_MODULATE
+void TexEnvDot3(bool on){ texEnv = on ? 2 : 0; }
+void TexEnvReplace(bool on){ texEnv = on ? 1 : 0; }
+void TexEnvAlphaOnly(bool on){ texEnv = on ? 3 : 0; }
+// MEZCLA DE TEXTURAS: la unidad 1 del pipeline fijo (lightmaps, la textura B del material, la rampa del toon). En el
+// shader es un segundo sampler sobre lo que salio de la unidad 0: interpolar con k, multiplicar (x1 / x2) o restar.
+// Los parametros de filtro y repeticion son del OBJETO textura B (igual que en el backend fijo).
+bool MezclaTexturasSoportada(){ return true; }
+void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int modo){
+    if(!idB){ MezclaTexturasOff(); return; }
+    if(k<0.0f) k=0.0f; if(k>1.0f) k=1.0f;
+    if(modo<0 || modo>3) modo=0;
+    mezclaOn=true; mezclaTex=idB; mezclaK=k; mezclaModo=modo;
+    W3D_GLC(glActiveTexture(GL_TEXTURE1));
+    W3D_GLC(glBindTexture(GL_TEXTURE_2D,idB));
+    W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,FiltroMin(idB,filtrado)));
+    W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,filtrado?GL_LINEAR:GL_NEAREST));
+    W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,repetir?GL_REPEAT:GL_CLAMP_TO_EDGE));
+    W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,repetir?GL_REPEAT:GL_CLAMP_TO_EDGE));
+    W3D_GLC(glActiveTexture(GL_TEXTURE0));
+}
+void MezclaTexturasOff(){ mezclaOn=false; mezclaUV=0; }
+bool MezclaTexturasActiva(){ return mezclaOn; }
+void MezclaTexturasUV(const float* p){ mezclaUV=p; }
+void MezclaTexturasUVVBO(unsigned int){ mezclaUV=0; }   // (sin VBOs en este backend: las de la unidad 0)
+void MezclaTexturaBorrada(unsigned int id){ if(id && id==mezclaTex){ mezclaTex=0; mezclaOn=false; } }
 unsigned int ErrorGL(){ return 0u; }
-void TexGenSphere(bool){}      // TODO: matcap por shader (UV = reflejo del normal en eye-space)
-void TexMatrixMatcap(bool){}   // TODO: idem, via matriz de textura -> UV del normal
-void TexMatrixUV(float,float,float,float){}   // TODO: uniform de la matriz de textura en el uber-shader
-bool TieneTexGen(){ return false; } // ES2 no tiene glTexGen fijo -> el matcap va por shader
+// SPHERE-MAP (GL_SPHERE_MAP): las UV salen del reflejo de la vista en la normal (en el vertex shader). Como el
+// backend fijo, la matriz de textura da vuelta la V para que el reflejo no salga cabeza abajo.
+void TexGenSphere(bool on){
+    if(texGenCache == (on ? 1 : 0)) return;
+    texGenCache = on ? 1 : 0;
+    matcapCache = -1;
+    texGenEsfera=on;
+    curTex.Identity();
+    if(on){ curTex.m[5]=-1.0f; curTex.m[13]=1.0f; }   // v -> 1 - v
+}
+// MATCAP sin texgen: las normales llegan como UV en bytes (TexCoordPointer3b) y esta matriz de textura las lleva a
+// OJO y a [0,1]: la MISMA matriz que arma el backend fijo (con la modelview de AHORA, la del objeto)
+void TexMatrixMatcap(bool on){
+    if(!on && matcapCache == 0) return;
+    matcapCache = on ? 1 : 0;
+    curTex.Identity();
+    if(!on) return;
+    const float* mv=curMV.m;
+    const float s=0.5f/127.0f;
+    float* T=curTex.m;
+    T[0]=s*mv[0];  T[1]=-s*mv[1]; T[2]=0.0f;  T[3]=0.0f;
+    T[4]=s*mv[4];  T[5]=-s*mv[5]; T[6]=0.0f;  T[7]=0.0f;
+    T[8]=s*mv[8];  T[9]=-s*mv[9]; T[10]=0.0f; T[11]=0.0f;
+    T[12]=0.5f;    T[13]=0.5f;    T[14]=0.0f; T[15]=1.0f;
+}
+// desplazamiento + escala de las UV (la rutina anima con esto el agua, los reflejos, las cintas...)
+void TexMatrixUV(float du,float dv,float su,float sv){
+    const bool ident = du == 0.0f && dv == 0.0f && su == 1.0f && sv == 1.0f;
+    if(ident ? matcapCache == 0 : (matcapCache == 2 && du == uvMat[0] && dv == uvMat[1] && su == uvMat[2] && sv == uvMat[3])) return;
+    matcapCache = ident ? 0 : 2;
+    uvMat[0] = du; uvMat[1] = dv; uvMat[2] = su; uvMat[3] = sv;
+    curTex.Identity();
+    curTex.m[0]=su; curTex.m[5]=sv; curTex.m[12]=du; curTex.m[13]=dv;
+}
+bool TieneTexGen(){ return true; }   // el sphere-map y el matcap van por el shader (como el texgen de GL)
 
 // ============================================================================
 //  Color uniforme (cuando NO hay array de color)
@@ -576,7 +776,7 @@ void VertexPointer2s(int stride,const short* p){ aPos.size=2; aPos.type=GL_SHORT
 void NormalPointer3b(const signed char* p){ aNrm.size=3; aNrm.type=GL_BYTE; aNrm.stride=0; aNrm.ptr=p; }
 void ColorPointer4ub(const unsigned char* p){ aCol.size=4; aCol.type=GL_UNSIGNED_BYTE; aCol.stride=0; aCol.ptr=p; }
 void TexCoordPointer2f(int stride,const float* p){ aUV.size=2; aUV.type=GL_FLOAT; aUV.stride=stride; aUV.ptr=p; }
-void TexCoordPointer3b(const signed char* p, int count){ (void)count; aUV.size=3; aUV.type=GL_BYTE; aUV.stride=0; aUV.ptr=p; } // matcap (normales como UV): TODO en el shader
+void TexCoordPointer3b(const signed char* p, int count){ (void)count; aUV.size=3; aUV.type=GL_BYTE; aUV.stride=0; aUV.ptr=p; } // matcap: normales como UV (sin normalizar, como GL)
 
 // ============================================================================
 //  Draw: setup compartido de uniforms + atributos, y las variantes
@@ -601,36 +801,96 @@ static void bindAttr(GLint loc,const Arr& ar,GLuint vbo,int nVerts,const float* 
         W3D_GLC(glVertexAttrib4fv(loc,def)); // constante (normal +Z, color = curColor)
     }
 }
+// la matriz de las NORMALES: la inversa transpuesta de la modelview (3x3), como el pipeline fijo. Con una escala
+// despareja la modelview sola tuerce las normales (y la luz). Columnas = productos cruz de las columnas / determinante.
+static void MatrizNormal(float out[9]){
+    const float* m=curMV.m;
+    const float c0[3]={m[0],m[1],m[2]}, c1[3]={m[4],m[5],m[6]}, c2[3]={m[8],m[9],m[10]};
+    float n0[3]={c1[1]*c2[2]-c1[2]*c2[1], c1[2]*c2[0]-c1[0]*c2[2], c1[0]*c2[1]-c1[1]*c2[0]};
+    float n1[3]={c2[1]*c0[2]-c2[2]*c0[1], c2[2]*c0[0]-c2[0]*c0[2], c2[0]*c0[1]-c2[1]*c0[0]};
+    float n2[3]={c0[1]*c1[2]-c0[2]*c1[1], c0[2]*c1[0]-c0[0]*c1[2], c0[0]*c1[1]-c0[1]*c1[0]};
+    const float det=c0[0]*n0[0]+c0[1]*n0[1]+c0[2]*n0[2];
+    if(fabsf(det)<1e-12f){ for(int k=0;k<3;k++){ out[k]=c0[k]; out[3+k]=c1[k]; out[6+k]=c2[k]; } return; }
+    const float id=1.0f/det;
+    for(int k=0;k<3;k++){ out[k]=n0[k]*id; out[3+k]=n1[k]*id; out[6+k]=n2[k]*id; }
+}
+// las luces prendidas, juntas al principio de los arreglos del shader (solo cuando cambiaron: los uniforms quedan)
+static void SubirLuces(){
+    if(!lucesSucias) return;
+    float pos[LucesMax*4], amb[LucesMax*4], dif[LucesMax*4], spec[LucesMax*4], att[LucesMax*4], cono[LucesMax*4];
+    int n=0;
+    for(int i=0;i<LucesMax;i++){
+        const Luz& L=luces[i];
+        if(!L.on) continue;
+        for(int k=0;k<4;k++){ pos[n*4+k]=L.pos[k]; amb[n*4+k]=L.amb[k]; dif[n*4+k]=L.dif[k]; spec[n*4+k]=L.spec[k]; }
+        att[n*4]=L.att[0]; att[n*4+1]=L.att[1]; att[n*4+2]=L.att[2]; att[n*4+3]=L.expo;
+        cono[n*4]=L.dir[0]; cono[n*4+1]=L.dir[1]; cono[n*4+2]=L.dir[2]; cono[n*4+3]=L.corteCos;
+        n++;
+    }
+    W3D_GLC(glUniform1i(uNLuces,n));
+    if(n>0){
+        W3D_GLC(glUniform4fv(uLPos,n,pos)); W3D_GLC(glUniform4fv(uLAmb,n,amb)); W3D_GLC(glUniform4fv(uLDif,n,dif));
+        W3D_GLC(glUniform4fv(uLSpec,n,spec)); W3D_GLC(glUniform4fv(uLAtt,n,att)); W3D_GLC(glUniform4fv(uLCono,n,cono));
+    }
+    lucesSucias=false;
+}
 static void setupState(int nV){
     Matrix4 mvp = curProj * curMV;
-    float nmat[9] = { curMV.m[0],curMV.m[1],curMV.m[2], curMV.m[4],curMV.m[5],curMV.m[6], curMV.m[8],curMV.m[9],curMV.m[10] };
+    float nmat[9]; MatrizNormal(nmat);
     W3D_GLC(glUseProgram(prog));
     W3D_GLC(glUniformMatrix4fv(uMVP,1,GL_FALSE,mvp.m));
     W3D_GLC(glUniformMatrix4fv(uMV,1,GL_FALSE,curMV.m));
     W3D_GLC(glUniformMatrix3fv(uNMat,1,GL_FALSE,nmat));
+    W3D_GLC(glUniformMatrix4fv(uTexM,1,GL_FALSE,curTex.m));
+    W3D_GLC(glUniform1i(uTexGen,texGenEsfera?1:0));
     W3D_GLC(glUniform1i(uUseTex,cap_tex?1:0));
-    W3D_GLC(glUniform1i(uLightOn,(cap_light && !dot3On && !replaceOn)?1:0));
+    W3D_GLC(glUniform1i(uEnv,texEnv));
+    // la luz no hace falta si la textura REEMPLAZA el color (el resultado es el mismo y ahorra el vertex shader)
+    W3D_GLC(glUniform1i(uLightOn,(cap_light && !(cap_tex && texEnv==1))?1:0));
     W3D_GLC(glUniform1i(uColorMat,cap_colormat?1:0));
     W3D_GLC(glUniform1f(uBlurY, blurY));
     W3D_GLC(glUniform1f(uAlphaRef, alphaRef));
-    W3D_GLC(glUniform1i(uAlfaAbajo, alfaAbajo)); // vertex color como material (COLOR_MATERIAL) con luz activa
-    W3D_GLC(glUniform1i(uDot3On,dot3On?1:0));
-    W3D_GLC(glUniform1i(uReplaceOn,replaceOn?1:0));
+    W3D_GLC(glUniform1i(uAlfaAbajo, alfaAbajo));
     W3D_GLC(glUniform1i(uFogOn,cap_fog?1:0));
     W3D_GLC(glUniform1i(uTex,0));
     W3D_GLC(glUniform1f(uPointSize,pointSize));
     W3D_GLC(glUniform1i(uPointSprite,pointSprite?1:0));
-    W3D_GLC(glUniform4fv(uLPos,1,lightPos)); W3D_GLC(glUniform4fv(uLDiff,1,lightDiff)); W3D_GLC(glUniform4fv(uLAmb,1,lightAmb));
+    W3D_GLC(glUniform4fv(uViewport,1,vpActual));
     W3D_GLC(glUniform4fv(uMDiff,1,matDiff)); W3D_GLC(glUniform4fv(uMAmb,1,matAmb));
-    W3D_GLC(glUniform4fv(uMSpec,1,matSpec)); W3D_GLC(glUniform4fv(uMEmis,1,matEmis)); W3D_GLC(glUniform4fv(uLSpec,1,lightSpec)); W3D_GLC(glUniform1f(uShine,matShine));
+    W3D_GLC(glUniform4fv(uMSpec,1,matSpec)); W3D_GLC(glUniform4fv(uMEmis,1,matEmis)); W3D_GLC(glUniform1f(uShine,matShine));
+    W3D_GLC(glUniform4fv(uAmbGlobal,1,ambGlobal));
+    SubirLuces();
     W3D_GLC(glUniform4fv(uFogColor,1,fogColor)); W3D_GLC(glUniform1f(uFogStart,fogStart)); W3D_GLC(glUniform1f(uFogEnd,fogEnd));
     W3D_GLC(glUniform1i(uFogModo,fogModo)); W3D_GLC(glUniform1f(uFogDens,fogDens));
-    if(cap_tex){ W3D_GLC(glActiveTexture(GL_TEXTURE0)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,boundTex)); }
+    // la unidad 1: la textura B en el sampler 1. Apagada, el sampler apunta a la unidad 0 (sin textura en la 1 el
+    // navegador avisa en cada draw)
+    const bool mezcla = mezclaOn && mezclaTex;
+    W3D_GLC(glUniform1i(uMezcla, mezcla ? mezclaModo : -1));
+    W3D_GLC(glUniform1i(uTex1, mezcla ? 1 : 0));
+    if(mezcla){
+        W3D_GLC(glUniform1f(uMezclaK, mezclaK));
+        W3D_GLC(glActiveTexture(GL_TEXTURE1)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,mezclaTex));
+    }
+    if(cap_tex || mezcla){ W3D_GLC(glActiveTexture(GL_TEXTURE0)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,boundTex)); }
     static const float defNrm[4]={0,0,1,0};
+    static const float defUV[4]={0,0,0,1};   // la texcoord de fabrica de GL
     bindAttr(aLpos,aPos,vboP,nV, defNrm,  false); // POSICION: NUNCA normalizar (short = coords enteras de pantalla/mundo)
     bindAttr(aLnrm,aNrm,vboN,nV, defNrm,  true);  // normal: byte -> [-1,1]
-    bindAttr(aLuv, aUV, vboT,nV, defNrm,  true);  // uv: float (no toca); byte matcap seria TODO
+    bindAttr(aLuv, aUV, vboT,nV, defUV,   false); // uv: float, o las normales en bytes del matcap (GL no las normaliza)
     bindAttr(aLcol,aCol,vboC,nV, curColor,true);  // color: ubyte -> [0,1]. sin array -> color uniforme (Color4*)
+    if(aLuv1>=0){
+        if(mezcla && mezclaUV){   // UV propias de la unidad 1
+            Arr uv1={true,2,GL_FLOAT,0,mezclaUV};
+            bindAttr(aLuv1,uv1,vboT1,nV,defUV,false);
+        } else if(mezcla && aUV.on && aUV.ptr && aUV.type==GL_FLOAT && nV>0){   // las mismas de la unidad 0 (ya subidas)
+            W3D_GLC(glBindBuffer(GL_ARRAY_BUFFER,vboT));
+            W3D_GLC(glEnableVertexAttribArray(aLuv1));
+            W3D_GLC(glVertexAttribPointer(aLuv1,2,GL_FLOAT,GL_FALSE,aUV.stride,(const void*)0));
+        } else {
+            W3D_GLC(glDisableVertexAttribArray(aLuv1));
+            W3D_GLC(glVertexAttrib4fv(aLuv1,defUV));
+        }
+    }
 }
 // dibujo INDEXADO (indices ushort; convierte desde MeshIndex/ubyte)
 static void drawIndexed(GLenum mode,int count,const unsigned short* idx16){
@@ -803,11 +1063,16 @@ void GLES2Init(void* (*getProc)(const char*)){
     glDisableVertexAttribArray=(PFdisableVAA)getProc("glDisableVertexAttribArray");
     glVertexAttrib4fv=(PFvertexAttrib4fv)getProc("glVertexAttrib4fv");
     glActiveTexture=(PFactiveTexture)getProc("glActiveTexture");
+    glBindAttribLocation=(PFbindAttribLocation)getProc("glBindAttribLocation");
+    // GL de escritorio: el tamanio del punto lo da el shader y el sprite tiene gl_PointCoord (en ES2 ya es asi)
+    glEnable(GL_VERTEX_PROGRAM_POINT_SIZE);
+    glEnable(GL_POINT_SPRITE);
 #else
     (void)getProc;
 #endif
-    curProj.Identity(); curMV.Identity();
+    curProj.Identity(); curMV.Identity(); curTex.Identity();
     buildProgram();
+    { GLint v[4]={0,0,1,1}; glGetIntegerv(GL_VIEWPORT,v); for(int i=0;i<4;i++) vpActual[i]=(float)v[i]; }
 }
 
 } // namespace w3dEngine

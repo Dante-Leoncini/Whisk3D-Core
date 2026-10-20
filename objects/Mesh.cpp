@@ -7,6 +7,7 @@
 #include "CameraBase.h"     // g_renderCamPos (camara del render, para el chrome equirect)
 #include "RenderColors.h"   // paleta de render del CORE (sin depender de la UI)
 #include "MallaRecurso.h"   // la malla 3D como recurso: vinculo, VBO compartidos
+#include "objects/Light.h"  // Lights: la luz que sombrea el toon (ToonHaciaLaLuz)
 #include <math.h> // C puro: compila en RVCT y PC por igual
 #include <algorithm> // sort/unique: dedup de aristas del material con `lineas`
 #include <map>    // Armature2DAplicar: peso por control-point de cada hueso 2D
@@ -459,6 +460,47 @@ void Mesh::ActualizarNormalMapColors(const Vector3& luzLocal) {
     }
 }
 
+// La direccion HACIA la luz que sombrea el toon, en MUNDO: la primera luz direccional de la escena (su "arriba" local,
+// como la manda Light a GL) o, si no hay, la primera luz (desde el punto 'p'). Sin luces: desde arriba y adelante.
+static Vector3 ToonHaciaLaLuz(const Vector3& p) {
+    Light* elegida = NULL;
+    for (size_t i = 0; i < Lights.size() && !elegida; i++) if (Lights[i] && Lights[i]->direccional) elegida = Lights[i];
+    if (!elegida && !Lights.empty()) elegida = Lights[0];
+    if (!elegida) return Vector3(0.0f, 0.8f, 0.6f);
+    Matrix4 LW; elegida->GetWorldMatrix(LW);
+    if (elegida->direccional) return Vector3(LW.m[4], LW.m[5], LW.m[6]);
+    return Vector3(LW.m[12] - p.x, LW.m[13] - p.y, LW.m[14] - p.z);
+}
+
+// SOMBREADO TOON: s = 0.5 + 0.5 * (n . l) por vertice, con l la direccion a la luz llevada al espacio de la malla.
+// La normal transformada al mundo es W^-T n, y (W^-T n) . L = n . (W^-1 L): alcanza con pasar la LUZ al espacio local
+// con la inversa (vale tambien con escala no uniforme). v queda en el medio de la rampa (una fila).
+void Mesh::ActualizarToonUV(const GLbyte* nor) {
+    if (!nor || vertexSize <= 0) { toonUV.clear(); return; }
+    Matrix4 W; GetWorldMatrix(W);
+    Vector3 l = ToonHaciaLaLuz(Vector3(W.m[12], W.m[13], W.m[14]));
+    Matrix4 Wi;
+    if (Matrix4::InvertirAfin(W, Wi)) {
+        Vector3 d(Wi.m[0] * l.x + Wi.m[4] * l.y + Wi.m[8]  * l.z,
+                  Wi.m[1] * l.x + Wi.m[5] * l.y + Wi.m[9]  * l.z,
+                  Wi.m[2] * l.x + Wi.m[6] * l.y + Wi.m[10] * l.z);
+        l = d;
+    }
+    const float largo = sqrtf(l.x * l.x + l.y * l.y + l.z * l.z);
+    if (largo < 1e-6f) l = Vector3(0.0f, 1.0f, 0.0f);
+    else l = l * (0.5f / (largo * 127.0f));   // (ya con el 0.5 y la escala de las normales de 8 bits)
+    // la FILA de la rampa: la v de la segunda capa UV si la malla la tiene (un atlas de rampas: una malla con varias
+    // telas en UN material, cada vertice con la suya); si no, el medio de la rampa
+    const GLfloat* filas = UVDeCapa(1);
+    toonUV.resize((size_t)vertexSize * 2);
+    GLfloat* t = &toonUV[0];
+    for (int v = 0; v < vertexSize; v++) {
+        const float s = 0.5f + nor[v*3] * l.x + nor[v*3+1] * l.y + nor[v*3+2] * l.z;
+        t[v*2]   = s < 0.0f ? 0.0f : (s > 1.0f ? 1.0f : s);
+        t[v*2+1] = filas ? filas[v*2+1] : 0.5f;
+    }
+}
+
 // === REFLEJO por SOFTWARE, matematica COMPARTIDA (la usan la malla base Y la generada) ===
 // UV de UN corner: pos LOCAL + normal LOCAL -> reflejo. equirect=true: lat-long 360 en MUNDO. false: matcap
 // (sphere-map en espacio de OJO, replica de GL_SPHERE_MAP). 'polo' marca el corner sobre el polo (equirect).
@@ -623,6 +665,12 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     const float dif[4] = { mat->diffuse[0] * tn[0],  mat->diffuse[1] * tn[1],  mat->diffuse[2] * tn[2],  mat->diffuse[3]  * xrayA };
     const float emi[4] = { mat->emission[0], mat->emission[1], mat->emission[2], mat->emission[3] * xrayA };
     gfx::SmoothShading(true); // el look suave/plano lo dan las NORMALES de la malla, no el material
+    // SOMBREADO TOON (Material::toon): la rampa (texturaB) en la unidad 1 con la coordenada por vertice que dejo
+    // RenderObject (toonUV), y sin la luz de GL. Sin multitextura (GLES2) o sin esa coordenada se dibuja como un material
+    // comun (con su luz, si la tiene)
+    const bool toonOn = mat->toon && mat->texturaB && mat->texturaB->iID && !toonUV.empty() &&
+                        toonUV.size() >= (size_t)vertexSize * 2 && !solido && !mat->chrome && !mat->normalMap &&
+                        gfx::MezclaTexturasSoportada();
     // sin color por vertice, COLOR_MATERIAL se apaga ANTES del material: prendido, GL pisa el ambiente y el difuso con el
     // color actual (y al apagarlo quedan asi: el ambiente dependia de lo que se dibujo antes)
     const bool colorVertice = !tintaNoEditable && mat->vertexColor && vertexColor;
@@ -665,7 +713,11 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         // MEZCLA DE TEXTURAS (Material::texturaB / mezclaB): la unidad 1 interpola B con lo de arriba, en la MISMA pasada
         // (no con el reflejo ni el normal map: esos ya usan el combiner / la matriz de textura)
         capaUnidad1 = -1;
-        if (mat->texturaB && mat->texturaB->iID && mat->mezclaB > 0.0f && !mat->chrome && !mat->normalMap)
+        if (toonOn) {
+            // la rampa sin filtrar ni repetir: los escalones del dibujo animado quedan netos
+            gfx::MezclaTexturas(mat->texturaB->iID, 1.0f, false, false, mat->toon == 2 ? 1 : 3);
+            gfx::MezclaTexturasUV(&toonUV[0]);
+        } else if (mat->texturaB && mat->texturaB->iID && mat->mezclaB > 0.0f && !mat->chrome && !mat->normalMap)
             gfx::MezclaTexturas(mat->texturaB->iID, mat->mezclaB, !gfx::PixeladoGlobal() && mat->filtrado, mat->repeat);
         else if (mat->capas.size() == 1 && mat->capas[0].on && mat->capas[0].tex && mat->capas[0].tex->iID && uv &&
                  !mat->chrome && !mat->normalMap && !solido &&
@@ -703,7 +755,10 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         else if (uv) { if (vboRenderActivo && vboUVEnUso) gfx::TexCoordVBO(vboUVEnUso); else gfx::TexCoordPointer2f(0, uv); } // UV del modelo (VBO o RAM)
     } else {
         gfx::Disable(gfx::Texture2D);
-        gfx::MezclaTexturasOff();
+        // (un toon sin textura base: la unidad 1 recibe el color plano como "lo anterior" y le resta la rampa)
+        if (toonOn) { gfx::MezclaTexturas(mat->texturaB->iID, 1.0f, false, false, mat->toon == 2 ? 1 : 3);
+                      gfx::MezclaTexturasUV(&toonUV[0]); }
+        else gfx::MezclaTexturasOff();
         gfx::TexMatrixMatcap(false);
         gfx::TexGenSphere(false);
         gfx::TexEnvReplace(false);
@@ -714,11 +769,11 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     // matriz de textura usa las normales como TEXCOORDS (no como NormalArray). El path por SOFTWARE (equirect, y el
     // sphere exacto del N95) NO usa el array (UV precomputadas + draw NO indexado). Por eso el reflejo no depende de la luz.
     bool sphereHWn = mat->chrome && mat->reflectMode == 1 && gfx::TieneTexGen();
-    if (normals && (sphereHWn || (conLuz && mat->lighting))) gfx::EnableArray(gfx::NormalArray);
+    if (normals && (sphereHWn || (conLuz && mat->lighting && !toonOn))) gfx::EnableArray(gfx::NormalArray);
     else gfx::DisableArray(gfx::NormalArray);
     // la iluminacion en si solo si el material la pide (el chrome con GL_REPLACE la ignora -> espejo perfecto).
     // Con NORMAL MAP la base va SIN luz (albedo plano): el pass DOT3 de abajo aporta toda la iluminacion (N.L).
-    if (conLuz && mat->lighting && !mat->normalMap) gfx::Enable(gfx::Lighting);
+    if (conLuz && mat->lighting && !mat->normalMap && !toonOn) gfx::Enable(gfx::Lighting);
     else gfx::Disable(gfx::Lighting);
 
     if (mat->culling)     gfx::Enable(gfx::CullFace);  else gfx::Disable(gfx::CullFace);
@@ -1633,9 +1688,10 @@ void Mesh::RenderObject() {
     if (skinArmature) {
         // normales rotadas SOLO si algun mesh part tiene luz (sino no vale la pena; N95). w3dRenderSinLuz -> todo unlit.
         // El pase Normal View tambien las necesita (colorea por normal en view-space) aunque el material sea unlit.
+        // (el TOON tambien: su rampa se lee con la normal posada)
         bool algunaLuz = false;
         if (!w3dRenderSinLuz) for (size_t g = 0; g < materialsGroup.size(); g++)
-            if (materialsGroup[g].material && materialsGroup[g].material->lighting){ algunaLuz = true; break; }
+            if (materialsGroup[g].material && (materialsGroup[g].material->lighting || materialsGroup[g].material->toon)){ algunaLuz = true; break; }
         skinConLuz = algunaLuz || w3dRenderNormalColor;
         // medicion para el log PERF del device (SkeletalAnimation.cpp): sin reloj instalado, costo cero
         extern unsigned int (*g_skinRelojMs)();
@@ -1650,12 +1706,22 @@ void Mesh::RenderObject() {
         if (skinConLuz && skinNormals) norBuf = skinNormals;
     }
 
+    // SOMBREADO TOON: la coordenada de la rampa de cada vertice sale de la normal ya posada (una vez por dibujo: la pose,
+    // la luz y el objeto se mueven). La malla generada (hayGen) no lo tiene: sus materiales toon se ven sin la rampa
+    {
+        bool algunToon = false;
+        if (!w3dRenderSolido && !w3dRenderSinLuz && !hayGen) for (size_t g = 0; g < materialsGroup.size(); g++)
+            if (materialsGroup[g].material && materialsGroup[g].material->toon) { algunToon = true; break; }
+        if (algunToon) ActualizarToonUV(norBuf);
+        else if (!toonUV.empty()) toonUV.clear();
+    }
+
     // punteros de los datos de la malla (una sola vez). Si el relleno va a ir por los VBO (el caso comun) NO: el camino del
     // VBO los pisaba enseguida (los punteros de RAM y su bind 0, de mas en cada dibujo). Ahi los pone ese camino (de
     // RAM los arrays sin VBO) o, si al final no va por VBO (un esqueleto animando), PunterosRAM despues del bloque del VBO
     bool anyFancy = false;   // (chrome / normal map / capas: re-apuntan arrays por pasada, van de RAM)
     if (!w3dRenderSolido) for (size_t gg = 0; gg < materialsGroup.size(); gg++){ Material* mt = materialsGroup[gg].material;
-        if (mt && (mt->chrome || mt->normalMap || !mt->capas.empty())) { anyFancy = true; break; } }
+        if (mt && (mt->chrome || mt->normalMap || !mt->capas.empty() || mt->toon || mt->contorno > 0.0f)) { anyFancy = true; break; } }
     const bool talVezVBO = gfx::g_punterosCache && gfx::VBOSoportado() && !hayGen && !weightPaintOn && !vertexPaintOn &&
                            !editActiva && !w3dRenderWireframe && !w3dRenderNormalColor && !w3dRenderSinLuz && !w3dRenderAlpha &&
                            !anyFancy && faces && facesSize >= 3;
@@ -2150,6 +2216,48 @@ void Mesh::RenderObject() {
                     W3dDibujarLineasMat(&pvsFaces[run.start], run.count, mat->grosorLinea);
                     ultimo = NULL;
                 }
+            }
+        }
+        // CONTORNO del dibujo animado (Material::contorno), por CASCO INVERTIDO: la malla inflada sobre sus normales (ya
+        // posadas por el skinning) se dibuja otra vez en negro, sin textura ni luz y mostrando solo las caras de ATRAS:
+        // lo que asoma alrededor de la figura es el borde. El grosor crece con la distancia a la camara (ancho parejo en
+        // la pantalla). Sin shaders: PC y N95 igual (a cambio de dibujar dos veces los triangulos de esos materiales)
+        if (!solido && !useGen && !drawVBO && !w3dRenderSinLuz && !w3dRenderNormalColor && !w3dRenderAlpha &&
+            norBuf && posBuf && vertexSize > 0) {
+            float grosor = 0.0f;
+            for (size_t g = 0; g < materialsGroup.size(); g++) {
+                Material* mt = materialsGroup[g].material;
+                if (mt && mt->contorno > grosor) grosor = mt->contorno;
+            }
+            if (grosor > 0.0f) {
+                Matrix4 W; GetWorldMatrix(W);
+                const float dx = W.m[12] - g_renderCamPos.x, dy = W.m[13] - g_renderCamPos.y, dz = W.m[14] - g_renderCamPos.z;
+                const float k = grosor * sqrtf(dx * dx + dy * dy + dz * dz) / 127.0f;   // (normales de 8 bits)
+                contornoPos.resize((size_t)vertexSize * 3);
+                GLfloat* cp = &contornoPos[0];
+                for (int v = 0; v < vertexSize * 3; v++) cp[v] = posBuf[v] + norBuf[v] * k;
+                gfx::Disable(gfx::Texture2D);
+                gfx::MezclaTexturasOff();
+                gfx::Disable(gfx::Lighting);
+                gfx::DisableArray(gfx::NormalArray);
+                gfx::DisableArray(gfx::ColorArray);
+                gfx::Disable(gfx::ColorMaterial);
+                gfx::AlphaTest(0.0f);
+                gfx::Disable(gfx::Blend);
+                gfx::Color4f(0.0f, 0.0f, 0.0f, 1.0f);
+                gfx::Enable(gfx::CullFace);
+                gfx::CullCarasFrontales(true);
+                gfx::VertexPointer3f(0, cp);
+                const MeshIndex* idxC = usePvs ? pvsFaces : faces;
+                for (size_t g = 0; g < materialsGroup.size(); g++) {
+                    Material* mt = materialsGroup[g].material;
+                    if (!mt || mt->contorno <= 0.0f) continue;
+                    const MaterialGroup& dgrp = usePvs ? pvsGroups[g] : materialsGroup[g];
+                    if (dgrp.indicesDrawnCount >= 3) gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxC[dgrp.startDrawn]);
+                }
+                gfx::CullCarasFrontales(false);
+                gfx::VertexPointer3f(0, posBuf);
+                ultimo = NULL;
             }
         }
         if (drawVBO) { gfx::UnbindVBOs(); vboRenderActivo = false; } // volver a client-side (bordes/overlays/proximas mallas usan RAM)

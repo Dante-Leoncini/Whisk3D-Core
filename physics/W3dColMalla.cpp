@@ -332,6 +332,85 @@ static int LColRayo(lua_State* L) {
     return 4;
 }
 
+// ---------------------------------------------------------------------------
+//  RAYO CONTRA MALLAS QUE SE MUEVEN (rayoMalla): sin cache ni grilla, con la
+//  pose de ESTE momento (matriz de mundo actual, vertices skinneados si la malla
+//  tiene armature). Para lo chico que se anima: el cuerpo de un enemigo, un
+//  barril, una granada. Recorre el objeto y sus descendientes VISIBLES y
+//  devuelve el impacto mas cercano. Las dos caras cuentan (la bala no mira la
+//  normal). El parametro t es el del rayo de MUNDO aunque se pruebe en local
+//  (la matriz es afin: org + t*dir pasa a lo + t*ld con el mismo t).
+// ---------------------------------------------------------------------------
+static bool RayoTriangulo(const Vector3& o, const Vector3& d, const Vector3& a, const Vector3& b,
+                          const Vector3& c, float* t) {
+    const Vector3 e1 = b - a, e2 = c - a;
+    const Vector3 p = Vector3::Cross(d, e2);
+    const float det = e1.Dot(p);
+    if (det > -1e-12f && det < 1e-12f) return false;
+    const float inv = 1.0f / det;
+    const Vector3 s = o - a;
+    const float u = s.Dot(p) * inv;
+    if (u < 0.0f || u > 1.0f) return false;
+    const Vector3 q = Vector3::Cross(s, e1);
+    const float v = d.Dot(q) * inv;
+    if (v < 0.0f || u + v > 1.0f) return false;
+    *t = e2.Dot(q) * inv;
+    return *t >= 0.0f;
+}
+
+static void RayoObjeto(Object* o, const Vector3& org, const Vector3& dir, float* mejor, Object** quien, Vector3* nrm) {
+    if (!o || !o->visible) return;
+    if (o->getType() == ObjectType::mesh) {
+        Mesh* m = (Mesh*)o;
+        // la pose de AHORA: si el render no la skinneo (malla culleada, o un tick sin dibujo) se skinnea aca; SkinearMesh
+        // esta cacheado por pose, asi que si ya esta al dia no cuesta nada
+        if (m->skinArmature) { extern void SkinearMesh(Mesh*); SkinearMesh(m); }
+        const GLfloat* src = (m->skinArmature && m->skinVertex && m->skinShapeSerial != 0xFFFFFFFFu) ? m->skinVertex : m->vertex;
+        if (src && m->faces && m->vertexSize > 0 && m->facesSize >= 3) {
+            Matrix4 W, Wi; o->GetWorldMatrix(W);
+            if (Matrix4::InvertirAfin(W, Wi)) {
+                const Vector3 lo = Wi * org, ld = (Wi * (org + dir)) - lo;
+                for (int i = 0; i + 2 < m->facesSize; i += 3) {
+                    const int ia = m->faces[i], ib = m->faces[i + 1], ic = m->faces[i + 2];
+                    if (ia >= m->vertexSize || ib >= m->vertexSize || ic >= m->vertexSize) continue;
+                    const Vector3 a(src[ia * 3], src[ia * 3 + 1], src[ia * 3 + 2]);
+                    const Vector3 b(src[ib * 3], src[ib * 3 + 1], src[ib * 3 + 2]);
+                    const Vector3 c(src[ic * 3], src[ic * 3 + 1], src[ic * 3 + 2]);
+                    float t;
+                    if (RayoTriangulo(lo, ld, a, b, c, &t) && t < *mejor) {
+                        *mejor = t; *quien = o;
+                        // la normal a mundo (sin la escala: alcanza para orientar un impacto)
+                        const Vector3 n = Vector3::Cross(b - a, c - a);
+                        Vector3 nw(W.m[0] * n.x + W.m[4] * n.y + W.m[8] * n.z,
+                                   W.m[1] * n.x + W.m[5] * n.y + W.m[9] * n.z,
+                                   W.m[2] * n.x + W.m[6] * n.y + W.m[10] * n.z);
+                        const float l = nw.Length();
+                        *nrm = l > 1e-12f ? nw * (1.0f / l) : Vector3(0, 1, 0);
+                    }
+                }
+            }
+        }
+    }
+    for (size_t k = 0; k < o->Childrens.size(); k++) RayoObjeto(o->Childrens[k], org, dir, mejor, quien, nrm);
+}
+
+// rayoMalla(obj, ox, oy, oz, dx, dy, dz [, max]) -> t, objeto, nx, ny, nz  (o nil si no toca nada a menos de max)
+static int LRayoMalla(lua_State* L) {
+    Object* o = W3dScriptParamObjeto((void*)L, 1);
+    Vector3 org((float)luaL_checknumber(L, 2), (float)luaL_checknumber(L, 3), (float)luaL_checknumber(L, 4));
+    Vector3 d((float)luaL_checknumber(L, 5), (float)luaL_checknumber(L, 6), (float)luaL_checknumber(L, 7));
+    float mejor = (float)luaL_optnumber(L, 8, 1e30);
+    if (!o || d.Length() < 1e-9f) { lua_pushnil(L); return 1; }
+    d = d.Normalized();
+    Object* quien = NULL; Vector3 n(0, 1, 0);
+    RayoObjeto(o, org, d, &mejor, &quien, &n);
+    if (!quien) { lua_pushnil(L); return 1; }
+    lua_pushnumber(L, mejor);
+    lua_pushlightuserdata(L, quien);
+    lua_pushnumber(L, n.x); lua_pushnumber(L, n.y); lua_pushnumber(L, n.z);
+    return 5;
+}
+
 static int LColOlvidar(lua_State* L) {
     W3dColOlvidar(W3dScriptParamObjeto((void*)L, 1));
     return 0;
@@ -345,4 +424,5 @@ void W3dColMallaRegistrarBinds(void* Lv) {
     lua_pushcfunction(L, LColPared);   lua_setglobal(L, "colPared");
     lua_pushcfunction(L, LColRayo);    lua_setglobal(L, "colRayo");
     lua_pushcfunction(L, LColOlvidar); lua_setglobal(L, "colOlvidar");
+    lua_pushcfunction(L, LRayoMalla);  lua_setglobal(L, "rayoMalla");
 }

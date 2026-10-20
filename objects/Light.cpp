@@ -144,22 +144,25 @@ void Light::RenderObject() {
     }
     return;
 #elif defined(W3D_WEBGL) || defined(__ANDROID__)
-    // WebGL/ES2: el backend hace la iluminacion en un shader con UNA luz (Light0). Encendemos esta luz por
-    // su id y le pasamos posicion/color/atenuacion por la abstraccion. La posicion se transforma con la
-    // matriz actual (igual que glLightfv). Multi-luz real = solo desktop (pipeline fijo).
+    // WebGL/ES2: el backend emula las 8 luces del pipeline fijo en el shader. Cada luz va a SU numero (el de su
+    // LightID) con lo mismo que la rama de PC: posicion (transformada con la matriz actual, como glLightfv),
+    // colores, atenuacion y cono.
     if (aplicar) {
-        w3dEngine::SetLightEnabled(LightID, true);
+        const int n = (int)LightID - (int)GL_LIGHT0;
+        w3dEngine::LightN(n, true);
         float pos[4];
         if (direccional) {                                  // DIRECCIONAL (sol): direccion = rotacion de la lampara
             pos[0] = 0.0f; pos[1] = 1.0f; pos[2] = 0.0f; pos[3] = 0.0f;
         } else { pos[0] = position[0]; pos[1] = position[1]; pos[2] = position[2]; pos[3] = 1.0f; }
-        w3dEngine::Light0fv(w3dEngine::LightPosition, pos);
-        w3dEngine::Light0fv(w3dEngine::LightDiffuse,  diffuse);
-        w3dEngine::Light0fv(w3dEngine::LightAmbient,  ambient);
-        w3dEngine::Light0fv(w3dEngine::LightSpecular, specular);
-        w3dEngine::Light0f(w3dEngine::LightConstantAtt,  attConstant);
-        w3dEngine::Light0f(w3dEngine::LightLinearAtt,    attLinear);
-        w3dEngine::Light0f(w3dEngine::LightQuadraticAtt, attQuadratic);
+        w3dEngine::LightNfv(n, w3dEngine::LightPosition, pos);
+        w3dEngine::LightNfv(n, w3dEngine::LightDiffuse,  diffuse);
+        w3dEngine::LightNfv(n, w3dEngine::LightAmbient,  ambient);
+        w3dEngine::LightNfv(n, w3dEngine::LightSpecular, specular);
+        w3dEngine::LightNf(n, w3dEngine::LightConstantAtt,  attConstant);
+        w3dEngine::LightNf(n, w3dEngine::LightLinearAtt,    attLinear);
+        w3dEngine::LightNf(n, w3dEngine::LightQuadraticAtt, attQuadratic);
+        const float sdir[3] = { 0.0f, 0.0f, -1.0f };       // el "forward" local de la lampara
+        w3dEngine::LightNSpot(n, direccional ? 180.0f : spotCutoff, spotExponent, sdir);
     }
     // GIZMO de la luz (overlay del editor): igual que en desktop
     if (g_lightOverlayHook && !gAplicandoPrepase) g_lightOverlayHook(this);
