@@ -216,6 +216,9 @@ static inline bool Canal(int v, int bits, int& q) {
 static bool g_tex16Siempre = false;
 bool Texturas16Siempre() { return g_tex16Siempre; }
 void SetTexturas16Siempre(bool on) { g_tex16Siempre = on; }
+static bool g_tex16Movil = false;
+bool Texturas16Movil() { return g_tex16Movil; }
+void SetTexturas16Movil(bool on) { g_tex16Movil = on; }
 
 static int g_texMitadDesde = 0;
 int TexturasMitadDesde() { return g_texMitadDesde; }
@@ -251,7 +254,11 @@ unsigned char* ReducirMitadRGBA(const unsigned char* rgba, int w, int h, int& ow
     return out;
 }
 static GLenum Empacar16(const unsigned char* rgba, int w, int h, std::vector<unsigned short>& out, GLenum& formato) {
+#ifdef W3D_SYMBIAN
+    const bool siempre = g_tex16Siempre || g_tex16Movil;   // (el proyecto acepta el error de cuantizar)
+#else
     const bool siempre = g_tex16Siempre;   // (el proyecto acepta el error de cuantizar)
+#endif
     const size_t n = (size_t)w * h;
     bool opaca = true;
     for (size_t i = 0; i < n; i++) {

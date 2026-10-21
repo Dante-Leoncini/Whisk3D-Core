@@ -292,22 +292,26 @@ long gClavesCompactasN = 0;
 long gClavesCompactasBytes = 0;
 long gClavesExpansiones = 0;       // compacta -> comun, desde el arranque
 
-size_t BytesBloque(unsigned n) { return sizeof(W3dClavesCompactas) + (size_t)n * sizeof(float); }
-W3dClavesCompactas* BloqueNuevo(unsigned n) {
-    W3dClavesCompactas* c = static_cast<W3dClavesCompactas*>(::operator new(BytesBloque(n)));
-    c->primero = 0; c->paso = 1; c->interp = KfLinear; c->tipoH = HAuto; c->n = n;
+// (una IRREGULAR lleva ademas un int por clave: su frame)
+size_t BytesBloque(unsigned n, bool irregular) {
+    return sizeof(W3dClavesCompactas) + (size_t)n * (sizeof(float) + (irregular ? sizeof(int) : 0));
+}
+size_t BytesBloque(const W3dClavesCompactas* c) { return BytesBloque(c->n, c->Irregular()); }
+W3dClavesCompactas* BloqueNuevo(unsigned n, bool irregular) {
+    W3dClavesCompactas* c = static_cast<W3dClavesCompactas*>(::operator new(BytesBloque(n, irregular)));
+    c->primero = 0; c->paso = irregular ? 0 : 1; c->interp = KfLinear; c->tipoH = HAuto; c->n = n;
     gClavesCompactas++; gClavesCompactasN += (long)n;
-    gClavesCompactasBytes += (long)BytesBloque(n); gClavesBytes += (long)BytesBloque(n);
+    gClavesCompactasBytes += (long)BytesBloque(c); gClavesBytes += (long)BytesBloque(c);
     return c;
 }
 void BloqueSoltar(W3dClavesCompactas* c) {
     gClavesCompactas--; gClavesCompactasN -= (long)c->n;
-    gClavesCompactasBytes -= (long)BytesBloque(c->n); gClavesBytes -= (long)BytesBloque(c->n);
+    gClavesCompactasBytes -= (long)BytesBloque(c); gClavesBytes -= (long)BytesBloque(c);
     ::operator delete(c);
 }
 W3dClavesCompactas* BloqueCopia(const W3dClavesCompactas* o) {
-    W3dClavesCompactas* c = BloqueNuevo(o->n);
-    memcpy(c, o, BytesBloque(o->n));   // (cabecera + valores: datos planos, los bits tal cual)
+    W3dClavesCompactas* c = BloqueNuevo(o->n, o->Irregular());
+    memcpy(c, o, BytesBloque(o));   // (cabecera + valores (+ frames): datos planos, los bits tal cual)
     return c;
 }
 long BytesVec(size_t capacidad) { return (long)(capacidad * sizeof(keyFrame)); }
@@ -380,14 +384,17 @@ keyFrame W3dClaves::Clave(size_type i) const {
     return k;
 }
 long W3dClaves::BytesMemoria() const {
-    return c_ ? (long)BytesBloque(c_->n) : BytesVec(v_.capacity());
+    return c_ ? (long)BytesBloque(c_) : BytesVec(v_.capacity());
 }
 bool W3dClaves::MismosBits(const W3dClaves& o) const {
     const size_type n = size();
     if (n != o.size()) return false;
-    if (c_ && o.c_)   // (las mismas claves = la misma cabecera: frames regulares, interp y tipo de handle de todas)
+    if (c_ && o.c_ && c_->Irregular() == o.c_->Irregular())
+        // (las mismas claves = la misma cabecera -frames regulares o los mismos frames, interp y tipo de handle de
+        //  todas- y los mismos valores)
         return c_->primero == o.c_->primero && c_->paso == o.c_->paso && c_->interp == o.c_->interp &&
-               c_->tipoH == o.c_->tipoH && memcmp(c_->Valores(), o.c_->Valores(), n * sizeof(float)) == 0;
+               c_->tipoH == o.c_->tipoH && memcmp(c_->Valores(), o.c_->Valores(), n * sizeof(float)) == 0 &&
+               (!c_->Irregular() || memcmp(c_->Frames(), o.c_->Frames(), n * sizeof(int)) == 0);
     for (size_type i = 0; i < n; i++) {
         const keyFrame x = Clave(i), y = o.Clave(i);
         if (x.frame != y.frame || x.Interpolation != y.Interpolation || x.handleType != y.handleType) return false;
@@ -406,8 +413,22 @@ float* W3dClaves::CompactaCrear(size_type n, int primero, int paso, int interp, 
     SoltarCompacta();
     gClavesBytes -= BytesVec(v_.capacity());
     Vec().swap(v_);
-    c_ = BloqueNuevo((unsigned)n);
+    c_ = BloqueNuevo((unsigned)n, false);
     c_->primero = primero; c_->paso = paso; c_->interp = interp; c_->tipoH = tipoH;
+    return c_->Valores();
+}
+bool W3dClaves::CompactaIrregularPosible(size_type n, const int* frames) {
+    if (n < 2 || n > 0xFFFFFFFFu) return false;
+    for (size_type i = 1; i < n; i++) if (frames[i] <= frames[i - 1]) return false;
+    return true;
+}
+float* W3dClaves::CompactaCrearIrregular(size_type n, const int* frames, int interp, int tipoH) {
+    SoltarCompacta();
+    gClavesBytes -= BytesVec(v_.capacity());
+    Vec().swap(v_);
+    c_ = BloqueNuevo((unsigned)n, true);
+    c_->primero = frames[0]; c_->interp = interp; c_->tipoH = tipoH;
+    memcpy(c_->Frames(), frames, (size_t)n * sizeof(int));
     return c_->Valores();
 }
 void W3dClaves::push_back(const keyFrame& k) {
@@ -523,6 +544,8 @@ float AnimProperty::Eval(int frame, float def) const { return EvalF((float)frame
 // EvalF ya pasaron): el tramo [i-1, i] que se evalua. La curva comun la RECORRE (como siempre: no supone que
 // este ordenada). La COMPACTA (frames primero + paso * i, crecientes) llega al MISMO i sin recorrer: lo estima
 // con una division y lo corrige con las mismas comparaciones en float (un frame enorme no es exacto en float).
+// La IRREGULAR (frames estrictamente crecientes: su (float) no decrece) lo busca por biseccion con la misma
+// comparacion (con NaN ninguna da true y queda en el primero, como el recorrido).
 static size_t TramoDe(const W3dClaves& K, float frame) {
     const size_t n = K.size();
     const W3dClavesCompactas* c = K.DatosCompactos();
@@ -530,6 +553,15 @@ static size_t TramoDe(const W3dClaves& K, float frame) {
         size_t i = 1;
         while (i < n && (float)K.Frame(i) < frame) i++;
         return i;
+    }
+    if (c->Irregular()) {
+        const int* fr = c->Frames();
+        size_t lo = 1, hi = n - 1;
+        while (lo < hi) {
+            const size_t m = lo + (hi - lo) / 2;
+            if ((float)fr[m] < frame) lo = m + 1; else hi = m;
+        }
+        return lo;
     }
     size_t i = 1;
     if (frame == frame) {   // (NaN: la curva comun se queda en el primer tramo; aca tambien)

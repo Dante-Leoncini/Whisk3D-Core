@@ -43,6 +43,10 @@ namespace w3dEngine {
     // memoria). Las de alfa con niveles quedan en 8 bits. Gobierna las cargas nuevas
     bool Texturas16Siempre();
     void SetTexturas16Siempre(bool on);
+    // ...y lo mismo SOLO EN EL N95 ("texturas16Movil" en el .w3d): el proyecto se ve igual en PC y en el telefono sus
+    // texturas ocupan la mitad (junto con texturasMitadDesde, la cuarta parte). Solo en Symbian; en el resto se ignora
+    bool Texturas16Movil();
+    void SetTexturas16Movil(bool on);
     // TEXTURAS A LA MITAD EN EL N95 ("texturasMitadDesde" en el .w3d; 0 = no, el defecto): cada textura del PROYECTO
     // (las de los materiales y las imagenes de la UI; no las del editor ni las fuentes) con un lado MAYOR a ese se sube
     // a la mitad de resolucion. Un proyecto pensado para PC no entra en la memoria del telefono (Daytona: ~35 MB de

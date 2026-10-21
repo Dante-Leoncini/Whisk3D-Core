@@ -126,8 +126,10 @@ public:
 //  usa todo el editor); por dentro puede estar COMPACTA: una curva HORNEADA (frames regulares, la misma
 //  interpolacion y el mismo tipo de handle en todas, handles guardados en cero: lo que trae un glTF, un keyframe
 //  por frame; los handles automaticos se calculan de los vecinos) se guarda como primer frame + paso + UN float
-//  por clave, ~4 B por clave en vez de los 32 de un keyFrame. La crea el lector del .w3da (W3dAnimSet.cpp) y se
-//  copia compacta (variantes, copy-on-write, undo).
+//  por clave, ~4 B por clave en vez de los 32 de un keyFrame. Una curva con los frames IRREGULARES (crecientes)
+//  pero lo demas igual (una animacion horneada y reducida: solo las claves que hacen falta) tambien: su frame y
+//  su valor, ~8 B por clave (paso = 0), y la evaluacion busca el tramo por biseccion en vez de recorrerla. La crea
+//  el lector del .w3da (W3dAnimSet.cpp) y se copia compacta (variantes, copy-on-write, undo).
 //    - SIN expandir: size/empty, Frame/Valor/Interp/TipoH/Clave(i), PrimerFrame/UltimoFrame, la evaluacion
 //      (AnimProperty::Eval/EvalF/HandleEfectivo: el juego y la reproduccion), el escritor del .w3da, copiar y
 //      comparar.
@@ -136,17 +138,22 @@ public:
 //  La evaluacion es UNA sola funcion para las dos (lee con Frame/Valor/...): dan los mismos bits (lo compara en
 //  todos los frames, enteros y fraccionarios, tools/pruebas/prueba_claves_compactas.w3s).
 // ============================================================================
-// el bloque de una curva compacta: esta cabecera y, en la MISMA reserva, sus n valores
+// el bloque de una curva compacta: esta cabecera y, en la MISMA reserva, sus n valores (y en una IRREGULAR,
+// despues, sus n frames)
 struct W3dClavesCompactas {
     int primero;     // frame de la clave 0
-    int paso;        // frame de la clave i = primero + paso * i (paso > 0; el ultimo entra en un int)
+    int paso;        // frame de la clave i = primero + paso * i (paso > 0; el ultimo entra en un int).
+                     // 0 = IRREGULAR: los frames de cada clave van despues de los valores (estrictamente crecientes)
     int interp;      // la interpolacion de TODAS
     int tipoH;       // el tipo de handle de todas (los guardados son cero: HFree/HAligned quedan en cero)
     unsigned n;      // cantidad de claves (>= 2)
     float*       Valores()       { return reinterpret_cast<float*>(this + 1); }
     const float* Valores() const { return reinterpret_cast<const float*>(this + 1); }
+    bool Irregular() const { return paso == 0; }
+    int*       Frames()       { return reinterpret_cast<int*>(Valores() + n); }        // (solo las irregulares)
+    const int* Frames() const { return reinterpret_cast<const int*>(Valores() + n); }
     // frame de la clave i, en aritmetica sin signo: el mismo resultado que sumar el paso clave a clave (el lector)
-    int Frame(unsigned i) const { return (int)((unsigned)primero + (unsigned)paso * i); }
+    int Frame(unsigned i) const { return paso ? (int)((unsigned)primero + (unsigned)paso * i) : Frames()[i]; }
 };
 
 class W3dClaves {
@@ -199,6 +206,11 @@ public:
     static bool CompactaPosible(size_type n, int primero, int paso);
     // la deja COMPACTA (descarta lo que tuviera) y devuelve donde van sus n valores. Antes: CompactaPosible.
     float* CompactaCrear(size_type n, int primero, int paso, int interp, int tipoH);
+    // n claves con estos frames se pueden guardar compactas IRREGULARES? (2 o mas, estrictamente crecientes)
+    static bool CompactaIrregularPosible(size_type n, const int* frames);
+    // la deja COMPACTA IRREGULAR con esos frames (los copia) y devuelve donde van sus n valores. Antes:
+    // CompactaIrregularPosible.
+    float* CompactaCrearIrregular(size_type n, const int* frames, int interp, int tipoH);
 
     // ---- la API de std::vector<keyFrame>: EXPANDEN (una compacta pasa a ser una curva comun) ----
     reference       operator[](size_type i)       { Expandir(); return v_[i]; }

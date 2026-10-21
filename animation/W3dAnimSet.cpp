@@ -115,18 +115,29 @@ struct Cursor {
 // Una curva COMPACTA en memoria (W3dClaves, Animation.h) se escribe SIN expandirla y con los mismos bytes que
 // daria expandida: sus claves son justo las de los modos regulares + uno para todos + handles en cero (n >= 2,
 // paso > 0 y el ultimo frame entra en un int, asi que las diferencias que mira el camino de abajo son el paso).
-// Lo prueba prueba_claves_compactas.w3s (guardar sin editar da el archivo identico).
+// Una IRREGULAR va con sus frames, salvo que resulten regulares (como las mira el camino de abajo: el lector nunca
+// las deja asi, pero los bytes no dependen de eso). Lo prueba prueba_claves_compactas.w3s (guardar sin editar da
+// el archivo identico).
 void PonCurvaCompacta(std::string& s, const AnimProperty& ap, const W3dClavesCompactas& c) {
     PonI32(s, ap.Property);
     PonI32(s, ap.component);
     PonU32(s, c.n);
+    bool regulares = !c.Irregular();
+    if (!regulares) {
+        const double d0 = (double)c.Frame(1) - (double)c.Frame(0);
+        regulares = d0 <= 2147483647.0;
+        for (unsigned i = 2; regulares && i < c.n; i++)
+            if ((double)c.Frame(i) - (double)c.Frame(i - 1) != d0) regulares = false;
+    }
     char modos[4];
-    modos[0] = (char)KF_FRAMES_REGULARES;
+    modos[0] = (char)(regulares ? KF_FRAMES_REGULARES : KF_FRAMES_TODOS);
     modos[1] = (char)KF_INT_UNO;
     modos[2] = (char)KF_INT_UNO;
     modos[3] = (char)KF_HANDLES_CERO;
     s.append(modos, 4);
-    PonI32(s, c.primero); PonI32(s, c.paso);
+    if (!c.Irregular()) { PonI32(s, c.primero); PonI32(s, c.paso); }
+    else if (regulares) { PonI32(s, c.Frame(0)); PonI32(s, c.Frame(1) - c.Frame(0)); }
+    else for (unsigned i = 0; i < c.n; i++) PonI32(s, c.Frame(i));
     const float* v = c.Valores();
     for (unsigned i = 0; i < c.n; i++) PonF32(s, v[i]);
     PonI32(s, c.interp);
@@ -204,6 +215,19 @@ bool LeerCurva(Cursor& c, AnimProperty& ap, std::string& motivo) {
         if (W3dClaves::CompactaPosible(n, f0, paso)) {
             c.I32(); c.I32();
             float* v = ap.keyframes.CompactaCrear(n, f0, paso, interp, tipoH);
+            for (unsigned i = 0; i < n; i++) v[i] = c.F32();
+            c.I32(); c.I32();
+            return c.ok;
+        }
+    }
+    // REDUCIDA (frames irregulares crecientes, lo demas igual): compacta IRREGULAR, su frame y su valor por clave
+    if (mF == KF_FRAMES_TODOS && mI == KF_INT_UNO && mT == KF_INT_UNO && mH == KF_HANDLES_CERO && n >= 2) {
+        std::vector<int> fr(n);
+        for (unsigned i = 0; i < n; i++) fr[i] = (int)LeeU32(c.p + (size_t)i * 4);
+        if (W3dClaves::CompactaIrregularPosible(n, &fr[0])) {
+            const int interp = (int)LeeU32(c.p + (size_t)n * 8), tipoH = (int)LeeU32(c.p + 4 + (size_t)n * 8);
+            for (unsigned i = 0; i < n; i++) c.I32();
+            float* v = ap.keyframes.CompactaCrearIrregular(n, &fr[0], interp, tipoH);
             for (unsigned i = 0; i < n; i++) v[i] = c.F32();
             c.I32(); c.I32();
             return c.ok;
