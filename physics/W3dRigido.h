@@ -33,6 +33,11 @@
 //                 rebote: el script le fija la velocidad horizontal y la
 //                 fisica pone gravedad + choques (no atraviesa un auto y un
 //                 auto lo empuja).
+//    3 MALLA      estatico con la forma de SUS TRIANGULOS (el objeto es una malla:
+//                 el piso irregular, las rampas y las paredes de un mapa). Las
+//                 cajas chocan contra cada triangulo; la caja/centro/masa de la
+//                 definicion se ignoran. Lee la malla con la grilla de
+//                 W3dColMalla (una vez, en mundo: se asume QUIETA).
 //
 //  QUIEN LO LLAMA:
 //    * SimPlay (editor) / arranque del juego: W3dRigidosAsegurar(escena)
@@ -47,6 +52,7 @@
 //    fisicaFuerza(obj, fx,fy,fz [,px,py,pz])    fuerza DE ESTE FRAME (se
 //                                      acumula y se consume en el proximo paso)
 //    fisicaRayo(ox,oy,oz, dx,dy,dz, max [,ignorar]) -> dist,nx,ny,nz,obj | nil
+//                                      (cajas Y cuerpos de tipo malla)
 //    contactos() -> { {a,b, x,y,z, nx,ny,nz, impulso}, ... } del ultimo paso
 //    fisicaGravedad([g]) lee o fija el modulo de la gravedad (default 9.81)
 // ============================================================================
@@ -58,7 +64,7 @@ class Object;
 
 // definicion que PERSISTE (bloque "fisica" del objeto en el .w3d)
 struct W3dRigidoDef {
-    int   tipo;        // 0 estatico | 1 dinamico | 2 personaje
+    int   tipo;        // 0 estatico | 1 dinamico | 2 personaje | 3 malla
     float masa;        // kg (los estaticos la ignoran)
     float caja[3];     // tamano TOTAL de la caja en espacio LOCAL del objeto
     float centro[3];   // centro de la caja respecto del origen del objeto
@@ -113,7 +119,8 @@ float W3dRigidosGravedadActual(void);
 // cuantos cuerpos runtime hay, y la caja del i-esimo DESPUES del ultimo paso: su objeto, el
 // centro en mundo, los ejes (columnas de la rotacion) y los semiejes (escala ya horneada).
 // 'activo' = fisicaActiva; 'quieto' = estatico o dormido (la fisica NO evalua los pares
-// entre dos quietos: sus contactos no se reportan mientras sigan asi). false = fuera de rango.
+// entre dos quietos: sus contactos no se reportan mientras sigan asi). false = fuera de rango
+// o un cuerpo de tipo MALLA (no es una caja).
 int  W3dRigidosCantidad(void);
 bool W3dRigidoCaja(int i, Object** o, Vector3* centro, Vector3 ejes[3], Vector3* semi,
                    bool* activo, bool* quieto);

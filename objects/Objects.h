@@ -159,6 +159,10 @@ class Object {
         // se VE en el viewport pero puede NO salir en el render final (la foto/
         // los pases): la marca clasica de "renderizable" de los editores 3D
         bool renderizable;
+        // la LISTA DEL RIEL de su Culling padre (metodo riel): 1 = el nodo actual lo ve, 0 = no lo ve, 255 = no se sabe
+        // (sin padre de riel o sin dato). La pone Culling::RielAplicarNodo al cambiar de nodo; la lee la rutina
+        // ("Skip if not listed") cuando el hijo lo dibuja ella y no el Culling
+        unsigned char listadoRiel;
         // ESTATICO vs DINAMICO (para el culling por GRILLA, W3dGridCull): true = NO se mueve en runtime, su
         // celda se cachea (escenario, cajas); false = DINAMICO (Crash, enemigos), se re-evalua su celda por
         // frame. Solo importa cuando el objeto cuelga de un GridCull (afuera se ignora). Default true.

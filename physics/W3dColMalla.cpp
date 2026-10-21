@@ -35,6 +35,7 @@ struct ColMalla {
     // grilla XZ: celdas de 'celda' metros sobre la caja del mapa; CSR (offset por celda + indices)
     float x0, z0, celda;
     int nx, nz;
+    Vector3 mn, mx;                 // la caja de todos los triangulos
     std::vector<int> off, idx;
     // marca por triangulo para no probarlo dos veces en una consulta que toca varias celdas
     std::vector<unsigned> marca;
@@ -54,7 +55,7 @@ ColMalla* Construir(Object* o) {
     ColMalla* c = new ColMalla();
     c->obj = o; c->firma = m->vertex; c->nVerts = m->vertexSize; c->nIdx = m->facesSize;
     c->consulta = 0;
-    float mnX = 1e30f, mxX = -1e30f, mnZ = 1e30f, mxZ = -1e30f;
+    float mnX = 1e30f, mxX = -1e30f, mnY = 1e30f, mxY = -1e30f, mnZ = 1e30f, mxZ = -1e30f;
     c->tris.reserve(m->facesSize / 3);
     for (int i = 0; i + 2 < m->facesSize; i += 3) {
         const int ia = m->faces[i], ib = m->faces[i + 1], ic = m->faces[i + 2];
@@ -71,10 +72,12 @@ ColMalla* Construir(Object* o) {
         t.minY = Mn(t.a.y, Mn(t.b.y, t.c.y)); t.maxY = Mx(t.a.y, Mx(t.b.y, t.c.y));
         t.minZ = Mn(t.a.z, Mn(t.b.z, t.c.z)); t.maxZ = Mx(t.a.z, Mx(t.b.z, t.c.z));
         if (t.minX < mnX) mnX = t.minX; if (t.maxX > mxX) mxX = t.maxX;
+        if (t.minY < mnY) mnY = t.minY; if (t.maxY > mxY) mxY = t.maxY;
         if (t.minZ < mnZ) mnZ = t.minZ; if (t.maxZ > mxZ) mxZ = t.maxZ;
         c->tris.push_back(t);
     }
     if (c->tris.empty()) { delete c; return NULL; }
+    c->mn = Vector3(mnX, mnY, mnZ); c->mx = Vector3(mxX, mxY, mxZ);
     // celda: ~ que haya del orden de 64x64 celdas como mucho, y no menos de 2 m
     const float ancho = Mx(mxX - mnX, mxZ - mnZ);
     c->celda = Mx(2.0f, ancho / 64.0f);
@@ -240,7 +243,33 @@ struct FRayo {
     }
 };
 
+struct FJuntar {
+    Vector3 mn, mx; W3dColTri* out; int max, n;
+    void operator()(const Tri& t) {
+        if (n >= max) return;
+        if (t.maxX < mn.x || t.minX > mx.x || t.maxY < mn.y || t.minY > mx.y || t.maxZ < mn.z || t.minZ > mx.z) return;
+        W3dColTri& o = out[n++];
+        o.a = t.a; o.b = t.b; o.c = t.c; o.n = t.n;
+    }
+};
+
 } // namespace
+
+bool W3dColCaja(Object* malla, Vector3* mn, Vector3* mx) {
+    ColMalla* c = Buscar(malla);
+    if (!c) return false;
+    if (mn) *mn = c->mn;
+    if (mx) *mx = c->mx;
+    return true;
+}
+
+int W3dColTriangulos(Object* malla, const Vector3& mn, const Vector3& mx, W3dColTri* out, int max) {
+    ColMalla* c = Buscar(malla);
+    if (!c || !out || max <= 0) return 0;
+    FJuntar f; f.mn = mn; f.mx = mx; f.out = out; f.max = max; f.n = 0;
+    PorTriangulo(c, mn.x, mn.z, mx.x, mx.z, f);
+    return f.n;
+}
 
 bool W3dColSuelo(Object* malla, float x, float y, float z, float subida, float* sueloY) {
     ColMalla* c = Buscar(malla);

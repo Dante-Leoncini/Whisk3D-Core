@@ -35,6 +35,9 @@
 //        primer triangulo que corta el rayo (ej: que la camara no atraviese
 //        una pared: se la acerca al personaje hasta 'dist').
 //    colOlvidar(malla)   descarta lo leido (la proxima consulta relee la malla)
+//
+//  W3dRigido usa la misma grilla para los cuerpos de tipo MALLA (una malla estatica
+//  contra la que chocan las cajas): W3dColCaja + W3dColTriangulos.
 // ============================================================================
 
 #include "math/Vector3.h"
@@ -47,6 +50,12 @@ bool  W3dColSuelo(Object* malla, float x, float y, float z, float subida, float*
 bool  W3dColPared(Object* malla, float* x, float y, float* z, float radio, float alto);
 // distancia al primer triangulo que corta el rayo (d normalizado); < 0 = nada. n = normal del triangulo.
 float W3dColRayo(Object* malla, const Vector3& o, const Vector3& d, float max, Vector3* n);
+// la caja (en mundo) de toda la malla. false = no es una malla con triangulos.
+bool  W3dColCaja(Object* malla, Vector3* mn, Vector3* mx);
+// un triangulo en mundo con su normal (la del orden de sus vertices)
+struct W3dColTri { Vector3 a, b, c, n; };
+// los triangulos cuya caja toca [mn, mx], a lo sumo 'max' (sin allocations: el buffer es del que llama)
+int   W3dColTriangulos(Object* malla, const Vector3& mn, const Vector3& mx, W3dColTri* out, int max);
 void  W3dColOlvidar(Object* malla);
 // descarta TODO lo leido (al parar el juego / descargar la escena: las mallas pueden dejar de existir)
 void  W3dColLimpiar(void);

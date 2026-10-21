@@ -718,6 +718,17 @@ class Mesh : public Object {
         // por triangulo de estas mallas la lleva el modificador CullingTri ("Oclusion"),
         // que puede seguir un PATH (Curve o malla de aristas) eligiendo el nodo solo.
         bool noEditable;
+        // soloRutina: la malla la DIBUJA UNA RUTINA (pasos "Pose pointer" / "Draw visible"), no el recorrido del arbol.
+        // Sigue viva para todo lo demas (su script, su vertex anim, el modificador Oclusion, la fisica): solo no se
+        // dibuja sola (ni push/pop, ni material, ni subir su VBO). Asi una pose animada no re-especifica ningun buffer:
+        // la rutina apunta los vertices a la pose de RAM y la UV y los indices al recurso, subidos una vez.
+        bool soloRutina;
+        bool DibujaAlgo() W3D_OVERRIDE { return !soloRutina; }
+        // (soloRutina) su vertex anim avanzo pero NO se evaluo: la pose se calcula recien cuando una rutina la apunta
+        // (W3dPoseAlDia). Lo que no se dibuja no interpola nada
+        bool posePendiente;
+        unsigned paseDibujado;   // (soloRutina) el g_w3dPase en el que una rutina la apunto por ultima vez
+        void RenderSoloRutinaReflejo();   // (pase de un espejo) la pose de RAM con sus materiales, sin tocar VBOs
         void CalcularAABBSolo();      // AABB + radioGeom + centroGeom sin soldaduras ni edges
         // (runtime, por frame) SELECCION de una malla no editable: sin edges no hay contorno
         // que dibujar -> las caras se tintan ~25% verde EN EL MISMO draw (AplicarMaterial),
@@ -1480,6 +1491,11 @@ void W3dLucesDibujarPendientes();
 // espejo (el reflejo tiene su propia matriz y su propio recorte por estencil) y
 // los propios flushes.
 extern bool w3dDecalesInline;
+// el pase de un ESPEJO esta dibujando a sus objetivos: una malla soloRutina se dibuja igual (desde su pose de RAM)
+extern bool w3dReflejando;
+// el PASE de escena actual (sube una vez por cuadro, W3dEscena3DPasada): con Mesh::paseDibujado dice si una rutina
+// dibujo a una malla soloRutina en este cuadro (un espejo solo refleja lo que se ve)
+extern unsigned g_w3dPase;
 
 #include "animation/VertexAnimation.h"
 

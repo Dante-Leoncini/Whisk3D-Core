@@ -389,6 +389,8 @@ void VertexAnimRemapPorPosicion(VertexAnimation& anim, Mesh* mesh);
 void VertexAnimLiberarControlador(Mesh* mesh);
 
 void UpdateAnimations(float dtSeg = 1.0f / 60.0f);
+// (Mesh::soloRutina) la pose que UpdateAnimations dejo pendiente, calculada ahora: la llama la rutina al apuntarla
+void W3dPoseAlDia(Mesh* m);
 // posa la vertex-anim ACTIVA en el timeline (kind 3) al frame del playhead (CurrentFrame). Se llama por frame;
 // re-evalua solo al cambiar de malla/anim/frame. En PC vive inline en main.cpp; el loop de Symbian la invoca.
 void AplicarVertexAnimTimeline();

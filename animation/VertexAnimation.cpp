@@ -1382,8 +1382,19 @@ void VertexAnimationActive::UpdateAnimation(float dtSeg){
         }
     }
 
-    if (anim && !anim->frames.empty())
-        EvalVertexAnim(*anim, meshToAnim, playFrame);
+    if (!anim || anim->frames.empty()) return;
+    // la dibuja una rutina: el tiempo y los cambios de clip avanzan, la pose se calcula al apuntarla (W3dPoseAlDia)
+    if (meshToAnim->soloRutina) { meshToAnim->posePendiente = true; return; }
+    EvalVertexAnim(*anim, meshToAnim, playFrame);
+}
+
+void W3dPoseAlDia(Mesh* m) {
+    if (!m || !m->posePendiente) return;
+    m->posePendiente = false;
+    VertexAnimationActive* a = FindTargetAnim(m);
+    if (!a || a->currentAnim < 0 || a->currentAnim >= (int)m->animations.size()) return;
+    VertexAnimation* anim = m->animations[a->currentAnim];
+    if (anim && !anim->frames.empty()) EvalVertexAnim(*anim, m, a->playFrame);
 }
 
 std::vector<VertexAnimationActive*> VertexAnimationActives;

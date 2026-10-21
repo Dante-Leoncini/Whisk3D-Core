@@ -246,5 +246,8 @@ void W3dScriptRedibujar(void);
 // helpers para los bindings de plataforma (empujan/leen el Object* del stack). Un objeto que ya NO EXISTE
 // (lua lo guardo y despues se destruyo: destruir(), cambiarEscena) llega como NULL (ver W3dObjetoVivo)
 Object* W3dScriptParamObjeto(void* L, int idx);
+// (harness / depuracion) corre un pedazo de codigo lua en el estado de CADA script de ese objeto (sus globales y sus
+// funciones: teletransportar al personaje, forzar un estado del juego). false + error si no compila o falla
+bool W3dScriptEjecutar(Object* duenio, const char* codigo, std::string& error);
 
 #endif // W3DSCRIPT_H

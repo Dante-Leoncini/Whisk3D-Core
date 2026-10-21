@@ -180,6 +180,7 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
     : Parent(parent),
       visible(true),
       renderizable(true),
+      listadoRiel(255),
       estatico(true),   // por defecto NO se mueve en runtime (convencion RenderWare); el juego marca dinamicos a Crash/enemigos
       sinTransformacion(false),
       desplegado(true),

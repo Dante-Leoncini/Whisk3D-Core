@@ -67,7 +67,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     pvsFaces = NULL; pvsFacesSize = 0; pvsVersion = 0; vboPvsVer = 0; pvsOrdenado = false; // sin override PVS (malla completa; vboPvsVer retirado por P3, ver Mesh.h)
     enLoteEstatico = 0; // (P4) sin sello: la malla se dibuja sola
     uvDesplU = uvDesplV = 0.0f; // desplazarUV: sin base capturada (uvDesplBase vacia)
-    noEditable = false; tintaNoEditable = false; // malla editable (el import con noEditable / el boton de la card Mesh lo prenden)
+    noEditable = false; soloRutina = false; posePendiente = false; paseDibujado = 0; tintaNoEditable = false; // malla editable (el import con noEditable / el boton de la card Mesh lo prenden)
     tinte[0] = tinte[1] = tinte[2] = 1.0f;
     datosRec = NULL; datosComp = 0; // geometria propia hasta que el importador la comparta (MallaDatos.h)
     malla = NULL; vboCompartidas = 0; vboUVEnUso = 0; // sin recurso (MallaRecurso.h) hasta que el lector la vincule
@@ -1351,6 +1351,8 @@ void Mesh::SubirVBO(const GLfloat* posBuf, const GLbyte* norBuf, bool soloPose) 
 //  el resultado no depende del orden (que es, justamente, la gracia del aditivo).
 // ===========================================================================
 bool w3dDecalesInline = false;
+bool w3dReflejando = false;
+unsigned g_w3dPase = 0;
 static std::vector<Mesh*> gDecalPend;
 static std::vector<Mesh*> gLuzPend;
 
@@ -1599,7 +1601,32 @@ static void PunterosRAM(const GLfloat* pos, const GLbyte* nor, const GLubyte* co
     if (uvp) gfx::TexCoordPointer2f(0, uvp);
 }
 
+// (soloRutina, pase de un espejo) la pose de RAM -la que dejo la vertex anim o lua- con los materiales de sus partes.
+// De cliente: el reflejo no re-especifica el VBO de la pose (el stall del MBX) ni el del recurso
+void Mesh::RenderSoloRutinaReflejo() {
+    namespace gfx = w3dEngine;
+    W3dPoseAlDia(this);
+    if (!vertex || !faces || facesSize < 3) return;
+    vboRenderActivo = false;
+    gfx::EnableArray(gfx::VertexArray);
+    gfx::DisableArray(gfx::NormalArray);
+    if (uv) gfx::EnableArray(gfx::TexCoordArray); else gfx::DisableArray(gfx::TexCoordArray);
+    if (vertexColor) gfx::EnableArray(gfx::ColorArray); else gfx::DisableArray(gfx::ColorArray);
+    PunterosRAM(vertex, NULL, vertexColor, uv);
+    Material* ultimo = NULL;
+    for (size_t g = 0; g < materialsGroup.size(); g++) {
+        const MaterialGroup& grp = materialsGroup[g];
+        if (grp.indicesDrawnCount <= 0) continue;
+        Material* mat = grp.material ? grp.material : MaterialDefecto;
+        if (!mat) continue;
+        if (mat != ultimo) { AplicarMaterial(mat, false, false); ultimo = mat; }
+        gfx::DrawTriangles(grp.indicesDrawnCount, &faces[grp.startDrawn]);
+    }
+}
+
 void Mesh::RenderObject() {
+    // la dibuja una rutina (ver soloRutina en Mesh.h); en el pase de un espejo, el reflejo de su pose
+    if (soloRutina) { if (w3dReflejando) RenderSoloRutinaReflejo(); return; }
     // en el render FINAL un objeto no-renderizable no sale (en el viewport si)
     if (w3dEngine::w3dRenderFinal && !renderizable) return;
     // (P4) horneada en el lote estatico de una Collection ESTE frame: el lote ya
@@ -1826,6 +1853,7 @@ void Mesh::RenderObject() {
         for (size_t g = 0; g < ng; g++) {
             const MaterialGroup& grp = useGen ? genMaterialsGroup[g] : materialsGroup[g];
             Material* mat = grp.material ? grp.material : MaterialDefecto;
+        if (!mat) continue;
             bool trans = mat->transparent && mat->texture && mat->textureOn && (useGen ? (genUV != 0) : (uv != 0));
             if (trans) {
                 gfx::Enable(gfx::Texture2D);

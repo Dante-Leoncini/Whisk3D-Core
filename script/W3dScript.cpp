@@ -2186,6 +2186,21 @@ static bool LlamarEvento(W3dScriptInst* inst, const char* fn, int idx, Object* c
     return true;
 }
 
+bool W3dScriptEjecutar(Object* duenio, const char* codigo, std::string& error) {
+    std::map<Object*, std::vector<W3dScriptInst*> >::iterator it = gInstancias.find(duenio);
+    if (it == gInstancias.end() || it->second.empty()) { error = "el objeto no tiene scripts corriendo"; return false; }
+    for (size_t i = 0; i < it->second.size(); i++) {
+        lua_State* L = it->second[i]->L;
+        if (!L) continue;
+        if (luaL_dostring(L, codigo) != 0) {
+            error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "error";
+            lua_pop(L, 1);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool W3dScriptEvento(Object* duenio, const char* fn, Object* const* objs, int nObjs,
                      const float* nums, int nNums) {
     if (!duenio || !fn) return false;

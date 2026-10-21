@@ -12,8 +12,12 @@
 //      DOS sub-pasos por frame para que 30 fps sea estable (mas si el frame es
 //      lento: ningun sub-paso pasa de 1/60 s, ver SUBPASO_MAX)
 //    * cuerpos DORMIDOS: un auto estacionado cuesta cero hasta que algo lo toca
+//    * MALLAS estaticas: la caja contra cada triangulo cercano (sus esquinas
+//      hundidas en el triangulo y las aristas del triangulo que la atraviesan),
+//      un manifold por triangulo con su normal, al mismo solver
 // ============================================================================
 #include "physics/W3dRigido.h"
+#include "physics/W3dColMalla.h"   // los cuerpos de tipo MALLA: sus triangulos por grilla
 #include "objects/Objects.h"
 #include "math/Quaternion.h"
 #include "script/W3dScript.h"   // W3dScriptParamObjeto (para los binds)
@@ -38,6 +42,8 @@ static const float DORMIR_LIN2    = 0.005f; // vel lineal^2 para contar quietud
 static const float DORMIR_ANG2    = 0.01f;  // vel angular^2 idem
 static const int   DORMIR_FRAMES  = 45;     // pasos quieto -> a dormir
 static const float DESPERTAR_VEL2 = 0.04f;  // vecino mas rapido que esto despierta
+static const int   MALLA_TRIS     = 128;    // triangulos de una malla que mira UNA caja por sub-paso
+static const int   MALLA_MANIF    = 12;     // manifolds (triangulos con contacto) por par caja-malla
 
 static float gGravedad = 9.81f;
 
@@ -46,7 +52,7 @@ static float gGravedad = 9.81f;
 // ---------------------------------------------------------------------------
 struct Rigido {
     Object* obj;
-    int     tipo;            // 0 estatico | 1 dinamico | 2 personaje
+    int     tipo;            // 0 estatico | 1 dinamico | 2 personaje | 3 malla
     float   invMasa;
     Vector3 half;            // semiejes de la caja (escala del objeto aplicada)
     Vector3 centroLocal;     // centro de la caja en local (escalado)
@@ -76,7 +82,11 @@ struct Rigido {
     bool dormido;
     bool activo;     // false = el cuerpo no colisiona ni se integra
                      // (fisicaActiva(obj,false): Claude adentro del auto)
+    bool mallaLista; // tipo MALLA: su caja (pos/half) ya se leyo de los triangulos
 };
+
+// no se mueve nunca: estatico o malla
+static inline bool Fijo(const Rigido& c) { return c.tipo == 0 || c.tipo == 3; }
 
 static std::vector<Rigido> gR;
 static std::vector<W3dRigidoContacto> gEventos;
@@ -210,14 +220,19 @@ static void CrearCuerpo(Object* o) {
                  o->name.c_str());
         return;
     }
+    if (d->tipo == 3 && o->getType() != ObjectType::mesh) {
+        w3dLogfW("[rigido] '%s' es de tipo malla pero no es una malla: se salta", o->name.c_str());
+        return;
+    }
     Rigido c;
     c.obj  = o;
     c.tipo = d->tipo;
+    c.mallaLista = false;
     Dimensionar(c, d, EscalaMundo(o, e));
     c.friccion = d->friccion;
     c.rebote   = d->rebote;
     float m = (d->masa > 0.001f) ? d->masa : 0.001f;
-    c.invMasa = (c.tipo == 0) ? 0.0f : 1.0f / m;
+    c.invMasa = Fijo(c) ? 0.0f : 1.0f / m;
     c.rot = RotMundo(o, e);
     c.pos = PosMundo(o, e) + c.rot * c.centroLocal;
     c.vel = Vector3(0, 0, 0);
@@ -225,7 +240,7 @@ static void CrearCuerpo(Object* o) {
     c.fAcum = Vector3(0, 0, 0);
     c.tAcum = Vector3(0, 0, 0);
     c.quietud = 0;
-    c.dormido = (c.tipo != 0);   // los dinamicos ARRANCAN dormidos: nada se
+    c.dormido = !Fijo(c);        // los dinamicos ARRANCAN dormidos: nada se
     c.activo = true;             // cae solo hasta que algo lo toque o empuje
     c.prevObjPos = o->pos;
     c.prevObjRot = o->Rot();
@@ -271,7 +286,7 @@ bool W3dRigidoVel(Object* o, Vector3* out) {
 }
 void W3dRigidoSetVel(Object* o, const Vector3& v) {
     Rigido* c = Buscar(o);
-    if (!c || c->tipo == 0) return;
+    if (!c || Fijo(*c)) return;
     c->vel = v;
     Despertar(*c);
 }
@@ -289,14 +304,14 @@ void W3dRigidoSetVelAng(Object* o, const Vector3& v) {
 }
 void W3dRigidoImpulso(Object* o, const Vector3& imp, const Vector3& punto) {
     Rigido* c = Buscar(o);
-    if (!c || c->tipo == 0) return;
+    if (!c || Fijo(*c)) return;
     c->vel += imp * c->invMasa;
     c->velAng += InerciaInv(*c, Vector3::Cross(punto - c->pos, imp));
     Despertar(*c);
 }
 void W3dRigidoFuerza(Object* o, const Vector3& f, const Vector3& punto) {
     Rigido* c = Buscar(o);
-    if (!c || c->tipo == 0) return;
+    if (!c || Fijo(*c)) return;
     c->fAcum += f;
     c->tAcum += Vector3::Cross(punto - c->pos, f);
     // OJO: NO resetea la quietud. Una fuerza CONTINUA y balanceada (la
@@ -312,6 +327,7 @@ bool W3dRigidoCaja(int i, Object** o, Vector3* centro, Vector3 ejes[3], Vector3*
                    bool* activo, bool* quieto) {
     if (i < 0 || i >= (int)gR.size()) return false;
     const Rigido& c = gR[i];
+    if (c.tipo == 3) return false;   // una malla no es una caja (los hitbox no la ven)
     if (o)      *o = c.obj;
     if (centro) *centro = c.pos;
     if (ejes)   { ejes[0] = c.u[0]; ejes[1] = c.u[1]; ejes[2] = c.u[2]; }
@@ -326,7 +342,7 @@ bool W3dRigidoCaja(int i, Object** o, Vector3* centro, Vector3 ejes[3], Vector3*
 void W3dRigidoActivo(Object* o, bool activo) {
     Rigido* c = Buscar(o);
     if (!c) return;
-    if (activo && !c->activo) {
+    if (activo && !c->activo && c->tipo != 3) {
         EspacioPadre e;
         EspacioDe(o, e);
         c->rot = RotMundo(o, e);
@@ -353,6 +369,16 @@ float W3dRigidosRayo(const Vector3& origen, const Vector3& dir, float maxDist,
     for (size_t i = 0; i < gR.size(); i++) {
         Rigido& c = gR[i];
         if (c.obj == ignorar || !c.activo) continue;
+        if (c.tipo == 3) {   // malla: el primer triangulo (la grilla de W3dColMalla)
+            Vector3 n;
+            const float t = W3dColRayo(c.obj, origen, dir, (mejor >= 0.0f && mejor < maxDist) ? mejor : maxDist, &n);
+            if (t >= 0.0f && (mejor < 0.0f || t < mejor)) {
+                mejor = t;
+                mejorN = (n.Dot(dir) > 0.0f) ? -n : n;   // la cara que mira al rayo
+                mejorO = c.obj;
+            }
+            continue;
+        }
         // al espacio de la caja
         Vector3 rel = origen - c.pos;
         float o0 = c.u[0].Dot(rel), o1 = c.u[1].Dot(rel), o2 = c.u[2].Dot(rel);
@@ -583,6 +609,125 @@ static bool Colision(int ia, int ib, Manifold& m) {
 }
 
 // ---------------------------------------------------------------------------
+//  deteccion OBB vs MALLA estatica: por triangulo cercano (grilla de W3dColMalla)
+//    * las esquinas de la caja hundidas en el triangulo (dentro de su prisma y
+//      a menos de 'hondo' del plano): el caso de apoyarse en un piso o una
+//      rampa, o chocar de lleno contra una pared. Normal = la del triangulo.
+//    * si ninguna esquina cae en el triangulo, sus ARISTAS que atraviesan la
+//      caja (la esquina de un edificio contra el costado de un auto): el
+//      punto medio del tramo de adentro, por la cara de la caja mas cercana.
+//  Un manifold por triangulo (cada uno con su normal); A = la malla, B = la caja.
+// ---------------------------------------------------------------------------
+static W3dColTri gTris[MALLA_TRIS];
+
+static void PuntoNuevo(Manifold& m, const Vector3& pos, float hundido) {
+    PuntoContacto* p;
+    if (m.n < 4) p = &m.p[m.n++];
+    else {   // lleno: reemplaza al menos hundido si este lo esta mas
+        int menor = 0;
+        for (int i = 1; i < m.n; i++) if (m.p[i].hundido < m.p[menor].hundido) menor = i;
+        if (m.p[menor].hundido >= hundido) return;
+        p = &m.p[menor];
+    }
+    p->pos = pos;
+    p->hundido = hundido;
+    p->acumN = p->acumT1 = p->acumT2 = 0.0f;
+    p->vnInicial = 0.0f;
+}
+
+// el tramo del segmento a-b que queda adentro de la caja (slabs en sus ejes); su punto medio
+static bool SegmentoEnCaja(const Rigido& B, const Vector3& a, const Vector3& b, Vector3* medio) {
+    float h[3]; h[0] = B.half.x; h[1] = B.half.y; h[2] = B.half.z;
+    const Vector3 ra = a - B.pos, d = b - a;
+    float t0 = 0.0f, t1 = 1.0f;
+    for (int e = 0; e < 3; e++) {
+        const float o = B.u[e].Dot(ra), v = B.u[e].Dot(d);
+        if (fabsf(v) < 1e-9f) {
+            if (o < -h[e] || o > h[e]) return false;
+            continue;
+        }
+        float ta = (-h[e] - o) / v, tb = (h[e] - o) / v;
+        if (ta > tb) { float x = ta; ta = tb; tb = x; }
+        if (ta > t0) t0 = ta;
+        if (tb < t1) t1 = tb;
+        if (t0 > t1) return false;
+    }
+    *medio = a + d * (0.5f * (t0 + t1));
+    return true;
+}
+
+static void ColisionMalla(int ia, int ib, std::vector<Manifold>& ms) {
+    const Rigido& B = gR[ib];
+    const Vector3 ext(fabsf(B.u[0].x) * B.half.x + fabsf(B.u[1].x) * B.half.y + fabsf(B.u[2].x) * B.half.z,
+                      fabsf(B.u[0].y) * B.half.x + fabsf(B.u[1].y) * B.half.y + fabsf(B.u[2].y) * B.half.z,
+                      fabsf(B.u[0].z) * B.half.x + fabsf(B.u[1].z) * B.half.y + fabsf(B.u[2].z) * B.half.z);
+    const int nt = W3dColTriangulos(gR[ia].obj, B.pos - ext, B.pos + ext, gTris, MALLA_TRIS);
+    if (nt <= 0) return;
+    float h[3]; h[0] = B.half.x; h[1] = B.half.y; h[2] = B.half.z;
+    Vector3 esq[8];
+    for (int k = 0; k < 8; k++)
+        esq[k] = B.pos + B.u[0] * ((k & 1) ? h[0] : -h[0]) + B.u[1] * ((k & 2) ? h[1] : -h[1]) +
+                 B.u[2] * ((k & 4) ? h[2] : -h[2]);
+    // una esquina mas hundida que esto esta del OTRO lado (una pared fina, el piso de abajo): no es contacto
+    float hondo = h[0]; if (h[1] < hondo) hondo = h[1]; if (h[2] < hondo) hondo = h[2];
+    int hechos = 0;
+    for (int t = 0; t < nt && hechos < MALLA_MANIF; t++) {
+        const W3dColTri& T = gTris[t];
+        // la normal hacia el lado de la caja (las mallas de colision no siempre tienen el orden de vertices parejo)
+        const Vector3 n = (T.n.Dot(B.pos - T.a) >= 0.0f) ? T.n : -T.n;
+        const float dPlano = n.Dot(T.a);
+        Manifold m;
+        m.ia = ia; m.ib = ib; m.n = 0; m.normal = n;
+        const Vector3 ab = T.b - T.a, bc = T.c - T.b, ca = T.a - T.c;
+        for (int k = 0; k < 8; k++) {
+            const float hund = dPlano - n.Dot(esq[k]);
+            if (hund <= 0.0f || hund > hondo) continue;
+            // adentro del prisma del triangulo (con la normal de su orden de vertices, este como este girada)
+            if (Vector3::Cross(ab, esq[k] - T.a).Dot(T.n) < 0.0f) continue;
+            if (Vector3::Cross(bc, esq[k] - T.b).Dot(T.n) < 0.0f) continue;
+            if (Vector3::Cross(ca, esq[k] - T.c).Dot(T.n) < 0.0f) continue;
+            PuntoNuevo(m, esq[k], hund);
+        }
+        if (m.n > 0) { ms.push_back(m); hechos++; continue; }
+        // ninguna esquina: las aristas del triangulo que atraviesan la caja
+        for (int e = 0; e < 3 && hechos < MALLA_MANIF; e++) {
+            const Vector3& p0 = e == 0 ? T.a : (e == 1 ? T.b : T.c);
+            const Vector3& p1 = e == 0 ? T.b : (e == 1 ? T.c : T.a);
+            Vector3 q;
+            if (!SegmentoEnCaja(B, p0, p1, &q)) continue;
+            // sale por la cara de la caja mas cercana al punto: la caja se aleja de el
+            const Vector3 r = q - B.pos;
+            int eje = 0; float menor = 1e30f, sg = 1.0f;
+            for (int k = 0; k < 3; k++) {
+                const float l = B.u[k].Dot(r);
+                const float falta = h[k] - fabsf(l);
+                if (falta < menor) { menor = falta; eje = k; sg = (l >= 0.0f) ? 1.0f : -1.0f; }
+            }
+            if (menor <= 0.0f) continue;
+            Manifold me;
+            me.ia = ia; me.ib = ib; me.n = 0; me.normal = B.u[eje] * (-sg);
+            PuntoNuevo(me, q, menor);
+            ms.push_back(me);
+            hechos++;
+        }
+    }
+}
+
+// la caja de un cuerpo de tipo malla (la de sus triangulos, en mundo). La primera vez que hace falta:
+// la malla se lee con su pose de ese momento (una instancia de prefab ya puesta en su lugar)
+static bool MallaLista(Rigido& c) {
+    if (c.mallaLista) return true;
+    Vector3 mn, mx;
+    if (!W3dColCaja(c.obj, &mn, &mx)) return false;
+    c.pos = (mn + mx) * 0.5f;
+    c.half = (mx - mn) * 0.5f;
+    c.rot = Quaternion();
+    ActualizarEjes(c);
+    c.mallaLista = true;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 //  solver de impulsos secuenciales
 // ---------------------------------------------------------------------------
 static Vector3 VelEnPunto(const Rigido& c, const Vector3& p) {
@@ -716,6 +861,7 @@ void W3dRigidosPaso(float dt) {
     // ---- re-sincronizar lo que el script movio por afuera -------------------
     for (size_t i = 0; i < gR.size(); i++) {
         Rigido& c = gR[i];
+        if (c.tipo == 3) continue;   // la malla se lee una vez (quieta): su caja es la de los triangulos
         Object* o = c.obj;
         EspacioPadre e;
         EspacioDe(o, e);
@@ -750,7 +896,7 @@ void W3dRigidosPaso(float dt) {
         // ---- integrar velocidades (gravedad + fuerzas del frame) -----------
         for (size_t i = 0; i < gR.size(); i++) {
             Rigido& c = gR[i];
-            if (c.tipo == 0 || c.dormido || !c.activo) continue;
+            if (Fijo(c) || c.dormido || !c.activo) continue;
             c.vel.y -= gGravedad * h;
             c.vel += c.fAcum * (c.invMasa * h);
             c.velAng += InerciaInv(c, c.tAcum) * h;
@@ -762,10 +908,22 @@ void W3dRigidosPaso(float dt) {
                 Rigido& A = gR[i];
                 Rigido& B = gR[j];
                 if (!A.activo || !B.activo) continue;
-                if (A.tipo == 0 && B.tipo == 0) continue;
-                bool aQuieto = A.dormido || A.tipo == 0;
-                bool bQuieto = B.dormido || B.tipo == 0;
+                if (Fijo(A) && Fijo(B)) continue;
+                bool aQuieto = A.dormido || Fijo(A);
+                bool bQuieto = B.dormido || Fijo(B);
                 if (aQuieto && bQuieto) continue;
+                if (A.tipo == 3 || B.tipo == 3) {
+                    // caja contra malla (la malla siempre como A): poda por la caja de la malla
+                    const int im = (A.tipo == 3) ? (int)i : (int)j, ic = (A.tipo == 3) ? (int)j : (int)i;
+                    Rigido& M = gR[im];
+                    const Rigido& C = gR[ic];
+                    if (!MallaLista(M)) continue;
+                    const float rc = C.half.Length();
+                    const Vector3 dd = C.pos - M.pos;
+                    if (fabsf(dd.x) > M.half.x + rc || fabsf(dd.y) > M.half.y + rc || fabsf(dd.z) > M.half.z + rc) continue;
+                    ColisionMalla(im, ic, ms);
+                    continue;
+                }
                 // poda por esfera envolvente (barato) antes del SAT
                 float ra = A.half.Length(), rb = B.half.Length();
                 if ((B.pos - A.pos).LengthSq() > (ra + rb) * (ra + rb)) continue;
@@ -782,7 +940,7 @@ void W3dRigidosPaso(float dt) {
         // ---- integrar posiciones -------------------------------------------
         for (size_t i = 0; i < gR.size(); i++) {
             Rigido& c = gR[i];
-            if (c.tipo == 0 || c.dormido || !c.activo) continue;
+            if (Fijo(c) || c.dormido || !c.activo) continue;
             c.pos += c.vel * h;
             if (c.velAng.LengthSq() > 1e-10f) {
                 // q' = q + h/2 * w*q (integracion estandar del cuaternion)
@@ -804,7 +962,7 @@ void W3dRigidosPaso(float dt) {
         Rigido& c = gR[i];
         c.fAcum = Vector3(0, 0, 0);
         c.tAcum = Vector3(0, 0, 0);
-        if (c.tipo == 0 || c.dormido || !c.activo) {
+        if (Fijo(c) || c.dormido || !c.activo) {
             c.prevObjPos = c.obj->pos;
             c.prevObjRot = c.obj->Rot();
             continue;
@@ -958,7 +1116,7 @@ static int LContactos(lua_State* L) {
 static int LFisicaDespierto(lua_State* L) {
     Object* o = ObjArg(L, 1);
     Rigido* c = o ? Buscar(o) : NULL;
-    lua_pushboolean(L, (c && c->activo && !c->dormido && c->tipo != 0) ? 1 : 0);
+    lua_pushboolean(L, (c && c->activo && !c->dormido && !Fijo(*c)) ? 1 : 0);
     return 1;
 }
 
