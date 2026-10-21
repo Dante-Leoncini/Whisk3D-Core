@@ -870,6 +870,12 @@ void TexEnvDot3(bool on) {
 #ifndef GL_OPERAND0_ALPHA
 #define GL_OPERAND0_ALPHA 0x8598
 #endif
+#ifndef GL_SRC1_ALPHA
+#define GL_SRC1_ALPHA     0x8589
+#endif
+#ifndef GL_OPERAND1_ALPHA
+#define GL_OPERAND1_ALPHA 0x8599
+#endif
 // ALPHA-ONLY: color del fragmento = PRIMARY (color de vertice/uniforme), pero el ALPHA = alpha de la
 // TEXTURA. Para los PASES PLANOS (zbuffer/alpha/normal): la forma del objeto transparente sale SOLO del
 // alpha de su textura, con el color plano (blanco o normal), sin mostrar el color de la textura.
