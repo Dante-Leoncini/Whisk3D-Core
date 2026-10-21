@@ -66,6 +66,11 @@ extern Object* W3dPrefabInstanciarDuenio;
 // (0 descargada, 1 pidiendo sus recursos, 2 cargada) o -1 si 'o' no es una instancia de prefab ni un proxy. Lo instala
 // io/Streaming (editor y juego compilado); NULL = sin streaming (los binds devuelven nil)
 extern int (*W3dStreamingLuaHook)(Object* o, int pedido);
+// ---- LA COLA DIFERIDA DE TEXTURAS (main/importers/import_obj.cpp): el motor sube UNA por cuadro, y una escena pedida con
+// cambiarEscena() llega con las suyas en la cola (en el N95 cada pagina de 1024 tarda: lo que aparece se ve blanco hasta que
+// sube la suya). 'cargar' 0 = solo contar, 1 = cargarlas TODAS ya (bloquea). Devuelve las que quedan. Lo instala import_obj;
+// NULL = sin cola (los binds devuelven 0)
+extern int (*W3dTexturasLuaHook)(int cargar);
 // las FUENTES de los scripts como recurso del almacen (io/W3dRecursos.h, W3DREC_SCRIPT, id = la ruta del script): el
 // streaming las pide ASYNC antes de generar y el script que arranca usa la que este LISTA en vez de leer el archivo
 void W3dScriptFuentesAsegurarOps();

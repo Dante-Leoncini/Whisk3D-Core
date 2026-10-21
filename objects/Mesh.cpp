@@ -715,7 +715,7 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         capaUnidad1 = -1;
         if (toonOn) {
             // la rampa sin filtrar ni repetir: los escalones del dibujo animado quedan netos
-            gfx::MezclaTexturas(mat->texturaB->iID, 1.0f, false, false, mat->toon == 2 ? 1 : 3);
+            gfx::MezclaTexturas(mat->texturaB->iID, 1.0f, false, false, mat->toon == 2 ? 4 : 3);
             gfx::MezclaTexturasUV(&toonUV[0]);
         } else if (mat->texturaB && mat->texturaB->iID && mat->mezclaB > 0.0f && !mat->chrome && !mat->normalMap)
             gfx::MezclaTexturas(mat->texturaB->iID, mat->mezclaB, !gfx::PixeladoGlobal() && mat->filtrado, mat->repeat);
@@ -756,7 +756,7 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     } else {
         gfx::Disable(gfx::Texture2D);
         // (un toon sin textura base: la unidad 1 recibe el color plano como "lo anterior" y le resta la rampa)
-        if (toonOn) { gfx::MezclaTexturas(mat->texturaB->iID, 1.0f, false, false, mat->toon == 2 ? 1 : 3);
+        if (toonOn) { gfx::MezclaTexturas(mat->texturaB->iID, 1.0f, false, false, mat->toon == 2 ? 4 : 3);
                       gfx::MezclaTexturasUV(&toonUV[0]); }
         else gfx::MezclaTexturasOff();
         gfx::TexMatrixMatcap(false);

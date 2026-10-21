@@ -182,7 +182,8 @@ namespace w3dEngine {
     // Off = vuelve a una unidad (lo llaman AplicarMaterial, el fin del dibujo de la malla y EstadoBase).
     // 'modo': 0 = INTERPOLATE (B * k + unidad0 * (1 - k)); 1 = MULTIPLY (unidad0 * B: un lightmap en la misma
     // pasada, k no se usa); 2 = MULTIPLY 2x (unidad0 * B * 2: el lightmap con overbright, GL_RGB_SCALE); 3 = SUBTRACT
-    // (unidad0 - B: la rampa del sombreado toon, Material::toon).
+    // (unidad0 - B: la rampa del sombreado toon, Material::toon); 4 = MULTIPLY SIMPLE (unidad0 * B con el GL_MODULATE
+    // clasico, sin el combiner: el toon "multiplicar", que anda en cualquier driver GL ES 1.1).
     bool MezclaTexturasSoportada();
     void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int modo = 0);
     void MezclaTexturasOff();

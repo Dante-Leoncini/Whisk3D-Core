@@ -126,6 +126,9 @@ static std::map<std::string, bool> gTeclas;
 // copia UNA vez por frame al final de W3dScriptActualizar, DESPUES de correr los scripts, para que todas
 // las llamadas del frame vean el mismo estado previo.
 static std::map<std::string, bool> gTeclasPrev;
+// las teclas que BAJARON desde el snapshot (aunque ya se hayan soltado): con el juego lento (el N95) una pulsacion
+// corta baja y sube entre dos frames y gTeclas nunca la mostraba; teclaApretada() la cuenta igual
+static std::map<std::string, bool> gTeclasPulsadas;
 static bool gFinFrameExterno = false;   // alguien llama W3dScriptFinFrame: el snapshot es suyo (ver el .h)
 static float gSticks[2][2] = { {0,0}, {0,0} };   // [izq/der][x/y]
 static float gGatillos[2] = { 0, 0 };              // [izq/der] 0..1 (los gatillos analogicos del mando: pedales)
@@ -164,11 +167,14 @@ static bool gSemillaFija = false;
 void W3dScriptSemillaFija(bool on) { gSemillaFija = on; gSemContador = 0; }
 
 void W3dScriptTecla(const char* nombre, bool apretada) {
-    if (nombre) gTeclas[nombre] = apretada;
+    if (!nombre) return;
+    if (apretada) gTeclasPulsadas[nombre] = true;
+    gTeclas[nombre] = apretada;
 }
 void W3dScriptSoltarTeclas() {
     gTeclas.clear(); gBotonesPad.clear();
     gTeclasPrev.clear(); gBotonesPadPrev.clear();   // el reset tambien limpia el snapshot del flanco
+    gTeclasPulsadas.clear();
     gSticks[0][0] = gSticks[0][1] = gSticks[1][0] = gSticks[1][1] = 0.0f;
     gGatillos[0] = gGatillos[1] = 0.0f;
     for (int i=0;i<W3D_MAXDEDOS;i++){ gDedoX[i]=gDedoY[i]=0.0f; gDedoAct[i]=false; }
@@ -224,10 +230,11 @@ static bool EstadoTecla(std::map<std::string, bool>& m, const char* n) {
     return it != m.end() && it->second;
 }
 // teclaApretada("w") -> true SOLO en el frame en que la tecla pasa de suelta a apretada (flanco de subida).
-// Gemelo de apretado() (que es tactil): usa gTeclas (estado actual) vs gTeclasPrev (snapshot del frame anterior).
+// Gemelo de apretado() (que es tactil): usa gTeclas (estado actual) vs gTeclasPrev (snapshot del frame anterior),
+// y tambien cuenta la que bajo y subio entre dos frames (gTeclasPulsadas: un juego lento no pierde el tiro).
 static int LTeclaApretada(lua_State* L) {
     const char* n = luaL_checkstring(L, 1);
-    lua_pushboolean(L, EstadoTecla(gTeclas, n) && !EstadoTecla(gTeclasPrev, n));
+    lua_pushboolean(L, (EstadoTecla(gTeclas, n) && !EstadoTecla(gTeclasPrev, n)) || EstadoTecla(gTeclasPulsadas, n));
     return 1;
 }
 // botonApretado("a") -> idem para los botones del gamepad (mismo indexado por nombre que boton()).
@@ -311,6 +318,7 @@ void W3dScriptLiberarYa(Object* o) {
     else W3dScriptDestruirObjeto(o);
 }
 int (*W3dStreamingLuaHook)(Object* o, int pedido) = 0;
+int (*W3dTexturasLuaHook)(int cargar) = 0;
 
 // ---- LAS FUENTES DE LOS SCRIPTS como recurso del almacen (W3DREC_SCRIPT, ver W3dScript.h) ----
 static void* OpCargarFuente(const std::string& id, long* bytes) {
@@ -392,6 +400,11 @@ static int LStreaming(lua_State* L, int pedido) {
     else lua_pushboolean(L, e >= 0);
     return 1;
 }
+// texturasPendientes() -> cuantas texturas esperan en la cola diferida (sube una por cuadro). cargarTexturas() -> las sube
+// TODAS ya (bloquea: en el N95 cada pagina de atlas tarda) y devuelve las que quedan (0). Para el principio de una escena
+// pedida con cambiarEscena(): sin esto lo que aparece se ve blanco hasta que llega su textura
+static int LTexturasPendientes(lua_State* L) { lua_pushinteger(L, W3dTexturasLuaHook ? W3dTexturasLuaHook(0) : 0); return 1; }
+static int LCargarTexturas(lua_State* L)     { lua_pushinteger(L, W3dTexturasLuaHook ? W3dTexturasLuaHook(1) : 0); return 1; }
 static int LCargar(lua_State* L)    { return LStreaming(L, 1); }
 static int LDescargar(lua_State* L) { return LStreaming(L, -1); }
 static int LCargaAuto(lua_State* L) { return LStreaming(L, 2); }
@@ -1863,6 +1876,8 @@ static void AbrirLibs(lua_State* L) {
 static void RegistrarAPI(lua_State* L) {
     lua_pushcfunction(L, LTecla);  lua_setglobal(L, "tecla");
     lua_pushcfunction(L, LTeclaApretada); lua_setglobal(L, "teclaApretada");
+    lua_pushcfunction(L, LTexturasPendientes); lua_setglobal(L, "texturasPendientes");
+    lua_pushcfunction(L, LCargarTexturas);     lua_setglobal(L, "cargarTexturas");
     lua_pushcfunction(L, LBotonApretado); lua_setglobal(L, "botonApretado");
     lua_pushcfunction(L, LAzar);   lua_setglobal(L, "azar");
     lua_pushcfunction(L, LObjeto); lua_setglobal(L, "objeto");
@@ -2149,6 +2164,7 @@ bool W3dScriptActualizar(Object* duenio, float dt) {
     if (!gFinFrameExterno) {
         gTeclasPrev = gTeclas;
         gBotonesPadPrev = gBotonesPad;
+        gTeclasPulsadas.clear();
     }
     return ok;
 }
@@ -2228,6 +2244,7 @@ void W3dScriptFinFrame() {
     gFinFrameExterno = true;
     gTeclasPrev = gTeclas;
     gBotonesPadPrev = gBotonesPad;
+    gTeclasPulsadas.clear();
     // los destruir() del frame: ahora que no corre ningun actualizar()
     W3dScriptDestruirPendientes();
 }

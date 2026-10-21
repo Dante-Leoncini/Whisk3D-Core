@@ -884,9 +884,13 @@ void TexEnvAlphaOnly(bool on) {
         W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB,    GL_REPLACE));
         W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_SRC0_RGB,       GL_PRIMARY_COLOR)); // RGB = color plano
         W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB,   GL_SRC_COLOR));
-        W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA,  GL_REPLACE));
-        W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_SRC0_ALPHA,     GL_TEXTURE));       // ALPHA = alpha de la textura
+        // ALPHA = alpha de la textura por el del color (con el color opaco, el de la textura: los pases planos del
+        // editor; con alfa por vertice, un desvanecido: el agua de una rutina)
+        W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA,  GL_MODULATE));
+        W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_SRC0_ALPHA,     GL_TEXTURE));
         W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_ALPHA, GL_SRC_ALPHA));
+        W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_SRC1_ALPHA,     GL_PRIMARY_COLOR));
+        W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_ALPHA, GL_SRC_ALPHA));
     } else {
         W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE));
     }
@@ -1323,7 +1327,7 @@ void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int 
     if (!idB || !MezclaTexturasSoportada()) { MezclaTexturasOff(); return; }
     if (k < 0.0f) k = 0.0f;
     if (k > 1.0f) k = 1.0f;
-    if (modo < 0 || modo > 3) modo = 0;
+    if (modo < 0 || modo > 4) modo = 0;
     if (gMezclaTexOn < 0) { gMezclaTexId = 0xFFFFFFFFu; gMezclaTexK = -1.0f; gMezclaTexModo = -1; gUV1PuestoTipo = -1; }   // (desconocido)
     const bool prender = gMezclaTexOn != 1;
     const bool bind    = gMezclaTexId != idB;
@@ -1372,6 +1376,11 @@ void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int 
             W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_ALPHA, GL_SRC_ALPHA));
             W3D_GLC(glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE,      1.0f));
             g_statStateChanges += 10;
+        } else if (modo == 4) {
+            // MULTIPLY SIMPLE: el GL_MODULATE de siempre (unidad0 * B; el alfa por el de B), sin el combiner: el camino que
+            // todo driver GL ES 1.1 tiene (el del MBX del N95 incluido). El toon "multiplicar" (la rampa invertida)
+            W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE));
+            g_statStateChanges += 1;
         } else {
             // MULTIPLY: unidad0 * B (x2 con GL_RGB_SCALE, que solo vale con el env en COMBINE): un lightmap en la misma pasada
             W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE));

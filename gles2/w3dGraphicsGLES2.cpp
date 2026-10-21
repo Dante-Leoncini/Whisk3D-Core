@@ -340,7 +340,7 @@ static const char* FS =
 "    }\n"
 "    if(uEnv==1) col=tex;\n"                                                         // GL_REPLACE
 "    else if(uEnv==2) col=vec4(vec3(clamp(dot(tex.rgb*2.0-1.0,vC.rgb*2.0-1.0),0.0,1.0)),tex.a*vC.a);\n" // GL_DOT3_RGB
-"    else if(uEnv==3) col=vec4(vC.rgb,tex.a);\n"                                   // solo alfa
+"    else if(uEnv==3) col=vec4(vC.rgb,tex.a*vC.a);\n"                              // solo alfa (por el del color)
 "    else col=vC*tex;\n"                                                            // GL_MODULATE
 "  }\n"
 "  if(uMezcla>=0){ vec4 b=texture2D(uTex1,vT1);\n"   // la unidad 1 sobre lo que salio de la 0 (el alfa no cambia)
@@ -693,7 +693,8 @@ bool MezclaTexturasSoportada(){ return true; }
 void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int modo){
     if(!idB){ MezclaTexturasOff(); return; }
     if(k<0.0f) k=0.0f; if(k>1.0f) k=1.0f;
-    if(modo<0 || modo>3) modo=0;
+    if(modo<0 || modo>4) modo=0;
+    if(modo==4) modo=1;   // (multiplicar simple = multiplicar: en el shader es lo mismo)
     mezclaOn=true; mezclaTex=idB; mezclaK=k; mezclaModo=modo;
     W3D_GLC(glActiveTexture(GL_TEXTURE1));
     W3D_GLC(glBindTexture(GL_TEXTURE_2D,idB));

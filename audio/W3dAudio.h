@@ -77,6 +77,40 @@ double W3dAudioReloj();
 int  W3dSoundPlayAt(W3dSound* s, float volume, bool loop, float pitch, float pan, double enSeg);
 void W3dSoundStopFadeAt(int voice, float fadeSeg, double enSeg);
 void W3dSoundStopAll();
+
+// ENVOLVENTE de una voz: la de los chips de sonido (el AICA de la Dreamcast, el SCSP de la Saturn, el OPL...): ADSR mas
+// la CAIDA del sostenido. Tiempos en segundos. El ataque es lineal (de 0 al maximo); despues todo baja en curva
+// exponencial (lineal en dB, como bajan los chips): el decaimiento va del maximo al nivel 'sostenido', la caida lo
+// sigue bajando mientras la nota sigue (60 dB en 'caida' segundos; 0 = se mantiene) y la liberacion baja 60 dB al SOLTAR
+// la nota. La nota se suelta con W3dSoundSoltar, sola a los 'duracion' segundos, o no se suelta (el sonido termina).
+// Por defecto (sin envolvente) la voz suena entera a su volumen. Cuando la envolvente baja de -60 dB la voz se libera.
+struct W3dEnvolvente {
+    float ataque;        // de 0 al maximo (0 = de golpe)
+    float decaimiento;   // del maximo al sostenido (0 = salta al sostenido)
+    float sostenido;     // nivel 0..1 mientras la nota sigue
+    float caida;         // segundos en que el sostenido baja 60 dB aunque la nota siga (0 = no baja)
+    float liberacion;    // segundos en que baja 60 dB al soltar la nota (0 = ~5 ms, el corte sin click)
+    float duracion;      // la nota se suelta sola a los N segundos de empezar (0 = no se suelta)
+    W3dEnvolvente() : ataque(0.0f), decaimiento(0.0f), sostenido(1.0f), caida(0.0f), liberacion(0.0f), duracion(0.0f) {}
+};
+// Igual que W3dSoundPlayAt con una ENVOLVENTE (NULL = sin) y el ENVIO de la voz a la reverb (0..1: cuanto de su sonido
+// entra a la reverb global; lo directo no cambia). Devuelve el id de la voz o 0.
+int  W3dSoundPlayEnv(W3dSound* s, float volume, bool loop, float pitch, float pan, double enSeg,
+                     const W3dEnvolvente* env, float envioReverb);
+// SOLTAR la nota de una voz: su envolvente pasa a la liberacion (una voz sin envolvente se corta con la rampa de ~5 ms)
+void W3dSoundSoltar(int voice);
+void W3dSoundSetEnvio(int voice, float envioReverb);
+// REVERB global (una sala: peines con amortiguacion y pasa-todos, la estructura de Schroeder y Moorer; estereo). Las
+// voces le mandan su ENVIO y lo que sale se suma a la mezcla. sala 0..1 = el largo de la cola, amortiguacion 0..1 =
+// cuanto se apagan los agudos en la cola, nivel 0..1 = cuanto se suma (0 = apagada: no cuesta nada). En enteros: en un
+// telefono sin FPU rapida (o con denormales lentos) cuesta lo mismo que una voz o dos.
+void W3dAudioReverb(float sala, float amortiguacion, float nivel);
+// el rate del mixer (Hz; 0 si no abrio)
+int  W3dAudioRate();
+// MEZCLA SIN DISPOSITIVO (pruebas, grabar a WAV): 'frames' frames estereo de lo que suena ahora, como si los pidiera la
+// salida (las voces avanzan). Pensado con el mixer en PAUSA (la salida no avanza nada): asi lo grabado es exactamente
+// lo que el juego disparo. false si el mixer no abrio.
+bool W3dAudioGrabar(short* stereoOut, int frames);
 // PAUSA global del mixer: con true las voces se congelan (el mixer saca silencio y NO avanza ninguna
 // posicion); con false siguen donde estaban. Para el "Pausa" del editor / del juego: la musica se
 // detiene de verdad y retoma del mismo punto. W3dSoundStopAll es el "Parar": corta todo.

@@ -949,10 +949,16 @@ static void AplicarCurvasJuegoCanales(Object* o, std::vector<AnimProperty>& prop
         else if (P == AnimAtten)    hayAtt = true;
         else if (P == AnimSpot)     haySpot = true;
     }
+    // la VISIBILIDAD primero: un nodo que su clip apaga no se dibuja, asi que no se evalua lo demas (los pedazos de una
+    // explosion: de cientos, se ven unos pocos a la vez). Se pone al dia el cuadro en que vuelve a prenderse
+    if (hayV) {
+        o->visible = PropertyDeLista(props, AnimVisible, AnimX).Eval(frame, o->visible ? 1.0f : 0.0f) >= 0.5f;
+        // (solo mallas y vacios: una camara o una luz ocultas pueden seguir en uso)
+        if (!o->visible && (o->getType() == ObjectType::mesh || o->getType() == ObjectType::empty)) return;
+    }
     if (hayP && (transform & kCanalPos)) o->pos   = EvalPropVecF(props, AnimPosition, fr, o->pos);
     if (hayS && (transform & kCanalEsc)) o->scale = EvalPropVecF(props, AnimScale,    fr, o->scale);
     if (hayR && (transform & kCanalRot)) { Vector3 e = EvalPropVecF(props, AnimRotation, fr, o->rotEuler); o->SetRotEuler(e); }
-    if (hayV)   o->visible      = PropertyDeLista(props, AnimVisible, AnimX).Eval(frame, o->visible ? 1.0f : 0.0f) >= 0.5f;
     if (hayRnd) o->renderizable = PropertyDeLista(props, AnimRender,  AnimX).Eval(frame, o->renderizable ? 1.0f : 0.0f) >= 0.5f;
     // (ver W3dAplicarFormas)
     W3dAplicarFormas(o, props, frame);
@@ -1527,7 +1533,9 @@ void W3dAnimObjetosTick(float dt) {
                 if (s.loop) s.frame = EnvolverAbajo(s.frame, ini, fin, largo);
                 else { s.frame = ini; s.termino = true; }
             } else if (FrameRaro(s.frame)) s.frame = ini;   // (NaN: una velocidad NaN desde lua)
-            s.mover = true;   // (el tick en que una pasada llega al final tambien la posa: su ultima pose)
+            // (el tick en que una pasada llega al final tambien la posa: su ultima pose). Con velocidad 0 el cabezal no
+            // se mueve: la pose ya esta (la puso animObjeto o animObjetoFrame, que posan en el momento)
+            s.mover = s.vel != 0.0f;
         }
         k++;
     }
