@@ -346,6 +346,7 @@ namespace w3dEngine {
     void DeleteBuffer(unsigned int h);                            // lo libera
     void ArrayBufferData(unsigned int h, const void* data, int bytes);  // sube atributos a GL_ARRAY_BUFFER (STATIC_DRAW)
     void IndexBufferData(unsigned int h, const void* data, int bytes);  // sube indices a GL_ELEMENT_ARRAY_BUFFER (STATIC_DRAW)
+    long VBOMemoria();                                            // bytes de los buffer objects vivos (lo ultimo subido a cada uno)
     // setup del draw DESDE VBOs (cada atributo en su propio buffer -> puntero con offset 0):
     void VertexVBO(unsigned int h);    // bind + glVertexPointer(3,FLOAT,0,0)
     void NormalVBO(unsigned int h);    // bind + glNormalPointer(BYTE,0,0)

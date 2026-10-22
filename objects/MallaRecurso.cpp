@@ -18,6 +18,7 @@
 #include "animation/VertexAnimation.h"  // re-posar a los usuarios animados tras re-apuntarlos
 #include "w3dlog.h"
 #include <string.h>
+#include <stdlib.h>             // getenv (W3D_VBO_TOPE_KB, solo PC)
 
 namespace gfx = w3dEngine;
 
@@ -55,7 +56,8 @@ MallaRecurso::MallaRecurso()
       suave(false), primTipo(-1), primTam(2.0f), primTam2(0.0f), primAlto(0.0f), primVerts(8), primVerts2(8),
       extrasEnRecurso(false), firmaFormas(0), firmaUVRest(0),
       grupoActivo(-1), uvGrupoActivo(-1), radio(0.0f), aabbOk(false), vertsAgrupados(0), statsNoEditable(false),
-      flujos(0), refsRutina(0), vboPos(0), vboNor(0), vboCol(0), vboUV(0), vboIdx(0), vboVer(0), topoEstado(0),
+      flujos(0), refsRutina(0), vboPos(0), vboNor(0), vboCol(0), vboUV(0), vboIdx(0), vboVer(0), vboRechazado(0),
+      topoEstado(0),
       soloGPU(false), ramFija(false), soltarPend(false), arraysHay(0), bytesSoltados(0) {
     esRecurso = true;
     for (int k = 0; k < 3; k++) { aabbMin[k] = aabbMax[k] = centro[k] = 0.0f; }
@@ -1085,9 +1087,12 @@ static void AnotarSoltable(MallaRecurso* r);
 bool W3dMallaRecursoAsegurarVBO(MallaRecurso* r) {
     if (!r || !gfx::VBOSoportado() || (!r->vertex && !r->soloGPU) || r->vertexSize <= 0) return false;
     if (r->vboPos && r->vboVer == r->version) { AnotarSoltable(r); return true; }
+    // (el driver ya rechazo los VBO de esta version: va desde RAM, sin volver a probar cada cuadro)
+    if (r->vboRechazado == r->version + 1) return false;
     // una malla soloGPU con el VBO perdido (contexto GL nuevo): sus arrays de vuelta para subirlos
     if (!r->vertex && !W3dMallaRecursoAsegurarRAM(r)) return false;
     const int nv = r->vertexSize;
+    gfx::ErrorGL();   // (vaciar lo que hubiera)
     if (!r->vboPos) r->vboPos = gfx::GenBuffer();
     gfx::ArrayBufferData(r->vboPos, r->vertex, nv * 3 * (int)sizeof(GLfloat));
     if (r->normals)     { if (!r->vboNor) r->vboNor = gfx::GenBuffer(); gfx::ArrayBufferData(r->vboNor, r->normals, nv * 3 * (int)sizeof(GLbyte)); }
@@ -1103,6 +1108,30 @@ bool W3dMallaRecursoAsegurarVBO(MallaRecurso* r) {
     if (r->faces && r->facesSize > 0) {
         if (!r->vboIdx) r->vboIdx = gfx::GenBuffer();
         gfx::IndexBufferData(r->vboIdx, r->faces, r->facesSize * (int)sizeof(MeshIndex));
+    }
+    // un glBufferData que no entra (el MBX del N95 con la memoria de VBO llena) falla EN SILENCIO: sin preguntar, la
+    // malla soltaba su RAM (soloGPU) y el dibujo leia un VBO vacio (el driver se caia: KERN-EXEC 3). Queda en RAM,
+    // mas lenta pero se ve, y no la suelta
+    unsigned err = gfx::ErrorGL();
+#ifndef W3D_SYMBIAN
+    {   // (pruebas en PC: W3D_VBO_TOPE_KB simula un driver que, pasado ese total, rechaza lo que se sube)
+        static const char* tope = getenv("W3D_VBO_TOPE_KB");
+        static long subidos = 0;
+        const long bytes = (long)nv * (3 * 4 + (r->normals ? 3 : 0) + (r->vertexColor ? 4 : 0) + (r->uv ? 8 : 0)) +
+                           (long)r->facesSize * (long)sizeof(MeshIndex);
+        if (tope && tope[0] && err == 0) {
+            if (subidos + bytes > atol(tope) * 1024L) err = 0x0505;   // GL_OUT_OF_MEMORY
+            else subidos += bytes;
+        }
+    }
+#endif
+    if (err != 0) {
+        w3dLogfW("[mallas] '%s' (%d vertices, %d indices): el driver no acepto sus VBO (glError 0x%x) -> se dibuja desde RAM",
+                 r->nombre.c_str(), nv, r->facesSize, err);
+        BorrarVBO(r);
+        r->vboRechazado = r->version + 1;
+        r->ramFija = true;
+        return false;
     }
     r->vboVer = r->version;
     AnotarSoltable(r);

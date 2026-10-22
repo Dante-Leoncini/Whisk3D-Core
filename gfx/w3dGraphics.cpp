@@ -60,6 +60,7 @@
     #define GL_STATIC_DRAW 0x88E4
 #endif
 #include <stddef.h> // ptrdiff_t / size_t (offset de VBO)
+#include <map>        // la memoria de los VBO vivos (VBOMemoria)
 
 // En Symbian/GLES 1.1 los buffer objects son CORE (<GLES/gl.h> los declara). En desktop GL 1.1 (Windows, opengl32)
 // son GL 1.5 -> hay que cargar los punteros por wglGetProcAddress. Se abstrae con macros GLB_* + un flag gVBOok.
@@ -1473,10 +1474,19 @@ void TexCoordPointer3b(const signed char* p, int count) {
 // ---- BUFFER OBJECTS (VBO/IBO): subir 1 vez, dibujar desde GPU (ver w3dGraphics.h) ----
 bool VBOSoportado(){ w3d_CargarVBO(); return w3d_vboOk; }
 unsigned int GenBuffer(){ w3d_CargarVBO(); if (!w3d_vboOk) return 0; GLuint b = 0; W3D_GLC(GLB_GEN(1, &b)); return (unsigned int)b; }
+// la MEMORIA de los VBO vivos: id -> bytes del ultimo glBufferData (el N95 la comparte con las texturas y un glBufferData
+// que no entra falla en silencio: el log de las rutinas dice cuanto habia subido hasta ahi)
+static std::map<unsigned int, long> g_vboBytes;
+long VBOMemoria(){
+    long t = 0;
+    for (std::map<unsigned int, long>::const_iterator it = g_vboBytes.begin(); it != g_vboBytes.end(); ++it) t += it->second;
+    return t;
+}
 // borrar un buffer lo desbindea de todo (GL lo pone en 0 y puede reciclar el numero): los punteros que lo usaban, el IBO
 // y el UV de la unidad 1 dejan de saberse
 void DeleteBuffer(unsigned int h){
     if (h && w3d_vboOk){
+        g_vboBytes.erase(h);
         GLuint b = (GLuint)h; W3D_GLC(GLB_DEL(1, &b));
         if (gArrBuf == h) gArrBuf = 0;
         if (gIdxBuf == h) gIdxBuf = 0;
@@ -1485,9 +1495,9 @@ void DeleteBuffer(unsigned int h){
     }
 }
 void ArrayBufferData(unsigned int h, const void* data, int bytes){
-    if (!w3d_vboOk || !h) return; g_statUploadBytes += bytes; BindArrBuf(h); W3D_GLC(GLB_DATA(GL_ARRAY_BUFFER, (ptrdiff_t)bytes, data, GL_STATIC_DRAW)); }
+    if (!w3d_vboOk || !h) return; g_statUploadBytes += bytes; g_vboBytes[h] = bytes; BindArrBuf(h); W3D_GLC(GLB_DATA(GL_ARRAY_BUFFER, (ptrdiff_t)bytes, data, GL_STATIC_DRAW)); }
 void IndexBufferData(unsigned int h, const void* data, int bytes){
-    if (!w3d_vboOk || !h) return; g_statUploadBytes += bytes; gIdxBuf = h; W3D_GLC(GLB_BIND(GL_ELEMENT_ARRAY_BUFFER, (GLuint)h)); W3D_GLC(GLB_DATA(GL_ELEMENT_ARRAY_BUFFER, (ptrdiff_t)bytes, data, GL_STATIC_DRAW)); }
+    if (!w3d_vboOk || !h) return; g_statUploadBytes += bytes; g_vboBytes[h] = bytes; gIdxBuf = h; W3D_GLC(GLB_BIND(GL_ELEMENT_ARRAY_BUFFER, (GLuint)h)); W3D_GLC(GLB_DATA(GL_ELEMENT_ARRAY_BUFFER, (ptrdiff_t)bytes, data, GL_STATIC_DRAW)); }
 void VertexVBO(unsigned int h){ if (PtrIgual(VertexArray, h, 0, 3, GL_FLOAT, 0)) return; g_statOtras += 2; BindArrBuf(h); W3D_GLC(glVertexPointer(3, GL_FLOAT, 0, (const GLvoid*)0)); }
 void NormalVBO(unsigned int h){ if (PtrIgual(NormalArray, h, 0, 3, GL_BYTE, 0)) return; g_statOtras += 2; BindArrBuf(h); W3D_GLC(glNormalPointer(GL_BYTE, 0, (const GLvoid*)0)); }
 void ColorVBO(unsigned int h){ if (PtrIgual(ColorArray, h, 0, 4, GL_UNSIGNED_BYTE, 0)) return; g_statOtras += 2; BindArrBuf(h); W3D_GLC(glColorPointer(4, GL_UNSIGNED_BYTE, 0, (const GLvoid*)0)); }

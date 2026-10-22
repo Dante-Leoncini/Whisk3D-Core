@@ -131,6 +131,7 @@ struct MallaRecurso : public MallaDatos {
     unsigned int vboPos, vboNor, vboCol, vboUV, vboIdx;
     std::vector<unsigned int> vboUVx;    // las capas UV extra (uvExtra[k]; la 0 es la activa: su VBO es vboUV)
     unsigned     vboVer;                 // 'version' con la que se subieron (0 = nunca)
+    unsigned     vboRechazado;           // 'version' + 1 cuyos VBO el driver no acepto (0 = ninguna): va desde RAM
 
     // LA TOPOLOGIA COMPARTIDA para MIRAR a los usuarios con la edicion PENDIENTE (wireframe,
     // snap a aristas y caras, seleccion por caja, estadisticas): las aristas y las caras del

@@ -228,6 +228,15 @@ static int PrimGL(int prim) {
     }
 }
 
+// el IBO de un flujo derivado. Un glBufferData que no entra (el MBX del N95 sin memoria de VBO) falla en silencio: sin
+// IBO el flujo se manda de su copia en RAM (d.idx) en vez de un IBO vacio
+static void SubirIBO(FlujoDerivado& d) {
+    gfx::ErrorGL();
+    d.ibo = gfx::GenBuffer();
+    if (d.ibo) gfx::IndexBufferData(d.ibo, &d.idx[0], (int)(d.idx.size() * sizeof(MeshIndex)));
+    if (d.ibo && gfx::ErrorGL() != 0) { gfx::DeleteBuffer(d.ibo); d.ibo = 0; }
+}
+
 bool W3dMallaFlujo(MallaRecurso* r, int parte, int prim, W3dFlujo& f) {
     // (soloGPU: sin r->faces, los indices estan en el IBO de la malla. Sin IBO -un contexto GL perdido que todavia
     // no se volvio a subir- el flujo igual dice cuantos indices son: f.ibo 0 y f.idx NULL = no hay que mandar)
@@ -246,8 +255,7 @@ bool W3dMallaFlujo(MallaRecurso* r, int parte, int prim, W3dFlujo& f) {
         // (el contexto GL se perdio: el IBO del flujo se vuelve a subir de su copia, una vez)
         d.iboPerdido = false;
         if (r->vboIdx && !d.idx.empty()) {
-            d.ibo = gfx::GenBuffer();
-            if (d.ibo) gfx::IndexBufferData(d.ibo, &d.idx[0], (int)(d.idx.size() * sizeof(MeshIndex)));
+            SubirIBO(d);
         }
     }
     if (!d.listo && !r->faces) {
@@ -265,8 +273,7 @@ bool W3dMallaFlujo(MallaRecurso* r, int parte, int prim, W3dFlujo& f) {
         d.listo = true;
         // al IBO si la malla dibuja de VBO (si no, de RAM)
         if (r->vboIdx && !d.idx.empty()) {
-            d.ibo = gfx::GenBuffer();
-            if (d.ibo) gfx::IndexBufferData(d.ibo, &d.idx[0], (int)(d.idx.size() * sizeof(MeshIndex)));
+            SubirIBO(d);
         }
     }
     f.idx = d.idx.empty() ? 0 : &d.idx[0]; f.cantidad = (int)d.idx.size(); f.ibo = d.ibo; f.primero = 0;
