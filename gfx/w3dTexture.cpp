@@ -408,6 +408,150 @@ void DeleteTexture(unsigned int id) {
     g_texMem.erase(id);
 }
 
+// ============================================================================
+//  .w3dt — TEXTURA LISTA PARA LA GPU (sin decodificar nada al cargar)
+//
+//  Un PNG se descomprime (inflate), se desfiltra, se convierte a RGBA, se reescala a potencia de dos, se empaca a
+//  16 bits y el driver le arma la piramide: en el N95 eso es lo que traba el streaming. Un .w3dt trae los pixeles
+//  YA en el formato que recibe glTexImage2D, con TODOS los niveles de mipmap hechos: cargarlo es leer y subir.
+//
+//      cabecera (16 B): "W3DT" | u16 version (1) | u16 formato | u16 ancho | u16 alto | u8 niveles | u8 0 | u16 0
+//      niveles:         el 0 (ancho x alto) y cada mitad hasta 1x1, filas apretadas, cada nivel arranca alineado a 4
+//      formato:         1 RGB565 | 2 RGBA5551 | 3 RGBA4444 | 4 RGB888 | 5 RGBA8888   (little-endian, como GL)
+//
+//  Ancho y alto potencia de dos (lo que acepta el N95). En el telefono, con texturasMitadDesde, se SALTEA el nivel 0
+//  (la mitad ya esta hecha: es el nivel 1).
+// ============================================================================
+#ifndef GL_UNSIGNED_SHORT_4_4_4_4
+#define GL_UNSIGNED_SHORT_4_4_4_4 0x8033
+#endif
+namespace {
+struct W3dtCab { int formato, w, h, niveles; };
+inline unsigned short W3dtU16(const unsigned char* p) { return (unsigned short)(p[0] | (p[1] << 8)); }
+int W3dtBpp(int formato) { return formato <= 3 ? 2 : (formato == 4 ? 3 : 4); }
+bool W3dtCabecera(const std::vector<unsigned char>& d, W3dtCab& c) {
+    if (d.size() < 16 || memcmp(&d[0], "W3DT", 4) != 0 || W3dtU16(&d[4]) != 1) return false;
+    c.formato = W3dtU16(&d[6]); c.w = W3dtU16(&d[8]); c.h = W3dtU16(&d[10]); c.niveles = d[12];
+    return c.formato >= 1 && c.formato <= 5 && c.w > 0 && c.h > 0 && c.niveles >= 1;
+}
+// el offset de cada nivel (y su tamano); false si el archivo no los trae enteros
+bool W3dtNiveles(const std::vector<unsigned char>& d, const W3dtCab& c, std::vector<size_t>& off) {
+    off.clear();
+    size_t p = 16;
+    int w = c.w, h = c.h;
+    for (int k = 0; k < c.niveles; k++) {
+        const size_t n = (size_t)w * h * W3dtBpp(c.formato);
+        if (p > d.size() || d.size() - p < n) return false;
+        off.push_back(p);
+        p = (p + n + 3) & ~(size_t)3;
+        w = w > 1 ? w / 2 : 1; h = h > 1 ? h / 2 : 1;
+    }
+    return true;
+}
+// un nivel a RGBA 8888 (para el editor: miniaturas, el pintor de texturas, lo que pide pixeles)
+void W3dtARGBA(const unsigned char* s, int formato, int n, unsigned char* o) {
+    for (int i = 0; i < n; i++, o += 4) {
+        if (formato <= 3) {
+            const unsigned v = s[i * 2] | (s[i * 2 + 1] << 8);
+            if (formato == 1) { o[0] = (unsigned char)(((v >> 11) & 31) * 255 / 31); o[1] = (unsigned char)(((v >> 5) & 63) * 255 / 63);
+                                o[2] = (unsigned char)((v & 31) * 255 / 31); o[3] = 255; }
+            else if (formato == 2) { o[0] = (unsigned char)(((v >> 11) & 31) * 255 / 31); o[1] = (unsigned char)(((v >> 6) & 31) * 255 / 31);
+                                     o[2] = (unsigned char)(((v >> 1) & 31) * 255 / 31); o[3] = (v & 1) ? 255 : 0; }
+            else { o[0] = (unsigned char)(((v >> 12) & 15) * 17); o[1] = (unsigned char)(((v >> 8) & 15) * 17);
+                   o[2] = (unsigned char)(((v >> 4) & 15) * 17); o[3] = (unsigned char)((v & 15) * 17); }
+        } else if (formato == 4) { o[0] = s[i * 3]; o[1] = s[i * 3 + 1]; o[2] = s[i * 3 + 2]; o[3] = 255; }
+        else { o[0] = s[i * 4]; o[1] = s[i * 4 + 1]; o[2] = s[i * 4 + 2]; o[3] = s[i * 4 + 3]; }
+    }
+}
+} // namespace
+
+bool EsW3dt(const char* path) {
+    if (!path) return false;
+    const size_t n = strlen(path);
+    if (n < 5) return false;
+    const char* e = path + n - 5;
+    return e[0] == '.' && (e[1] | 32) == 'w' && e[2] == '3' && (e[3] | 32) == 'd' && (e[4] | 32) == 't';
+}
+
+bool LoadTextureW3dt(const char* path, unsigned int& outId, int* outW, int* outH) {
+    std::vector<unsigned char> d;
+    W3dtCab c;
+    std::vector<size_t> off;
+    if (!w3dFileSystem::ReadFileBytes(path ? path : "", d) || !W3dtCabecera(d, c) || !W3dtNiveles(d, c, off)) {
+        w3dLogfE("[textura] %s no es un .w3dt que este Whisk3D pueda leer", path ? path : "");
+        return false;
+    }
+    const bool pot = ((c.w & (c.w - 1)) == 0) && ((c.h & (c.h - 1)) == 0);
+    int primero = 0;
+#ifdef W3D_SYMBIAN
+    if (!pot || c.w > 1024 || c.h > 1024) {
+        w3dLogfE("[textura] %s: %dx%d no es potencia de dos (el N95 no la acepta)", path, c.w, c.h);
+        return false;
+    }
+    // la MITAD en el telefono (texturasMitadDesde): el nivel 1 ya es la mitad
+    const int mitad = TexturasMitadDesde();
+    while (mitad > 0 && primero + 1 < c.niveles && ((c.w >> primero) > mitad || (c.h >> primero) > mitad)) primero++;
+#endif
+    GLenum formato = GL_RGBA, tipo = GL_UNSIGNED_BYTE;
+    switch (c.formato) {
+        case 1: formato = GL_RGB;  tipo = GL_UNSIGNED_SHORT_5_6_5; break;
+        case 2: formato = GL_RGBA; tipo = GL_UNSIGNED_SHORT_5_5_5_1; break;
+        case 3: formato = GL_RGBA; tipo = GL_UNSIGNED_SHORT_4_4_4_4; break;
+        case 4: formato = GL_RGB;  tipo = GL_UNSIGNED_BYTE; break;
+        default: break;
+    }
+    const int bpp = W3dtBpp(c.formato);
+    // la piramide del archivo, si el proyecto quiere mipmaps (y la textura es POT: NPOT + piramide es incompleta)
+    const bool mips = pot && MipmapsGlobal() && c.niveles - primero > 1;
+    GLuint id = 0;
+    glGenTextures(1, &id);
+    BindTexture(id);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, bpp == 4 ? 4 : (bpp == 2 ? 2 : 1));
+    const int hasta = mips ? c.niveles : primero + 1;
+    for (int k = primero; k < hasta; k++) {
+        const int w = c.w >> k ? c.w >> k : 1, h = c.h >> k ? c.h >> k : 1;
+        glTexImage2D(GL_TEXTURE_2D, k - primero, formato, w, h, 0, formato, tipo, &d[off[k]]);
+    }
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    const bool pix = PixeladoGlobal();
+    const GLint filtro = pix ? GL_NEAREST : GL_LINEAR;
+    const GLint filtroMin = !mips ? filtro : (pix ? GL_NEAREST_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtro);
+    if (mips && !pix) w3dAnisotropico();
+    const GLint wrap = pot ? GL_REPEAT : GL_CLAMP_TO_EDGE;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
+    TexParamsRegistrar(id, (pix ? 0 : 1) | (mips ? 2 : 0), pot ? 1 : 0);
+    TexMipsRegistrar(id, mips);
+    BindTexture(0);
+    const int w0 = c.w >> primero ? c.w >> primero : 1, h0 = c.h >> primero ? c.h >> primero : 1;
+    g_texSizes[id] = std::make_pair(w0, h0);
+    TexMemAnotar(id, w0, h0, bpp, mips, mips);
+    outId = id;
+    if (outW) *outW = c.w;
+    if (outH) *outH = c.h;
+    return true;
+}
+
+bool DecodeW3dt(const char* path, int maxLado, unsigned char** outRGBA, int* outW, int* outH) {
+    std::vector<unsigned char> d;
+    W3dtCab c;
+    std::vector<size_t> off;
+    if (!outRGBA || !w3dFileSystem::ReadFileBytes(path ? path : "", d) || !W3dtCabecera(d, c) || !W3dtNiveles(d, c, off))
+        return false;
+    // (una miniatura sale del nivel que ya entra: la piramide esta hecha)
+    int k = 0;
+    while (maxLado > 0 && k + 1 < c.niveles && ((c.w >> k) > maxLado || (c.h >> k) > maxLado)) k++;
+    const int w = c.w >> k ? c.w >> k : 1, h = c.h >> k ? c.h >> k : 1;
+    unsigned char* buf = new unsigned char[(size_t)w * h * 4];
+    W3dtARGBA(&d[off[k]], c.formato, w * h, buf);
+    *outRGBA = buf;
+    if (outW) *outW = w;
+    if (outH) *outH = h;
+    return true;
+}
+
 // stb + su consumidor (CargarPixeles/DecodeImage/DecodeThumbnail) NO existe en Symbian: el N95 decodifica
 // con ICL en platform/symbian/src/w3dtexload.cpp. Ademas su toolchain es C++03 (sin nullptr / vector::data).
 #ifndef W3D_SYMBIAN
@@ -429,6 +573,7 @@ bool DecodeImage(const char* path, unsigned char** outRGBA, int* outW, int* outH
     if (!outRGBA) {
         return false;
     }
+    if (EsW3dt(path)) return DecodeW3dt(path, 0, outRGBA, outW, outH);
     int w = 0, h = 0, canales = 0;
     stbi_uc* data = CargarPixeles(path, &w, &h, &canales, STBI_rgb_alpha);
     if (!data) {
@@ -448,6 +593,7 @@ bool DecodeImage(const char* path, unsigned char** outRGBA, int* outW, int* outH
 // solo queda la mini. Asi una foto de 5MP no se queda entera en RAM: clave para no reventar la memoria (N95).
 bool DecodeThumbnail(const char* path, int maxSize, unsigned char** outRGBA, int* outW, int* outH) {
     if (!outRGBA || maxSize < 1) return false;
+    if (EsW3dt(path)) return DecodeW3dt(path, maxSize, outRGBA, outW, outH);   // (el nivel de mipmap que entra)
     int w = 0, h = 0, canales = 0;
     stbi_uc* full = CargarPixeles(path, &w, &h, &canales, STBI_rgb_alpha);
     if (!full) return false;
@@ -488,6 +634,7 @@ bool DecodeThumbnail(const char* path, int maxSize, unsigned char** outRGBA, int
 // ----------------------------------------------------------------------------
 #ifndef W3D_SYMBIAN
 bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
+    if (EsW3dt(path)) return LoadTextureW3dt(path, outId, outW, outH);   // (lista para la GPU: nada que decodificar)
     int w = 0, h = 0, canales = 0;
     // SIEMPRE a RGBA: con canales reales (req=0) una imagen en escala de grises entrega 1-2 bytes
     // por pixel y subirla como GL_RGB sobre-lee el heap. Pedir 4 canales lo resuelve de raiz.

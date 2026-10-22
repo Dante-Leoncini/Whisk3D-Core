@@ -684,12 +684,8 @@ bool W3dZipLector::Abrir(const std::string& r) {
     return true;
 }
 
-bool W3dZipLector::LeerCrudo(const std::string& nombre, std::vector<unsigned char>& out,
-                             unsigned* metodo, unsigned* crc, unsigned* origLen) {
-    out.clear();
-    if (!fh) return false;
-    const W3dZipIndice* e = Buscar(nombre);
-    if (!e) return false;
+bool W3dZipLector::DatosDe(const W3dZipIndice* e, unsigned long& ini) {
+    if (e->datosIni) { ini = e->datosIni; return true; }
     FILE* f = (FILE*)fh;
     if (fseek(f, (long)e->offLocal, SEEK_SET) != 0) return false;
     unsigned char lh[30];
@@ -702,10 +698,22 @@ bool W3dZipLector::LeerCrudo(const std::string& nombre, std::vector<unsigned cha
         if (fread(&nl[0], 1, lNom, f) != lNom) return false;
         if (memcmp(&nl[0], e->nombre.c_str(), lNom) != 0) return false;
     }
-    if (lExtra && fseek(f, (long)lExtra, SEEK_CUR) != 0) return false;
-    unsigned long datosIni = (unsigned long)e->offLocal + 30uL + lNom + lExtra;
+    const unsigned long datosIni = (unsigned long)e->offLocal + 30uL + lNom + lExtra;
     // con RESTAS: los datos tienen que entrar enteros en el archivo
     if (datosIni > tamArchivo || tamArchivo - datosIni < (unsigned long)e->compLen) return false;
+    e->datosIni = ini = datosIni;
+    return true;
+}
+
+bool W3dZipLector::LeerCrudo(const std::string& nombre, std::vector<unsigned char>& out,
+                             unsigned* metodo, unsigned* crc, unsigned* origLen) {
+    out.clear();
+    if (!fh) return false;
+    const W3dZipIndice* e = Buscar(nombre);
+    if (!e) return false;
+    FILE* f = (FILE*)fh;
+    unsigned long datosIni = 0;
+    if (!DatosDe(e, datosIni) || fseek(f, (long)datosIni, SEEK_SET) != 0) return false;
     W3D_ZIP_TRY
     out.resize(e->compLen);
     W3D_ZIP_CATCH(ruta.c_str(), nombre.c_str())
@@ -758,12 +766,38 @@ bool W3dZipLector::Leer(const std::string& nombre, std::vector<unsigned char>& o
         w3dLogfE("W3dZip: metodo %u no soportado (%s)", e->metodo, nombre.c_str());
         return false;
     }
-    // CRC32: la unica forma de saber que lo leido es lo que se guardo
-    if (Crc32De(out) != e->crc) {
-        w3dLogfE("W3dZip: CRC32 que no coincide en %s (%s): archivo corrupto",
-                 ruta.c_str(), nombre.c_str());
-        out.clear(); return false;
+    // CRC32: la unica forma de saber que lo leido es lo que se guardo (una vez por entrada: el archivo abierto no
+    // cambia y el streaming relee lo mismo cada vez que una celda vuelve a entrar)
+    if (!e->verificada) {
+        if (Crc32De(out) != e->crc) {
+            w3dLogfE("W3dZip: CRC32 que no coincide en %s (%s): archivo corrupto",
+                     ruta.c_str(), nombre.c_str());
+            out.clear(); return false;
+        }
+        e->verificada = true;
     }
+    return true;
+}
+
+bool W3dZipLector::LeerRango(const std::string& nombre, unsigned desde, unsigned n, std::vector<unsigned char>& out) {
+    out.clear();
+    if (!fh) return false;
+    const W3dZipIndice* e = Buscar(nombre);
+    if (!e) return false;
+    if (desde > e->origLen || e->origLen - desde < n) return false;   // (con RESTA)
+    if (e->metodo != 0) {
+        std::vector<unsigned char> todo;
+        if (!Leer(nombre, todo)) return false;
+        out.assign(todo.begin() + desde, todo.begin() + desde + n);
+        return true;
+    }
+    unsigned long ini = 0;
+    FILE* f = (FILE*)fh;
+    if (!DatosDe(e, ini) || fseek(f, (long)(ini + desde), SEEK_SET) != 0) return false;
+    W3D_ZIP_TRY
+    out.resize(n);
+    W3D_ZIP_CATCH(ruta.c_str(), nombre.c_str())
+    if (n && fread(&out[0], 1, n, f) != n) { out.clear(); return false; }
     return true;
 }
 

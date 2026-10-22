@@ -70,7 +70,11 @@ struct W3dZipIndice {
     unsigned    origLen;    // bytes ya descomprimidos
     unsigned    metodo;     // 0 = STORE, 8 = DEFLATE
     unsigned    crc;        // el que declara el directorio central
-    W3dZipIndice() : offLocal(0), compLen(0), origLen(0), metodo(0), crc(0) {}
+    // lo que se averigua leyendo (el archivo abierto no cambia): donde empiezan los datos (0 = todavia no se leyo
+    // el local header) y si el CRC32 ya se verifico una vez (el streaming relee la misma entrada muchas veces)
+    mutable unsigned long datosIni;
+    mutable bool          verificada;
+    W3dZipIndice() : offLocal(0), compLen(0), origLen(0), metodo(0), crc(0), datosIni(0), verificada(false) {}
 };
 
 class W3dZipLector {
@@ -86,8 +90,13 @@ public:
     bool Existe(const std::string& nombre) const;
     // tamano DESCOMPRIMIDO. 0 si la entrada no esta (o si esta vacia)
     unsigned Tam(const std::string& nombre) const;
-    // levanta UNA entrada (descomprimiendola si hace falta) y verifica su CRC32
+    // levanta UNA entrada (descomprimiendola si hace falta) y verifica su CRC32 (la PRIMERA vez: el archivo
+    // abierto no cambia, una entrada ya verificada no se vuelve a sumar en cada relectura)
     bool Leer(const std::string& nombre, std::vector<unsigned char>& out);
+    // 'n' bytes desde 'desde' de UNA entrada. Guardada sin comprimir (STORE, lo que escribe el editor): un fseek y
+    // un fread de SOLO esos bytes, sin leer el resto ni sumar el CRC (el streaming lee de una malla solo sus bloques
+    // de render). Comprimida: la entrada entera y el recorte. false = no esta o el rango se pasa
+    bool LeerRango(const std::string& nombre, unsigned desde, unsigned n, std::vector<unsigned char>& out);
     // los bytes TAL CUAL estan en el archivo, sin descomprimir: lo usa
     // W3dZipWriter::CopiarDe para reenvasar una entrada sin recomprimirla
     bool LeerCrudo(const std::string& nombre, std::vector<unsigned char>& out,
@@ -102,6 +111,8 @@ private:
     W3dZipLector(const W3dZipLector&);
     W3dZipLector& operator=(const W3dZipLector&);
     const W3dZipIndice* Buscar(const std::string& nombre) const;
+    // donde empiezan los datos de la entrada (valida su local header la primera vez y lo recuerda)
+    bool DatosDe(const W3dZipIndice* e, unsigned long& ini);
 
     void*         fh;          // FILE* (void* para no meter <stdio.h> en el header)
     std::string   ruta;

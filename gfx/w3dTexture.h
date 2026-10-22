@@ -22,6 +22,13 @@ namespace w3dEngine {
     bool LoadTexture(const char* path, unsigned int& outId,
                      int* outW = 0, int* outH = 0);
 
+    // .w3dt: TEXTURA LISTA PARA LA GPU (16 bits + mipmaps hechos; formato en w3dTexture.cpp). LoadTexture y
+    // DecodeImage la reconocen por la extension en todas las plataformas: cargarla es leer y subir, sin decodificar
+    bool EsW3dt(const char* path);
+    bool LoadTextureW3dt(const char* path, unsigned int& outId, int* outW = 0, int* outH = 0);
+    // su nivel 0 (o el primero que entra en 'maxLado', si > 0) a RGBA 8888, en un buffer de FreeImage
+    bool DecodeW3dt(const char* path, int maxLado, unsigned char** outRGBA, int* outW, int* outH);
+
     // Sube pixeles RGBA 8888 ya decodificados como textura 2D y devuelve su id
     // (0 si falla). 'filtrado' = LINEAR si true, NEAREST si false. Formato
     // interno GL_RGBA: valido tanto en GL de escritorio como en GLES 1.1.

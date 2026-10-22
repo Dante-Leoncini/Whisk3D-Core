@@ -47,6 +47,9 @@ namespace w3dFileSystem {
 
     // Lee un archivo entero a memoria. Devuelve false si no se pudo abrir/leer.
     bool ReadFileBytes(const std::string& path, std::vector<unsigned char>& out);
+    // 'n' bytes desde 'desde' del archivo (mismo orden de busqueda que ReadFileBytes). Del contenedor montado o de
+    // una libreria: SOLO esos bytes (un fseek en el zip); del pak o del disco, el archivo entero y el recorte
+    bool ReadFileRange(const std::string& path, unsigned desde, unsigned n, std::vector<unsigned char>& out);
     // Lee un archivo de texto entero. 'ok' (opcional) queda en false si fallo.
     std::string ReadTextFile(const std::string& path, bool* ok = 0);
     // Escribe/crea un archivo de texto (trunca). false si no se pudo.

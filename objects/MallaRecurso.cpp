@@ -514,6 +514,52 @@ static MallaRecurso* PorIdAlmacen(const std::string& id) {
     return 0;
 }
 
+// LOS BLOQUES DE RENDER de un .w3db, sin los de edicion (FACE, CNRM, UVLY... la mitad de los bytes de una malla de
+// escenario): lo que el streaming necesita para dibujar. Lee la cabecera y la cabecera de cada bloque, y despues
+// solo los tramos de render (los contiguos en UNA lectura), y arma un .w3db valido con esos bloques. false = no es un
+// .w3db (o no se pudo): el que llama lee la entrada entera
+static bool LeerSoloRender(const std::string& entrada, std::string& out) {
+    out.clear();
+    std::vector<unsigned char> cab;
+    if (!w3dFileSystem::ReadFileRange(entrada, 0, 20, cab) || cab.size() != 20 || memcmp(&cab[0], "W3DB", 4) != 0)
+        return false;
+    const unsigned nBloques = cab[12] | (cab[13] << 8) | (cab[14] << 16) | ((unsigned)cab[15] << 24);
+    if (nBloques > 4096) return false;
+    std::vector<std::pair<unsigned, unsigned> > tramos;   // (desde, bytes) de lo que se queda
+    unsigned p = 20, quedan = 0, salteados = 0;
+    std::vector<unsigned char> bh;
+    for (unsigned k = 0; k < nBloques; k++) {
+        if (!w3dFileSystem::ReadFileRange(entrada, p, 16, bh) || bh.size() != 16) return false;
+        const unsigned bytes = bh[12] | (bh[13] << 8) | (bh[14] << 16) | ((unsigned)bh[15] << 24);
+        const unsigned total = 16 + ((bytes + 3) & ~3u);
+        static const char* const kEdicion[] = { "FACE", "LOOS", "CNRM", "UVLY", "COLY", "SHRP", "SEAM", "EDGE", "AJEN" };
+        bool edicion = false;
+        for (size_t e = 0; e < sizeof(kEdicion) / sizeof(kEdicion[0]) && !edicion; e++)
+            edicion = memcmp(&bh[0], kEdicion[e], 4) == 0;
+        if (edicion) salteados++;
+        else {
+            if (!tramos.empty() && tramos.back().first + tramos.back().second == p) tramos.back().second += total;
+            else tramos.push_back(std::make_pair(p, total));
+            quedan++;
+        }
+        p += total;
+    }
+    if (!salteados) return false;   // (nada que saltear: la lectura entera es una sola)
+    out.reserve(20 + (p - 20));
+    cab[12] = (unsigned char)(quedan & 0xFF); cab[13] = (unsigned char)((quedan >> 8) & 0xFF);
+    cab[14] = (unsigned char)((quedan >> 16) & 0xFF); cab[15] = (unsigned char)((quedan >> 24) & 0xFF);
+    out.append((const char*)&cab[0], 20);
+    std::vector<unsigned char> t;
+    for (size_t i = 0; i < tramos.size(); i++) {
+        if (!w3dFileSystem::ReadFileRange(entrada, tramos[i].first, tramos[i].second, t) || t.size() != tramos[i].second) {
+            out.clear();
+            return false;
+        }
+        out.append((const char*)&t[0], t.size());
+    }
+    return true;
+}
+
 static void* OpCargarMalla(const std::string& id, long* bytes) {
     MallaRecurso* r = PorIdAlmacen(id);
     if (!r) return 0;   // solo se cargan las del REGISTRO del proyecto (o las de una libreria)
@@ -525,7 +571,10 @@ static void* OpCargarMalla(const std::string& id, long* bytes) {
         return 0;
     }
     std::string b;
-    if (!W3dMallaRecursoLeerBytes(r, b)) {
+    // (lo que se carga aca son los arrays de DIBUJO: de un .w3db en el almacen alcanza con sus bloques de render; la
+    //  edicion, si alguien la pide, se lee aparte -edicionPendiente-)
+    const bool soloRender = r->bytes.empty() && !r->entrada.empty() && LeerSoloRender(r->entrada, b);
+    if (!soloRender && !W3dMallaRecursoLeerBytes(r, b)) {
         w3dLogfE("[mallas] no pude leer la malla '%s' (%s)", r->nombre.c_str(), id.c_str());
         return 0;
     }

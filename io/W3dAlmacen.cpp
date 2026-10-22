@@ -24,6 +24,16 @@ bool AlmacenZip::Abrir(const std::string& ruta) {
     return true;
 }
 bool AlmacenZip::Existe(const std::string& entrada) const { return zip->Existe(entrada); }
+bool W3dAlmacen::LeerRango(const std::string& entrada, unsigned desde, unsigned n, std::vector<unsigned char>& out) {
+    out.clear();
+    std::vector<unsigned char> todo;
+    if (!Leer(entrada, todo) || desde > todo.size() || todo.size() - desde < n) return false;
+    out.assign(todo.begin() + desde, todo.begin() + desde + n);
+    return true;
+}
+bool AlmacenZip::LeerRango(const std::string& entrada, unsigned desde, unsigned n, std::vector<unsigned char>& out) {
+    return zip->LeerRango(entrada, desde, n, out);
+}
 bool AlmacenZip::Leer(const std::string& entrada, std::vector<unsigned char>& out) {
     return zip->Leer(entrada, out);
 }

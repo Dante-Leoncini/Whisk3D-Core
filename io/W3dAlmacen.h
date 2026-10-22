@@ -48,6 +48,9 @@ public:
     virtual bool Abrir(const std::string& ruta) = 0;
     virtual bool Existe(const std::string& entrada) const = 0;
     virtual bool Leer(const std::string& entrada, std::vector<unsigned char>& out) = 0;
+    // 'n' bytes desde 'desde' de una entrada (el streaming de mallas: solo sus bloques de render). Por defecto la
+    // entrada entera y el recorte; el zip lo hace con un fseek
+    virtual bool LeerRango(const std::string& entrada, unsigned desde, unsigned n, std::vector<unsigned char>& out);
     virtual void Listar(std::vector<std::string>& out) const = 0;
     virtual unsigned Tam(const std::string& entrada) const = 0;
     virtual void Cerrar() = 0;
@@ -61,6 +64,7 @@ public:
     virtual bool Abrir(const std::string& ruta);
     virtual bool Existe(const std::string& entrada) const;
     virtual bool Leer(const std::string& entrada, std::vector<unsigned char>& out);
+    virtual bool LeerRango(const std::string& entrada, unsigned desde, unsigned n, std::vector<unsigned char>& out);
     virtual void Listar(std::vector<std::string>& out) const;
     virtual unsigned Tam(const std::string& entrada) const;
     virtual void Cerrar();

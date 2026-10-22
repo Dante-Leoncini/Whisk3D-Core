@@ -427,6 +427,22 @@ namespace w3dFileSystem {
         return false;
     }
 
+    bool ReadFileRange(const std::string& path, unsigned desde, unsigned n, std::vector<unsigned char>& out) {
+        out.clear();
+        {
+            std::string lib, ent;
+            if (W3dRutaDeLibreria(path, &lib, &ent)) {
+                W3dAlmacen* a = AlmacenDeLibreria(lib);
+                if (a) return a->LeerRango(Normaliza(ent), desde, n, out);
+            }
+        }
+        if (!gPakDatos && gAlmacenMontado && gAlmacenMontado->LeerRango(Normaliza(path), desde, n, out)) return true;
+        std::vector<unsigned char> todo;
+        if (!ReadFileBytes(path, todo) || desde > todo.size() || todo.size() - desde < n) { out.clear(); return false; }
+        out.assign(todo.begin() + desde, todo.begin() + desde + n);
+        return true;
+    }
+
     bool ReadFileBytes(const std::string& path, std::vector<unsigned char>& out) {
         out.clear();
         // UNA ENTRADA DE LIBRERIA ("lib:<nombre>/texturas/x.png", ver W3dAlmacen.h): la lee el
