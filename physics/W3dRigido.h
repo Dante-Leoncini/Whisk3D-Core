@@ -32,7 +32,8 @@
 //    2 PERSONAJE  dinamico con la rotacion BLOQUEADA (siempre parado) y sin
 //                 rebote: el script le fija la velocidad horizontal y la
 //                 fisica pone gravedad + choques (no atraviesa un auto y un
-//                 auto lo empuja).
+//                 auto lo empuja). Contra una MALLA sube escalones (un
+//                 cordon, una escalera) de hasta ~30 cm.
 //    3 MALLA      estatico con la forma de SUS TRIANGULOS (el objeto es una malla:
 //                 el piso irregular, las rampas y las paredes de un mapa). Las
 //                 cajas chocan contra cada triangulo; la caja/centro/masa de la

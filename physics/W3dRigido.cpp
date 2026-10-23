@@ -656,6 +656,12 @@ static bool SegmentoEnCaja(const Rigido& B, const Vector3& a, const Vector3& b, 
     return true;
 }
 
+// todos los puntos del manifold por debajo de la altura 'y' (un contacto que solo toca el pie)
+static bool EsBajo(const Manifold& m, float y) {
+    for (int i = 0; i < m.n; i++) if (m.p[i].pos.y > y) return false;
+    return true;
+}
+
 static void ColisionMalla(int ia, int ib, std::vector<Manifold>& ms) {
     const Rigido& B = gR[ib];
     const Vector3 ext(fabsf(B.u[0].x) * B.half.x + fabsf(B.u[1].x) * B.half.y + fabsf(B.u[2].x) * B.half.z,
@@ -670,6 +676,11 @@ static void ColisionMalla(int ia, int ib, std::vector<Manifold>& ms) {
                  B.u[2] * ((k & 4) ? h[2] : -h[2]);
     // una esquina mas hundida que esto esta del OTRO lado (una pared fina, el piso de abajo): no es contacto
     float hondo = h[0]; if (h[1] < hondo) hondo = h[1]; if (h[2] < hondo) hondo = h[2];
+    // EL PERSONAJE SUBE ESCALONES: una pared que lo toca solo por debajo de esta altura (un cordon, un escalon) no
+    // lo frena; avanza, sus esquinas de abajo quedan adentro del piso de arriba y ese contacto lo levanta. Tiene
+    // que ser menor que 'hondo' (mas hundido el piso de arriba ya no cuenta como contacto)
+    const float pie = B.pos.y - ext.y;
+    const float escalon = (B.tipo == 2) ? (hondo * 0.9f < 0.32f ? hondo * 0.9f : 0.32f) : 0.0f;
     int hechos = 0;
     for (int t = 0; t < nt && hechos < MALLA_MANIF; t++) {
         const W3dColTri& T = gTris[t];
@@ -688,7 +699,10 @@ static void ColisionMalla(int ia, int ib, std::vector<Manifold>& ms) {
             if (Vector3::Cross(ca, esq[k] - T.c).Dot(T.n) < 0.0f) continue;
             PuntoNuevo(m, esq[k], hund);
         }
-        if (m.n > 0) { ms.push_back(m); hechos++; continue; }
+        if (m.n > 0) {
+            if (!(escalon > 0.0f && fabsf(n.y) < 0.5f && EsBajo(m, pie + escalon))) { ms.push_back(m); hechos++; }
+            continue;
+        }
         // ninguna esquina: las aristas del triangulo que atraviesan la caja
         for (int e = 0; e < 3 && hechos < MALLA_MANIF; e++) {
             const Vector3& p0 = e == 0 ? T.a : (e == 1 ? T.b : T.c);
@@ -707,6 +721,7 @@ static void ColisionMalla(int ia, int ib, std::vector<Manifold>& ms) {
             Manifold me;
             me.ia = ia; me.ib = ib; me.n = 0; me.normal = B.u[eje] * (-sg);
             PuntoNuevo(me, q, menor);
+            if (escalon > 0.0f && fabsf(me.normal.y) < 0.5f && EsBajo(me, pie + escalon)) continue;
             ms.push_back(me);
             hechos++;
         }

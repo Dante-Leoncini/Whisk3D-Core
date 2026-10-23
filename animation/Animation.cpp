@@ -1725,6 +1725,13 @@ bool W3dMixEscenasAplicar(int frameMix, bool juego){
     if (raicesCapas.size() > 1){ conCapas = raicesCapas; std::sort(conCapas.begin(), conCapas.end()); }
     for (size_t r = 0; r < raicesCapas.size(); r++){
         Object* raiz = raicesCapas[r];
+        // JUGANDO, una raiz OCULTA (ella o un ancestro) no se posa: no se dibuja, y su pose cuesta lo mismo que la de
+        // una visible (un peaton lejano que el juego escondio). Su cabezal sigue avanzando: al mostrarse, esta en fase
+        if (juego) {
+            bool ver = true;
+            for (const Object* q = raiz; q && ver; q = q->Parent) ver = q->visible;
+            if (!ver) continue;
+        }
         const bool anidada = std::find(tocadosJer.begin(), tocadosJer.end(), raiz) != tocadosJer.end();
         W3dMixBase baseAnidada;
         if (anidada) baseAnidada = acc[raiz];   // (lo que le dejaron las capas de antes: su base relativa)
