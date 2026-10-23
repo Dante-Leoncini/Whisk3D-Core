@@ -268,6 +268,8 @@ namespace w3dFileSystem {
     static std::string DetectResDir() {
     #if defined(__ANDROID__)
         return "res";
+    #elif defined(W3D_DREAMCAST)
+        return "/rd";   // el romdisk que va adentro del ejecutable (res/, ver platform/dreamcast/Makefile)
     #elif defined(W3D_SYMBIAN)
         return std::string(); // Symbian no usa GetResDir (skinDir va a mano)
     #else
@@ -610,6 +612,8 @@ namespace w3dFileSystem {
     #elif defined(W3D_SYMBIAN)
         if (EsCarpeta("E:/")) return "E:/"; // tarjeta de memoria del N95
         return "C:/";
+    #elif defined(W3D_DREAMCAST)
+        return "/ram";   // la Dreamcast: lo unico escribible es el disco en RAM (se pierde al apagar)
     #elif defined(__ANDROID__)
         // almacenamiento COMPARTIDO del usuario (Descargas, DCIM, etc.), NO el
         // sandbox de la app. El permiso de lectura lo pide la app; sin permiso

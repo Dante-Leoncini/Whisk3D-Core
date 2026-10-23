@@ -242,7 +242,10 @@ namespace w3dEngine {
     // query: usa el CACHE del motor (NO llama glIsEnabled, que flushea el GPU en el N95)
     bool IsEnabled(Cap c);
 
-    // leer pixeles (render-a-imagen / picking por color)
+    // leer pixeles (render-a-imagen / picking por color). ReadPixelsBegin avisa ANTES de dibujar que zona se va a
+    // leer: donde no se puede leer el framebuffer (la PVR de la Dreamcast arma el cuadro recien al cerrarlo), lo que
+    // se dibuja hasta el ReadPixelsRGBA va por software a esa zona. En el resto no hace nada.
+    void ReadPixelsBegin(int x, int y, int w, int h);
     void ReadPixelsRGBA(int x, int y, int w, int h, unsigned char* pixels);
 
     // mezcla alfa estandar: SRC_ALPHA, ONE_MINUS_SRC_ALPHA (para Blend)
@@ -336,6 +339,11 @@ namespace w3dEngine {
     void NormalPointer3b(const signed char* p);                    // 3 byte
     void TexCoordPointer2f(int strideBytes, const float* p);       // 2 float
     void TexCoordPointer3b(const signed char* p, int count);       // 3 byte (normales como texcoords, matcap HW). count=vertices (desktop convierte a GL_SHORT)
+#ifdef W3D_DREAMCAST
+    // GLdc define GLbyte como 'char' (no 'signed char'): las normales en bytes de las mallas llegan como char*
+    inline void NormalPointer3b(const char* p) { NormalPointer3b((const signed char*)p); }
+    inline void TexCoordPointer3b(const char* p, int count) { TexCoordPointer3b((const signed char*)p, count); }
+#endif
 
     // --- BUFFER OBJECTS (VBO/IBO): subir la malla UNA vez a memoria de GPU y dibujar desde ahi, en vez de
     //     re-transferir los client-arrays de RAM en CADA glDrawElements. GL ES 1.1 (N95/MBX) y GL ES 2 (WebGL) los

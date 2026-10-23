@@ -700,6 +700,7 @@ void W3dSoundSetVolume(int, float) {}
 void W3dSoundSetPitch(int, float) {}
 float W3dSoundPos(int) { return -1.0f; }
 void W3dAudioMasterVolume(float) {}
+void W3dAudioJuegoVolume(float) {}
 void W3dAudioMix(short*, int) {}
 
 #endif

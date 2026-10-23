@@ -299,18 +299,28 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
     if (!rgba || w <= 0 || h <= 0) {
         return 0;
     }
-#ifdef W3D_SYMBIAN
+#if defined(W3D_SYMBIAN) || defined(W3D_DREAMCAST)
+#ifdef W3D_DREAMCAST
+    forzarPOT = true;      // la PVR de la Dreamcast tampoco acepta NPOT (ni mas de 1024): SIEMPRE al POT siguiente
+    permitir16 = false;    // GLdc no toma el 5551/565 empacado del editor: va en RGBA y GLdc lo pasa a 16 bits de la PVR
+    conMips = false;       // GLdc solo hace mipmaps en texturas twiddled
+#endif
     // N95 (PowerVR MBX Lite, GLES 1.1): una textura NPOT se RECHAZA (glTexImage2D ->
     // INVALID_VALUE) y el quad sale SIN textura -- es el bug del fuego: sus atlas son NPOT
     // (960x24, 1440x48). El camino de MATERIAL ya remuestrea a POT (w3dtexload ReescalarPOT);
     // el de particulas/UI-2D (Textura2D -> aca) se lo saltaba. forzarPOT lo iguala: remuestreo
     // por VECINO al POT siguiente (tope 1024), igual que el material. Los UV 0..1 no cambian.
     unsigned char* potBuf = 0;
+#ifdef W3D_DREAMCAST
+    const int ladoMin = 8;   // la PVR no acepta texturas de menos de 8x8 (un icono de 2x8 se rechazaba)
+#else
+    const int ladoMin = 1;
+#endif
     if (forzarPOT) {
-        const bool yaPot = ((w & (w - 1)) == 0) && ((h & (h - 1)) == 0) && w <= 1024 && h <= 1024;
+        const bool yaPot = ((w & (w - 1)) == 0) && ((h & (h - 1)) == 0) && w <= 1024 && h <= 1024 && w >= ladoMin && h >= ladoMin;
         if (!yaPot) {
-            int pw = 1; while (pw < w && pw < 1024) { pw <<= 1; }
-            int ph = 1; while (ph < h && ph < 1024) { ph <<= 1; }
+            int pw = ladoMin; while (pw < w && pw < 1024) { pw <<= 1; }
+            int ph = ladoMin; while (ph < h && ph < 1024) { ph <<= 1; }
             potBuf = new unsigned char[(size_t)pw * ph * 4];
             if (potBuf) {
                 for (int y = 0; y < ph; y++) {
@@ -354,7 +364,18 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
     }
     const bool de16 = (tipo != GL_UNSIGNED_BYTE);
     if (de16) glPixelStorei(GL_UNPACK_ALIGNMENT, 2);   // (filas de 2 bytes por texel)
-#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+#ifdef W3D_DREAMCAST
+    // GLdc guarda GL_RGBA en ARGB4444 (4 bits por canal: bandas marcadas en una foto o en el trazado de rayos). Una
+    // imagen sin transparencia va como GL_RGB, que GLdc guarda en RGB565. Los datos siguen en RGBA de 8 bits: GLdc los
+    // convierte, tambien en las actualizaciones parciales (UpdateRGBA)
+    GLenum interno = formato;
+    {
+        bool opaca = true;
+        for (size_t i = 3, n = (size_t)w * h * 4; i < n && opaca; i += 4) opaca = (rgba[i] == 255);
+        if (opaca) interno = GL_RGB;
+    }
+    glTexImage2D(GL_TEXTURE_2D, 0, interno, w, h, 0, formato, tipo, datos);
+#elif defined(__ANDROID__) || defined(__EMSCRIPTEN__)
     glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0, formato, tipo, datos);
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
 #else
@@ -382,10 +403,49 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
 
     w3dEngine::BindTexture(0);
     g_texSizes[id] = std::make_pair(w, h); // recordar el tamano para el aspect ratio del UV editor
-#ifdef W3D_SYMBIAN
+#if defined(W3D_SYMBIAN) || defined(W3D_DREAMCAST)
     if (potBuf) delete[] potBuf;
 #endif
     return id;
+}
+
+// ----------------------------------------------------------------------------
+// CAPTURA DE PANTALLA: una textura RGB vacia y la copia del framebuffer a ella (w3dTexture.h)
+// ----------------------------------------------------------------------------
+unsigned int ReservarPantalla(unsigned int id, int w, int h) {
+    if (w <= 0 || h <= 0) return id;
+    GLuint t = id;
+    if (!t) glGenTextures(1, &t);
+    w3dEngine::BindTexture(t);
+#ifdef W3D_SYMBIAN
+    // (el framebuffer del N95 es de 16 bits: en 565 ocupa la mitad y no se pierde nada)
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, NULL);
+    TexMemAnotar(t, w, h, 2, false, false);
+#else
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    TexMemAnotar(t, w, h, 3, false, false);
+#endif
+    TexMipsRegistrar(t, false);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    TexParamsRegistrar(t, 1, 0);
+    w3dEngine::BindTexture(0);
+    g_texSizes[t] = std::make_pair(w, h);
+    return t;
+}
+
+void CopiarPantalla(unsigned int id, int x, int y, int w, int h) {
+    if (!id || w <= 0 || h <= 0) return;
+#ifdef W3D_DREAMCAST
+    // la PVR arma el cuadro recien al cerrarlo: no hay pantalla para copiar a mitad de cuadro (y en GLdc
+    // glCopyTexSubImage2D es un assert que corta el programa). La captura queda como estaba.
+    (void)x; (void)y;
+    return;
+#endif
+    w3dEngine::BindTexture(id);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, y, w, h);
 }
 
 // ----------------------------------------------------------------------------
@@ -474,6 +534,17 @@ bool EsW3dt(const char* path) {
 }
 
 bool LoadTextureW3dt(const char* path, unsigned int& outId, int* outW, int* outH) {
+#ifdef W3D_DREAMCAST
+    {   // GLdc no toma los 16 bits del archivo (5551/4444 en ese orden): se decodifica a RGBA y sube como cualquier otra
+        unsigned char* rgba = 0; int w = 0, h = 0;
+        if (!DecodeW3dt(path, 1024, &rgba, &w, &h) || !rgba) return false;
+        outId = UploadRGBA(rgba, w, h, !PixeladoGlobal(), false, true, false);
+        delete[] rgba;
+        if (outW) *outW = w;
+        if (outH) *outH = h;
+        return outId != 0;
+    }
+#endif
     std::vector<unsigned char> d;
     W3dtCab c;
     std::vector<size_t> off;
@@ -642,6 +713,15 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
     if (!data) {
         return false;
     }
+#ifdef W3D_DREAMCAST
+    {   // la PVR: potencia de dos, RGBA (GLdc la pasa a 16 bits) y sin mipmaps: lo resuelve UploadRGBA
+        outId = UploadRGBA(data, w, h, !w3dEngine::PixeladoGlobal(), false, true, false);
+        stbi_image_free(data);
+        if (outW) *outW = w;
+        if (outH) *outH = h;
+        return outId != 0;
+    }
+#endif
     // PNG SIN canal alpha (canales <= 3, lo reporta stb aunque se fuerce RGBA): se
     // RE-EMPACA el buffer ya-RGBA a RGB apretado y se sube GL_RGB -> 25% menos de
     // memoria de GPU en las texturas opacas (idea del dueno: atlas opaco 8,8,8).

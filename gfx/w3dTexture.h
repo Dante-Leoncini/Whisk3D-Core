@@ -80,6 +80,16 @@ namespace w3dEngine {
     // dimensiones con que se subio una textura (para el aspect ratio). false si no se conoce.
     bool TextureSize(unsigned int id, int& w, int& h);
 
+    // CAPTURA DE PANTALLA (un cuadro dibujado, copiado a una textura). ReservarPantalla deja en 'id' (0 = crea una) una
+    // textura RGB de w x h sin datos, sin mipmaps, LINEAR y sin repetir (w y h potencias de dos: el N95 no acepta
+    // otras); devuelve su id. CopiarPantalla copia un rectangulo del framebuffer (x, y desde abajo a la izquierda, como
+    // glViewport) a la esquina (0,0) de la textura con glCopyTexSubImage2D, que esta en GL 1.1, GLES 1.1 y
+    // GLES2/WebGL sin extensiones. La fila 0 de la textura es la de ABAJO del rectangulo: queda dada vuelta respecto de
+    // una imagen cargada. En un PowerVR (el N95) copiar en medio del cuadro obliga a dibujar todo lo mandado hasta ahi:
+    // es para un cuadro de vez en cuando, no para cada cuadro
+    unsigned int ReservarPantalla(unsigned int id, int w, int h);
+    void CopiarPantalla(unsigned int id, int x, int y, int w, int h);
+
     // Decodifica una imagen del disco a pixeles RGBA 8888 en el heap, sin
     // subirla a GL. Util cuando se necesitan los PIXELES (no solo el id), p.ej.
     // para armar un sprite. El que llama libera con FreeImage. Devuelve true y

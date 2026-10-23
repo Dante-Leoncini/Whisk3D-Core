@@ -569,6 +569,7 @@ void DepthRange(float n,float f){
     W3D_GLC(glDepthRange(n,f));
 #endif
 }
+void ReadPixelsBegin(int,int,int,int){}   // (lee el framebuffer de verdad)
 void ReadPixelsRGBA(int x,int y,int w,int h,unsigned char* px){ W3D_GLC(glReadPixels(x,y,w,h,GL_RGBA,GL_UNSIGNED_BYTE,px)); }
 void BlurY(float amt){ blurY = (amt > 0.0f) ? amt : 0.0f; }   // blur vertical por shader
 void AlphaTest(float ref){ alphaRef = (ref > 0.0f) ? ref : 0.0f; }  // descarte por alpha

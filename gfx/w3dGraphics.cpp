@@ -27,6 +27,7 @@
         #include <GL/glext.h>
     #endif
 #endif
+#include "w3dGLdc.h"   // Dreamcast: lo que GLdc no trae (vacio en el resto)
 #include <math.h>  // tanf (Perspective)
 #include <stdio.h> // printf (AuditarEstado: reporte de desyncs del cache)
 
@@ -95,6 +96,17 @@
     #define GLMT_OK     (w3d_glActiveTexture && w3d_glClientActiveTexture)
     #define GLMT_ACTIVE w3d_glActiveTexture
     #define GLMT_CLIENT w3d_glClientActiveTexture
+#elif defined(W3D_DREAMCAST)
+    // GLdc: sin buffer objects (todo por arreglos en RAM) y la multitextura con los nombres ARB
+    static bool w3d_vboOk = false;
+    static void w3d_CargarVBO(){}
+    #define GLMT_OK     true
+    #define GLMT_ACTIVE glActiveTextureARB
+    #define GLMT_CLIENT glClientActiveTextureARB
+    #define GLB_GEN    glGenBuffers
+    #define GLB_DEL    glDeleteBuffers
+    #define GLB_BIND   glBindBuffer
+    #define GLB_DATA   glBufferData
 #else
     static bool w3d_vboOk = true;         // GLES 1.1 / ES2: core
     static void w3d_CargarVBO(){}
@@ -199,6 +211,21 @@ static bool  gMatKnown[4] = { false, false, false, false };
 static float gShinCache   = -1e9f;
 static float gColCache[4];
 static bool  gColKnown    = false;
+#ifdef W3D_DREAMCAST
+// la lectura de pixeles por software (ver ReadPixelsBegin, mas abajo) y el estado de GL que necesita y no se guardaba
+static bool  gLectActiva  = false;
+static float gClearCol[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+static bool  gColorMaskOn = true;
+static float gLineaAncho  = 1.0f;
+static bool  gFrenteCCW   = true, gCullFrente = false;
+enum LectPrim { LectTriangulos, LectLineas, LectTiraLineas, LectPuntos };
+static void LectDibujar(LectPrim p, int primero, int n, const void* idx, int bytesIdx);
+static void LectLimpiar(int bits);
+// mientras la lectura esta prendida, un draw se rasteriza en ella y no va a la PVR
+#define W3D_LECT(prim, primero, n, idx, bytesIdx) if (gLectActiva) { LectDibujar(prim, primero, n, idx, bytesIdx); return; }
+#else
+#define W3D_LECT(prim, primero, n, idx, bytesIdx)
+#endif
 
 // ---- capacidades ----
 static GLenum CapGL(Cap c) {
@@ -240,6 +267,9 @@ void DepthFunc(DepthCmp c) {
 void Enable(Cap c) {
     if (gCapKnown[c] && gCapOn[c]) { return; } // ya prendida y la conocemos -> nada
     gCapOn[c] = true; gCapKnown[c] = true;
+#ifdef W3D_DREAMCAST
+    if (c == PointSprite || c == Dither || c == Multisample) return;   // (GLdc no las conoce: solo daban GL_INVALID_ENUM)
+#endif
     g_statStateChanges++;
     W3D_GLC(glEnable(CapGL(c)));
     // COLOR_MATERIAL: al prenderse, ambient/diffuse del material pasan a seguir
@@ -250,6 +280,9 @@ void Enable(Cap c) {
 void Disable(Cap c) {
     if (gCapKnown[c] && !gCapOn[c]) { return; } // ya apagada y la conocemos -> nada
     gCapOn[c] = false; gCapKnown[c] = true;
+#ifdef W3D_DREAMCAST
+    if (c == PointSprite || c == Dither || c == Multisample) return;
+#endif
     g_statStateChanges++;
     W3D_GLC(glDisable(CapGL(c)));
     // COLOR_MATERIAL: al apagarse, el material queda con lo ULTIMO trackeado
@@ -282,8 +315,15 @@ void DisableArray(VArray a) {
 int ArrayEstado(VArray a) { return gArrOn[a]; }
 
 // ---- buffers ----
+#ifdef W3D_DREAMCAST
+void ClearColor(float r, float g, float b, float a) { gClearCol[0] = r; gClearCol[1] = g; gClearCol[2] = b; gClearCol[3] = a; W3D_GLC(glClearColor(r, g, b, a)); }
+#else
 void ClearColor(float r, float g, float b, float a) { W3D_GLC(glClearColor(r, g, b, a)); }
+#endif
 void Clear(int bits) {
+#ifdef W3D_DREAMCAST
+    if (gLectActiva) { LectLimpiar(bits); return; }
+#endif
     GLbitfield m = 0;
     if (bits & ColorBuffer)   { m |= GL_COLOR_BUFFER_BIT; }
     if (bits & DepthBuffer)   { m |= GL_DEPTH_BUFFER_BIT; }
@@ -299,6 +339,9 @@ static int gMaxClip = -1;
 static int gClipOn  = 0;   // cuantos hay prendidos ahora (para apagarlos rapido)
 
 int PlanosRecorteMax() {
+#ifdef W3D_DREAMCAST
+    return 0;   // la PVR no tiene planos de recorte: el espejo se recorta solo por la vista
+#endif
     if (gMaxClip < 0) {
         GLint n = 0;
         W3D_GLC(glGetIntegerv(GL_MAX_CLIP_PLANES, &n));
@@ -366,8 +409,15 @@ void EstencilApagar() {
 }
 
 // ---- viewport / recorte ----
+#ifdef W3D_DREAMCAST
+// GLdc no deja consultar el viewport: se recuerda el ultimo que se puso
+static int gViewportPuesto[4] = { 0, 0, 640, 480 };
+void Viewport(int x, int y, int w, int h) { gViewportPuesto[0] = x; gViewportPuesto[1] = y; gViewportPuesto[2] = w; gViewportPuesto[3] = h; W3D_GLC(glViewport(x, y, w, h)); }
+void GetViewport(int v[4]) { for (int i = 0; i < 4; i++) v[i] = gViewportPuesto[i]; }
+#else
 void Viewport(int x, int y, int w, int h) { W3D_GLC(glViewport(x, y, w, h)); }
 void GetViewport(int v[4]) { GLint g[4]; W3D_GLC(glGetIntegerv(GL_VIEWPORT, g)); for (int i = 0; i < 4; i++) v[i] = (int)g[i]; }
+#endif
 void GetScissor(int v[4])  { GLint g[4]; W3D_GLC(glGetIntegerv(GL_SCISSOR_BOX, g)); for (int i = 0; i < 4; i++) v[i] = (int)g[i]; }
 bool ScissorActivo()       { return W3D_GLC(glIsEnabled(GL_SCISSOR_TEST)) == GL_TRUE; }
 void Scissor(int x, int y, int w, int h)  { W3D_GLC(glScissor(x, y, w, h)); }
@@ -646,7 +696,11 @@ void DepthMask(bool escribir)  {
     gDepthMaskCache = escribir ? 1 : 0;
     g_statStateChanges++; W3D_GLC(glDepthMask(escribir ? GL_TRUE : GL_FALSE));
 }
+#ifdef W3D_DREAMCAST
+void LineWidth(float px)       { gLineaAncho = px; W3D_GLC(glLineWidth(px)); }
+#else
 void LineWidth(float px)       { W3D_GLC(glLineWidth(px)); }
+#endif
 void SmoothShading(bool suave) {
     if (gSmoothCache == (suave ? 1 : 0)) return;
     gSmoothCache = suave ? 1 : 0;
@@ -725,7 +779,7 @@ void BindTexture(unsigned int id) {
 // CHROME: genera las UV con sphere-map del pipeline fijo (PC). En GLES1 (Symbian) no hay glTexGen ->
 // stub (calcular las UV del chrome por software a partir del normal y la camara).
 void TexGenSphere(bool on) {
-#if defined(W3D_SYMBIAN) || defined(__ANDROID__)
+#if defined(W3D_SYMBIAN) || defined(__ANDROID__) || defined(W3D_DREAMCAST)
     (void)on;
 #else
     if (gTexGenCache == (on ? 1 : 0)) return;   // ya esta (la matriz del texgen es fija)
@@ -800,8 +854,8 @@ void TexMatrixUV(float du, float dv, float su, float sv) {
 // true si el backend tiene glTexGen (sphere-map por HARDWARE). PC = si; GLES1 del N95 = NO -> el matcap se
 // calcula por SOFTWARE (sphere-map por vertice, como el equirect). Lo usa el render del chrome para elegir.
 bool TieneTexGen() {
-#ifdef W3D_SYMBIAN
-    return false;
+#if defined(W3D_SYMBIAN) || defined(W3D_DREAMCAST)
+    return false;   // (Dreamcast: GLdc no tiene glTexGen)
 #else
     return true;
 #endif
@@ -904,10 +958,20 @@ void TexEnvAlphaOnly(bool on) {
 }
 
 // ---- color uniforme ----
+#ifdef W3D_DREAMCAST
+void FrontFace(bool ccw) { gFrenteCCW = ccw; W3D_GLC(glFrontFace(ccw ? GL_CCW : GL_CW)); }
+void CullCarasFrontales(bool on) { gCullFrente = on; W3D_GLC(glCullFace(on ? GL_FRONT : GL_BACK)); g_statStateChanges++; }
+void ColorMask(bool r, bool g, bool b, bool a) { gColorMaskOn = r || g || b; W3D_GLC(glColorMask(r, g, b, a)); }
+#else
 void FrontFace(bool ccw) { W3D_GLC(glFrontFace(ccw ? GL_CCW : GL_CW)); }
 void CullCarasFrontales(bool on) { W3D_GLC(glCullFace(on ? GL_FRONT : GL_BACK)); g_statStateChanges++; }
 void ColorMask(bool r, bool g, bool b, bool a) { W3D_GLC(glColorMask(r, g, b, a)); }
+#endif
+#ifdef W3D_DREAMCAST
+void PointSpriteCoordReplace(bool on) { (void)on; }   // (los puntos de la Dreamcast ya van con la textura entera)
+#else
 void PointSpriteCoordReplace(bool on) { W3D_GLC(glTexEnvi(GL_POINT_SPRITE, GL_COORD_REPLACE, on ? GL_TRUE : GL_FALSE)); }
+#endif
 
 void Color4f(float r, float g, float b, float a) {
     if (gColKnown && gColCache[0] == r && gColCache[1] == g &&
@@ -922,11 +986,21 @@ void Color4f(float r, float g, float b, float a) {
 void Color4fv(const float* c) { Color4f(c[0], c[1], c[2], c[3]); }
 
 // --- niebla ---
+#ifdef W3D_DREAMCAST
+// GLdc toma el modo de la niebla solo como entero (glFogf con GL_FOG_MODE da GL_INVALID_ENUM y queda la de fabrica,
+// que nublaba toda la vista)
+void FogMode(bool linear) { W3D_GLC(glFogi(GL_FOG_MODE, linear ? GL_LINEAR : GL_EXP)); }
+#else
 void FogMode(bool linear) { W3D_GLC(glFogf(GL_FOG_MODE, (float)(linear ? GL_LINEAR : GL_EXP))); }
+#endif
 void FogStart(float z)    { W3D_GLC(glFogf(GL_FOG_START, z)); }
 void FogEnd(float z)      { W3D_GLC(glFogf(GL_FOG_END, z)); }
 void FogColor(const float* c) { W3D_GLC(glFogfv(GL_FOG_COLOR, c)); }
+#ifdef W3D_DREAMCAST
+void FogModo(int m)       { W3D_GLC(glFogi(GL_FOG_MODE, m == 2 ? GL_EXP2 : (m == 1 ? GL_EXP : GL_LINEAR))); }
+#else
 void FogModo(int m)       { W3D_GLC(glFogf(GL_FOG_MODE, (float)(m == 2 ? GL_EXP2 : (m == 1 ? GL_EXP : GL_LINEAR)))); }
+#endif
 void FogDensidad(float d) { W3D_GLC(glFogf(GL_FOG_DENSITY, d)); }
 
 // --- luz 0 ---
@@ -989,9 +1063,12 @@ void LightModelAmbient(const float* c) { g_statOtras++; W3D_GLC(glLightModelfv(G
 // query del CACHE (todas las Enable/Disable pasan por el motor, asi que es fiel)
 bool IsEnabled(Cap c) { return gCapOn[c]; }
 
+#ifndef W3D_DREAMCAST
+void ReadPixelsBegin(int, int, int, int) {}   // (GL lee el framebuffer de verdad: no hace falta preparar nada)
 void ReadPixelsRGBA(int x, int y, int w, int h, unsigned char* p) {
     W3D_GLC(glReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, p));
 }
+#endif
 void Color4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a) {
     gColKnown = false;   // otra precision: el cache de Color4f deja de valer
     if (gCapOn[ColorMaterial]) { gMatKnown[MatAmbient] = false; gMatKnown[MatDiffuse] = false; }
@@ -1261,6 +1338,9 @@ static void SinIBO() {
 #define GL_SUBTRACT           0x84E7
 #endif
 bool MezclaTexturasSoportada() {
+#ifdef W3D_DREAMCAST
+    return false;   // GLdc no tiene el combiner (GL_COMBINE): la mezcla de texturas va en varias pasadas
+#endif
     if (gMezclaSoportada < 0) {
         w3d_CargarVBO();   // (Windows: carga tambien glActiveTexture / glClientActiveTexture)
         GLint n = 1;
@@ -1512,6 +1592,7 @@ void BindIndexVBO(unsigned int h){
     gIdxBuf = h; g_statOtras++; W3D_GLC(GLB_BIND(GL_ELEMENT_ARRAY_BUFFER, (GLuint)h));
 }
 void DrawTrianglesVBO(int count, int firstIndex){
+    W3D_LECT(LectTriangulos, 0, 0, 0, 0);   // (sin VBOs en la Dreamcast: no llega)
     MatricesSincronizar();
     StatDrawTri(count); g_statDrawVBO++;
 #if defined(W3D_SYMBIAN) || defined(__ANDROID__)
@@ -1533,6 +1614,7 @@ static inline void AntesDeDibujar(bool indicesRAM) { MatricesSincronizar(); if (
 // ELEMENT_ARRAY (los indices se leen de RAM en el draw) y cuenta esos bytes como
 // "subidos" (son lo unico que cruza el bus por frame con la visibilidad activa).
 void DrawTrianglesClientIdx(int count, const MeshIndex* indices) {
+    W3D_LECT(LectTriangulos, 0, count, indices, (int)sizeof(MeshIndex));
     MatricesSincronizar();
     if (g_punterosCache) SinIBO();
     else if (w3d_vboOk) { W3D_GLC(GLB_BIND(GL_ELEMENT_ARRAY_BUFFER, 0)); gIdxBuf = 0; }
@@ -1549,6 +1631,7 @@ void DrawTrianglesClientIdx(int count, const MeshIndex* indices) {
 // client arrays): el gemelo de DrawTrianglesClientIdx para las aristas de un
 // material con `lineas` (el mismo camino sirve en los dos modos de dibujo).
 void DrawLinesClientIdx(int count, const MeshIndex* indices) {
+    W3D_LECT(LectLineas, 0, count, indices, (int)sizeof(MeshIndex));
     MatricesSincronizar();
     if (g_punterosCache) SinIBO();
     else if (w3d_vboOk) { W3D_GLC(GLB_BIND(GL_ELEMENT_ARRAY_BUFFER, 0)); gIdxBuf = 0; }
@@ -1561,14 +1644,63 @@ void DrawLinesClientIdx(int count, const MeshIndex* indices) {
 #endif
 }
 
+#ifdef W3D_DREAMCAST
+// EL CAMINO RAPIDO DE GLdc: copia los vertices de una (y los transforma al pasar) solo si las posiciones son de 3
+// floats, las UV de 2 floats y el color de 4 floats. La interfaz (texto, rectangulos, iconos, la grilla) manda
+// posiciones de 2 floats o de shorts: GLdc las leia por el camino lento, atributo por atributo y vertice por vertice, y
+// era lo mas caro del cuadro. Antes de esos draws las posiciones pasan a 3 floats (z = 0 si no hay) en un buffer
+// propio, y despues vuelve el puntero de siempre.
+static float* gPos3 = 0;
+static int gPos3Cap = 0;
+static bool PosConviene() {   // (barato: se mira antes de buscar el indice mas alto)
+    const PunteroPuesto& v = gPtr[VertexArray];
+    if (gArrOn[VertexArray] != 1 || !gPtrOk[VertexArray] || !v.ptr || v.buf) return false;
+    if (v.tipo == GL_FLOAT && v.tam == 3) return false;   // (ya va por el camino rapido)
+    // el resto de lo prendido tiene que estar en el formato rapido, si no GLdc va por el lento igual
+    if (gArrOn[ColorArray] == 1 || gArrOn[NormalArray] == 1) return false;
+    return gArrOn[TexCoordArray] != 1 || (gPtrOk[TexCoordArray] && gPtr[TexCoordArray].tipo == GL_FLOAT && gPtr[TexCoordArray].tam == 2);
+}
+static bool PosA3f(int desde, int hasta) {   // los vertices [desde, hasta) del arreglo puesto
+    const PunteroPuesto& v = gPtr[VertexArray];
+    if (hasta <= desde) return false;
+    if (hasta > gPos3Cap) {
+        float* nuevo = (float*)realloc(gPos3, (size_t)hasta * 3 * sizeof(float));
+        if (!nuevo) return false;
+        gPos3 = nuevo; gPos3Cap = hasta;
+    }
+    const int bytes = (v.tipo == GL_SHORT) ? 2 : 4;
+    const int paso = v.paso ? v.paso : v.tam * bytes;
+    for (int i = desde; i < hasta; i++) {
+        const unsigned char* b = (const unsigned char*)v.ptr + (size_t)i * paso;
+        float* d = gPos3 + (size_t)i * 3;
+        if (v.tipo == GL_SHORT) { const short* q = (const short*)b; d[0] = q[0]; d[1] = q[1]; d[2] = v.tam > 2 ? q[2] : 0.0f; }
+        else                    { const float* q = (const float*)b; d[0] = q[0]; d[1] = q[1]; d[2] = v.tam > 2 ? q[2] : 0.0f; }
+    }
+    glVertexPointer(3, GL_FLOAT, 0, gPos3);
+    return true;
+}
+static void PosRestaurar() { const PunteroPuesto& v = gPtr[VertexArray]; glVertexPointer(v.tam, v.tipo, v.paso, v.ptr); }
+template <typename T> static int MaxIndice(const T* idx, int n) { int m = -1; for (int i = 0; i < n; i++) if ((int)idx[i] > m) m = (int)idx[i]; return m; }
+#define W3D_POS3F_ARR(primero, n) const bool pos3f_ = PosConviene() && PosA3f(primero, (primero) + (n));
+#define W3D_POS3F_IDX(idx, n) const bool pos3f_ = PosConviene() && PosA3f(0, MaxIndice(idx, n) + 1);
+#define W3D_POS3F_FIN() if (pos3f_) PosRestaurar();
+#else
+#define W3D_POS3F_ARR(primero, n)
+#define W3D_POS3F_IDX(idx, n)
+#define W3D_POS3F_FIN()
+#endif
+
 // ---- dibujo de triangulos indexados ----
 void DrawTriangles(int count, const MeshIndex* indices) {
+    W3D_LECT(LectTriangulos, 0, count, indices, (int)sizeof(MeshIndex));
     AntesDeDibujar(true);
     StatDrawTri(count);
 #if defined(W3D_SYMBIAN) || defined(__ANDROID__)
     W3D_GLC(glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_SHORT, indices)); // GLES1.1: solo 16 bits
 #else
+    W3D_POS3F_IDX(indices, count);
     W3D_GLC(glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_INT, indices));   // PC/WebGL/N8: 32 bits
+    W3D_POS3F_FIN();
 #endif
 }
 // ---- primitivas genericas (la Rutina) ----
@@ -1591,15 +1723,20 @@ static inline void StatDrawPrim(Primitiva p, int count) {
     StatDrawTri(eq);
 }
 void DrawElements(Primitiva p, int count, const MeshIndex* indices) {
+    W3D_LECT(p == PrimTriangulos ? LectTriangulos : p == PrimLineas ? LectLineas : p == PrimTiraLineas ? LectTiraLineas : LectPuntos,
+             0, (p == PrimTriangulos || p == PrimLineas || p == PrimTiraLineas || p == PrimPuntos) ? count : 0, indices, (int)sizeof(MeshIndex));
     AntesDeDibujar(true);
     StatDrawPrim(p, count);
 #if defined(W3D_SYMBIAN) || defined(__ANDROID__)
     W3D_GLC(glDrawElements(PrimGL(p), count, GL_UNSIGNED_SHORT, indices));
 #else
+    W3D_POS3F_IDX(indices, count);
     W3D_GLC(glDrawElements(PrimGL(p), count, GL_UNSIGNED_INT, indices));
+    W3D_POS3F_FIN();
 #endif
 }
 void DrawElementsVBO(Primitiva p, int count, int firstIndex) {
+    W3D_LECT(LectTriangulos, 0, 0, 0, 0);
     AntesDeDibujar(false);
     StatDrawPrim(p, count); g_statDrawVBO++;
 #if defined(W3D_SYMBIAN) || defined(__ANDROID__)
@@ -1611,33 +1748,49 @@ void DrawElementsVBO(Primitiva p, int count, int firstIndex) {
 
 // triangulos NO indexados (glDrawArrays): la UI 2D arma sus verts en orden
 void DrawTrianglesArray(int vertexCount) {
+    W3D_LECT(LectTriangulos, 0, vertexCount, 0, 0);
     AntesDeDibujar(false);
     StatDrawTri(vertexCount);
+    W3D_POS3F_ARR(0, vertexCount);
     W3D_GLC(glDrawArrays(GL_TRIANGLES, 0, vertexCount));
+    W3D_POS3F_FIN();
 }
 void DrawTrianglesArrayFrom(int first, int count) { // glDrawArrays con offset (chrome equirect por-corner)
+    W3D_LECT(LectTriangulos, first, count, 0, 0);
     AntesDeDibujar(false);
     StatDrawTri(count);
+    W3D_POS3F_ARR(first, count);
     W3D_GLC(glDrawArrays(GL_TRIANGLES, first, count));
+    W3D_POS3F_FIN();
 }
 void DrawTrianglesByte(int count, const unsigned char* indices) {
+    W3D_LECT(LectTriangulos, 0, count, indices, 1);
     AntesDeDibujar(true);
     StatDrawTri(count);
+    W3D_POS3F_IDX(indices, count);
     W3D_GLC(glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_BYTE, indices));
+    W3D_POS3F_FIN();
 }
 
 // lineas sueltas (overlay de normales): dibuja vertexCount vertices de a pares
 void DrawLines(int vertexCount) {
+    W3D_LECT(LectLineas, 0, vertexCount, 0, 0);
     AntesDeDibujar(false);
     PostDrawColor();
+    W3D_POS3F_ARR(0, vertexCount);
     W3D_GLC(glDrawArrays(GL_LINES, 0, vertexCount));
+    W3D_POS3F_FIN();
 }
 void DrawLineStrip(int vertexCount) {
+    W3D_LECT(LectTiraLineas, 0, vertexCount, 0, 0);
     AntesDeDibujar(false);
     PostDrawColor();
+    W3D_POS3F_ARR(0, vertexCount);
     W3D_GLC(glDrawArrays(GL_LINE_STRIP, 0, vertexCount));
+    W3D_POS3F_FIN();
 }
 void DrawLineStripIndexed(int count, const unsigned short* indices) {
+    W3D_LECT(LectTiraLineas, 0, count, indices, 2);
     AntesDeDibujar(true);
     PostDrawColor();
     W3D_GLC(glDrawElements(GL_LINE_STRIP, count, GL_UNSIGNED_SHORT, indices));
@@ -1645,19 +1798,99 @@ void DrawLineStripIndexed(int count, const unsigned short* indices) {
 
 // puntos (vertices en Edit Mode). glDrawArrays(GL_POINTS) anda en la fase 3D
 // (no es la fase 2D rota del N95, y no usa glDrawElements)
+#ifdef W3D_DREAMCAST
+// PUNTOS EN LA DREAMCAST: GLdc arma el cuadrado del punto antes de la division de perspectiva (el tamanio no queda en
+// pixeles) y sin la textura entera encima. Aca cada punto es un cuadrado de 'tamanio' pixeles centrado donde cae en
+// pantalla, dibujado con el modo inmediato de GLdc (que guarda y repone los arreglos): con la textura de 0 a 1 si es un
+// sprite (iconos de luz, origen, cursor 3D), liso si no (los vertices de Edit Mode).
+// El cuadrado va en coordenadas de CAMARA (modelview en identidad, la proyeccion de siempre), con el lado pasado de
+// pixeles a metros a la distancia del punto: asi GLdc le da la misma profundidad que al resto de la escena (la PVR
+// compara 1/w; con las dos matrices en identidad w valia 1 y la profundidad no tenia que ver con la de las caras).
+// Va apenas hacia la camara, como las lineas del parche de GLdc: un vertice no pelea con sus caras.
+// En dos triangulos y no en un GL_QUADS: con el scissor prendido (el viewport 3D) GLdc recorta los quads con el orden
+// de vertices equivocado y no dibuja nada (los vertices de Edit Mode no se veian; los iconos van sin scissor).
+static float gPuntoTam = 1.0f;
+static bool  gPuntoSprite = false;
+static void DibujarPuntosDC(int n) {
+    const PunteroPuesto& v = gPtr[VertexArray];
+    if (n <= 0 || !gPtrOk[VertexArray] || !v.ptr) return;
+    float P[16], M[16];
+    GetMatrix(Projection, P); GetMatrix(ModelView, M);
+    if (P[0] == 0.0f || P[5] == 0.0f) return;
+    const bool orto = (P[11] == 0.0f);   // (la perspectiva tiene -1 ahi: w = -z de camara)
+    // medio lado en NDC -> en metros de camara: dx = hx * w / P[0] (w = 1 en ortografica, -z en perspectiva)
+    const float hx = gPuntoTam / (float)(gViewportPuesto[2] > 0 ? gViewportPuesto[2] : 640) / P[0];
+    const float hy = gPuntoTam / (float)(gViewportPuesto[3] > 0 ? gViewportPuesto[3] : 480) / P[5];
+    const PunteroPuesto& col = gPtr[ColorArray];
+    const bool conColor = gArrOn[ColorArray] == 1 && gPtrOk[ColorArray] && col.ptr;
+    const int bytes = (v.tipo == GL_SHORT) ? 2 : 4;
+    const int paso = v.paso ? v.paso : v.tam * bytes;
+    const int modo = gMatMode;
+    const bool cull = gCapKnown[CullFace] && gCapOn[CullFace];
+    if (cull) glDisable(GL_CULL_FACE);   // (el cuadrado va de frente, pero que el culling no lo decida)
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+    glBegin(GL_TRIANGLES);
+    for (int i = 0; i < n; i++) {
+        const unsigned char* b = (const unsigned char*)v.ptr + (size_t)i * paso;
+        float x, y, z = 0.0f;
+        if (v.tipo == GL_SHORT) { const short* q = (const short*)b; x = q[0]; y = q[1]; if (v.tam > 2) z = q[2]; }
+        else                    { const float* q = (const float*)b; x = q[0]; y = q[1]; if (v.tam > 2) z = q[2]; }
+        float ex = M[0] * x + M[4] * y + M[8]  * z + M[12];
+        float ey = M[1] * x + M[5] * y + M[9]  * z + M[13];
+        float ez = M[2] * x + M[6] * y + M[10] * z + M[14];
+        float w = 1.0f;
+        if (!orto) {
+            if (ez >= 0.0f) continue;   // detras de la camara
+            ex *= 0.996f; ey *= 0.996f; ez *= 0.996f;   // (hacia la camara por el mismo rayo: no se mueve en pantalla)
+            w = -ez;
+        } else {
+            ez += 0.001f * (P[10] != 0.0f ? 2.0f / fabsf(P[10]) : 1.0f);   // (un milesimo del rango de z, hacia adelante)
+        }
+        const float dx = hx * w, dy = hy * w;
+        if (conColor) { const unsigned char* k = (const unsigned char*)col.ptr + (size_t)i * 4; glColor4ub(k[0], k[1], k[2], k[3]); }
+        else if (gColKnown) glColor4f(gColCache[0], gColCache[1], gColCache[2], gColCache[3]);
+        // (antihorario) arriba-izq, abajo-izq, abajo-der | arriba-izq, abajo-der, arriba-der
+        glTexCoord2f(0.0f, 0.0f); glVertex3f(ex - dx, ey + dy, ez);
+        glTexCoord2f(0.0f, 1.0f); glVertex3f(ex - dx, ey - dy, ez);
+        glTexCoord2f(1.0f, 1.0f); glVertex3f(ex + dx, ey - dy, ez);
+        glTexCoord2f(0.0f, 0.0f); glVertex3f(ex - dx, ey + dy, ez);
+        glTexCoord2f(1.0f, 1.0f); glVertex3f(ex + dx, ey - dy, ez);
+        glTexCoord2f(1.0f, 0.0f); glVertex3f(ex + dx, ey + dy, ez);
+    }
+    glEnd();
+    glMatrixMode(GL_MODELVIEW); glPopMatrix();
+    if (cull) glEnable(GL_CULL_FACE);
+    if (modo == (int)Projection) glMatrixMode(GL_PROJECTION);
+    else if (modo == (int)TextureMatrix) glMatrixMode(GL_TEXTURE);
+    else gMatMode = (int)ModelView;
+    (void)gPuntoSprite;
+}
+#endif
 void DrawPoints(int vertexCount) {
+    W3D_LECT(LectPuntos, 0, vertexCount, 0, 0);
     AntesDeDibujar(false);
     PostDrawColor();
+#ifdef W3D_DREAMCAST
+    DibujarPuntosDC(vertexCount);
+#else
     W3D_GLC(glDrawArrays(GL_POINTS, 0, vertexCount));
+#endif
 }
+#ifdef W3D_DREAMCAST
+void PointSize(float px) { gPuntoTam = px; }
+#else
 void PointSize(float px) { W3D_GLC(glPointSize(px)); }
+#endif
 
 // lineas INDEXADAS (bordes de edit mode con vertex color compartido): en la fase
 // 3D glDrawElements funciona (la malla rellena ya lo usa para los triangulos).
 void DrawLinesIndexed(int count, const unsigned short* indices) {
+    W3D_LECT(LectLineas, 0, count, indices, 2);
     AntesDeDibujar(true);
     PostDrawColor();
+    W3D_POS3F_IDX(indices, count);
     W3D_GLC(glDrawElements(GL_LINES, count, GL_UNSIGNED_SHORT, indices));
+    W3D_POS3F_FIN();
 }
 
 // offset de profundidad del relleno (slope-aware). Negativo = lo tira hacia la
@@ -1669,6 +1902,223 @@ void PolygonOffset(float factor, float units) {
     gPolyOffF = factor; gPolyOffU = units;
     W3D_GLC(glPolygonOffset(factor, units));
 }
+
+#ifdef W3D_DREAMCAST
+// ---------------------------------------------------------------------------------------------------------------
+//  LEER PIXELES EN LA DREAMCAST. La PVR arma el cuadro entero recien al cerrarlo (no hay un framebuffer para leer a
+//  mitad de cuadro) y el glReadPixels de GLdc es un assert que corta el programa. Lo que el editor lee es la pasada de
+//  seleccion: los objetos (o los vertices, aristas y caras) pintados con su ID como color plano. Esa pasada se dibuja
+//  por software: ReadPixelsBegin(zona) la prende, los draws que siguen se rasterizan en un buffer chico de esa zona,
+//  con su z, en vez de ir a la PVR, y ReadPixelsRGBA devuelve el buffer y la apaga.
+//  Hace lo que usa la seleccion: triangulos, lineas con ancho, puntos con tamanio, color plano o por vertice, prueba y
+//  escritura de z, recorte contra el plano cercano, culling, color mask y polygon offset.
+// ---------------------------------------------------------------------------------------------------------------
+#include <string.h>   // memset / memcpy
+enum { kLectMax = 64 };
+static int gLectX = 0, gLectY = 0, gLectW = 0, gLectH = 0;   // la zona, en pixeles de ventana de GL (abajo-izq)
+static unsigned char gLectColor[kLectMax * kLectMax * 4];
+static float gLectZ[kLectMax * kLectMax];
+
+void ReadPixelsBegin(int x, int y, int w, int h) {
+    if (w > kLectMax) w = kLectMax;
+    if (h > kLectMax) h = kLectMax;
+    gLectActiva = w > 0 && h > 0;
+    gLectX = x; gLectY = y; gLectW = w; gLectH = h;
+    memset(gLectColor, 0, sizeof(gLectColor));
+    for (int i = 0; i < kLectMax * kLectMax; i++) gLectZ[i] = 1.0f;
+}
+void ReadPixelsRGBA(int x, int y, int w, int h, unsigned char* p) {
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++) {
+            const int lx = x + i - gLectX, ly = y + j - gLectY;
+            unsigned char* d = p + ((size_t)j * w + i) * 4;
+            if (gLectActiva && lx >= 0 && ly >= 0 && lx < gLectW && ly < gLectH) memcpy(d, &gLectColor[(ly * gLectW + lx) * 4], 4);
+            else d[0] = d[1] = d[2] = d[3] = 0;   // (fuera de la zona, o sin ReadPixelsBegin: negro, el "nada" del pick)
+        }
+    gLectActiva = false;
+}
+
+static inline unsigned char LectByte(float v) { return v <= 0.0f ? 0 : (v >= 1.0f ? 255 : (unsigned char)(v * 255.0f + 0.5f)); }
+static void LectLimpiar(int bits) {
+    const int n = gLectW * gLectH;
+    if (bits & ColorBuffer) {
+        unsigned char c[4];
+        for (int k = 0; k < 4; k++) c[k] = LectByte(gClearCol[k]);
+        for (int i = 0; i < n; i++) memcpy(&gLectColor[i * 4], c, 4);
+    }
+    if (bits & DepthBuffer) for (int i = 0; i < n; i++) gLectZ[i] = 1.0f;
+}
+
+// un pixel de la zona (x, y de ventana) con la prueba de z de GL
+static inline void LectPixel(int x, int y, float z, const unsigned char* c) {
+    const int lx = x - gLectX, ly = y - gLectY;
+    if (lx < 0 || ly < 0 || lx >= gLectW || ly >= gLectH) return;
+    const int k = ly * gLectW + lx;
+    if (gCapOn[DepthTest]) {
+        const float zb = gLectZ[k];
+        const bool pasa = gDepthFuncCache == DepthAlways ? true : (gDepthFuncCache == DepthEqual ? z == zb :
+                          (gDepthFuncCache == DepthLEqual ? z <= zb : z < zb));
+        if (!pasa) return;
+        if (gDepthMaskCache != 0) gLectZ[k] = z;
+    }
+    if (gColorMaskOn) memcpy(&gLectColor[k * 4], c, 4);
+}
+
+struct LectVert { float x, y, z, w; unsigned char c[4]; };   // en el espacio de recorte, con su color
+
+static inline int LectIndice(const void* idx, int bytes, int i) {
+    if (!idx) return i;
+    if (bytes == 1) return ((const unsigned char*)idx)[i];
+    if (bytes == 2) return ((const unsigned short*)idx)[i];
+    return (int)((const unsigned int*)idx)[i];
+}
+static void LectLeer(int i, const float* PM, const unsigned char* plano, LectVert& o) {
+    const PunteroPuesto& v = gPtr[VertexArray];
+    const int bytes = (v.tipo == GL_SHORT) ? 2 : 4;
+    const unsigned char* b = (const unsigned char*)v.ptr + (size_t)i * (v.paso ? v.paso : v.tam * bytes);
+    float x, y, z = 0.0f;
+    if (v.tipo == GL_SHORT) { const short* q = (const short*)b; x = q[0]; y = q[1]; if (v.tam > 2) z = q[2]; }
+    else                    { const float* q = (const float*)b; x = q[0]; y = q[1]; if (v.tam > 2) z = q[2]; }
+    o.x = PM[0] * x + PM[4] * y + PM[8]  * z + PM[12];
+    o.y = PM[1] * x + PM[5] * y + PM[9]  * z + PM[13];
+    o.z = PM[2] * x + PM[6] * y + PM[10] * z + PM[14];
+    o.w = PM[3] * x + PM[7] * y + PM[11] * z + PM[15];
+    const PunteroPuesto& col = gPtr[ColorArray];
+    if (gArrOn[ColorArray] == 1 && gPtrOk[ColorArray] && col.ptr && col.tipo == GL_UNSIGNED_BYTE)
+        memcpy(o.c, (const unsigned char*)col.ptr + (size_t)i * (col.paso ? col.paso : 4), 4);
+    else
+        memcpy(o.c, plano, 4);
+}
+static void LectMezcla(const LectVert& a, const LectVert& b, float t, LectVert& o) {
+    LectVert r;
+    r.x = a.x + (b.x - a.x) * t; r.y = a.y + (b.y - a.y) * t;
+    r.z = a.z + (b.z - a.z) * t; r.w = a.w + (b.w - a.w) * t;
+    memcpy(r.c, a.c, 4);
+    o = r;
+}
+static void LectVentana(const LectVert& v, float* o) {   // -> x, y, z de ventana
+    const float iw = 1.0f / v.w;
+    o[0] = gViewportPuesto[0] + (v.x * iw + 1.0f) * 0.5f * gViewportPuesto[2];
+    o[1] = gViewportPuesto[1] + (v.y * iw + 1.0f) * 0.5f * gViewportPuesto[3];
+    o[2] = (v.z * iw + 1.0f) * 0.5f;
+}
+static inline void LectCaja(float a0, float a1, float b0, float b1, int& x0, int& x1, int& y0, int& y1) {
+    x0 = (int)floorf(a0); x1 = (int)ceilf(a1); y0 = (int)floorf(b0); y1 = (int)ceilf(b1);
+    if (x0 < gLectX) x0 = gLectX;
+    if (y0 < gLectY) y0 = gLectY;
+    if (x1 > gLectX + gLectW - 1) x1 = gLectX + gLectW - 1;
+    if (y1 > gLectY + gLectH - 1) y1 = gLectY + gLectH - 1;
+}
+
+static void LectTriVentana(const float* a, const float* b, const float* c, const unsigned char* col) {
+    const float area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    if (area == 0.0f) return;
+    if (gCapOn[CullFace]) {
+        const bool frente = gFrenteCCW ? area > 0.0f : area < 0.0f;
+        if (frente == gCullFrente) return;   // GL_BACK descarta las de atras; GL_FRONT, las de adelante
+    }
+    float sesgo = 0.0f;
+    if (gCapOn[PolygonOffsetFill]) {
+        const float dzx = fabsf(((b[2] - a[2]) * (c[1] - a[1]) - (c[2] - a[2]) * (b[1] - a[1])) / area);
+        const float dzy = fabsf(((c[2] - a[2]) * (b[0] - a[0]) - (b[2] - a[2]) * (c[0] - a[0])) / area);
+        sesgo = gPolyOffF * (dzx > dzy ? dzx : dzy) + gPolyOffU * (1.0f / 1048576.0f);
+    }
+    int x0, x1, y0, y1;
+    LectCaja(fminf(a[0], fminf(b[0], c[0])), fmaxf(a[0], fmaxf(b[0], c[0])),
+             fminf(a[1], fminf(b[1], c[1])), fmaxf(a[1], fmaxf(b[1], c[1])), x0, x1, y0, y1);
+    const float inv = 1.0f / area;
+    for (int y = y0; y <= y1; y++)
+        for (int x = x0; x <= x1; x++) {
+            const float px = x + 0.5f, py = y + 0.5f;
+            const float wa = ((c[0] - b[0]) * (py - b[1]) - (c[1] - b[1]) * (px - b[0])) * inv;
+            const float wb = ((a[0] - c[0]) * (py - c[1]) - (a[1] - c[1]) * (px - c[0])) * inv;
+            const float wc = ((b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0])) * inv;
+            if (wa < 0.0f || wb < 0.0f || wc < 0.0f) continue;
+            LectPixel(x, y, wa * a[2] + wb * b[2] + wc * c[2] + sesgo, col);
+        }
+}
+static void LectTriangulo(const LectVert* v) {
+    // recorte contra el plano cercano (z + w >= 0): el triangulo queda en 3 o 4 vertices, que se dibujan en abanico
+    LectVert pol[4];
+    int n = 0;
+    for (int i = 0; i < 3; i++) {
+        const LectVert& a = v[i];
+        const LectVert& b = v[(i + 1) % 3];
+        const float da = a.z + a.w, db = b.z + b.w;
+        if (da >= 0.0f) pol[n++] = a;
+        if ((da >= 0.0f) != (db >= 0.0f)) LectMezcla(a, b, da / (da - db), pol[n++]);
+    }
+    if (n < 3) return;
+    float w[4][3];
+    for (int i = 0; i < n; i++) LectVentana(pol[i], w[i]);
+    for (int i = 1; i + 1 < n; i++) LectTriVentana(w[0], w[i], w[i + 1], v[0].c);
+}
+static void LectLinea(LectVert a, LectVert b) {
+    const float da = a.z + a.w, db = b.z + b.w;
+    if (da < 0.0f && db < 0.0f) return;
+    if (da < 0.0f) LectMezcla(a, b, da / (da - db), a);
+    else if (db < 0.0f) LectMezcla(b, a, db / (db - da), b);
+    float p[3], q[3];
+    LectVentana(a, p); LectVentana(b, q);
+    const float r = (gLineaAncho > 1.0f ? gLineaAncho : 1.0f) * 0.5f;
+    int x0, x1, y0, y1;
+    LectCaja(fminf(p[0], q[0]) - r, fmaxf(p[0], q[0]) + r, fminf(p[1], q[1]) - r, fmaxf(p[1], q[1]) + r, x0, x1, y0, y1);
+    const float dx = q[0] - p[0], dy = q[1] - p[1], l2 = dx * dx + dy * dy;
+    for (int y = y0; y <= y1; y++)
+        for (int x = x0; x <= x1; x++) {
+            const float px = x + 0.5f, py = y + 0.5f;
+            float t = l2 > 0.0f ? ((px - p[0]) * dx + (py - p[1]) * dy) / l2 : 0.0f;
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+            const float ex = p[0] + dx * t - px, ey = p[1] + dy * t - py;
+            if (ex * ex + ey * ey > r * r) continue;
+            LectPixel(x, y, p[2] + (q[2] - p[2]) * t, a.c);
+        }
+}
+static void LectPunto(const LectVert& v) {
+    if (v.w <= 0.0f || v.z + v.w < 0.0f) return;   // (GL descarta el punto entero si el centro queda afuera)
+    float p[3];
+    LectVentana(v, p);
+    const float h = (gPuntoTam > 1.0f ? gPuntoTam : 1.0f) * 0.5f;
+    int x0, x1, y0, y1;
+    LectCaja(p[0] - h, p[0] + h, p[1] - h, p[1] + h, x0, x1, y0, y1);
+    for (int y = y0; y <= y1; y++)
+        for (int x = x0; x <= x1; x++) {
+            const float px = x + 0.5f, py = y + 0.5f;
+            if (px < p[0] - h || px >= p[0] + h || py < p[1] - h || py >= p[1] + h) continue;
+            LectPixel(x, y, p[2], v.c);
+        }
+}
+static void LectDibujar(LectPrim prim, int primero, int n, const void* idx, int bytesIdx) {
+    if (n <= 0 || !gPtrOk[VertexArray] || !gPtr[VertexArray].ptr) return;
+    float P[16], M[16], PM[16];
+    GetMatrix(Projection, P); GetMatrix(ModelView, M);
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            PM[c * 4 + r] = P[0 * 4 + r] * M[c * 4 + 0] + P[1 * 4 + r] * M[c * 4 + 1] + P[2 * 4 + r] * M[c * 4 + 2] + P[3 * 4 + r] * M[c * 4 + 3];
+    unsigned char plano[4] = { 255, 255, 255, 255 };
+    if (gColKnown) for (int k = 0; k < 4; k++) plano[k] = LectByte(gColCache[k]);
+    LectVert v[3];
+    if (prim == LectTriangulos) {
+        for (int i = 0; i + 2 < n; i += 3) {
+            for (int k = 0; k < 3; k++) LectLeer(LectIndice(idx, bytesIdx, primero + i + k), PM, plano, v[k]);
+            LectTriangulo(v);
+        }
+    } else if (prim == LectLineas || prim == LectTiraLineas) {
+        const int paso = (prim == LectLineas) ? 2 : 1;
+        for (int i = 0; i + 1 < n; i += paso) {
+            LectLeer(LectIndice(idx, bytesIdx, primero + i), PM, plano, v[0]);
+            LectLeer(LectIndice(idx, bytesIdx, primero + i + 1), PM, plano, v[1]);
+            LectLinea(v[0], v[1]);
+        }
+    } else {
+        for (int i = 0; i < n; i++) {
+            LectLeer(LectIndice(idx, bytesIdx, primero + i), PM, plano, v[0]);
+            LectPunto(v[0]);
+        }
+    }
+}
+#endif
 
 // empuja el rango de profundidad (contorno: las lineas internas quedan tapadas
 // por la malla y solo se ve el borde/silueta)
@@ -1814,7 +2264,7 @@ void EstadoFotoReponer() {
 bool g_auditarEscena = false;   // la prende el harness ('glaudit')
 int  g_auditDesyncs  = 0;
 int AuditarEstado() {
-#if defined(W3D_SYMBIAN) || defined(__ANDROID__)
+#if defined(W3D_SYMBIAN) || defined(__ANDROID__) || defined(W3D_DREAMCAST)
     return 0;   // en dispositivo no se audita (glGet = flush del tiler)
 #else
     int malos = 0;

@@ -121,6 +121,21 @@ void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirAndroid(0, 
 void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirAndroid(1, aMsg); }
 void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirAndroid(2, aMsg); }
 
+#elif defined(W3D_DREAMCAST)
+// ---------------------------------------------------------------------------
+//  Backend Dreamcast: a la salida estandar, que KallistiOS manda por el puerto serie (dbgio). Se ve con dc-tool en la
+//  consola real y en Flycast con la consola serie prendida. La consola no tiene un disco escribible para un archivo.
+// ---------------------------------------------------------------------------
+static void EscribirDC(int nivel, const char* aMsg) {
+    RingPush(nivel, aMsg); // espejo en memoria para la UI
+    printf("[%s] %s\n", NivelTag(nivel), aMsg ? aMsg : "");
+    fflush(stdout);
+}
+void w3dLogReset() { EscribirDC(0, "=== Whisk3D DEV LOG ==="); }
+void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirDC(0, aMsg); }
+void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirDC(1, aMsg); }
+void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirDC(2, aMsg); }
+
 #elif defined(__EMSCRIPTEN__)
 // ---------------------------------------------------------------------------
 //  Backend WebGL / Emscripten: a la CONSOLA del browser, RESPETANDO el nivel:
