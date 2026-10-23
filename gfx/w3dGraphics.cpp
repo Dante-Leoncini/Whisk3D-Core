@@ -1517,6 +1517,7 @@ void VertexPointer3s(int strideBytes, const short* p)   { if (PtrIgual(VertexArr
 void VertexPointer2s(int strideBytes, const short* p)   { if (PtrIgual(VertexArray, 0, p, 2, GL_SHORT, strideBytes)) return; SinVBO(); W3D_GLC(glVertexPointer(2, GL_SHORT, strideBytes, p)); }
 void ColorPointer4ub(const unsigned char* p)            { if (PtrIgual(ColorArray, 0, p, 4, GL_UNSIGNED_BYTE, 0)) return; SinVBO(); g_statOtras++; W3D_GLC(glColorPointer(4, GL_UNSIGNED_BYTE, 0, p)); }
 void NormalPointer3b(const signed char* p)              { if (PtrIgual(NormalArray, 0, p, 3, GL_BYTE, 0)) return; SinVBO(); g_statOtras++; W3D_GLC(glNormalPointer(GL_BYTE, 0, p)); }
+void ColorPointer4f(int strideBytes, const float* p)    { if (PtrIgual(ColorArray, 0, p, 4, GL_FLOAT, strideBytes)) return; SinVBO(); g_statOtras++; W3D_GLC(glColorPointer(4, GL_FLOAT, strideBytes, p)); }
 void TexCoordPointer2f(int strideBytes, const float* p) {
     const bool igual = PtrIgual(TexCoordArray, 0, p, 2, GL_FLOAT, strideBytes);
     if (!igual) { SinVBO(); g_statOtras++; W3D_GLC(glTexCoordPointer(2, GL_FLOAT, strideBytes, p)); }
@@ -1721,6 +1722,11 @@ static inline void StatDrawPrim(Primitiva p, int count) {
     const int eq = (p == PrimTriangulos) ? count :
                    (p == PrimTiraTriangulos || p == PrimAbanico) ? (count > 2 ? (count - 2) * 3 : 0) : 0;
     StatDrawTri(eq);
+}
+void DrawElements16(Primitiva p, int count, const unsigned short* indices) {
+    AntesDeDibujar(true);
+    StatDrawPrim(p, count);
+    W3D_GLC(glDrawElements(PrimGL(p), count, GL_UNSIGNED_SHORT, indices));
 }
 void DrawElements(Primitiva p, int count, const MeshIndex* indices) {
     W3D_LECT(p == PrimTriangulos ? LectTriangulos : p == PrimLineas ? LectLineas : p == PrimTiraLineas ? LectTiraLineas : LectPuntos,

@@ -336,6 +336,7 @@ namespace w3dEngine {
     void VertexPointer3s(int strideBytes, const short* p);         // 3 short (verts enteros)
     void VertexPointer2s(int strideBytes, const short* p);         // 2 short (UI 2D entera)
     void ColorPointer4ub(const unsigned char* p);                  // 4 ubyte
+    void ColorPointer4f(int strideBytes, const float* p);          // 4 float (GLdc: su camino rapido es todo float)
     void NormalPointer3b(const signed char* p);                    // 3 byte
     void TexCoordPointer2f(int strideBytes, const float* p);       // 2 float
     void TexCoordPointer3b(const signed char* p, int count);       // 3 byte (normales como texcoords, matcap HW). count=vertices (desktop convierte a GL_SHORT)
@@ -388,6 +389,9 @@ namespace w3dEngine {
     enum Primitiva { PrimPuntos = 0, PrimLineas, PrimTiraLineas, PrimLazoLineas, PrimTriangulos, PrimTiraTriangulos,
                      PrimAbanico };
     void DrawElements(Primitiva p, int count, const MeshIndex* indices);   // indices en RAM (client-side)
+    // indices de 16 bits en RAM, en todas las plataformas (MeshIndex es de 32 bits fuera del N95): un juego que ya
+    // trae sus indices en 16 bits (la Dreamcast: GLdc los lee directo) no los convierte ni los recorre
+    void DrawElements16(Primitiva p, int count, const unsigned short* indices);
     void DrawElementsVBO(Primitiva p, int count, int firstIndex);          // del IBO bindeado (offset en indices)
 
     // dibuja triangulos indexados (indices ushort)

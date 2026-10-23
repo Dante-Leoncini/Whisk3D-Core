@@ -136,6 +136,23 @@ void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirDC(0, aMsg)
 void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirDC(1, aMsg); }
 void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirDC(2, aMsg); }
 
+#elif defined(W3D_3DS)
+// ---------------------------------------------------------------------------
+//  Backend 3DS: svcOutputDebugString, que sale en el log del emulador (Azahar/Citra) y en un depurador por la red con
+//  la consola real. La pantalla no se usa: las dos son del editor.
+// ---------------------------------------------------------------------------
+#include <3ds.h>
+static void Escribir3ds(int nivel, const char* aMsg) {
+    RingPush(nivel, aMsg); // espejo en memoria para la UI
+    char buf[300];
+    const int n = snprintf(buf, sizeof(buf), "[%s] %s", NivelTag(nivel), aMsg ? aMsg : "");
+    svcOutputDebugString(buf, n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1);
+}
+void w3dLogReset() { Escribir3ds(0, "=== Whisk3D DEV LOG ==="); }
+void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; Escribir3ds(0, aMsg); }
+void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; Escribir3ds(1, aMsg); }
+void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; Escribir3ds(2, aMsg); }
+
 #elif defined(__EMSCRIPTEN__)
 // ---------------------------------------------------------------------------
 //  Backend WebGL / Emscripten: a la CONSOLA del browser, RESPETANDO el nivel:

@@ -270,6 +270,8 @@ namespace w3dFileSystem {
         return "res";
     #elif defined(W3D_DREAMCAST)
         return "/rd";   // el romdisk que va adentro del ejecutable (res/, ver platform/dreamcast/Makefile)
+    #elif defined(W3D_3DS)
+        return "romfs:";   // el romfs que va adentro del .3dsx (res/, ver platform/3ds/Makefile; SDL2main lo monta)
     #elif defined(W3D_SYMBIAN)
         return std::string(); // Symbian no usa GetResDir (skinDir va a mano)
     #else
@@ -614,6 +616,8 @@ namespace w3dFileSystem {
         return "C:/";
     #elif defined(W3D_DREAMCAST)
         return "/ram";   // la Dreamcast: lo unico escribible es el disco en RAM (se pierde al apagar)
+    #elif defined(W3D_3DS)
+        return "sdmc:/";   // la tarjeta SD de la 3DS
     #elif defined(__ANDROID__)
         // almacenamiento COMPARTIDO del usuario (Descargas, DCIM, etc.), NO el
         // sandbox de la app. El permiso de lectura lo pide la app; sin permiso

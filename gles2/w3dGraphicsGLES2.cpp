@@ -777,6 +777,7 @@ void VertexPointer3s(int stride,const short* p){ aPos.size=3; aPos.type=GL_SHORT
 void VertexPointer2s(int stride,const short* p){ aPos.size=2; aPos.type=GL_SHORT; aPos.stride=stride; aPos.ptr=p; }
 void NormalPointer3b(const signed char* p){ aNrm.size=3; aNrm.type=GL_BYTE; aNrm.stride=0; aNrm.ptr=p; }
 void ColorPointer4ub(const unsigned char* p){ aCol.size=4; aCol.type=GL_UNSIGNED_BYTE; aCol.stride=0; aCol.ptr=p; }
+void ColorPointer4f(int stride,const float* p){ aCol.size=4; aCol.type=GL_FLOAT; aCol.stride=stride; aCol.ptr=p; }
 void TexCoordPointer2f(int stride,const float* p){ aUV.size=2; aUV.type=GL_FLOAT; aUV.stride=stride; aUV.ptr=p; }
 void TexCoordPointer3b(const signed char* p, int count){ (void)count; aUV.size=3; aUV.type=GL_BYTE; aUV.stride=0; aUV.ptr=p; } // matcap: normales como UV (sin normalizar, como GL)
 
@@ -918,6 +919,13 @@ void DrawElements(Primitiva p,int count,const MeshIndex* indices){
     static std::vector<unsigned short> idx; idx.resize(count);
     for(int i=0;i<count;i++) idx[i]=(unsigned short)indices[i];
     drawIndexed(kModo[(int)p>=0&&(int)p<7?(int)p:4],count,&idx[0]);
+}
+void DrawElements16(Primitiva p,int count,const unsigned short* indices){
+    if(!ready || count<=0 || !indices) return;
+    static const GLenum kModo[7]={GL_POINTS,GL_LINES,GL_LINE_STRIP,GL_LINE_LOOP,GL_TRIANGLES,GL_TRIANGLE_STRIP,GL_TRIANGLE_FAN};
+    int nV=0; for(int i=0;i<count;i++) if((int)indices[i]+1>nV) nV=(int)indices[i]+1;
+    setupState(nV);
+    drawIndexed(kModo[(int)p>=0&&(int)p<7?(int)p:4],count,indices);
 }
 void DrawElementsVBO(Primitiva,int,int){}   // (sin VBO en este backend: VBOSoportado() = false)
 void DrawTrianglesByte(int count,const unsigned char* indices){
