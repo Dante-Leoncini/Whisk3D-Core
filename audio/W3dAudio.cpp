@@ -530,6 +530,100 @@ static void ReverbMezclar(int* acc, const int* envio, int frames) {
     }
 }
 
+#ifndef W3D_MEZCLA_FLOAT
+// LA VOZ COMUN (sin envolvente ni envio a la reverb: los efectos y las notas de un juego), en ENTEROS: la posicion en
+// 16.16, la interpolacion lineal en Q15 y la ganancia en Q14, por tramos de hasta 32 muestras (la rampa de salida se
+// interpola dentro del tramo). Lo que en el camino general se mira en cada muestra (el fin de la vuelta, la rampa
+// agendada, el fin de la rampa) aca se mira una vez por tramo: el tramo termina justo antes. Suena igual que el camino
+// general (que sigue para las voces con envolvente o reverb); en el N95 el VFP convertia float <-> int varias veces por
+// muestra y voz, y el hilo del sonido se comia un cuarto de la CPU. (-DW3D_MEZCLA_FLOAT: todo por el camino general)
+static void MezclarVozEntera(Voice& v, int* acc, int i0, int frames, float g) {
+    const short* p = v.s->pcm;
+    const bool mono = v.s->canales == 1;
+    const int fr = v.s->frames;
+    const bool conPuntos = v.loop && v.s->loopFin > 0;
+    const int finVuelta = conPuntos ? v.s->loopFin : fr;
+    const int iniVuelta = conPuntos ? v.s->loopIni : 0;
+    const bool lazo = v.loop && fr > 0;
+    int pos = (int)v.pos;
+    unsigned frac = (unsigned)((v.pos - (float)pos) * 65536.0f) & 0xFFFFu;
+    const unsigned paso = (unsigned)(v.step * 65536.0f + 0.5f);
+    // (la ganancia en Q14: 4 = el tope sin desbordar 32 bits con una muestra de 16)
+    float gl = g * v.gL, gr = g * v.gR;
+    if (gl > 3.99f) gl = 3.99f;
+    if (gr > 3.99f) gr = 3.99f;
+    int i = i0;
+    while (i < frames) {
+        int n = frames - i;
+        if (n > 32) n = 32;
+        // la rampa agendada: empieza en su muestra
+        if (v.finAbs) {
+            const unsigned long long ahora = s_reloj + (unsigned long long)i;
+            if (ahora >= v.finAbs) {
+                if (v.fadeStep <= 0.0f || v.fadeFin > v.fadeStep) v.fadeStep = v.fadeFin * v.fadeGain;
+                v.finAbs = 0;
+            } else if (v.finAbs - ahora < (unsigned long long)n) n = (int)(v.finAbs - ahora);
+        }
+        // el fin de la vuelta (o del sonido)
+        if (pos >= finVuelta) {
+            if (lazo) {
+                pos -= finVuelta - iniVuelta;
+                if (pos < 0 || pos >= fr) { pos = iniVuelta; frac = 0; }
+            } else { v.active = false; break; }
+        }
+        // las muestras en que la siguiente (la de interpolar) todavia es pos + 1; la del borde va sola
+        bool borde = false;
+        if (pos + 1 >= finVuelta) { n = 1; borde = true; }
+        else if (paso > 0) {
+            const long long falta = ((long long)(finVuelta - 1 - pos) << 16) - (long long)frac;
+            const long long k = (falta + paso - 1) / paso;
+            if (k < n) n = (int)k;
+        }
+        // la rampa de salida: termina la voz en este tramo?
+        const float fg0 = v.fadeGain;
+        bool termina = false;
+        if (v.fadeStep > 0.0f && fg0 - v.fadeStep * (float)n <= 0.0f) {
+            int m = (int)(fg0 / v.fadeStep);
+            if (fg0 - v.fadeStep * (float)m > 0.0f) m++;
+            if (m < 1) m = 1;
+            if (m < n) n = m;
+            termina = true;
+        }
+        int gL0 = (int)(gl * fg0 * 16384.0f), gR0 = (int)(gr * fg0 * 16384.0f);
+        const int dL = v.fadeStep > 0.0f ? (int)(gl * v.fadeStep * 16384.0f) : 0;
+        const int dR = v.fadeStep > 0.0f ? (int)(gr * v.fadeStep * 16384.0f) : 0;
+        int* a = acc + i * 2;
+        if (mono) {
+            for (int j = 0; j < n; j++) {
+                const int s0 = p[pos];
+                const int s1 = borde ? p[lazo ? iniVuelta : pos] : p[pos + 1];
+                const int s = s0 + (((s1 - s0) * (int)(frac >> 1)) >> 15);
+                a[0] += (s * gL0) >> 14;
+                a[1] += (s * gR0) >> 14;
+                a += 2;
+                gL0 -= dL; gR0 -= dR;
+                frac += paso; pos += (int)(frac >> 16); frac &= 0xFFFFu;
+            }
+        } else {
+            for (int j = 0; j < n; j++) {
+                const int q1 = borde ? (lazo ? iniVuelta : pos) : pos + 1;
+                const int l0 = p[pos * 2], l1 = p[q1 * 2], r0 = p[pos * 2 + 1], r1 = p[q1 * 2 + 1];
+                const int f = (int)(frac >> 1);
+                a[0] += ((l0 + (((l1 - l0) * f) >> 15)) * gL0) >> 14;
+                a[1] += ((r0 + (((r1 - r0) * f) >> 15)) * gR0) >> 14;
+                a += 2;
+                gL0 -= dL; gR0 -= dR;
+                frac += paso; pos += (int)(frac >> 16); frac &= 0xFFFFu;
+            }
+        }
+        if (v.fadeStep > 0.0f) v.fadeGain = fg0 - v.fadeStep * (float)n;
+        i += n;
+        if (termina) { v.active = false; break; }
+    }
+    v.pos = (float)pos + (float)frac / 65536.0f;
+}
+#endif
+
 // La MEZCLA (corre en el hilo de audio, bajo la exclusion del backend; W3dAudioGrabar la llama igual):
 // 1) cada voz se suma a un acumulador de 32 bits (sin recortar por voz) leyendo el PCM con interpolacion LINEAL entre
 //    la muestra actual y la siguiente (pitch fraccional limpio), por su volumen, su rampa de salida, su ENVOLVENTE y
@@ -568,6 +662,9 @@ static void Mezclar(short* out, int frames) {
             if (falta >= (unsigned long long)frames) continue;      // arranca en otro buffer
             i0 = (int)falta;
         }
+#ifndef W3D_MEZCLA_FLOAT
+        if (!v.envEtapa && !manda) { MezclarVozEntera(v, acc, i0, frames, g); continue; }
+#endif
         for (int i = i0; i < frames; i++) {
             if (v.finAbs && s_reloj + (unsigned long long)i >= v.finAbs) {   // la rampa agendada empieza en esta muestra
                 if (v.fadeStep <= 0.0f || v.fadeFin > v.fadeStep) v.fadeStep = v.fadeFin * v.fadeGain;

@@ -6,6 +6,7 @@
 #if W3D_DEV_LOG
 
 #include <stdio.h>
+#include <string.h>
 #include <stdarg.h>
 #ifndef W3D_SYMBIAN
 #include <time.h>     // clock()/CLOCKS_PER_SEC (w3dTickMs en no-Symbian; Symbian usa User::NTickCount)
@@ -14,6 +15,18 @@
 #include <string>
 
 // nivel: 0 = INFO, 1 = WARN, 2 = ERROR
+#ifdef W3D_SYMBIAN
+static char gRutaLog[128] = "e:\\whisk3d.log";
+#else
+static char gRutaLog[128] = "whisk3d.log";
+#endif
+
+void w3dLogRuta(const char* ruta) {
+    if (!ruta || !*ruta) return;
+    strncpy(gRutaLog, ruta, sizeof(gRutaLog) - 1);
+    gRutaLog[sizeof(gRutaLog) - 1] = 0;
+}
+
 static const char* NivelTag(int nivel) { return nivel == 2 ? "ERROR" : (nivel == 1 ? "WARN" : "INFO"); }
 
 // ---------------------------------------------------------------------------
@@ -71,14 +84,15 @@ static void EscribirSymbian(int nivel, const char* aMsg, bool aTruncar) {
         return; // sin tarjeta E: u otro problema: no hay log, pero no molesta
     }
     RFile f;
-    _LIT(KPath, "e:\\whisk3d.log");
+    TBuf<128> ruta;
+    ruta.Copy(TPtrC8((const TUint8*)gRutaLog));
     TInt err;
     if (aTruncar) {
-        err = f.Replace(fs, KPath, EFileWrite | EFileShareAny);
+        err = f.Replace(fs, ruta, EFileWrite | EFileShareAny);
     } else {
-        err = f.Open(fs, KPath, EFileWrite | EFileShareAny);
+        err = f.Open(fs, ruta, EFileWrite | EFileShareAny);
         if (err == KErrNotFound) {
-            err = f.Create(fs, KPath, EFileWrite | EFileShareAny);
+            err = f.Create(fs, ruta, EFileWrite | EFileShareAny);
         }
     }
     if (err == KErrNone) {
@@ -196,7 +210,7 @@ void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirWeb(2, aMsg
 
 static void EscribirStdio(int nivel, const char* aMsg, bool aTruncar) {
     RingPush(nivel, aMsg); // espejo en memoria para la UI
-    FILE* f = fopen("whisk3d.log", aTruncar ? "w" : "a");
+    FILE* f = fopen(gRutaLog, aTruncar ? "w" : "a");
     if (!f) return;
     unsigned long ms = (unsigned long)(clock() * 1000.0 / CLOCKS_PER_SEC);
     fprintf(f, "%lu [%s] %s\r\n", ms, NivelTag(nivel), aMsg ? aMsg : "");
