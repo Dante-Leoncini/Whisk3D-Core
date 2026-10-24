@@ -208,6 +208,11 @@ void W3dScriptSoltarTeclas();
 void W3dScriptStick(int cual, float x, float y);        // 0 = izq, 1 = der
 void W3dScriptBotonPad(const char* nombre, bool v);     // "a" "b" "x" "y" "arriba"...
 void W3dScriptGatillo(int cual, float v);              // gatillo analogico 0..1 (0 = izq / LT, 1 = der / RT)
+// ...y cada MANDO por separado (mando 0..3, en el orden en que se conectaron): lo leen boton("a", 2), stick("izq", 2),
+// gatillo("der", 2) y botonApretado("a", 2) para dos jugadores en el mismo equipo. Lo de arriba sigue siendo la mezcla
+void W3dScriptStickDe(int mando, int cual, float x, float y);
+void W3dScriptBotonPadDe(int mando, const char* nombre, bool v);
+void W3dScriptGatilloDe(int mando, int cual, float v);
 // LO QUE EL SCRIPT VE ahora mismo (harness de pruebas y overlays de debug): el
 // mismo valor que devuelven stick("izq") y boton("a") adentro del .lua.
 void W3dScriptStickLeer(int cual, float* x, float* y);
@@ -228,6 +233,17 @@ void W3dScriptRatonCapturadoSet(bool v);                  // la plataforma avisa
 void W3dScriptSemilla(unsigned s);
 // el harness: semillas FIJAS (dos corridas del mismo script juegan igual: las capturas se comparan). Reinicia la cuenta
 void W3dScriptSemillaFija(bool on);
+
+// PANTALLA DIVIDIDA (setVistas / setVistaCamara de lua): cuantas vistas pidio el juego (1 o 2), como (0 lado a lado,
+// 1 una arriba de la otra) y la camara de cada una (NULL = la activa). El render, antes de dibujar la vista i (0-based),
+// llama a W3dVistaAntes(i) -- el script reorienta lo que mira a la camara (antesDeVista) -- y al terminar las dos,
+// W3dVistaDespues(). vista() de lua dice cual se esta dibujando
+int     W3dVistasCuantas();
+int     W3dVistasModo();
+Object* W3dVistaCamara(int i);
+int     W3dVistaDibujando();
+void    W3dVistaAntes(int i);
+void    W3dVistaDespues();
 
 // el ultimo error de lua ("" si no hubo): para mostrarlo en el editor
 const char* W3dScriptUltimoError();

@@ -17,6 +17,7 @@
 #include "physics/W3dRigido.h"
 #include "physics/W3dColMalla.h" // colision contra triangulos (colSuelo/colPared/colRayo)  // cuerpos rigidos del Core (fisicaVel/fisicaRayo/contactos/...)
 #include "physics/W3dHitbox.h"   // hitbox: binds + limpiar pares al Stop
+#include "net/W3dRed.h"          // jugar en red: binds red*, se atiende al fin de cada cuadro y se cierra al Stop
 #include "io/W3dRecursos.h"      // las FUENTES de los scripts como recurso (el streaming las pide antes)
 #include "w3dlog.h"
 #include <math.h>
@@ -131,6 +132,13 @@ static std::map<std::string, bool> gTeclasPrev;
 static std::map<std::string, bool> gTeclasPulsadas;
 static bool gFinFrameExterno = false;   // alguien llama W3dScriptFinFrame: el snapshot es suyo (ver el .h)
 static float gSticks[2][2] = { {0,0}, {0,0} };   // [izq/der][x/y]
+// LOS MANDOS POR SEPARADO (dos jugadores en el mismo equipo): ademas de la mezcla de todos (gSticks / gBotonesPad: lo
+// que leen boton("a") y stick("izq")), el estado de cada uno. boton("a", 2), stick("izq", 2), gatillo("der", 2) y
+// botonApretado("a", 2) leen el mando 2 (1..W3D_MANDOS, en el orden en que se conectaron)
+enum { W3D_MANDOS = 4 };
+static float gSticksM[W3D_MANDOS][2][2];
+static float gGatillosM[W3D_MANDOS][2];
+static std::map<std::string, bool> gBotonesM[W3D_MANDOS], gBotonesMPrev[W3D_MANDOS];
 static float gGatillos[2] = { 0, 0 };              // [izq/der] 0..1 (los gatillos analogicos del mando: pedales)
 static std::map<std::string, bool> gBotonesPad;
 static std::map<std::string, bool> gBotonesPadPrev;   // gemelo de gTeclasPrev para el gamepad
@@ -177,7 +185,23 @@ void W3dScriptSoltarTeclas() {
     gTeclasPulsadas.clear();
     gSticks[0][0] = gSticks[0][1] = gSticks[1][0] = gSticks[1][1] = 0.0f;
     gGatillos[0] = gGatillos[1] = 0.0f;
+    for (int m = 0; m < W3D_MANDOS; m++) {
+        gBotonesM[m].clear(); gBotonesMPrev[m].clear();
+        gSticksM[m][0][0] = gSticksM[m][0][1] = gSticksM[m][1][0] = gSticksM[m][1][1] = 0.0f;
+        gGatillosM[m][0] = gGatillosM[m][1] = 0.0f;
+    }
     for (int i=0;i<W3D_MAXDEDOS;i++){ gDedoX[i]=gDedoY[i]=0.0f; gDedoAct[i]=false; }
+}
+void W3dScriptStickDe(int mando, int cual, float x, float y) {
+    if (mando < 0 || mando >= W3D_MANDOS || cual < 0 || cual > 1) return;
+    gSticksM[mando][cual][0] = x; gSticksM[mando][cual][1] = y;
+}
+void W3dScriptBotonPadDe(int mando, const char* nombre, bool v) {
+    if (mando >= 0 && mando < W3D_MANDOS && nombre) gBotonesM[mando][nombre] = v;
+}
+void W3dScriptGatilloDe(int mando, int cual, float v) {
+    if (mando < 0 || mando >= W3D_MANDOS || cual < 0 || cual > 1) return;
+    gGatillosM[mando][cual] = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
 }
 void W3dScriptStick(int cual, float x, float y) {
     if (cual < 0 || cual > 1) return;
@@ -237,10 +261,18 @@ static int LTeclaApretada(lua_State* L) {
     lua_pushboolean(L, (EstadoTecla(gTeclas, n) && !EstadoTecla(gTeclasPrev, n)) || EstadoTecla(gTeclasPulsadas, n));
     return 1;
 }
-// botonApretado("a") -> idem para los botones del gamepad (mismo indexado por nombre que boton()).
+// el mando pedido por un bind (el 2do argumento, 1..W3D_MANDOS): -1 = todos mezclados (sin argumento)
+static int MandoArg(lua_State* L, int i) {
+    if (lua_isnoneornil(L, i)) return -1;
+    const int m = (int)luaL_checkinteger(L, i) - 1;
+    return (m >= 0 && m < W3D_MANDOS) ? m : -2;   // (-2: uno que no existe: todo suelto)
+}
+// botonApretado("a" [, mando]) -> idem para los botones del gamepad (mismo indexado por nombre que boton()).
 static int LBotonApretado(lua_State* L) {
     const char* n = luaL_checkstring(L, 1);
-    lua_pushboolean(L, EstadoTecla(gBotonesPad, n) && !EstadoTecla(gBotonesPadPrev, n));
+    const int m = MandoArg(L, 2);
+    if (m == -1) lua_pushboolean(L, EstadoTecla(gBotonesPad, n) && !EstadoTecla(gBotonesPadPrev, n));
+    else lua_pushboolean(L, m >= 0 && EstadoTecla(gBotonesM[m], n) && !EstadoTecla(gBotonesMPrev[m], n));
     return 1;
 }
 // azar() -> real en [0,1);  azar(min,max) -> ENTERO en [min,max] inclusive.
@@ -602,6 +634,56 @@ static int LAnimRetarget(lua_State* L) {
     return 0;
 }
 
+// ---- PANTALLA DIVIDIDA (dos jugadores en el mismo equipo): el juego pide 2 vistas y la camara de cada una; el render
+// (el viewport del editor, el runtime compilado) dibuja la escena una vez por vista en su mitad del cuadro y el HUD
+// una vez encima. Antes de cada vista llama a antesDeVista(i) en el script que las pidio: ahi el juego da vuelta hacia
+// ESA camara lo que mira a la camara (llamas, chispas, lineas) y esconde lo que esa vista no tiene que ver
+static int gVistas = 1, gVistasModo = 0;          // 1 o 2; 0 = lado a lado, 1 = una arriba de la otra
+static Object* gVistaCam[2] = { NULL, NULL };
+static Object* gVistasDuenio = NULL;
+static int gVistaDibujando = 0;
+int W3dVistasCuantas() { return gVistas; }
+int W3dVistasModo() { return gVistasModo; }
+Object* W3dVistaCamara(int i) { return (i >= 0 && i < 2) ? gVistaCam[i] : NULL; }
+int W3dVistaDibujando() { return gVistaDibujando; }
+void W3dVistaAntes(int i) {
+    gVistaDibujando = i + 1;
+    if (!gVistasDuenio) return;
+    const float n = (float)(i + 1);
+    W3dScriptEvento(gVistasDuenio, "antesDeVista", (Object* const*)NULL, 0, &n, 1);
+}
+void W3dVistaDespues() { gVistaDibujando = 0; }
+static void VistasReiniciar() {
+    gVistas = 1; gVistasModo = 0; gVistaCam[0] = gVistaCam[1] = NULL; gVistasDuenio = NULL; gVistaDibujando = 0;
+}
+// setVistas(n [, "lado" | "arriba"]): 1 = la pantalla entera (lo normal), 2 = dividida (lado a lado o una arriba de la
+// otra). El script que la llama recibe antesDeVista(i) antes de que se dibuje cada una
+static int LSetVistas(lua_State* L) {
+    const int n = (int)luaL_checkinteger(L, 1);
+    const char* modo = luaL_optstring(L, 2, "lado");
+    gVistas = n >= 2 ? 2 : 1;
+    gVistasModo = (modo && modo[0] == 'a') ? 1 : 0;
+    lua_getfield(L, LUA_REGISTRYINDEX, "w3d_duenio");
+    gVistasDuenio = (Object*)lua_touserdata(L, -1);
+    lua_pop(L, 1);
+    W3dScriptRedibujar();
+    return 0;
+}
+// setVistaCamara(i, camara): la camara de la vista i (1 o 2). Sin poner, la activa
+static int LSetVistaCamara(lua_State* L) {
+    const int i = (int)luaL_checkinteger(L, 1) - 1;
+    if (i < 0 || i > 1) return 0;
+    gVistaCam[i] = W3dScriptParamObjeto(L, 2);
+    W3dScriptRedibujar();
+    return 0;
+}
+// vista() -> la vista que se esta dibujando (1 o 2; 0 fuera del dibujo) y cuantas hay
+static int LVista(lua_State* L) {
+    lua_pushinteger(L, gVistaDibujando);
+    lua_pushinteger(L, gVistas);
+    return 2;
+}
+
 // yo() -> el objeto que tiene ESTE script (el mismo script puesto en varios objetos: cada instancia se maneja a si
 // misma sin buscarse por nombre)
 static int LYo(lua_State* L) {
@@ -726,18 +808,21 @@ bool W3dScriptCompartidoPar(int i, std::string* nombre, std::string* valor) {
     return true;
 }
 
-// stick("izq"|"der") -> x, y del stick analogico (-1..1, deadzone ya aplicada)
+// stick("izq"|"der" [, mando]) -> x, y del stick analogico (-1..1, deadzone ya aplicada); sin mando, todos juntos
 static int LStick(lua_State* L) {
     const char* n = luaL_optstring(L, 1, "izq");
     int cual = (n && n[0] == 'd') ? 1 : 0;
-    lua_pushnumber(L, gSticks[cual][0]);
-    lua_pushnumber(L, gSticks[cual][1]);
+    const int m = MandoArg(L, 2);
+    lua_pushnumber(L, m == -1 ? gSticks[cual][0] : (m >= 0 ? gSticksM[m][cual][0] : 0.0f));
+    lua_pushnumber(L, m == -1 ? gSticks[cual][1] : (m >= 0 ? gSticksM[m][cual][1] : 0.0f));
     return 2;
 }
-// gatillo("izq"|"der") -> 0..1: el gatillo analogico del mando (LT / RT, L2 / R2): un pedal (acelerador, freno)
+// gatillo("izq"|"der" [, mando]) -> 0..1: el gatillo analogico del mando (LT / RT, L2 / R2): un pedal (acelerador, freno)
 static int LGatillo(lua_State* L) {
     const char* n = luaL_optstring(L, 1, "der");
-    lua_pushnumber(L, gGatillos[(n && n[0] == 'i') ? 0 : 1]);
+    const int cual = (n && n[0] == 'i') ? 0 : 1;
+    const int m = MandoArg(L, 2);
+    lua_pushnumber(L, m == -1 ? gGatillos[cual] : (m >= 0 ? gGatillosM[m][cual] : 0.0f));
     return 1;
 }
 // toque() -> x, y, tocando: el dedo/mouse sobre el juego (px del lienzo, centro 0,0)
@@ -790,10 +875,12 @@ static int LBeep(lua_State* L) {
     if (s) w3dEngine::W3dSoundPlay(s, vol, false);
     return 0;
 }
+// boton("a" [, mando]): sin mando, el de cualquiera
 static int LBoton(lua_State* L) {
     const char* n = luaL_checkstring(L, 1);
-    std::map<std::string, bool>::iterator it = gBotonesPad.find(n);
-    lua_pushboolean(L, it != gBotonesPad.end() && it->second);
+    const int m = MandoArg(L, 2);
+    if (m == -1) lua_pushboolean(L, EstadoTecla(gBotonesPad, n));
+    else lua_pushboolean(L, m >= 0 && EstadoTecla(gBotonesM[m], n));
     return 1;
 }
 
@@ -1897,6 +1984,9 @@ static void RegistrarAPI(lua_State* L) {
     lua_pushcfunction(L, LRatonCapturado); lua_setglobal(L, "ratonCapturado");
     lua_pushcfunction(L, LBeep);   lua_setglobal(L, "beep");
     lua_pushcfunction(L, LBoton);  lua_setglobal(L, "boton");
+    lua_pushcfunction(L, LSetVistas);      lua_setglobal(L, "setVistas");
+    lua_pushcfunction(L, LSetVistaCamara); lua_setglobal(L, "setVistaCamara");
+    lua_pushcfunction(L, LVista);          lua_setglobal(L, "vista");
     lua_pushcfunction(L, LPos3);   lua_setglobal(L, "pos3");
     lua_pushcfunction(L, LSetPos3);lua_setglobal(L, "setPos3");
     lua_pushcfunction(L, LGirarHacia); lua_setglobal(L, "girarHacia");
@@ -2012,6 +2102,9 @@ static void RegistrarAPI(lua_State* L) {
     // HITBOX (hitboxActivo/setHitboxActivo/setHitboxTam/hitboxDentro/hitboxTocando/verHitboxes):
     // cajas de deteccion con eventos alEntrar/alQuedarse/alSalir. Ver physics/W3dHitbox.h.
     W3dHitboxRegistrarBinds((void*)L);
+    // RED (redHostear/redBuscar/redPartidas/redUnirse/redEnviar/redRecibir...): LAN, wifi o internet, con el
+    // permiso que de la aplicacion. Ver net/W3dRed.h.
+    w3dRed::RegistrarBinds((void*)L);
     if (gBindExtra) gBindExtra((void*)L);   // la API 2D del editor / plataforma
 }
 
@@ -2164,6 +2257,7 @@ bool W3dScriptActualizar(Object* duenio, float dt) {
     if (!gFinFrameExterno) {
         gTeclasPrev = gTeclas;
         gBotonesPadPrev = gBotonesPad;
+        for (int m = 0; m < W3D_MANDOS; m++) gBotonesMPrev[m] = gBotonesM[m];
         gTeclasPulsadas.clear();
     }
     return ok;
@@ -2244,9 +2338,12 @@ void W3dScriptFinFrame() {
     gFinFrameExterno = true;
     gTeclasPrev = gTeclas;
     gBotonesPadPrev = gBotonesPad;
+    for (int m = 0; m < W3D_MANDOS; m++) gBotonesMPrev[m] = gBotonesM[m];
     gTeclasPulsadas.clear();
     // los destruir() del frame: ahora que no corre ningun actualizar()
     W3dScriptDestruirPendientes();
+    // la red: manda lo que los scripts pidieron, lee lo que llego, reenvia lo confiable que falta
+    w3dRed::Actualizar();
 }
 
 // ---- LA DESTRUCCION (destruir de lua, ver W3dScript.h) ----
@@ -2344,6 +2441,8 @@ void W3dScriptDescargarTodo() {
     W3dFisicaLimpiar(); // y las velocidades tambien: el Stop deja la escena quieta (y sin punteros viejos)
     W3dHitboxFinPartida(); // y los pares de hitbox / contactos (la proxima partida arranca sin
                            // "adentro") y el overlay verHitboxes que haya prendido un script
+    w3dRed::Cerrar();      // y la sesion de red (el Stop se despide de los otros)
+    VistasReiniciar();     // y la pantalla dividida (el editor vuelve a una vista)
 }
 
 // ordena las propiedades por la posicion en que estan DECLARADAS en el archivo (ver abajo).

@@ -766,6 +766,7 @@ void StatsReset() {
     gStatCat = StatCatEscena;
 }
 void Finish() { W3D_GLC(glFinish()); }
+void DibujarPendiente() {}   // (este backend dibuja cada draw en el momento)
 
 // ---- textura activa (cacheada) ----
 void BindTexture(unsigned int id) {

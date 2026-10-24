@@ -139,14 +139,26 @@ void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirDC(2, aMsg)
 #elif defined(W3D_3DS)
 // ---------------------------------------------------------------------------
 //  Backend 3DS: svcOutputDebugString, que sale en el log del emulador (Azahar/Citra) y en un depurador por la red con
-//  la consola real. La pantalla no se usa: las dos son del editor.
+//  la consola real, y a la tarjeta SD (sdmc:/3ds/Whisk3D/whisk3d.log, se pisa en cada sesion): en la consola de verdad
+//  es lo que queda para ver que paso. Cada linea se escribe en el momento (si la consola se cuelga, ya esta en la SD).
+//  La pantalla no se usa: las dos son del editor.
 // ---------------------------------------------------------------------------
 #include <3ds.h>
+#include <sys/stat.h>
 static void Escribir3ds(int nivel, const char* aMsg) {
     RingPush(nivel, aMsg); // espejo en memoria para la UI
     char buf[300];
     const int n = snprintf(buf, sizeof(buf), "[%s] %s", NivelTag(nivel), aMsg ? aMsg : "");
     svcOutputDebugString(buf, n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1);
+    static FILE* f = NULL;
+    static bool probado = false;
+    if (!probado) {
+        probado = true;
+        mkdir("sdmc:/3ds", 0777);
+        mkdir("sdmc:/3ds/Whisk3D", 0777);
+        f = fopen("sdmc:/3ds/Whisk3D/whisk3d.log", "w");
+    }
+    if (f) { fputs(buf, f); fputc('\n', f); fflush(f); }
 }
 void w3dLogReset() { Escribir3ds(0, "=== Whisk3D DEV LOG ==="); }
 void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; Escribir3ds(0, aMsg); }

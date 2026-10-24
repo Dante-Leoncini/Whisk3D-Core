@@ -450,6 +450,7 @@ void CopiarPantalla(unsigned int id, int x, int y, int w, int h) {
     (void)x; (void)y;
     return;
 #endif
+    w3dEngine::DibujarPendiente();   // (la copia tiene que ver todo lo que ya se mando a dibujar)
     w3dEngine::BindTexture(id);
     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, y, w, h);
 }
@@ -465,6 +466,7 @@ void FreeImage(unsigned char* rgba) {
 void DeleteTexture(unsigned int id) {
     if (!id) return;
     GLuint g = (GLuint)id;
+    w3dEngine::DibujarPendiente();   // (lo juntado que la usa, antes de que deje de existir)
     glDeleteTextures(1, &g);
     w3dEngine::BindTexture(0);   // GL desbindea lo borrado; el cache del motor tiene que saberlo
     w3dEngine::MezclaTexturaBorrada(id);   // (idem la unidad 1)
@@ -929,6 +931,7 @@ static unsigned char* w3dEncodePNGImpl(const unsigned char* rgba, int w, int h, 
 // actualiza un RECTANGULO de una textura ya subida (pintura en vivo): 'rgbaRect' = w*h pixeles del rect
 bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect, bool regenerarMips) {
     if (!id || !rgbaRect || w <= 0 || h <= 0) return false;
+    w3dEngine::DibujarPendiente();   // (lo juntado que la usa, con lo que tenia)
     w3dEngine::BindTexture(id);
     const bool mips = regenerarMips && TexTieneMips(id);
 #if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
@@ -944,6 +947,7 @@ bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char
 }
 void RegenerarMips(unsigned int id, int x, int y, const unsigned char* px1) {
     if (!id || !px1 || !TexTieneMips(id)) return;
+    w3dEngine::DibujarPendiente();
     w3dEngine::BindTexture(id);
 #if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
     (void)x; (void)y;

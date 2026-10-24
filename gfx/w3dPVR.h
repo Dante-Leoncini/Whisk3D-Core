@@ -111,12 +111,29 @@ namespace w3dPVR {
     enum { CORTE = 0xFFFF };
     void Tiras(const float* pos, const float* uv, const uint32_t* argb, uint32_t fijo, const uint16_t* idx, int n,
                bool recortar);
+    // LO QUIETO CON MUCHAS TIRAS CORTAS (un escenario: de 4 o 6 indices): cada vertice en un registro de 32 bytes (una
+    // linea de cache: x, y, z, u, v y su color ARGB) y los indices SIN CORTE: el ultimo de cada tira lleva FIN_TIRA
+    // (el bit de arriba: hasta 32768 vertices). El bucle no busca los cortes ni paga nada por tira: la mitad del
+    // trabajo de Tiras por vertice
+    struct VerticeModelo { float x, y, z, u, v; uint32_t argb; uint32_t libre[2]; };
+    enum { FIN_TIRA = 0x8000 };
+    void TirasModelo(const VerticeModelo* v, const uint16_t* fines, int n, bool recortar);
+    // pasa tiras con CORTE a ese formato (sin las de menos de 3 indices): 'salida' puede ser 'idx' (nunca queda mas
+    // largo). 'donde' (opcional, n + 1 lugares): donde[i] = el lugar en la salida de lo que estaba en idx[i] (para
+    // pasar rangos que empiezan y terminan en un CORTE). Devuelve cuantos quedan; -1 si algun indice no entra
+    int TirasConFin(const uint16_t* idx, int n, uint16_t* salida, uint32_t* donde = 0);
     // vertices YA transformados (los de un personaje: se transforman una vez y se dibujan en dos pasadas): x, y de
-    // pantalla y z = 1/w, o w <= 0 (detras del plano cercano: sus triangulos no se dibujan)
+    // pantalla y z = 1/w, o w <= 0 (detras del plano cercano: sus triangulos no se dibujan). Indices con FIN_TIRA
     struct Vertice { float x, y, z, w; };
     // ('adelante': el que llama ya sabe que ninguno quedo detras; si no, se fija aca)
-    void TirasTransformadas(const Vertice* v, const float* uv, uint32_t argb, const uint16_t* idx, int n,
+    void TirasTransformadas(const Vertice* v, const float* uv, uint32_t argb, const uint16_t* fines, int n,
                             bool adelante = false);
+    // LO MAS RAPIDO: el vertice ya armado como lo recibe la PVR (la bandera, x, y, z de pantalla con z = 1/w, u, v):
+    // cada indice (con FIN_TIRA) se copia de a 8 bytes (fmov de pares) mas el color y la bandera. Lo arma el que
+    // transforma (un cuerpo, una vez por cuadro y por pasada); todos delante del plano cercano
+    struct Bloque { uint32_t bandera; float x, y, z, u, v; };
+    enum { BANDERA_VERTICE = 0xe0000000u };   // (PVR_CMD_VERTEX: la de cada Bloque)
+    void TirasBloques(const Bloque* b, uint32_t argb, const uint16_t* fines, int n);
     // un cuadro 2D en pixeles (x0, y0)-(x1, y1) con sus UV y color, delante de todo
     void Cuadro2D(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1, uint32_t argb,
                   float z = 1e4f);

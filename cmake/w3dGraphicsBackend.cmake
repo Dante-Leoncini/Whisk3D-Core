@@ -15,6 +15,8 @@ function(w3d_configure_graphics_backend TARGET)
         # OpenGL de escritorio (Windows)
         target_compile_definitions(${TARGET} PRIVATE W3D_OPENGL)
         target_link_libraries(${TARGET} PRIVATE opengl32 glu32)
+        # los sockets de net/W3dRed.cpp (jugar en red)
+        target_link_libraries(${TARGET} PRIVATE ws2_32)
         target_compile_definitions(${TARGET} PRIVATE SDL_MAIN_HANDLED)
 
     elseif(APPLE)

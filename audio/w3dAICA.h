@@ -10,7 +10,9 @@
 //    - EFECTOS: van a la memoria de sonido (2 MB, con el programa del AICA y los buffers de los flujos) y suenan en un
 //      canal cada uno. Hasta 65534 muestras (el contador de posicion del canal es de 16 bits: 2,7 s a 24 kHz).
 //    - FLUJOS: lo largo (musica, ambiente, frases) queda en la RAM principal y se le pasa al AICA de a pedazos: hasta
-//      cuatro a la vez. Actualizar() (una vez por cuadro) les da lo que sigue.
+//      cuatro a la vez. Los atiende un hilo aparte, cada 50 ms (el buffer de cada uno dura mas de un segundo; cada
+//      10 ms le costaba al juego 1,2 ms por cuadro): pasarle un pedazo al AICA es un DMA que hay que esperar, y
+//      esperarlo en el bucle del juego le costaba al cuadro varios milisegundos.
 //    - ADPCM: el de Yamaha (wav2adpcm de KallistiOS, sin encabezado); estereo intercalado: un byte = una muestra de
 //      cada canal (la izquierda en el nibble de arriba). Un efecto en lazo conviene en PCM de 16 bits: el decodificador
 //      ADPCM no vuelve a su estado inicial al repetir.
@@ -45,7 +47,7 @@ namespace w3dAICA {
     bool FlujoSonando(int f);  // (uno sin lazo termina solo; al terminar se libera)
     void VolumenFlujo(int f, float vol);
 
-    // una vez por cuadro: los flujos que suenan piden lo que sigue
+    // (los flujos los atiende el hilo: queda por si un programa lo arranco sin hilo)
     void Actualizar();
 }
 

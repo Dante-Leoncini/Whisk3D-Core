@@ -23,41 +23,199 @@ size_t gBaseMostrados = 0;       // los que KallistiOS ya habia mostrado al Inic
 // EL ENVIO RAPIDO (las tiras enteras, que son casi todo): el puntero de la store queue en un registro todo el bucle
 // (pvr_dr_target lo lee y lo escribe en memoria por cada vertice) y las 8 palabras guardadas de atras para adelante
 // con predecremento: el SH-4 no tiene fmov con desplazamiento y cada una costaba tres instrucciones. Despues, el pref
-// que la manda a la PVR. 'sq' es la store queue de este vertice (alternan: sq ^= 32 antes de cada uno). (Sin
-// "memory": solo escribe en la store queue, que nada lee; asi lo de alrededor sigue en registros)
-inline void EnviarSQ(uint32_t sq, uint32_t flags, float x, float y, float z, uint32_t u, uint32_t v, uint32_t argb,
+// que la manda a la PVR. 'sq' es la store queue de este vertice (alternan: sq ^= 32 antes de cada uno). Lo del vertice
+// va en registros de punto flotante (los enteros no alcanzan para el bucle y el compilador los mandaba a la pila).
+// (Sin "memory": solo escribe en la store queue, que nada lee; asi lo de alrededor sigue en registros)
+inline void EnviarSQ(uint32_t sq, uint32_t flags, float x, float y, float z, float u, float v, uint32_t argb,
                      uint32_t oargb) {
     uint32_t p = sq + 32;
     __asm__ __volatile__(
         "mov.l   %1, @-%0\n\t"
         "mov.l   %2, @-%0\n\t"
-        "mov.l   %3, @-%0\n\t"
-        "mov.l   %4, @-%0\n\t"
+        "fmov.s  %3, @-%0\n\t"
+        "fmov.s  %4, @-%0\n\t"
         "fmov.s  %5, @-%0\n\t"
         "fmov.s  %6, @-%0\n\t"
         "fmov.s  %7, @-%0\n\t"
         "mov.l   %8, @-%0\n\t"
         "pref    @%0\n\t"
         : "+r"(p)
-        : "r"(oargb), "r"(argb), "r"(v), "r"(u), "f"(z), "f"(y), "f"(x), "r"(flags));
+        : "r"(oargb), "r"(argb), "f"(v), "f"(u), "f"(z), "f"(y), "f"(x), "r"(flags));
 }
 
-// lo mismo con todo ya hecho (los vertices transformados: se copian como enteros)
-inline void EnviarSQCopia(uint32_t sq, uint32_t flags, const uint32_t* xyz, const uint32_t* uv, uint32_t argb,
-                          uint32_t oargb) {
+// lo mismo leyendo lo del vertice adentro, con post-incremento (fmov.s @Rm+: sin cuentas de direcciones): x, y, z de
+// 'xyz' (o los ya calculados) y u, v de 'uv'. Lo que leen va declarado ("m"): con un "memory" el compilador tenia que
+// dejar en la memoria todo lo del bucle (la store queue, los punteros) y releerlo en cada vertice
+inline void EnviarSQDe(uint32_t sq, uint32_t flags, const float* xyz, const float* uv, uint32_t argb, uint32_t oargb) {
     uint32_t p = sq + 32;
+    float a, b, c, d, e;
     __asm__ __volatile__(
-        "mov.l   %1, @-%0\n\t"
-        "mov.l   %2, @-%0\n\t"
-        "mov.l   %3, @-%0\n\t"
-        "mov.l   %4, @-%0\n\t"
-        "mov.l   %5, @-%0\n\t"
-        "mov.l   %6, @-%0\n\t"
-        "mov.l   %7, @-%0\n\t"
-        "mov.l   %8, @-%0\n\t"
-        "pref    @%0\n\t"
-        : "+r"(p)
-        : "r"(oargb), "r"(argb), "r"(uv[1]), "r"(uv[0]), "r"(xyz[2]), "r"(xyz[1]), "r"(xyz[0]), "r"(flags));
+        "fmov.s  @%[xyz]+, %[a]\n\t"
+        "fmov.s  @%[xyz]+, %[b]\n\t"
+        "fmov.s  @%[xyz], %[c]\n\t"
+        "fmov.s  @%[uv]+, %[d]\n\t"
+        "fmov.s  @%[uv], %[e]\n\t"
+        "mov.l   %[oargb], @-%[p]\n\t"
+        "mov.l   %[argb], @-%[p]\n\t"
+        "fmov.s  %[e], @-%[p]\n\t"
+        "fmov.s  %[d], @-%[p]\n\t"
+        "fmov.s  %[c], @-%[p]\n\t"
+        "fmov.s  %[b], @-%[p]\n\t"
+        "fmov.s  %[a], @-%[p]\n\t"
+        "mov.l   %[flags], @-%[p]\n\t"
+        "pref    @%[p]\n\t"
+        : [p] "+r"(p), [xyz] "+r"(xyz), [uv] "+r"(uv), [a] "=&f"(a), [b] "=&f"(b), [c] "=&f"(c), [d] "=&f"(d),
+          [e] "=&f"(e)
+        : [oargb] "r"(oargb), [argb] "r"(argb), [flags] "r"(flags), "m"(*(const float(*)[3])xyz),
+          "m"(*(const float(*)[2])uv));
+}
+
+inline void EnviarSQUV(uint32_t sq, uint32_t flags, float x, float y, float z, const float* uv, uint32_t argb,
+                       uint32_t oargb) {
+    uint32_t p = sq + 32;
+    float d, e;
+    __asm__ __volatile__(
+        "fmov.s  @%[uv]+, %[d]\n\t"
+        "fmov.s  @%[uv], %[e]\n\t"
+        "mov.l   %[oargb], @-%[p]\n\t"
+        "mov.l   %[argb], @-%[p]\n\t"
+        "fmov.s  %[e], @-%[p]\n\t"
+        "fmov.s  %[d], @-%[p]\n\t"
+        "fmov.s  %[z], @-%[p]\n\t"
+        "fmov.s  %[y], @-%[p]\n\t"
+        "fmov.s  %[x], @-%[p]\n\t"
+        "mov.l   %[flags], @-%[p]\n\t"
+        "pref    @%[p]\n\t"
+        : [p] "+r"(p), [uv] "+r"(uv), [d] "=&f"(d), [e] "=&f"(e)
+        : [oargb] "r"(oargb), [argb] "r"(argb), [x] "f"(x), [y] "f"(y), [z] "f"(z), [flags] "r"(flags),
+          "m"(*(const float(*)[2])uv));
+}
+
+// x, y, z de 'p' (con w = 1) por la matriz cargada en XMTRX: lo proyectado (sin dividir) en x, y, w
+inline void Proyectar(const float* p, float& x, float& y, float& w) {
+    register float f0 __asm__("fr0");
+    register float f1 __asm__("fr1");
+    register float f2 __asm__("fr2");
+    register float f3 __asm__("fr3") = 1.0f;
+    __asm__ __volatile__(
+        "fmov.s  @%[p]+, fr0\n\t"
+        "fmov.s  @%[p]+, fr1\n\t"
+        "fmov.s  @%[p], fr2\n\t"
+        "ftrv    xmtrx, fv0\n\t"
+        : [p] "+r"(p), "=&f"(f0), "=&f"(f1), "=&f"(f2), "+f"(f3)
+        : "m"(*(const float(*)[3])p));
+    x = f0; y = f1; w = f3;
+}
+
+// las tiras de Bloques (TirasBloques), el bucle entero aca: por indice (con FIN_TIRA, como EnviarModelo) su Bloque
+// (24 bytes: bandera, x, y, z, u, v) copiado de a pares (con fschg, fmov mueve 8 bytes), los colores y la bandera
+// encima de la del Bloque. Devuelve la store queue del ultimo
+inline uint32_t EnviarBloques(uint32_t sq, const Bloque* b, const uint16_t* idx, int n, uint32_t argb, uint32_t oargb) {
+    const uint32_t vertice = PVR_CMD_VERTEX, x32 = 32, doce = 12;
+    const int fin = 28;
+    uint32_t k, f, q;
+    __asm__ __volatile__(
+        "1:\n\t"
+        "mov.w   @%[idx]+, %[k]\n\t"
+        "shll    %[k]\n\t"
+        "movt    %[f]\n\t"
+        "extu.w  %[k], %[k]\n\t"
+        "mulu.w  %[doce], %[k]\n\t"
+        "shld    %[fin], %[f]\n\t"
+        "or      %[vertice], %[f]\n\t"
+        "xor     %[x32], %[sq]\n\t"
+        "mov     %[sq], %[q]\n\t"
+        "add     #32, %[q]\n\t"
+        "sts     macl, %[k]\n\t"
+        "add     %[b], %[k]\n\t"
+        "fschg\n\t"
+        "fmov    @%[k]+, dr0\n\t"
+        "fmov    @%[k]+, dr2\n\t"
+        "fmov    @%[k], dr4\n\t"
+        "mov.l   %[oargb], @-%[q]\n\t"
+        "mov.l   %[argb], @-%[q]\n\t"
+        "fmov    dr4, @-%[q]\n\t"
+        "fmov    dr2, @-%[q]\n\t"
+        "fmov    dr0, @-%[q]\n\t"
+        "fschg\n\t"
+        "mov.l   %[f], @%[q]\n\t"
+        "dt      %[n]\n\t"
+        "bf.s    1b\n\t"
+        "pref    @%[q]\n\t"
+        : [idx] "+r"(idx), [n] "+r"(n), [sq] "+r"(sq), [k] "=&r"(k), [f] "=&r"(f), [q] "=&r"(q)
+        : [b] "r"(b), [doce] "r"(doce), [fin] "r"(fin), [vertice] "r"(vertice), [x32] "r"(x32), [argb] "r"(argb),
+          [oargb] "r"(oargb)
+        : "fr0", "fr1", "fr2", "fr3", "fr4", "fr5", "macl", "t", "memory");
+    return sq;
+}
+
+// las tiras de un modelo (TirasModelo), el bucle entero aca: por indice, el registro de su vertice (k << 5), FTRV,
+// 1/w con FSRRA y las 8 palabras a la store queue. La bandera sale del bit de arriba del indice (FIN_TIRA: shll lo
+// deja en T). Devuelve la store queue del ultimo
+inline uint32_t EnviarModelo(uint32_t sq, const VerticeModelo* v, const uint16_t* idx, int n, uint32_t oargb) {
+    const uint32_t vertice = PVR_CMD_VERTEX, x32 = 32;
+    const int cuatro = 4, fin = 28;
+    uint32_t k, b, q;
+    __asm__ __volatile__(
+        "1:\n\t"
+        "mov.w   @%[idx]+, %[k]\n\t"
+        "shll    %[k]\n\t"
+        "movt    %[b]\n\t"
+        "extu.w  %[k], %[k]\n\t"
+        "shld    %[cuatro], %[k]\n\t"
+        "add     %[v], %[k]\n\t"
+        "fmov.s  @%[k]+, fr0\n\t"
+        "fmov.s  @%[k]+, fr1\n\t"
+        "fmov.s  @%[k]+, fr2\n\t"
+        "fldi1   fr3\n\t"
+        "ftrv    xmtrx, fv0\n\t"
+        "fmov.s  @%[k]+, fr4\n\t"
+        "fmov.s  @%[k]+, fr5\n\t"
+        "mov.l   @%[k], %[k]\n\t"
+        "shld    %[fin], %[b]\n\t"
+        "or      %[vertice], %[b]\n\t"
+        "xor     %[x32], %[sq]\n\t"
+        "mov     %[sq], %[q]\n\t"
+        "add     #32, %[q]\n\t"
+        "fmul    fr3, fr3\n\t"
+        "fsrra   fr3\n\t"
+        "fmul    fr3, fr0\n\t"
+        "fmul    fr3, fr1\n\t"
+        "mov.l   %[oargb], @-%[q]\n\t"
+        "mov.l   %[k], @-%[q]\n\t"
+        "fmov.s  fr5, @-%[q]\n\t"
+        "fmov.s  fr4, @-%[q]\n\t"
+        "fmov.s  fr3, @-%[q]\n\t"
+        "fmov.s  fr1, @-%[q]\n\t"
+        "fmov.s  fr0, @-%[q]\n\t"
+        "mov.l   %[b], @-%[q]\n\t"
+        "dt      %[n]\n\t"
+        "bf.s    1b\n\t"
+        "pref    @%[q]\n\t"
+        : [idx] "+r"(idx), [n] "+r"(n), [sq] "+r"(sq), [k] "=&r"(k), [b] "=&r"(b), [q] "=&r"(q)
+        : [v] "r"(v), [cuatro] "r"(cuatro), [fin] "r"(fin), [vertice] "r"(vertice), [x32] "r"(x32),
+          [oargb] "r"(oargb)
+        : "fr0", "fr1", "fr2", "fr3", "fr4", "fr5", "t", "memory");
+    return sq;
+}
+
+// recorre las tiras de 'idx' (separadas por CORTE) y por cada indice llama a uno(k, flags): el ultimo de cada tira con
+// su fin. El bucle de adentro no pregunta nada mas (cuantos van se cuenta por tira). Devuelve los que mando
+template <class F> inline int PorTiras(const uint16_t* idx, int n, F uno) {
+    const uint16_t* p = idx;
+    const uint16_t* const fin = idx + n;
+    int enviados = 0;
+    while (p < fin) {
+        if (*p == CORTE) { p++; continue; }
+        const uint16_t* q = p + 1;
+        while (q < fin && *q != CORTE) q++;
+        enviados += (int)(q - p);
+        const uint16_t* const ultimo = q - 1;
+        for (; p < ultimo; p++) uno(*p, PVR_CMD_VERTEX);
+        uno(*p, PVR_CMD_VERTEX_EOL);
+        p = q;
+    }
+    return enviados;
 }
 
 inline void Vert(uint32_t flags, float x, float y, float z, float u, float v, uint32_t argb) {
@@ -364,28 +522,20 @@ void Tiras(const float* pos, const float* uv, const uint32_t* argb, uint32_t fij
            bool recortar) {
     if (n < 3) return;
     if (!recortar && uv) {
-        // lo de siempre: cada indice, FTRV, division y 8 palabras a la PVR (el ultimo de cada tira, con su fin). El
-        // color: el de cada vertice o el fijo (la mascara deja el indice en 0)
+        // lo de siempre: cada indice, FTRV, division y 8 palabras a la PVR. El color: el de cada vertice o el fijo (la
+        // mascara deja el indice en 0)
         const uint32_t* colores = argb ? argb : &fijo;
         const uint32_t mascara = argb ? 0xFFFFu : 0u;
-        const uint32_t* uvs = (const uint32_t*)uv;
         const uint32_t suma = gSumado;
         uint32_t sq = pvr_dr_addr;
-        int enviados = 0;
-        for (int i = 0; i < n; i++) {
-            const uint32_t k = idx[i];
-            if (k == CORTE) continue;
-            const float* p = pos + k * 3;
-            float x = p[0], y = p[1], z = p[2], w = 1.0f;
-            mat_trans_nodiv(x, y, z, w);
+        gCuenta.vertices += PorTiras(idx, n, [&](uint32_t k, uint32_t flags) {
+            float x, y, w;
+            Proyectar(pos + k * 3, x, y, w);
             const float iw = Inversa(w);
-            const uint32_t flags = (i == n - 1 || idx[i + 1] == CORTE) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
             sq ^= 32;
-            EnviarSQ(sq, flags, x * iw, y * iw, iw, uvs[k * 2], uvs[k * 2 + 1], colores[k & mascara], suma);
-            enviados++;
-        }
+            EnviarSQUV(sq, flags, x * iw, y * iw, iw, uv + k * 2, colores[k & mascara], suma);
+        });
         pvr_dr_addr = sq;
-        gCuenta.vertices += enviados;
         return;
     }
     if (!recortar) {
@@ -431,36 +581,98 @@ void Tiras(const float* pos, const float* uv, const uint32_t* argb, uint32_t fij
     }
 }
 
-void TirasTransformadas(const Vertice* v, const float* uv, uint32_t argb, const uint16_t* idx, int n, bool adelante) {
+void TirasModelo(const VerticeModelo* v, const uint16_t* fines, int n, bool recortar) {
+    if (n < 3) return;
+    if (!recortar) {
+        pvr_dr_addr = EnviarModelo(pvr_dr_addr, v, fines, n, gSumado);
+        gCuenta.vertices += n;
+        return;
+    }
+    // triangulo por triangulo (como Tiras): los de una misma tira (ni el primero ni el segundo son el fin de la suya)
+    const float wc = gWCercano;
+    int inicio = 0;
+    for (int i = 0; i + 2 < n; i++) {
+        if (i > 0 && (fines[i - 1] & FIN_TIRA)) inicio = i;
+        if ((fines[i] | fines[i + 1]) & FIN_TIRA) continue;
+        int a = fines[i], b = fines[i + 1];
+        const int c = fines[i + 2] & ~FIN_TIRA;
+        if (a == b || b == c || a == c) continue;
+        if ((i - inicio) & 1) { const int s = a; a = b; b = s; }
+        Clip t[3];
+        const int ks[3] = { a, b, c };
+        int adentro = 0;
+        for (int j = 0; j < 3; j++) {
+            const VerticeModelo& m = v[ks[j]];
+            Transformar(&m.x, t[j]);
+            t[j].u = m.u;
+            t[j].v = m.v;
+            t[j].c = m.argb;
+            adentro += t[j].w >= wc ? 1 : 0;
+        }
+        if (adentro == 0) continue;
+        if (adentro < 3) { TrianguloRecortado(t); continue; }
+        for (int j = 0; j < 3; j++) {
+            const float iw = Inversa(t[j].w);
+            Vert(j == 2 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, t[j].x * iw, t[j].y * iw, iw, t[j].u, t[j].v, t[j].c);
+        }
+        gCuenta.vertices += 3;
+    }
+}
+
+int TirasConFin(const uint16_t* idx, int n, uint16_t* salida, uint32_t* donde) {
+    int o = 0, i = 0;
+    while (i < n) {
+        if (idx[i] == CORTE) {
+            if (donde) donde[i] = (uint32_t)o;
+            i++;
+            continue;
+        }
+        int j = i;
+        while (j < n && idx[j] != CORTE) j++;
+        // (las de menos de 3 no dibujan nada: afuera)
+        const bool sirve = j - i >= 3;
+        const int o0 = o;
+        for (int k = i; k < j; k++) {
+            if (idx[k] >= FIN_TIRA) return -1;
+            if (donde) donde[k] = (uint32_t)(sirve ? o0 + (k - i) : o0);
+            if (sirve) salida[o++] = (uint16_t)(idx[k] | (k == j - 1 ? FIN_TIRA : 0));
+        }
+        i = j;
+    }
+    if (donde) donde[n] = (uint32_t)o;
+    return o;
+}
+
+void TirasTransformadas(const Vertice* v, const float* uv, uint32_t argb, const uint16_t* fines, int n,
+                        bool adelante) {
     if (n < 3) return;
     bool todos = adelante;
     if (!todos) {
         todos = true;
-        for (int i = 0; i < n && todos; i++) todos = idx[i] == CORTE || v[idx[i]].w > 0.0f;
+        for (int i = 0; i < n && todos; i++) todos = v[fines[i] & ~FIN_TIRA].w > 0.0f;
     }
     if (todos) {
-        const uint32_t* uvs = (const uint32_t*)uv;
         const uint32_t suma = gSumado;
         uint32_t sq = pvr_dr_addr;
-        int enviados = 0;
         for (int i = 0; i < n; i++) {
-            const uint32_t k = idx[i];
-            if (k == CORTE) continue;
-            const uint32_t flags = (i == n - 1 || idx[i + 1] == CORTE) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
+            const uint32_t k = fines[i] & ~FIN_TIRA;
             sq ^= 32;
-            EnviarSQCopia(sq, flags, (const uint32_t*)&v[k], uvs + k * 2, argb, suma);
-            enviados++;
+            EnviarSQDe(sq, (fines[i] & FIN_TIRA) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, &v[k].x, uv + k * 2, argb,
+                       suma);
         }
         pvr_dr_addr = sq;
-        gCuenta.vertices += enviados;
+        gCuenta.vertices += n;
         return;
     }
-    // alguno detras del plano cercano: triangulo por triangulo, sin los que lo tocan
+    // alguno detras del plano cercano: triangulo por triangulo, sin los que lo tocan (los de una misma tira: ni el
+    // primero ni el segundo son el fin de la suya)
     int inicio = 0;
     for (int i = 0; i + 2 < n; i++) {
-        int a = idx[i], b = idx[i + 1], c = idx[i + 2];
-        if (a == CORTE) { inicio = i + 1; continue; }
-        if (b == CORTE || c == CORTE || a == b || b == c || a == c) continue;
+        if (i > 0 && (fines[i - 1] & FIN_TIRA)) inicio = i;
+        if ((fines[i] | fines[i + 1]) & FIN_TIRA) continue;
+        int a = fines[i], b = fines[i + 1];
+        const int c = fines[i + 2] & ~FIN_TIRA;
+        if (a == b || b == c || a == c) continue;
         if (v[a].w <= 0.0f || v[b].w <= 0.0f || v[c].w <= 0.0f) continue;
         if ((i - inicio) & 1) { const int s = a; a = b; b = s; }
         const int ks[3] = { a, b, c };
@@ -470,6 +682,12 @@ void TirasTransformadas(const Vertice* v, const float* uv, uint32_t argb, const 
         }
         gCuenta.vertices += 3;
     }
+}
+
+void TirasBloques(const Bloque* b, uint32_t argb, const uint16_t* fines, int n) {
+    if (n < 3) return;
+    pvr_dr_addr = EnviarBloques(pvr_dr_addr, b, fines, n, argb, gSumado);
+    gCuenta.vertices += n;
 }
 
 void Cuadro2DEsquinas(const float* xy, const float* uv, uint32_t argb, float z) {

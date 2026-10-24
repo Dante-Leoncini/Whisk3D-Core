@@ -20,8 +20,10 @@
 //  wireframe por glPolygonMode.
 // ============================================================================
 #include "w3dGraphics.h"
+#include "w3dlog.h"
 #include "math/Matrix4.h"
 #include <vector>
+#include <map>
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
@@ -83,6 +85,9 @@
     typedef void   (APIENTRY* PFvertexAttrib4fv)(GLuint, const GLfloat*);
     typedef void   (APIENTRY* PFactiveTexture)(GLenum);
     typedef void   (APIENTRY* PFbindAttribLocation)(GLuint, GLuint, const GLchar*);
+    typedef void   (APIENTRY* PFdeleteShader)(GLuint);
+    typedef void   (APIENTRY* PFdeleteBuffers)(GLsizei, const GLuint*);
+    typedef void   (APIENTRY* PFdeleteProgram)(GLuint);
     static PFcreateShader        glCreateShader;
     static PFshaderSource        glShaderSource;
     static PFcompileShader       glCompileShader;
@@ -112,6 +117,9 @@
     #define glActiveTexture w3dGlActiveTexture
     static PFactiveTexture       glActiveTexture;
     static PFbindAttribLocation  glBindAttribLocation;
+    static PFdeleteShader        glDeleteShader;
+    static PFdeleteBuffers       glDeleteBuffers;
+    static PFdeleteProgram       glDeleteProgram;
     #ifndef GL_TEXTURE1
         #define GL_TEXTURE1         0x84C1
     #endif
@@ -164,12 +172,16 @@ void TrazaGLVer() {
     }
     gTrazaCant = 0;
 }
-#define W3D_GLC(llamada) (g_statLlamadas[gStatCat]++, g_trazaGL ? TrazaGL(#llamada) : (void)0, (llamada))
+// (antes de cada llamada a GL se dibuja el LOTE juntado, si hay: ver LoteVaciar)
+static int loteN = 0;
+static void LoteVaciar();
+#define W3D_GLC(llamada) (loteN ? LoteVaciar() : (void)0, g_statLlamadas[gStatCat]++, g_trazaGL ? TrazaGL(#llamada) : (void)0, (llamada))
 
 // ============================================================================
 //  Estado emulado del pipeline fijo
 // ============================================================================
 static bool cap_depth=false, cap_cull=false, cap_tex=false, cap_light=false, cap_blend=false, cap_fog=false, cap_scissor=false;
+static bool cap_offset=false;   // GL_POLYGON_OFFSET_FILL
 static bool cap_colormat=false; // GL_COLOR_MATERIAL: el color del VERTICE reemplaza el diffuse/ambient del material
 static int  matMode = 1; // 0=Projection, 1=ModelView, 2=Texture
 static Matrix4 curProj, curMV;
@@ -221,7 +233,9 @@ static unsigned mezclaTex=0;
 static int      mezclaModo=0;   // 0 interpolar con k, 1 multiplicar, 2 multiplicar x2, 3 restar
 static float    mezclaK=1.0f;
 static const float* mezclaUV=0; // UV propias de la unidad 1 (0 = las mismas de la unidad 0)
-struct Arr { bool on; int size; unsigned type; int stride; const void* ptr; };
+static GLuint mezclaUVVbo=0;    // o en un buffer object
+// un atributo: de RAM (ptr) o de un buffer object (vbo, desde el byte 0: ver VertexVBO y compania)
+struct Arr { bool on; int size; unsigned type; int stride; const void* ptr; GLuint vbo; };
 static Arr aPos={false,3,0,0,0}, aNrm={false,3,0,0,0}, aUV={false,2,0,0,0}, aCol={false,4,0,0,0};
 
 // ---- objetos GL + locations ----
@@ -234,8 +248,19 @@ static float alphaRef = 0.0f;
 static int   alfaAbajo = 0;
 static GLint uMDiff,uMAmb,uMSpec,uMEmis,uShine,uAmbGlobal,uNLuces,uLPos,uLAmb,uLDif,uLSpec,uLAtt,uLCono;
 static GLint uFogColor,uFogStart,uFogEnd,uFogModo,uFogDens;
-static GLint aLpos,aLnrm,aLuv,aLcol,aLuv1;
+// los atributos, en lugares fijos (los mismos en todos los programas, ver linkear)
+static const GLint aLpos=0, aLnrm=1, aLuv=2, aLcol=3, aLuv1=4;
 static bool ready=false;
+// los planos de recorte en OJO (ver PlanosRecorte), para subirlos al programa de cada draw
+static int clipN=0;
+static float clipEq[5][4];
+// lo que GL tiene en cada atributo (los 5 lugares fijos) y en GL_ARRAY_BUFFER, para no repetir llamadas. El valor
+// constante y el prendido son del contexto (no del programa)
+struct AttrGL { int on; float cte[4]; bool hayCte; const void* ptr; GLuint vbo; int size; unsigned type; GLboolean norm; int stride; };
+static AttrGL attrGL[5];
+static GLint bufArrayGL = -1, bufIndicesGL = -1;
+static void AttrOlvidar(){ memset(attrGL, 0, sizeof(attrGL)); for(int i=0;i<5;i++) attrGL[i].on = -1; bufArrayGL = bufIndicesGL = -1; }
+static void BindArray(GLuint b){ if(bufArrayGL != (GLint)b){ W3D_GLC(glBindBuffer(GL_ARRAY_BUFFER,b)); bufArrayGL = (GLint)b; } }
 
 // ============================================================================
 //  Shaders (GLSL ES 1.00). La ILUMINACION va en el VERTEX shader, con la cuenta de OpenGL ES 1.1 (es lo que
@@ -256,35 +281,60 @@ static const char* VS =
 "varying vec3 vP; varying vec2 vT; varying vec2 vT1; varying vec4 vC; varying float vFogZ;\n"
 "varying vec2 vCentro; varying float vTam;\n"   // el centro y el tamanio del punto en pixeles de ventana (para el sprite)
 "void main(){\n"
-"  vec4 eye=uMV*vec4(aPos,1.0); gl_Position=uMVP*vec4(aPos,1.0);\n"
+"  gl_Position=uMVP*vec4(aPos,1.0);\n"
+// (la posicion en OJO solo para lo que la usa: sin eso uMV no queda en el programa y no se sube en cada draw)
+"#if defined(W3D_LUZ) || defined(W3D_TEXGEN) || defined(W3D_CLIP) || defined(W3D_NIEBLA)\n"
+"  vec4 eye=uMV*vec4(aPos,1.0);\n"
+"#endif\n"
+"#ifdef W3D_SPRITE\n"
 "  vCentro=(gl_Position.xy/gl_Position.w*0.5+0.5)*uViewport.zw+uViewport.xy; vTam=uPointSize;\n"
-"  vP=eye.xyz; vFogZ=-eye.z; gl_PointSize=uPointSize; vT1=aUV1;\n"
+"#endif\n"
+"  gl_PointSize=uPointSize;\n"
+"#ifdef W3D_CLIP\n"
+"  vP=eye.xyz;\n"
+"#endif\n"
+"#ifdef W3D_NIEBLA\n"
+"  vFogZ=-eye.z;\n"
+"#endif\n"
+"#ifdef W3D_MEZCLA\n"
+"  vT1=aUV1;\n"
+"#endif\n"
+"#if defined(W3D_LUZ) || defined(W3D_TEXGEN)\n"
 "  vec3 n=uNMat*aNrm; float nl=length(n); vec3 N=(nl>0.0)?n/nl:vec3(0.0,0.0,1.0);\n"   // GL_NORMALIZE
+"#endif\n"
+"#ifdef W3D_TEX\n"
 "  vec4 uv=aUV;\n"
+"#ifdef W3D_TEXGEN\n"
 "  if(uTexGen==1){\n"   // GL_SPHERE_MAP: el reflejo de la vista en la normal (en ojo)
 "    vec3 r=reflect(normalize(eye.xyz),N); float m=2.0*sqrt(r.x*r.x+r.y*r.y+(r.z+1.0)*(r.z+1.0));\n"
 "    uv=vec4(r.x/m+0.5,r.y/m+0.5,0.0,1.0);\n"
 "  }\n"
+"#endif\n"
 "  vec4 t=uTexM*uv; vT=t.xy/t.w;\n"
+"#endif\n"
 "  vec4 c=aCol;\n"
+"#ifdef W3D_LUZ\n"
 "  if(uLightOn==1){\n"
 "    vec4 md=(uColorMat==1)?aCol:uMDiff; vec4 ma=(uColorMat==1)?aCol:uMAmb;\n"   // COLOR_MATERIAL = AMBIENT_AND_DIFFUSE
 "    vec3 acc=uMEmis.rgb+ma.rgb*uAmbGlobal.rgb;\n"
-"    for(int i=0;i<8;i++){\n"
-"      if(i>=uNLuces) break;\n"
-"      vec3 L; float at=1.0;\n"
-"      if(uLPos[i].w!=0.0){ vec3 d=uLPos[i].xyz/uLPos[i].w-eye.xyz; float dist=length(d); L=d/max(dist,1e-6);\n"
-"        at=1.0/max(uLAtt[i].x+uLAtt[i].y*dist+uLAtt[i].z*dist*dist,1e-6); }\n"
-"      else L=normalize(uLPos[i].xyz);\n"
-"      if(uLCono[i].w>-0.5){ float sd=dot(-L,normalize(uLCono[i].xyz)); at*=(sd>=uLCono[i].w)?pow(max(sd,0.0),uLAtt[i].w):0.0; }\n"
-"      float ndl=max(dot(N,L),0.0);\n"
-"      vec3 col=ma.rgb*uLAmb[i].rgb+md.rgb*uLDif[i].rgb*ndl;\n"
-"      if(ndl>0.0){ float nh=max(dot(N,normalize(L+vec3(0.0,0.0,1.0))),0.0);\n"
-"        col+=uMSpec.rgb*uLSpec[i].rgb*((uShine>0.0)?pow(nh,uShine):1.0); }\n"
-"      acc+=at*col;\n"
-"    }\n"
+// las luces una por una (LUCES = LUZ(0) LUZ(1) ..., ver DefsPrograma) y no con un for: el compilador del driver Broadcom
+// (VideoCore IV, Android 2.3) desenrolla mal ese for y no linkea el programa ("Indexing with an integral constant
+// expression greater than declared size"). La macro va en UNA linea (sin \n entre los pedazos): GLSL ES 1.00 no
+// continua lineas con '\'
+"#define LUZ(i) if(i<uNLuces){ vec3 L; float at=1.0;"
+"      if(uLPos[i].w!=0.0){ vec3 d=uLPos[i].xyz/uLPos[i].w-eye.xyz; float dist=length(d); L=d/max(dist,1e-6);"
+"        at=1.0/max(uLAtt[i].x+uLAtt[i].y*dist+uLAtt[i].z*dist*dist,1e-6); }"
+"      else L=normalize(uLPos[i].xyz);"
+"      if(uLCono[i].w>-0.5){ float sd=dot(-L,normalize(uLCono[i].xyz)); at*=(sd>=uLCono[i].w)?pow(max(sd,0.0),uLAtt[i].w):0.0; }"
+"      float ndl=max(dot(N,L),0.0);"
+"      vec3 col=ma.rgb*uLAmb[i].rgb+md.rgb*uLDif[i].rgb*ndl;"
+"      if(ndl>0.0){ float nh=max(dot(N,normalize(L+vec3(0.0,0.0,1.0))),0.0);"
+"        col+=uMSpec.rgb*uLSpec[i].rgb*((uShine>0.0)?pow(nh,uShine):1.0); }"
+"      acc+=at*col; }\n"
+"    LUCES\n"
 "    c=vec4(acc,md.a);\n"
 "  }\n"
+"#endif\n"
 "  vC=clamp(c,0.0,1.0);\n"
 "}\n";
 static const char* FS =
@@ -310,20 +360,28 @@ static const char* FS =
 "varying vec3 vP; varying vec2 vT; varying vec2 vT1; varying vec4 vC; varying float vFogZ;\n"
 "varying W3D_ALTA vec2 vCentro; varying W3D_ALTA float vTam;\n"
 "void main(){\n"
+"#ifdef W3D_CLIP\n"
 "  vec4 Pe = vec4(vP,1.0);\n"   // recorte por planos (desenrollado: GLSL ES 1.00 no indexa uniforms por variable)
 "  if(uClipN>0 && dot(Pe,uClip0)<0.0) discard;\n"
 "  if(uClipN>1 && dot(Pe,uClip1)<0.0) discard;\n"
 "  if(uClipN>2 && dot(Pe,uClip2)<0.0) discard;\n"
 "  if(uClipN>3 && dot(Pe,uClip3)<0.0) discard;\n"
 "  if(uClipN>4 && dot(Pe,uClip4)<0.0) discard;\n"
+"#endif\n"
+"#ifdef W3D_TEX\n"
 "  vec2 uv = vT;\n"
 // POINT SPRITE (iconos: luz, origen, cursor 3D): la coordenada adentro del punto sale de la posicion del pixel respecto
 // del centro del punto, no de gl_PointCoord: el driver iris de Mesa (Intel, Linux) la entrega en 0,0 -tambien a traves de
 // Chrome- y el icono salia invisible (se leia siempre la esquina transparente). gl_FragCoord anda en todos los drivers.
+"#ifdef W3D_SPRITE\n"
 "  if(uPointSprite==1){ W3D_ALTA vec2 d=(gl_FragCoord.xy-vCentro)/vTam; uv=vec2(0.5+d.x,0.5-d.y); }\n"
+"#endif\n"
+"#endif\n"
 "  vec4 col = vC;\n"   // sin textura: el color primario (la luz, o el color del vertice)
+"#ifdef W3D_TEX\n"
 "  if(uUseTex==1){\n"
 "    vec4 tex;\n"
+"#ifdef W3D_BLUR\n"
 "    if(uBlurY > 0.0){\n"                       // 9 muestras a lo largo de V (motion blur)
 "      vec4 acc = vec4(0.0);\n"
 "      for(int i=-4;i<=4;i++){\n"
@@ -333,26 +391,38 @@ static const char* FS =
 "      }\n"
 "      tex = acc * (1.0/9.0);\n"
 "    } else tex = texture2D(uTex,uv);\n"
+"#else\n"
+"    tex = texture2D(uTex,uv);\n"
+"#endif\n"
+"#ifdef W3D_ALFA_ABAJO\n"
 "    if(uAlfaAbajo==1){\n"                      // video con alpha EMPAQUETADO. El frame se sube
 "                                             \n"  // invertido en Y, asi que en la TEXTURA el color
 "                                             \n"  // queda en la mitad de ABAJO y la mascara arriba.
 "      tex.a = texture2D(uTex, vec2(uv.x, uv.y - 0.5)).r;\n"  // la mascara, media textura mas abajo
 "    }\n"
+"#endif\n"
 "    if(uEnv==1) col=tex;\n"                                                         // GL_REPLACE
 "    else if(uEnv==2) col=vec4(vec3(clamp(dot(tex.rgb*2.0-1.0,vC.rgb*2.0-1.0),0.0,1.0)),tex.a*vC.a);\n" // GL_DOT3_RGB
 "    else if(uEnv==3) col=vec4(vC.rgb,tex.a*vC.a);\n"                              // solo alfa (por el del color)
 "    else col=vC*tex;\n"                                                            // GL_MODULATE
 "  }\n"
+"#endif\n"
+"#ifdef W3D_MEZCLA\n"
 "  if(uMezcla>=0){ vec4 b=texture2D(uTex1,vT1);\n"   // la unidad 1 sobre lo que salio de la 0 (el alfa no cambia)
 "    if(uMezcla==0) col.rgb=mix(col.rgb,b.rgb,uMezclaK);\n"
 "    else if(uMezcla==3) col.rgb=max(col.rgb-b.rgb,0.0);\n"
 "    else col.rgb=min(col.rgb*b.rgb*((uMezcla==2)?2.0:1.0),1.0); }\n"
+"#endif\n"
+"#ifdef W3D_NIEBLA\n"
 "  if(uFogOn==1){ float f;\n"
 "    if(uFogModo==1) f=exp(-uFogDens*vFogZ);\n"                                   // GL_EXP
 "    else if(uFogModo==2){ float e=uFogDens*vFogZ; f=exp(-e*e); }\n"            // GL_EXP2
 "    else f=(uFogEnd-vFogZ)/(uFogEnd-uFogStart);\n"                              // GL_LINEAR
 "    col.rgb=mix(uFogColor.rgb,col.rgb,clamp(f,0.0,1.0)); }\n"
+"#endif\n"
+"#ifdef W3D_DESCARTE\n"
 "  if(uAlphaRef > 0.0 && col.a < uAlphaRef) discard;\n"   // no pinta NI escribe z-buffer
+"#endif\n"
 "  gl_FragColor=col;\n"
 "}\n";
 
@@ -394,60 +464,162 @@ static Matrix4& cur(){ return matMode==0 ? curProj : (matMode==2 ? curTex : curM
 // ============================================================================
 //  Compilar / linkear el programa
 // ============================================================================
-static GLuint compile(GLenum tipo,const char* src){
+// (defs: "#define ..." que van antes del codigo)
+static GLuint compile(GLenum tipo,const char* defs,const char* src){
 #if defined(__EMSCRIPTEN__) || defined(__ANDROID__)
-    const char* partes[1] = { src };
-    const int n = 1;
+    const char* partes[2] = { defs, src };
+    const int n = 2;
 #else
     // PC (GL 2.1, -DW3D_PC_GLES2): GLSL 1.20 (gl_PointCoord) en vez del GLSL ES 1.00 implicito
-    const char* partes[2] = { "#version 120\n", src };
-    const int n = 2;
+    const char* partes[3] = { "#version 120\n", defs, src };
+    const int n = 3;
 #endif
     GLuint s=W3D_GLC(glCreateShader(tipo)); W3D_GLC(glShaderSource(s,n,partes,0)); W3D_GLC(glCompileShader(s));
     GLint ok=0; W3D_GLC(glGetShaderiv(s,GL_COMPILE_STATUS,&ok));
-    if(!ok){ char log[1024]; log[0]=0; W3D_GLC(glGetShaderInfoLog(s,1024,0,log)); fprintf(stderr,"[w3dGLES2] shader compile error: %s\n",log); }
+    // (al log del editor: en Android y en la web stderr no se ve en ningun lado)
+    if(!ok){ char log[1024]; log[0]=0; W3D_GLC(glGetShaderInfoLog(s,1024,0,log)); w3dLogfE("[w3dGLES2] shader compile error: %s",log); }
     return s;
 }
+// ============================================================================
+//  PROGRAMAS. Donde la GPU se banca el programa ENTERO (PC, web, el Android de siempre) hay uno solo, con todo, y cada
+//  funcion se prende o apaga con uniforms. Donde no entra (la VideoCore IV de Android 2.3, ver buildProgram) cada draw
+//  usa uno armado con lo que necesita: un draw de la UI sin luz ni niebla ni recorte tiene un shader chiquito.
+//  La clave de un programa: un bit por funcion + la cantidad de luces (desde el bit PLuces)
+// ============================================================================
+enum { PLuz=1<<0, PTexGen=1<<1, PSprite=1<<2, PTex=1<<3, PBlur=1<<4, PAlfaAbajo=1<<5, PMezcla=1<<6, PNiebla=1<<7,
+       PClip=1<<8, PDescarte=1<<9, PTodo=(1<<10)-1, PLuces=10 };
+// Con un programa por draw la clave lleva ademas, desde el bit PEstado, lo que el driver de la VideoCore IV usa para
+// traducir el programa: la primitiva, el blending, la mascara de color y como llega cada atributo que el programa lee
+// (arreglo o constante, tipo, tamanio). El driver guarda pocas traducciones por programa: usado con mas combinaciones
+// en un mismo cuadro, las iba pisando y re-traducia el programa en cada cuadro (~35 ms cada vez). Con la combinacion
+// en la clave cada programa tiene una sola y se traduce una vez
+typedef unsigned long long Clave;
+static const int PEstado = 16;
+static const char* kDefFuncion[10] = { "W3D_LUZ", "W3D_TEXGEN", "W3D_SPRITE", "W3D_TEX", "W3D_BLUR", "W3D_ALFA_ABAJO",
+                                       "W3D_MEZCLA", "W3D_NIEBLA", "W3D_CLIP", "W3D_DESCARTE" };
+// las luces que entran en un programa armado por draw (las demas no iluminan)
+static const int kLucesPorDraw = 4;
+// donde quedo cada uniform en un programa (-1: ese programa no lo tiene, y glUniform con -1 no hace nada)
+#define W3D_UNIFORMS(X) X(uMVP) X(uMV) X(uNMat) X(uTexM) X(uTexGen) X(uUseTex) X(uTex) X(uTex1) X(uEnv) X(uLightOn) \
+    X(uFogOn) X(uPointSize) X(uPointSprite) X(uColorMat) X(uBlurY) X(uAlphaRef) X(uAlfaAbajo) X(uMezcla) X(uMezclaK) \
+    X(uViewport) X(uClipN) X(uMDiff) X(uMAmb) X(uMSpec) X(uMEmis) X(uShine) X(uAmbGlobal) X(uNLuces) X(uLPos) X(uLAmb) \
+    X(uLDif) X(uLSpec) X(uLAtt) X(uLCono) X(uFogColor) X(uFogStart) X(uFogEnd) X(uFogModo) X(uFogDens)
+// lo ultimo que se subio a un uniform (n = 0: nada todavia). Una llamada a GL que no cambia nada no se hace: en la
+// VideoCore IV de Android 2.3 cada una es un mensaje al chip, y un draw subia ~40 uniforms
+struct UCache { unsigned char b[64]; int n; };
+struct Programa {
+    GLuint id;
+    Clave clave;
+    unsigned verLuces;   // las luces que tiene subidas (ver SubirLuces)
+#define W3D_U(n) GLint n; UCache c_##n;
+    W3D_UNIFORMS(W3D_U)
+#undef W3D_U
+    GLint uClip[5]; UCache c_uClip[5];
+};
+static const int kProgramasMax = 96;
+static Programa programas[kProgramasMax];
+static int nProgramas = 0;
+static Programa* progUso = 0;   // el del ultimo draw
+static GLuint progActivo = 0;   // el que tiene GL (glUseProgram)
+
+static bool porDraw = false;    // un programa por draw (el entero no entra en la GPU)
+// los vertices de cada draw como arreglos del cliente (el driver los copia en el draw) y no subidos a un VBO: en la
+// misma GPU (la VideoCore IV de Android 2.3) un glBufferData por draw al mismo VBO a veces deja a un draw con los datos
+// del siguiente (los rotulos "X" "Y" "Z" de Properties salian "X" "Z" "Z"), y ademas cuesta mas
+static bool sinVBO = false;
+static unsigned verLuces = 1;   // sube cada vez que cambian las luces
+
+// los #define de un programa: sus funciones y LUCES = LUZ(0) LUZ(1) ... con sus luces
+static void DefsPrograma(Clave clave, char* d, int tam){
+    int n = 0;
+    for(int b=0;b<PLuces;b++) if(clave&(1ull<<b)) n += snprintf(d+n, tam-n, "#define %s\n", kDefFuncion[b]);
+    n += snprintf(d+n, tam-n, "#define LUCES");
+    for(int i=0;i<(int)((clave>>PLuces)&15);i++) n += snprintf(d+n, tam-n, " LUZ(%d)", i);
+    snprintf(d+n, tam-n, "\n");
+}
+// el programa, con defs delante de los dos shaders
+static GLuint linkear(const char* defs){
+    GLuint vs=compile(GL_VERTEX_SHADER,defs,VS), fs=compile(GL_FRAGMENT_SHADER,defs,FS);
+    GLuint p=W3D_GLC(glCreateProgram()); W3D_GLC(glAttachShader(p,vs)); W3D_GLC(glAttachShader(p,fs));
+    // los atributos en lugares fijos: al cambiar de programa no cambian (la posicion en el 0: GL de escritorio lo pide)
+    W3D_GLC(glBindAttribLocation(p,aLpos,"aPos")); W3D_GLC(glBindAttribLocation(p,aLnrm,"aNrm"));
+    W3D_GLC(glBindAttribLocation(p,aLuv,"aUV")); W3D_GLC(glBindAttribLocation(p,aLcol,"aCol"));
+    W3D_GLC(glBindAttribLocation(p,aLuv1,"aUV1"));
+    W3D_GLC(glLinkProgram(p));
+    W3D_GLC(glDeleteShader(vs)); W3D_GLC(glDeleteShader(fs));   // (se van con el programa)
+    GLint ok=0; W3D_GLC(glGetProgramiv(p,GL_LINK_STATUS,&ok));
+    if(!ok){ char log[1024]; log[0]=0; W3D_GLC(glGetProgramInfoLog(p,1024,0,log)); w3dLogfE("[w3dGLES2] link error: %s",log); }
+    return p;
+}
+static void ArmarPrograma(Programa& p, Clave clave){
+    char defs[512]; DefsPrograma(clave, defs, (int)sizeof(defs));
+    memset(&p, 0, sizeof(p));   // (los caches vacios)
+    p.id = linkear(defs); p.clave = clave; p.verLuces = 0;
+#define W3D_U(n) p.n=W3D_GLC(glGetUniformLocation(p.id,#n));
+    W3D_UNIFORMS(W3D_U)
+#undef W3D_U
+    p.uClip[0]=W3D_GLC(glGetUniformLocation(p.id,"uClip0")); p.uClip[1]=W3D_GLC(glGetUniformLocation(p.id,"uClip1"));
+    p.uClip[2]=W3D_GLC(glGetUniformLocation(p.id,"uClip2")); p.uClip[3]=W3D_GLC(glGetUniformLocation(p.id,"uClip3"));
+    p.uClip[4]=W3D_GLC(glGetUniformLocation(p.id,"uClip4"));
+}
+// lo deja en uso: prog y los u* son los suyos
+static void UsarPrograma(Programa& p){
+    progUso = &p; prog = p.id;
+#define W3D_U(n) n=p.n;
+    W3D_UNIFORMS(W3D_U)
+#undef W3D_U
+    for(int i=0;i<5;i++) uClip[i]=p.uClip[i];
+    if(progActivo != prog){ W3D_GLC(glUseProgram(prog)); progActivo = prog; }
+}
+static void BorrarPrograma(Programa& p){
+    if(progActivo == p.id) progActivo = 0;   // (un id nuevo puede salir igual al borrado)
+    W3D_GLC(glDeleteProgram(p.id));
+}
+// subir un uniform del programa en uso solo si cambio (nombre = el global u*, que tiene su c_* en el Programa)
+static inline bool UNuevo(UCache& c, const void* v, int n){
+    if(c.n == n && memcmp(c.b, v, (size_t)n) == 0) return false;
+    memcpy(c.b, v, (size_t)n); c.n = n; return true;
+}
+#define U_1I(nom, val)  do{ GLint v_ = (GLint)(val);   if(nom>=0 && UNuevo(progUso->c_##nom, &v_, (int)sizeof(v_))) W3D_GLC(glUniform1i(nom, v_)); }while(0)
+#define U_1F(nom, val)  do{ GLfloat v_ = (GLfloat)(val); if(nom>=0 && UNuevo(progUso->c_##nom, &v_, (int)sizeof(v_))) W3D_GLC(glUniform1f(nom, v_)); }while(0)
+#define U_4F(nom, p)    do{ if(nom>=0 && UNuevo(progUso->c_##nom, (p), 16)) W3D_GLC(glUniform4fv(nom, 1, (p))); }while(0)
+#define U_M3(nom, p)    do{ if(nom>=0 && UNuevo(progUso->c_##nom, (p), 36)) W3D_GLC(glUniformMatrix3fv(nom, 1, GL_FALSE, (p))); }while(0)
+#define U_M4(nom, p)    do{ if(nom>=0 && UNuevo(progUso->c_##nom, (p), 64)) W3D_GLC(glUniformMatrix4fv(nom, 1, GL_FALSE, (p))); }while(0)
+// el programa ENTRA en la GPU? El driver de Broadcom (VideoCore IV, Android 2.3) recien traduce los shaders al primer
+// draw, y si no le entran ese draw y todos los que siguen fallan con GL_OUT_OF_MEMORY: la pantalla queda negra.
+// Un triangulo de prueba sin escribir color ni profundidad (el atributo 0 en vboP)
+static bool entra(GLuint p){
+    static const float tri[9] = { -1,-1,0, 1,-1,0, 0,1,0 };
+    for(int i=0;i<8 && glGetError()!=GL_NO_ERROR;i++){}
+    W3D_GLC(glUseProgram(p)); progActivo = p;
+    W3D_GLC(glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE)); W3D_GLC(glDepthMask(GL_FALSE));
+    W3D_GLC(glBindBuffer(GL_ARRAY_BUFFER,vboP)); W3D_GLC(glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)sizeof(tri),tri,GL_DYNAMIC_DRAW));
+    W3D_GLC(glEnableVertexAttribArray(0)); W3D_GLC(glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,0,(const void*)0));
+    W3D_GLC(glDrawArrays(GL_TRIANGLES,0,3));
+    const bool si = glGetError()!=GL_OUT_OF_MEMORY;
+    W3D_GLC(glDisableVertexAttribArray(0));
+    W3D_GLC(glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE)); W3D_GLC(glDepthMask(GL_TRUE));
+    AttrOlvidar();
+    return si;
+}
 static void buildProgram(){
-    GLuint vs=compile(GL_VERTEX_SHADER,VS), fs=compile(GL_FRAGMENT_SHADER,FS);
-    prog=W3D_GLC(glCreateProgram()); W3D_GLC(glAttachShader(prog,vs)); W3D_GLC(glAttachShader(prog,fs));
-    W3D_GLC(glBindAttribLocation(prog,0,"aPos"));   // la posicion en el atributo 0 (GL de escritorio lo pide)
-    W3D_GLC(glLinkProgram(prog));
-    GLint ok=0; W3D_GLC(glGetProgramiv(prog,GL_LINK_STATUS,&ok));
-    if(!ok){ char log[1024]; log[0]=0; W3D_GLC(glGetProgramInfoLog(prog,1024,0,log)); fprintf(stderr,"[w3dGLES2] link error: %s\n",log); }
-    W3D_GLC(glUseProgram(prog));
-    uMVP=W3D_GLC(glGetUniformLocation(prog,"uMVP")); uMV=W3D_GLC(glGetUniformLocation(prog,"uMV")); uNMat=W3D_GLC(glGetUniformLocation(prog,"uNMat"));
-    uTexM=W3D_GLC(glGetUniformLocation(prog,"uTexM")); uTexGen=W3D_GLC(glGetUniformLocation(prog,"uTexGen"));
-    uUseTex=W3D_GLC(glGetUniformLocation(prog,"uUseTex")); uTex=W3D_GLC(glGetUniformLocation(prog,"uTex"));
-    uTex1=W3D_GLC(glGetUniformLocation(prog,"uTex1")); uEnv=W3D_GLC(glGetUniformLocation(prog,"uEnv"));
-    uMezcla=W3D_GLC(glGetUniformLocation(prog,"uMezcla")); uMezclaK=W3D_GLC(glGetUniformLocation(prog,"uMezclaK"));
-    uViewport=W3D_GLC(glGetUniformLocation(prog,"uViewport"));
-    uLightOn=W3D_GLC(glGetUniformLocation(prog,"uLightOn"));
-    uColorMat=W3D_GLC(glGetUniformLocation(prog,"uColorMat"));
-    uBlurY=W3D_GLC(glGetUniformLocation(prog,"uBlurY"));
-    uAlphaRef=W3D_GLC(glGetUniformLocation(prog,"uAlphaRef"));
-    uAlfaAbajo=W3D_GLC(glGetUniformLocation(prog,"uAlfaAbajo"));
-    uClipN=W3D_GLC(glGetUniformLocation(prog,"uClipN"));
-    uClip[0]=W3D_GLC(glGetUniformLocation(prog,"uClip0")); uClip[1]=W3D_GLC(glGetUniformLocation(prog,"uClip1"));
-    uClip[2]=W3D_GLC(glGetUniformLocation(prog,"uClip2")); uClip[3]=W3D_GLC(glGetUniformLocation(prog,"uClip3"));
-    uClip[4]=W3D_GLC(glGetUniformLocation(prog,"uClip4"));
-    W3D_GLC(glUniform1i(uClipN, 0));
-    uFogOn=W3D_GLC(glGetUniformLocation(prog,"uFogOn")); uPointSize=W3D_GLC(glGetUniformLocation(prog,"uPointSize"));
-    uPointSprite=W3D_GLC(glGetUniformLocation(prog,"uPointSprite"));
-    uMDiff=W3D_GLC(glGetUniformLocation(prog,"uMDiff")); uMAmb=W3D_GLC(glGetUniformLocation(prog,"uMAmb"));
-    uMSpec=W3D_GLC(glGetUniformLocation(prog,"uMSpec")); uMEmis=W3D_GLC(glGetUniformLocation(prog,"uMEmis"));
-    uShine=W3D_GLC(glGetUniformLocation(prog,"uShine")); uAmbGlobal=W3D_GLC(glGetUniformLocation(prog,"uAmbGlobal"));
-    uNLuces=W3D_GLC(glGetUniformLocation(prog,"uNLuces"));
-    uLPos=W3D_GLC(glGetUniformLocation(prog,"uLPos")); uLAmb=W3D_GLC(glGetUniformLocation(prog,"uLAmb"));
-    uLDif=W3D_GLC(glGetUniformLocation(prog,"uLDif")); uLSpec=W3D_GLC(glGetUniformLocation(prog,"uLSpec"));
-    uLAtt=W3D_GLC(glGetUniformLocation(prog,"uLAtt")); uLCono=W3D_GLC(glGetUniformLocation(prog,"uLCono"));
-    uFogColor=W3D_GLC(glGetUniformLocation(prog,"uFogColor")); uFogStart=W3D_GLC(glGetUniformLocation(prog,"uFogStart")); uFogEnd=W3D_GLC(glGetUniformLocation(prog,"uFogEnd"));
-    uFogModo=W3D_GLC(glGetUniformLocation(prog,"uFogModo")); uFogDens=W3D_GLC(glGetUniformLocation(prog,"uFogDens"));
-    aLpos=W3D_GLC(glGetAttribLocation(prog,"aPos")); aLnrm=W3D_GLC(glGetAttribLocation(prog,"aNrm"));
-    aLuv=W3D_GLC(glGetAttribLocation(prog,"aUV")); aLcol=W3D_GLC(glGetAttribLocation(prog,"aCol"));
-    aLuv1=W3D_GLC(glGetAttribLocation(prog,"aUV1"));
     W3D_GLC(glGenBuffers(1,&vboP)); W3D_GLC(glGenBuffers(1,&vboN)); W3D_GLC(glGenBuffers(1,&vboT)); W3D_GLC(glGenBuffers(1,&vboC));
     W3D_GLC(glGenBuffers(1,&vboT1)); W3D_GLC(glGenBuffers(1,&ibo));
+    // (de nuevo si el contexto GL se perdio y se volvio a armar: lo de antes ya no existe)
+    progUso = 0; porDraw = false; sinVBO = false;
+    ArmarPrograma(programas[0], (Clave)(PTodo | (LucesMax << PLuces)));
+    nProgramas = 1;
+    if(entra(programas[0].id)){
+        UsarPrograma(programas[0]);
+    } else {
+        // (y no siempre: con los formatos de los atributos y el blending el driver le agrega instrucciones, y uno que
+        // entra en la prueba puede no entrar en un draw)
+        w3dLogfW("[w3dGLES2] el programa entero no entra en esta GPU: uno por draw, con hasta %d luces", kLucesPorDraw);
+        BorrarPrograma(programas[0]);
+        nProgramas = 0;
+        porDraw = true;
+        sinVBO = true;
+    }
     LucesDeFabrica();
     ready=true;
 }
@@ -457,14 +629,14 @@ static void buildProgram(){
 // ============================================================================
 void Enable(Cap c){
     switch(c){
-        case DepthTest: cap_depth=true;   W3D_GLC(glEnable(GL_DEPTH_TEST)); break;
-        case CullFace:  cap_cull=true;    W3D_GLC(glEnable(GL_CULL_FACE));  break;
-        case Blend:     cap_blend=true;   W3D_GLC(glEnable(GL_BLEND));      break;
-        case ScissorTest: cap_scissor=true; W3D_GLC(glEnable(GL_SCISSOR_TEST)); break;
+        case DepthTest: if(!(porDraw && cap_depth)){ W3D_GLC(glEnable(GL_DEPTH_TEST)); cap_depth=true; } break;
+        case CullFace:  if(!(porDraw && cap_cull)){ W3D_GLC(glEnable(GL_CULL_FACE)); cap_cull=true; } break;
+        case Blend:     if(!(porDraw && cap_blend)){ W3D_GLC(glEnable(GL_BLEND)); cap_blend=true; } break;
+        case ScissorTest: if(!(porDraw && cap_scissor)){ W3D_GLC(glEnable(GL_SCISSOR_TEST)); cap_scissor=true; } break;
         case Texture2D: cap_tex=true;   break; // el shader decide (uUseTex)
         case Lighting:  cap_light=true; break;
         case Fog:       cap_fog=true;   break;
-        case PolygonOffsetFill: W3D_GLC(glEnable(GL_POLYGON_OFFSET_FILL)); break; // pick de CARAS: empuja la malla de
+        case PolygonOffsetFill: if(!(porDraw && cap_offset)){ W3D_GLC(glEnable(GL_POLYGON_OFFSET_FILL)); cap_offset=true; } break; // pick de CARAS: empuja la malla de
                        // oclusion atras para que los triangulos-ID pasen el depth test (sino no se seleccionan)
         case ColorMaterial: cap_colormat=true; break; // el shader usa el vertex color como diffuse/ambient
         case Light0: if(!luces[0].on){ luces[0].on=true; lucesSucias=true; } break;
@@ -474,16 +646,16 @@ void Enable(Cap c){
 }
 void Disable(Cap c){
     switch(c){
-        case DepthTest: cap_depth=false;  W3D_GLC(glDisable(GL_DEPTH_TEST)); break;
-        case CullFace:  cap_cull=false;   W3D_GLC(glDisable(GL_CULL_FACE));  break;
-        case Blend:     cap_blend=false;  W3D_GLC(glDisable(GL_BLEND));      break;
-        case ScissorTest: cap_scissor=false; W3D_GLC(glDisable(GL_SCISSOR_TEST)); break;
+        case DepthTest: if(!(porDraw && !cap_depth)){ W3D_GLC(glDisable(GL_DEPTH_TEST)); cap_depth=false; } break;
+        case CullFace:  if(!(porDraw && !cap_cull)){ W3D_GLC(glDisable(GL_CULL_FACE)); cap_cull=false; } break;
+        case Blend:     if(!(porDraw && !cap_blend)){ W3D_GLC(glDisable(GL_BLEND)); cap_blend=false; } break;
+        case ScissorTest: if(!(porDraw && !cap_scissor)){ W3D_GLC(glDisable(GL_SCISSOR_TEST)); cap_scissor=false; } break;
         case Texture2D: cap_tex=false;   break;
         case Lighting:  cap_light=false; break;
         case Fog:       cap_fog=false;   break;
         case ColorMaterial: cap_colormat=false; break;
         case Light0: if(luces[0].on){ luces[0].on=false; lucesSucias=true; } break;
-        case PolygonOffsetFill: W3D_GLC(glDisable(GL_POLYGON_OFFSET_FILL)); break;
+        case PolygonOffsetFill: if(!(porDraw && !cap_offset)){ W3D_GLC(glDisable(GL_POLYGON_OFFSET_FILL)); cap_offset=false; } break;
         default: break;
     }
 }
@@ -536,10 +708,10 @@ void PlanosRecorte(int n, const float* eq4){
             float e[4];
             for(int k=0;k<4;k++)
                 e[k]= inv.m[0*4+k]*p[0] + inv.m[1*4+k]*p[1] + inv.m[2*4+k]*p[2] + inv.m[3*4+k]*p[3];
-            if(uClip[i]>=0) W3D_GLC(glUniform4fv(uClip[i],1,e));
+            for(int k=0;k<4;k++) clipEq[i][k]=e[k];
         }
     }
-    if(uClipN>=0) W3D_GLC(glUniform1i(uClipN,n));
+    clipN=n;   // (los sube setupState al programa del draw)
 }
 
 // ---- estencil (GL ES 2.0 lo trae en el core) ----
@@ -548,18 +720,40 @@ void EstencilLimpiar(int v){ W3D_GLC(glClearStencil(v)); W3D_GLC(glStencilMask(0
 void EstencilMarcar(int v){ W3D_GLC(glEnable(GL_STENCIL_TEST)); W3D_GLC(glStencilMask(0xFFu)); W3D_GLC(glStencilFunc(GL_ALWAYS,v,0xFFu)); W3D_GLC(glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE)); }
 void EstencilDentro(int v){ W3D_GLC(glEnable(GL_STENCIL_TEST)); W3D_GLC(glStencilMask(0x00u)); W3D_GLC(glStencilFunc(GL_EQUAL,v,0xFFu)); W3D_GLC(glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP)); }
 void EstencilApagar(){ W3D_GLC(glStencilMask(0xFFu)); W3D_GLC(glDisable(GL_STENCIL_TEST)); }
-void Viewport(int x,int y,int w,int h){ if(w<0)w=0; if(h<0)h=0; W3D_GLC(glViewport(x,y,w,h)); vpActual[0]=(float)x; vpActual[1]=(float)y; vpActual[2]=(float)w; vpActual[3]=(float)h; }
+// LO QUE GL YA TIENE (con un programa por draw): no se vuelve a pedir. Ademas de la llamada, cada una dibujaria el lote
+// juntado (ver LoteVaciar) y la UI repite el mismo scissor, blending o textura en cada widget. GLES2Init los olvida
+static GLint scissorGL[4] = {-1,-1,-1,-1}, viewportGL[4] = {-1,-1,-1,-1};
+static int depthMaskGL = -1, depthFuncGL = -1, frontFaceGL = -1, blendGL = -1, colorMaskGL = -1;
+static float lineWidthGL = -1.0f;
+struct TexParamGL { GLint minF, magF, wrap; };
+static std::map<unsigned, TexParamGL> texParamGL;
+static void EstadoGLOlvidar(){
+    for(int i=0;i<4;i++){ scissorGL[i] = -1; viewportGL[i] = -1; }
+    depthMaskGL = depthFuncGL = frontFaceGL = blendGL = colorMaskGL = -1; lineWidthGL = -1.0f;
+    texParamGL.clear();
+}
+static inline bool MismoRect(const GLint* r, int x, int y, int w, int h){ return r[0]==x && r[1]==y && r[2]==w && r[3]==h; }
+void Viewport(int x,int y,int w,int h){ if(w<0)w=0; if(h<0)h=0;
+    if(!(porDraw && MismoRect(viewportGL,x,y,w,h))){ W3D_GLC(glViewport(x,y,w,h)); viewportGL[0]=x; viewportGL[1]=y; viewportGL[2]=w; viewportGL[3]=h; }
+    vpActual[0]=(float)x; vpActual[1]=(float)y; vpActual[2]=(float)w; vpActual[3]=(float)h; }
 // clamp de w/h a >=0: un ancho/alto negativo (viewport muy angosto - iconos/margenes en el outliner)
 // es GL_INVALID_VALUE en WebGL y deja el scissor en mal estado. Clampeando no rompe el clipping.
-void Scissor(int x,int y,int w,int h){ if(w<0)w=0; if(h<0)h=0; W3D_GLC(glScissor(x,y,w,h)); }
+void Scissor(int x,int y,int w,int h){ if(w<0)w=0; if(h<0)h=0;
+    if(porDraw && MismoRect(scissorGL,x,y,w,h)) return;
+    W3D_GLC(glScissor(x,y,w,h)); scissorGL[0]=x; scissorGL[1]=y; scissorGL[2]=w; scissorGL[3]=h; }
 void GetViewport(int v[4]){ GLint g[4]; W3D_GLC(glGetIntegerv(GL_VIEWPORT,g)); for(int i=0;i<4;i++) v[i]=(int)g[i]; }
 void GetScissor(int v[4]){ GLint g[4]; W3D_GLC(glGetIntegerv(GL_SCISSOR_BOX,g)); for(int i=0;i<4;i++) v[i]=(int)g[i]; }
 bool ScissorActivo(){ return W3D_GLC(glIsEnabled(GL_SCISSOR_TEST))==GL_TRUE; }
-void DepthFunc(DepthCmp c){ W3D_GLC(glDepthFunc(c==DepthLEqual?GL_LEQUAL:(c==DepthEqual?GL_EQUAL:(c==DepthAlways?GL_ALWAYS:GL_LESS)))); }
-void DepthMask(bool w){ W3D_GLC(glDepthMask(w?GL_TRUE:GL_FALSE)); }
-void ColorMask(bool r,bool g,bool b,bool a){ W3D_GLC(glColorMask(r,g,b,a)); }
-void LineWidth(float px){ W3D_GLC(glLineWidth(px)); }
-void FrontFace(bool ccw){ W3D_GLC(glFrontFace(ccw?GL_CCW:GL_CW)); }
+void DepthFunc(DepthCmp c){ const GLenum f = c==DepthLEqual?GL_LEQUAL:(c==DepthEqual?GL_EQUAL:(c==DepthAlways?GL_ALWAYS:GL_LESS));
+    if(porDraw && depthFuncGL==(int)f) return; W3D_GLC(glDepthFunc(f)); depthFuncGL=(int)f; }
+void DepthMask(bool w){ if(porDraw && depthMaskGL==(w?1:0)) return; W3D_GLC(glDepthMask(w?GL_TRUE:GL_FALSE)); depthMaskGL=w?1:0; }
+static unsigned mascaraColor = 15;   // (para la clave del programa, ver ElegirPrograma)
+void ColorMask(bool r,bool g,bool b,bool a){
+    const unsigned m = (r?1u:0u)|(g?2u:0u)|(b?4u:0u)|(a?8u:0u);
+    if(porDraw && colorMaskGL==(int)m){ mascaraColor = m; return; }
+    W3D_GLC(glColorMask(r,g,b,a)); mascaraColor = m; colorMaskGL=(int)m; }
+void LineWidth(float px){ if(porDraw && lineWidthGL==px) return; W3D_GLC(glLineWidth(px)); lineWidthGL=px; }
+void FrontFace(bool ccw){ if(porDraw && frontFaceGL==(ccw?1:0)) return; W3D_GLC(glFrontFace(ccw?GL_CCW:GL_CW)); frontFaceGL=ccw?1:0; }
 void CullCarasFrontales(bool on){ W3D_GLC(glCullFace(on?GL_FRONT:GL_BACK)); }
 void PolygonOffset(float factor,float units){ W3D_GLC(glPolygonOffset(factor,units)); }
 void DepthRange(float n,float f){
@@ -577,8 +771,17 @@ void AlfaEmpaquetado(bool si){ alfaAbajo = si ? 1 : 0; }   // alpha en la mitad 
 // la ECUACION tambien (mismo porque que el backend fijo, ver w3dGraphics.cpp:
 // tras un pase SUSTRACTIVO, reponer solo la func dejaba todo lo alpha-blended
 // RESTANDO del framebuffer: silueta negra con el alpha bien).
-void BlendAlpha(){ W3D_GLC(glBlendEquation(GL_FUNC_ADD)); W3D_GLC(glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)); }
+// el modo de blending puesto, como numero chico (para la clave del programa, ver ElegirPrograma)
+static unsigned modoBlend = 0;
+enum { BAlpha, BOff, BAdd, BAddAlpha, BMultiplicar, BScreen, BPremult, BRestar };
+// (con un programa por draw: el modo que GL ya tiene no se vuelve a poner)
+static bool BlendYaPuesto(unsigned m){
+    if(porDraw && blendGL==(int)m){ modoBlend = m; return true; }
+    LoteVaciar();   // (lo juntado, con el modo que tenia)
+    modoBlend = m; blendGL = (int)m; return false; }
+void BlendAlpha(){ if(BlendYaPuesto(BAlpha)) return; W3D_GLC(glBlendEquation(GL_FUNC_ADD)); W3D_GLC(glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)); }
 void BlendMode(int modo){
+    if(BlendYaPuesto(modo==1 ? BMultiplicar : modo==2 ? BAdd : BAlpha)) return;
     W3D_GLC(glBlendEquation(GL_FUNC_ADD));                                // capas multi-pass: siempre ADD
     if(modo==1)      W3D_GLC(glBlendFunc(GL_DST_COLOR, GL_ZERO));         // Multiply
     else if(modo==2) W3D_GLC(glBlendFunc(GL_ONE, GL_ONE));               // Add
@@ -586,6 +789,8 @@ void BlendMode(int modo){
 }
 // modos de mezcla nombrados (ver enum Mezcla). GLES2/WebGL: glBlendEquation es nativo.
 void SetMezcla(int m){
+    if(BlendYaPuesto(m==MezclaOff ? BOff : m==MezclaAdd ? BAdd : m==MezclaAddAlpha ? BAddAlpha : m==MezclaMultiply ? BMultiplicar :
+                     m==MezclaScreen ? BScreen : m==MezclaPremult ? BPremult : m==MezclaSubtract ? BRestar : BAlpha)) return;
     W3D_GLC(glBlendEquation(GL_FUNC_ADD)); // reset (por si venia de Substract)
     switch(m){
         case MezclaOff:      W3D_GLC(glBlendFunc(GL_ONE, GL_ZERO)); break;
@@ -674,15 +879,25 @@ void MaterialShininess(float s){ matShine=s; } // exponente specular (0..128)
 // ============================================================================
 //  Textura / texenv
 // ============================================================================
-void BindTexture(unsigned int id){ boundTex=id; W3D_GLC(glBindTexture(GL_TEXTURE_2D,id)); }
+void BindTexture(unsigned int id){ if(porDraw && id==boundTex) return; boundTex=id; W3D_GLC(glBindTexture(GL_TEXTURE_2D,id)); }
 // el min-filter con la PIRAMIDE si la textura la subio y los mipmaps estan prendidos (como el backend fijo): sin esto lo
 // lejano se veia con serrucho y titilaba en web/Android y no en el PC
 static GLint FiltroMin(unsigned int id, bool linear){
     if(MipmapsGlobal() && TexTieneMips(id)) return linear ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR;
     return linear ? GL_LINEAR : GL_NEAREST;
 }
-void TexFilter(bool linear){ W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,FiltroMin(boundTex,linear))); W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,linear?GL_LINEAR:GL_NEAREST)); }
-void TexWrap(bool repeat){ W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,repeat?GL_REPEAT:GL_CLAMP_TO_EDGE)); W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,repeat?GL_REPEAT:GL_CLAMP_TO_EDGE)); }
+void TexFilter(bool linear){
+    const GLint mn = FiltroMin(boundTex,linear), mg = linear?GL_LINEAR:GL_NEAREST;
+    if(porDraw){ std::map<unsigned,TexParamGL>::iterator it = texParamGL.find(boundTex);
+        if(it != texParamGL.end() && it->second.minF==mn && it->second.magF==mg) return;
+        TexParamGL& t = texParamGL[boundTex]; if(it == texParamGL.end()) t.wrap = -1; t.minF = mn; t.magF = mg; }
+    W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,mn)); W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,mg)); }
+void TexWrap(bool repeat){
+    const GLint w = repeat?GL_REPEAT:GL_CLAMP_TO_EDGE;
+    if(porDraw){ std::map<unsigned,TexParamGL>::iterator it = texParamGL.find(boundTex);
+        if(it != texParamGL.end() && it->second.wrap==w) return;
+        TexParamGL& t = texParamGL[boundTex]; if(it == texParamGL.end()){ t.minF = -1; t.magF = -1; } t.wrap = w; }
+    W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,w)); W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,w)); }
 // el combiner de la unidad 0, como glTexEnv: apagar cualquiera de los modos vuelve a GL_MODULATE
 void TexEnvDot3(bool on){ texEnv = on ? 2 : 0; }
 void TexEnvReplace(bool on){ texEnv = on ? 1 : 0; }
@@ -697,6 +912,7 @@ void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int 
     if(modo<0 || modo>4) modo=0;
     if(modo==4) modo=1;   // (multiplicar simple = multiplicar: en el shader es lo mismo)
     mezclaOn=true; mezclaTex=idB; mezclaK=k; mezclaModo=modo;
+    texParamGL.erase(idB);   // (sus parametros se ponen aca, sin el cache)
     W3D_GLC(glActiveTexture(GL_TEXTURE1));
     W3D_GLC(glBindTexture(GL_TEXTURE_2D,idB));
     W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,FiltroMin(idB,filtrado)));
@@ -705,12 +921,12 @@ void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int 
     W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,repetir?GL_REPEAT:GL_CLAMP_TO_EDGE));
     W3D_GLC(glActiveTexture(GL_TEXTURE0));
 }
-void MezclaTexturasOff(){ mezclaOn=false; mezclaUV=0; }
+void MezclaTexturasOff(){ mezclaOn=false; mezclaUV=0; mezclaUVVbo=0; }
 bool MezclaTexturasActiva(){ return mezclaOn; }
-void MezclaTexturasUV(const float* p){ mezclaUV=p; }
-void MezclaTexturasUVVBO(unsigned int){ mezclaUV=0; }   // (sin VBOs en este backend: las de la unidad 0)
-void MezclaTexturaBorrada(unsigned int id){ if(id && id==mezclaTex){ mezclaTex=0; mezclaOn=false; } }
-unsigned int ErrorGL(){ return 0u; }
+void MezclaTexturasUV(const float* p){ mezclaUV=p; if(p) mezclaUVVbo=0; }
+void MezclaTexturasUVVBO(unsigned int h){ mezclaUVVbo=h; if(h) mezclaUV=0; }
+void MezclaTexturaBorrada(unsigned int id){ if(id && id==mezclaTex){ mezclaTex=0; mezclaOn=false; } texParamGL.erase(id); }
+unsigned int ErrorGL(){ return (unsigned int)glGetError(); }
 // SPHERE-MAP (GL_SPHERE_MAP): las UV salen del reflejo de la vista en la normal (en el vertex shader). Como el
 // backend fijo, la matriz de textura da vuelta la V para que el reflejo no salga cabeza abajo.
 void TexGenSphere(bool on){
@@ -771,15 +987,15 @@ void PointSize(float px){ pointSize=px; } // gl_PointSize en el VS (ES2 no tiene
 void EnableArray(VArray a){ if(a==VertexArray)aPos.on=true; else if(a==NormalArray)aNrm.on=true; else if(a==TexCoordArray)aUV.on=true; else if(a==ColorArray)aCol.on=true; }
 void DisableArray(VArray a){ if(a==VertexArray)aPos.on=false; else if(a==NormalArray)aNrm.on=false; else if(a==TexCoordArray)aUV.on=false; else if(a==ColorArray)aCol.on=false; }
 int ArrayEstado(VArray a){ return (a==VertexArray ? aPos.on : a==NormalArray ? aNrm.on : a==TexCoordArray ? aUV.on : aCol.on) ? 1 : 0; }
-void VertexPointer2f(int stride,const float* p){ aPos.size=2; aPos.type=GL_FLOAT; aPos.stride=stride; aPos.ptr=p; }
-void VertexPointer3f(int stride,const float* p){ aPos.size=3; aPos.type=GL_FLOAT; aPos.stride=stride; aPos.ptr=p; }
-void VertexPointer3s(int stride,const short* p){ aPos.size=3; aPos.type=GL_SHORT; aPos.stride=stride; aPos.ptr=p; }
-void VertexPointer2s(int stride,const short* p){ aPos.size=2; aPos.type=GL_SHORT; aPos.stride=stride; aPos.ptr=p; }
-void NormalPointer3b(const signed char* p){ aNrm.size=3; aNrm.type=GL_BYTE; aNrm.stride=0; aNrm.ptr=p; }
-void ColorPointer4ub(const unsigned char* p){ aCol.size=4; aCol.type=GL_UNSIGNED_BYTE; aCol.stride=0; aCol.ptr=p; }
-void ColorPointer4f(int stride,const float* p){ aCol.size=4; aCol.type=GL_FLOAT; aCol.stride=stride; aCol.ptr=p; }
-void TexCoordPointer2f(int stride,const float* p){ aUV.size=2; aUV.type=GL_FLOAT; aUV.stride=stride; aUV.ptr=p; }
-void TexCoordPointer3b(const signed char* p, int count){ (void)count; aUV.size=3; aUV.type=GL_BYTE; aUV.stride=0; aUV.ptr=p; } // matcap: normales como UV (sin normalizar, como GL)
+void VertexPointer2f(int stride,const float* p){ aPos.size=2; aPos.type=GL_FLOAT; aPos.stride=stride; aPos.ptr=p; aPos.vbo=0; }
+void VertexPointer3f(int stride,const float* p){ aPos.size=3; aPos.type=GL_FLOAT; aPos.stride=stride; aPos.ptr=p; aPos.vbo=0; }
+void VertexPointer3s(int stride,const short* p){ aPos.size=3; aPos.type=GL_SHORT; aPos.stride=stride; aPos.ptr=p; aPos.vbo=0; }
+void VertexPointer2s(int stride,const short* p){ aPos.size=2; aPos.type=GL_SHORT; aPos.stride=stride; aPos.ptr=p; aPos.vbo=0; }
+void NormalPointer3b(const signed char* p){ aNrm.size=3; aNrm.type=GL_BYTE; aNrm.stride=0; aNrm.ptr=p; aNrm.vbo=0; }
+void ColorPointer4ub(const unsigned char* p){ aCol.size=4; aCol.type=GL_UNSIGNED_BYTE; aCol.stride=0; aCol.ptr=p; aCol.vbo=0; }
+void ColorPointer4f(int stride,const float* p){ aCol.size=4; aCol.type=GL_FLOAT; aCol.stride=stride; aCol.ptr=p; aCol.vbo=0; }
+void TexCoordPointer2f(int stride,const float* p){ aUV.size=2; aUV.type=GL_FLOAT; aUV.stride=stride; aUV.ptr=p; aUV.vbo=0; }
+void TexCoordPointer3b(const signed char* p, int count){ (void)count; aUV.size=3; aUV.type=GL_BYTE; aUV.stride=0; aUV.ptr=p; aUV.vbo=0; } // matcap: normales como UV (sin normalizar, como GL)
 
 // ============================================================================
 //  Draw: setup compartido de uniforms + atributos, y las variantes
@@ -787,21 +1003,38 @@ void TexCoordPointer3b(const signed char* p, int count){ (void)count; aUV.size=3
 static int bytesOf(unsigned type){ return (type==GL_FLOAT)?4:((type==GL_SHORT)?2:1); }
 static void bindAttr(GLint loc,const Arr& ar,GLuint vbo,int nVerts,const float* def,bool allowNorm){
     if(loc<0) return;
-    if(ar.on && ar.ptr && nVerts>0){
+    AttrGL& g = attrGL[loc];
+    if(ar.on && ar.vbo){   // de un buffer object (la malla ya esta en la GPU): solo el puntero, si cambio
+        BindArray(ar.vbo);
+        GLboolean norm = (allowNorm && ar.type!=GL_FLOAT)?GL_TRUE:GL_FALSE;
+        if(g.on != 1){ W3D_GLC(glEnableVertexAttribArray(loc)); g.on = 1; }
+        if(g.vbo!=ar.vbo || g.ptr!=0 || g.size!=ar.size || g.type!=ar.type || g.norm!=norm || g.stride!=ar.stride){
+            W3D_GLC(glVertexAttribPointer(loc,ar.size,ar.type,norm,ar.stride,(const void*)0));
+            g.vbo = ar.vbo; g.ptr = 0; g.size = ar.size; g.type = ar.type; g.norm = norm; g.stride = ar.stride;
+        }
+    } else if(ar.on && ar.ptr && nVerts>0){
         int elem = ar.size * bytesOf(ar.type);
         // el ultimo vertice solo aporta 'elem' bytes: con stride>elem no hay que leer el relleno final
         int bytes = ar.stride ? ar.stride*(nVerts-1)+elem : elem*nVerts;
-        W3D_GLC(glBindBuffer(GL_ARRAY_BUFFER,vbo));
-        W3D_GLC(glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)bytes,ar.ptr,GL_DYNAMIC_DRAW));
+        BindArray(sinVBO ? 0 : vbo);
+        if(!sinVBO) W3D_GLC(glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)bytes,ar.ptr,GL_DYNAMIC_DRAW));
         // normal (byte -127..127 -> -1..1) y color (ubyte 0..255 -> 0..1) SI se normalizan.
         // la POSICION NO: un short es una coord ENTERA de pantalla/mundo (ej. 0..800), NO un [-1,1]
         // -> normalizarla la mandaba a ~0 (el borde del viewport / sprites 2D quedaban invisibles).
         GLboolean norm = (allowNorm && ar.type!=GL_FLOAT)?GL_TRUE:GL_FALSE;
-        W3D_GLC(glEnableVertexAttribArray(loc));
-        W3D_GLC(glVertexAttribPointer(loc,ar.size,ar.type,norm,ar.stride,(const void*)0));
+        if(g.on != 1){ W3D_GLC(glEnableVertexAttribArray(loc)); g.on = 1; }
+        // (con arreglos del cliente el driver lee los datos en el draw: el mismo puntero con otro contenido no hace
+        // falta volver a darlo. Con el VBO se da siempre)
+        if(!sinVBO || g.vbo!=0 || g.ptr!=ar.ptr || g.size!=ar.size || g.type!=ar.type || g.norm!=norm || g.stride!=ar.stride){
+            W3D_GLC(glVertexAttribPointer(loc,ar.size,ar.type,norm,ar.stride,sinVBO ? ar.ptr : (const void*)0));
+            g.vbo = sinVBO ? 0 : vbo; g.ptr = ar.ptr; g.size = ar.size; g.type = ar.type; g.norm = norm; g.stride = ar.stride;
+        }
     } else {
-        W3D_GLC(glDisableVertexAttribArray(loc));
-        W3D_GLC(glVertexAttrib4fv(loc,def)); // constante (normal +Z, color = curColor)
+        if(g.on != 0){ W3D_GLC(glDisableVertexAttribArray(loc)); g.on = 0; }
+        if(!g.hayCte || memcmp(g.cte, def, sizeof(g.cte)) != 0){
+            W3D_GLC(glVertexAttrib4fv(loc,def)); // constante (normal +Z, color = curColor)
+            memcpy(g.cte, def, sizeof(g.cte)); g.hayCte = true;
+        }
     }
 }
 // la matriz de las NORMALES: la inversa transpuesta de la modelview (3x3), como el pipeline fijo. Con una escala
@@ -817,9 +1050,49 @@ static void MatrizNormal(float out[9]){
     const float id=1.0f/det;
     for(int k=0;k<3;k++){ out[k]=n0[k]*id; out[3+k]=n1[k]*id; out[6+k]=n2[k]*id; }
 }
-// las luces prendidas, juntas al principio de los arreglos del shader (solo cuando cambiaron: los uniforms quedan)
+// la primitiva del draw en curso (0 puntos, 1 lineas, 2 triangulos): la pone cada Draw* antes de setupState
+static int primDraw = 2;
+static void Prim(GLenum modo){ primDraw = (modo==GL_POINTS) ? 0 : (modo==GL_LINES || modo==GL_LINE_STRIP || modo==GL_LINE_LOOP) ? 1 : 2; }
+// como llega un atributo: 0 = constante; si no, el tipo (1 float, 2 short, 3 byte, 4 ubyte) y el tamanio
+static unsigned FirmaAttr(const Arr& a, int nV){
+    if(!(a.on && (a.vbo || (a.ptr && nV>0)))) return 0;
+    const unsigned t = (a.type==GL_FLOAT) ? 1u : (a.type==GL_SHORT) ? 2u : (a.type==GL_BYTE) ? 3u : 4u;
+    return t | ((unsigned)(a.size-1) << 3);
+}
+// el programa de este draw, si hay uno por draw: el que tiene justo lo que se va a usar
+static void ElegirPrograma(int nV){
+    if(!porDraw) return;
+    const bool luz = cap_light && !(cap_tex && texEnv==1);   // (como uLightOn, ver setupState)
+    const bool mezcla = mezclaOn && mezclaTex;
+    int nl = 0;
+    if(luz) for(int i=0;i<LucesMax;i++) if(luces[i].on) nl++;
+    if(nl > kLucesPorDraw) nl = kLucesPorDraw;
+    const unsigned f = (luz ? PLuz : 0) | ((texGenEsfera && cap_tex) ? PTexGen : 0) | (pointSprite ? PSprite : 0)
+                     | (cap_tex ? PTex : 0) | ((cap_tex && blurY > 0.0f) ? PBlur : 0) | ((cap_tex && alfaAbajo) ? PAlfaAbajo : 0)
+                     | (mezcla ? PMezcla : 0) | (cap_fog ? PNiebla : 0) | (clipN > 0 ? PClip : 0)
+                     | (alphaRef > 0.0f ? PDescarte : 0) | ((unsigned)nl << PLuces);
+    // lo del driver (ver PEstado): solo los atributos que este programa lee
+    const bool uv1 = mezcla && (mezclaUV || mezclaUVVbo || (aUV.on && aUV.type==GL_FLOAT && (aUV.vbo || (aUV.ptr && nV>0))));
+    Clave e = (Clave)primDraw | ((Clave)(cap_blend ? 1u + modoBlend : 0u) << 2) | ((Clave)mascaraColor << 6)
+            | ((Clave)FirmaAttr(aPos, nV) << 10) | ((Clave)FirmaAttr(aCol, nV) << 15);
+    if(f & (PLuz|PTexGen)) e |= (Clave)FirmaAttr(aNrm, nV) << 20;
+    if(f & PTex)           e |= (Clave)FirmaAttr(aUV, nV) << 25;
+    if(uv1)                e |= (Clave)1 << 30;
+    const Clave clave = (Clave)f | (e << PEstado);
+    if(progUso && progUso->clave == clave) return;
+    for(int i=0;i<nProgramas;i++) if(programas[i].clave == clave){ UsarPrograma(programas[i]); return; }
+    if(nProgramas == kProgramasMax){   // (lleno: se tiran todos y se vuelven a armar los que hagan falta)
+        for(int i=0;i<nProgramas;i++) BorrarPrograma(programas[i]);
+        nProgramas = 0;
+    }
+    ArmarPrograma(programas[nProgramas], clave);
+    UsarPrograma(programas[nProgramas++]);
+}
+// las luces prendidas, juntas al principio de los arreglos del shader (solo cuando cambiaron o el programa todavia no
+// las tiene: los uniforms quedan en cada programa)
 static void SubirLuces(){
-    if(!lucesSucias) return;
+    if(lucesSucias){ verLuces++; lucesSucias=false; }
+    if(progUso->verLuces == verLuces || uNLuces < 0) return;
     float pos[LucesMax*4], amb[LucesMax*4], dif[LucesMax*4], spec[LucesMax*4], att[LucesMax*4], cono[LucesMax*4];
     int n=0;
     for(int i=0;i<LucesMax;i++){
@@ -835,79 +1108,96 @@ static void SubirLuces(){
         W3D_GLC(glUniform4fv(uLPos,n,pos)); W3D_GLC(glUniform4fv(uLAmb,n,amb)); W3D_GLC(glUniform4fv(uLDif,n,dif));
         W3D_GLC(glUniform4fv(uLSpec,n,spec)); W3D_GLC(glUniform4fv(uLAtt,n,att)); W3D_GLC(glUniform4fv(uLCono,n,cono));
     }
-    lucesSucias=false;
+    progUso->verLuces=verLuces;
 }
 static void setupState(int nV){
+    LoteVaciar();   // (lo juntado sale ANTES de elegir nada para este draw: vaciarlo a mitad de camino pisaria el programa)
     Matrix4 mvp = curProj * curMV;
     float nmat[9]; MatrizNormal(nmat);
-    W3D_GLC(glUseProgram(prog));
-    W3D_GLC(glUniformMatrix4fv(uMVP,1,GL_FALSE,mvp.m));
-    W3D_GLC(glUniformMatrix4fv(uMV,1,GL_FALSE,curMV.m));
-    W3D_GLC(glUniformMatrix3fv(uNMat,1,GL_FALSE,nmat));
-    W3D_GLC(glUniformMatrix4fv(uTexM,1,GL_FALSE,curTex.m));
-    W3D_GLC(glUniform1i(uTexGen,texGenEsfera?1:0));
-    W3D_GLC(glUniform1i(uUseTex,cap_tex?1:0));
-    W3D_GLC(glUniform1i(uEnv,texEnv));
+    ElegirPrograma(nV);
+    if(progActivo != prog){ W3D_GLC(glUseProgram(prog)); progActivo = prog; }
+    if(uClipN>=0){
+        U_1I(uClipN, clipN);
+        for(int i=0;i<clipN;i++) if(uClip[i]>=0 && UNuevo(progUso->c_uClip[i], clipEq[i], 16)) W3D_GLC(glUniform4fv(uClip[i],1,clipEq[i]));
+    }
+    U_M4(uMVP, mvp.m);
+    U_M4(uMV, curMV.m);
+    U_M3(uNMat, nmat);
+    U_M4(uTexM, curTex.m);
+    U_1I(uTexGen, texGenEsfera?1:0);
+    U_1I(uUseTex, cap_tex?1:0);
+    U_1I(uEnv, texEnv);
     // la luz no hace falta si la textura REEMPLAZA el color (el resultado es el mismo y ahorra el vertex shader)
-    W3D_GLC(glUniform1i(uLightOn,(cap_light && !(cap_tex && texEnv==1))?1:0));
-    W3D_GLC(glUniform1i(uColorMat,cap_colormat?1:0));
-    W3D_GLC(glUniform1f(uBlurY, blurY));
-    W3D_GLC(glUniform1f(uAlphaRef, alphaRef));
-    W3D_GLC(glUniform1i(uAlfaAbajo, alfaAbajo));
-    W3D_GLC(glUniform1i(uFogOn,cap_fog?1:0));
-    W3D_GLC(glUniform1i(uTex,0));
-    W3D_GLC(glUniform1f(uPointSize,pointSize));
-    W3D_GLC(glUniform1i(uPointSprite,pointSprite?1:0));
-    W3D_GLC(glUniform4fv(uViewport,1,vpActual));
-    W3D_GLC(glUniform4fv(uMDiff,1,matDiff)); W3D_GLC(glUniform4fv(uMAmb,1,matAmb));
-    W3D_GLC(glUniform4fv(uMSpec,1,matSpec)); W3D_GLC(glUniform4fv(uMEmis,1,matEmis)); W3D_GLC(glUniform1f(uShine,matShine));
-    W3D_GLC(glUniform4fv(uAmbGlobal,1,ambGlobal));
+    U_1I(uLightOn, (cap_light && !(cap_tex && texEnv==1))?1:0);
+    U_1I(uColorMat, cap_colormat?1:0);
+    U_1F(uBlurY, blurY);
+    U_1F(uAlphaRef, alphaRef);
+    U_1I(uAlfaAbajo, alfaAbajo);
+    U_1I(uFogOn, cap_fog?1:0);
+    U_1I(uTex, 0);
+    U_1F(uPointSize, pointSize);
+    U_1I(uPointSprite, pointSprite?1:0);
+    U_4F(uViewport, vpActual);
+    U_4F(uMDiff, matDiff); U_4F(uMAmb, matAmb);
+    U_4F(uMSpec, matSpec); U_4F(uMEmis, matEmis); U_1F(uShine, matShine);
+    U_4F(uAmbGlobal, ambGlobal);
     SubirLuces();
-    W3D_GLC(glUniform4fv(uFogColor,1,fogColor)); W3D_GLC(glUniform1f(uFogStart,fogStart)); W3D_GLC(glUniform1f(uFogEnd,fogEnd));
-    W3D_GLC(glUniform1i(uFogModo,fogModo)); W3D_GLC(glUniform1f(uFogDens,fogDens));
+    U_4F(uFogColor, fogColor); U_1F(uFogStart, fogStart); U_1F(uFogEnd, fogEnd);
+    U_1I(uFogModo, fogModo); U_1F(uFogDens, fogDens);
     // la unidad 1: la textura B en el sampler 1. Apagada, el sampler apunta a la unidad 0 (sin textura en la 1 el
     // navegador avisa en cada draw)
     const bool mezcla = mezclaOn && mezclaTex;
-    W3D_GLC(glUniform1i(uMezcla, mezcla ? mezclaModo : -1));
-    W3D_GLC(glUniform1i(uTex1, mezcla ? 1 : 0));
+    U_1I(uMezcla, mezcla ? mezclaModo : -1);
+    U_1I(uTex1, mezcla ? 1 : 0);
     if(mezcla){
-        W3D_GLC(glUniform1f(uMezclaK, mezclaK));
+        U_1F(uMezclaK, mezclaK);
         W3D_GLC(glActiveTexture(GL_TEXTURE1)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,mezclaTex));
+        W3D_GLC(glActiveTexture(GL_TEXTURE0)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,boundTex));
     }
-    if(cap_tex || mezcla){ W3D_GLC(glActiveTexture(GL_TEXTURE0)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,boundTex)); }
+    // (sin la mezcla la unidad activa es siempre la 0 y su textura la deja BindTexture: no hace falta repetirla)
     static const float defNrm[4]={0,0,1,0};
     static const float defUV[4]={0,0,0,1};   // la texcoord de fabrica de GL
+    // (con un programa por draw, los atributos que el programa no lee van apagados: si no, cambian la traduccion del
+    // driver sin hacer falta, ver PEstado)
+    static const Arr apagado={false,3,GL_FLOAT,0,0};
+    const bool leeNrm = !porDraw || (progUso->clave & (PLuz|PTexGen));
+    const bool leeUV  = !porDraw || (progUso->clave & PTex);
     bindAttr(aLpos,aPos,vboP,nV, defNrm,  false); // POSICION: NUNCA normalizar (short = coords enteras de pantalla/mundo)
-    bindAttr(aLnrm,aNrm,vboN,nV, defNrm,  true);  // normal: byte -> [-1,1]
-    bindAttr(aLuv, aUV, vboT,nV, defUV,   false); // uv: float, o las normales en bytes del matcap (GL no las normaliza)
+    bindAttr(aLnrm,leeNrm ? aNrm : apagado,vboN,nV, defNrm,  true);  // normal: byte -> [-1,1]
+    bindAttr(aLuv, leeUV ? aUV : apagado, vboT,nV, defUV,   false); // uv: float, o las normales en bytes del matcap (GL no las normaliza)
     bindAttr(aLcol,aCol,vboC,nV, curColor,true);  // color: ubyte -> [0,1]. sin array -> color uniforme (Color4*)
     if(aLuv1>=0){
-        if(mezcla && mezclaUV){   // UV propias de la unidad 1
-            Arr uv1={true,2,GL_FLOAT,0,mezclaUV};
+        if(mezcla && (mezclaUV || mezclaUVVbo)){   // UV propias de la unidad 1
+            Arr uv1={true,2,GL_FLOAT,0,mezclaUV,mezclaUVVbo};
             bindAttr(aLuv1,uv1,vboT1,nV,defUV,false);
-        } else if(mezcla && aUV.on && aUV.ptr && aUV.type==GL_FLOAT && nV>0){   // las mismas de la unidad 0 (ya subidas)
-            W3D_GLC(glBindBuffer(GL_ARRAY_BUFFER,vboT));
-            W3D_GLC(glEnableVertexAttribArray(aLuv1));
-            W3D_GLC(glVertexAttribPointer(aLuv1,2,GL_FLOAT,GL_FALSE,aUV.stride,(const void*)0));
+        } else if(mezcla && aUV.on && aUV.type==GL_FLOAT && (aUV.vbo || (aUV.ptr && nV>0))){   // las mismas de la unidad 0 (ya subidas)
+            Arr uv0={true,2,GL_FLOAT,aUV.stride,aUV.ptr,aUV.vbo};
+            if(sinVBO || aUV.vbo) bindAttr(aLuv1,uv0,0,nV,defUV,false);
+            else {
+                BindArray(vboT);
+                if(attrGL[aLuv1].on != 1){ W3D_GLC(glEnableVertexAttribArray(aLuv1)); attrGL[aLuv1].on = 1; }
+                W3D_GLC(glVertexAttribPointer(aLuv1,2,GL_FLOAT,GL_FALSE,aUV.stride,(const void*)0));
+            }
         } else {
-            W3D_GLC(glDisableVertexAttribArray(aLuv1));
-            W3D_GLC(glVertexAttrib4fv(aLuv1,defUV));
+            Arr nada={false,2,GL_FLOAT,0,0};
+            bindAttr(aLuv1,nada,0,0,defUV,false);
         }
     }
 }
 // dibujo INDEXADO (indices ushort; convierte desde MeshIndex/ubyte)
 static void drawIndexed(GLenum mode,int count,const unsigned short* idx16){
-    W3D_GLC(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,ibo));
-    W3D_GLC(glBufferData(GL_ELEMENT_ARRAY_BUFFER,(GLsizeiptr)(count*2),idx16,GL_DYNAMIC_DRAW));
+    const GLint b = sinVBO ? 0 : (GLint)ibo;
+    if(bufIndicesGL != b){ W3D_GLC(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,(GLuint)b)); bufIndicesGL = b; }
+    if(!sinVBO) W3D_GLC(glBufferData(GL_ELEMENT_ARRAY_BUFFER,(GLsizeiptr)(count*2),idx16,GL_DYNAMIC_DRAW));
     g_statDrawTris++; g_statIndices += count; g_statDcCat[gStatCat]++;   // (un draw: lineas y puntos tambien)
-    W3D_GLC(glDrawElements(mode,count,GL_UNSIGNED_SHORT,(const void*)0));
+    W3D_GLC(glDrawElements(mode,count,GL_UNSIGNED_SHORT,sinVBO ? (const void*)idx16 : (const void*)0));
 }
 static int maxIndex(const MeshIndex* ind,int count){ int n=0; for(int i=0;i<count;i++) if((int)ind[i]+1>n) n=(int)ind[i]+1; return n; }
 static int maxIndexU16(const unsigned short* ind,int count){ int n=0; for(int i=0;i<count;i++) if((int)ind[i]+1>n) n=(int)ind[i]+1; return n; }
 
 void DrawTriangles(int count,const MeshIndex* indices){
     if(!ready || count<=0 || !indices) return;
-    setupState(maxIndex(indices,count));
+    Prim(GL_TRIANGLES); setupState(maxIndex(indices,count));
     static std::vector<unsigned short> idx; idx.resize(count);
     for(int i=0;i<count;i++) idx[i]=(unsigned short)indices[i];
     drawIndexed(GL_TRIANGLES,count,&idx[0]);
@@ -915,7 +1205,7 @@ void DrawTriangles(int count,const MeshIndex* indices){
 void DrawElements(Primitiva p,int count,const MeshIndex* indices){
     if(!ready || count<=0 || !indices) return;
     static const GLenum kModo[7]={GL_POINTS,GL_LINES,GL_LINE_STRIP,GL_LINE_LOOP,GL_TRIANGLES,GL_TRIANGLE_STRIP,GL_TRIANGLE_FAN};
-    setupState(maxIndex(indices,count));
+    Prim(kModo[(int)p>=0&&(int)p<7?(int)p:4]); setupState(maxIndex(indices,count));
     static std::vector<unsigned short> idx; idx.resize(count);
     for(int i=0;i<count;i++) idx[i]=(unsigned short)indices[i];
     drawIndexed(kModo[(int)p>=0&&(int)p<7?(int)p:4],count,&idx[0]);
@@ -924,45 +1214,48 @@ void DrawElements16(Primitiva p,int count,const unsigned short* indices){
     if(!ready || count<=0 || !indices) return;
     static const GLenum kModo[7]={GL_POINTS,GL_LINES,GL_LINE_STRIP,GL_LINE_LOOP,GL_TRIANGLES,GL_TRIANGLE_STRIP,GL_TRIANGLE_FAN};
     int nV=0; for(int i=0;i<count;i++) if((int)indices[i]+1>nV) nV=(int)indices[i]+1;
-    setupState(nV);
+    Prim(kModo[(int)p>=0&&(int)p<7?(int)p:4]); setupState(nV);
     drawIndexed(kModo[(int)p>=0&&(int)p<7?(int)p:4],count,indices);
 }
-void DrawElementsVBO(Primitiva,int,int){}   // (sin VBO en este backend: VBOSoportado() = false)
+static void DrawDesdeIBO(GLenum modo, int count, int first);
+void DrawElementsVBO(Primitiva p,int count,int firstIndex){
+    static const GLenum kModo[7]={GL_POINTS,GL_LINES,GL_LINE_STRIP,GL_LINE_LOOP,GL_TRIANGLES,GL_TRIANGLE_STRIP,GL_TRIANGLE_FAN};
+    DrawDesdeIBO(kModo[(int)p>=0&&(int)p<7?(int)p:4],count,firstIndex);
+}
 void DrawTrianglesByte(int count,const unsigned char* indices){
     if(!ready || count<=0 || !indices) return;
     int nV=0; for(int i=0;i<count;i++) if((int)indices[i]+1>nV) nV=(int)indices[i]+1;   // bytes: sin overload
-    setupState(nV);
+    Prim(GL_TRIANGLES); setupState(nV);
     static std::vector<unsigned short> idx; idx.resize(count);
     for(int i=0;i<count;i++) idx[i]=(unsigned short)indices[i];
     drawIndexed(GL_TRIANGLES,count,&idx[0]);
 }
 void DrawLinesIndexed(int count,const unsigned short* indices){
     if(!ready || count<=0 || !indices) return;
-    setupState(maxIndexU16(indices,count)); drawIndexed(GL_LINES,count,indices);
+    Prim(GL_LINES); setupState(maxIndexU16(indices,count)); drawIndexed(GL_LINES,count,indices);
 }
 void DrawLineStripIndexed(int count,const unsigned short* indices){
     if(!ready || count<=0 || !indices) return;
-    setupState(maxIndexU16(indices,count)); drawIndexed(GL_LINE_STRIP,count,indices);
+    Prim(GL_LINE_STRIP); setupState(maxIndexU16(indices,count)); drawIndexed(GL_LINE_STRIP,count,indices);
 }
 
 // ---------------------------------------------------------------------------
-//  INDICES DE CLIENTE sobre los atributos bindeados (ver w3dGraphics.h). En el
-//  backend de escritorio existen para dibujar SOLO la lista de triangulos visible
-//  (PVS) sin re-subir la geometria; en ES2 este backend ya sube los atributos a un
-//  VBO dinamico por draw (VBOSoportado()=false), asi que son el mismo camino que
+//  INDICES DE CLIENTE sobre los atributos bindeados (ver w3dGraphics.h): dibujar SOLO
+//  la lista de triangulos visible (PVS) sin re-subir la geometria. Los atributos son
+//  los que esten puestos (en un VBO de la malla o de RAM): el mismo camino que
 //  DrawTriangles/DrawLinesIndexed. Faltaban: sin ellas el APK de un juego 3D NO
 //  LINKEABA (el pase 2D nunca las usaba, por eso no se habia notado).
 // ---------------------------------------------------------------------------
 void DrawTrianglesClientIdx(int count,const MeshIndex* indices){
     if(!ready || count<=0 || !indices) return;
-    setupState(maxIndex(indices,count));
+    Prim(GL_TRIANGLES); setupState(maxIndex(indices,count));
     static std::vector<unsigned short> idx; idx.resize(count);
     for(int i=0;i<count;i++) idx[i]=(unsigned short)indices[i];
     drawIndexed(GL_TRIANGLES,count,&idx[0]);
 }
 void DrawLinesClientIdx(int count,const MeshIndex* indices){
     if(!ready || count<=0 || !indices) return;
-    setupState(maxIndex(indices,count));
+    Prim(GL_LINES); setupState(maxIndex(indices,count));
     static std::vector<unsigned short> idx; idx.resize(count);
     for(int i=0;i<count;i++) idx[i]=(unsigned short)indices[i];
     drawIndexed(GL_LINES,count,&idx[0]);
@@ -1012,32 +1305,163 @@ void GetMatrix(Matrix m, float* out16) {
     for (int i = 0; i < 16; i++) out16[i] = M.m[i];
 }
 void TexBaseLevel(int nivel) { (void)nivel; }   // ES2 no tiene GL_TEXTURE_BASE_LEVEL (PC solamente)
-// BUFFER OBJECTS: por ahora STUBS -> VBOSoportado()=false, asi Mesh cae al camino client-side de este backend (que
-// ya sube sus arrays a un VBO dinamico por draw). Los VBOs PERSISTENTES en el pipeline de atributos (glVertexAttrib
-// desde un VBO por-malla) son una optimizacion futura de este backend; la abstraccion ya esta lista.
-bool VBOSoportado(){ return false; }
-unsigned int GenBuffer(){ return 0; }
-void DeleteBuffer(unsigned int){}
-void ArrayBufferData(unsigned int, const void*, int){}
-void IndexBufferData(unsigned int, const void*, int){}
-void VertexVBO(unsigned int){}
-void NormalVBO(unsigned int){}
-void ColorVBO(unsigned int){}
-void TexCoordVBO(unsigned int){}
-void BindIndexVBO(unsigned int){}
-void DrawTrianglesVBO(int, int){}
-void UnbindVBOs(){}
+// BUFFER OBJECTS: la malla sube UNA vez a la GPU (ArrayBufferData / IndexBufferData) y cada draw solo da los punteros
+// (VertexVBO y compania, desde el byte 0) en vez de mandar todos los vertices desde la RAM. Los indices de la malla son
+// de 32 bits (MeshIndex) y GL ES 2 sin OES_element_index_uint solo dibuja de 16: se convierten al subirlos
+struct BufInfo { long bytes; int verts; bool u32; };   // verts = el indice mas alto + 1 (los IBO)
+static std::map<GLuint, BufInfo> buffers;
+static GLuint iboVBO = 0;   // el IBO de BindIndexVBO
+static int indicesU32 = -1; // el driver dibuja indices de 32 bits? (-1 = no se pregunto todavia)
+bool VBOSoportado(){ return ready; }
+unsigned int GenBuffer(){ GLuint h=0; W3D_GLC(glGenBuffers(1,&h)); return h; }
+void DeleteBuffer(unsigned int h){
+    if(!h) return;
+    W3D_GLC(glDeleteBuffers(1,&h));
+    buffers.erase(h);
+    Arr* a[4]={&aPos,&aNrm,&aUV,&aCol};
+    for(int i=0;i<4;i++) if(a[i]->vbo==h) a[i]->vbo=0;
+    if(iboVBO==h) iboVBO=0;
+    if(mezclaUVVbo==h) mezclaUVVbo=0;
+    AttrOlvidar();   // (GL lo desbindeo de donde estuviera: el cache ya no sabe)
+}
+void ArrayBufferData(unsigned int h, const void* data, int bytes){
+    if(!h || bytes<=0) return;
+    BindArray(h);
+    W3D_GLC(glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)bytes,data,GL_STATIC_DRAW));
+    BufInfo& b = buffers[h]; b.bytes = bytes; b.verts = 0; b.u32 = false;
+    g_statUploadBytes += bytes;
+}
+void IndexBufferData(unsigned int h, const void* data, int bytes){
+    if(!h || bytes<=0 || !data) return;
+    const MeshIndex* idx = (const MeshIndex*)data;
+    const int n = bytes / (int)sizeof(MeshIndex);
+    int maxI = 0; for(int i=0;i<n;i++) if((int)idx[i] > maxI) maxI = (int)idx[i];
+    if(indicesU32 < 0){ const char* ext=(const char*)glGetString(GL_EXTENSIONS); indicesU32 = (ext && strstr(ext,"GL_OES_element_index_uint")) ? 1 : 0; }
+    const bool u32 = sizeof(MeshIndex) == 4 && maxI > 65535 && indicesU32 == 1;
+    if(sizeof(MeshIndex) == 4 && maxI > 65535 && !u32) w3dLogfW("[w3dGLES2] malla de %d vertices: el driver no dibuja indices de 32 bits", maxI + 1);
+    if(bufIndicesGL != (GLint)h){ W3D_GLC(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,h)); bufIndicesGL = (GLint)h; }
+    if(u32 || sizeof(MeshIndex) == 2) W3D_GLC(glBufferData(GL_ELEMENT_ARRAY_BUFFER,(GLsizeiptr)bytes,data,GL_STATIC_DRAW));
+    else {
+        static std::vector<unsigned short> i16; i16.resize(n);
+        for(int i=0;i<n;i++) i16[i] = (unsigned short)idx[i];
+        W3D_GLC(glBufferData(GL_ELEMENT_ARRAY_BUFFER,(GLsizeiptr)(n*2),&i16[0],GL_STATIC_DRAW));
+    }
+    BufInfo& b = buffers[h]; b.bytes = u32 ? bytes : n*2; b.verts = maxI + 1; b.u32 = u32;
+    g_statUploadBytes += (int)b.bytes;
+}
+long VBOMemoria(){ long t=0; for(std::map<GLuint,BufInfo>::const_iterator it=buffers.begin(); it!=buffers.end(); ++it) t+=it->second.bytes; return t; }
+// (los formatos son los de la malla: pos 3 float, normal 3 byte, color 4 ubyte, uv 2 float)
+void VertexVBO(unsigned int h){ aPos.size=3; aPos.type=GL_FLOAT; aPos.stride=0; aPos.ptr=0; aPos.vbo=h; }
+void NormalVBO(unsigned int h){ aNrm.size=3; aNrm.type=GL_BYTE; aNrm.stride=0; aNrm.ptr=0; aNrm.vbo=h; }
+void ColorVBO(unsigned int h){ aCol.size=4; aCol.type=GL_UNSIGNED_BYTE; aCol.stride=0; aCol.ptr=0; aCol.vbo=h; }
+void TexCoordVBO(unsigned int h){ aUV.size=2; aUV.type=GL_FLOAT; aUV.stride=0; aUV.ptr=0; aUV.vbo=h; }
+void BindIndexVBO(unsigned int h){ iboVBO=h; }
+// del IBO bindeado: 'first' indices adelante
+static void DrawDesdeIBO(GLenum modo, int count, int first){
+    if(!ready || count<=0 || !iboVBO) return;
+    std::map<GLuint,BufInfo>::const_iterator it = buffers.find(iboVBO);
+    const int nV = (it != buffers.end()) ? it->second.verts : 0;
+    const bool u32 = (it != buffers.end()) && it->second.u32;
+    Prim(modo); setupState(nV);
+    if(bufIndicesGL != (GLint)iboVBO){ W3D_GLC(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,iboVBO)); bufIndicesGL = (GLint)iboVBO; }
+    g_statDrawTris++; g_statDrawVBO++; g_statIndices += count; g_statDcCat[gStatCat]++;
+    W3D_GLC(glDrawElements(modo,count,u32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT,(const void*)(size_t)(first * (u32 ? 4 : 2))));
+}
+void DrawTrianglesVBO(int count, int firstIndex){ DrawDesdeIBO(GL_TRIANGLES,count,firstIndex); }
+void UnbindVBOs(){ aPos.vbo=aNrm.vbo=aUV.vbo=aCol.vbo=0; iboVBO=0; }
 // la pila perezosa y el cache de punteros son del pipeline fijo: aca la pila ya vive en la CPU y va al shader por
 // uniforms en cada draw (perezosa de por si) y los punteros se leen recien al dibujar. Las opciones existen para el harness
 bool g_matricesPerezosas = true;
 bool g_punterosCache = true;
 void MatricesSincronizar() {}
 
-void DrawTrianglesArray(int vertexCount){ if(!ready||vertexCount<=0) return; setupState(vertexCount); g_statDrawTris++; g_statIndices += vertexCount; g_statDcCat[gStatCat]++; W3D_GLC(glDrawArrays(GL_TRIANGLES,0,vertexCount)); }
-void DrawTrianglesArrayFrom(int first,int count){ if(!ready||count<=0) return; setupState(first+count); g_statDrawTris++; g_statIndices += count; g_statDcCat[gStatCat]++; W3D_GLC(glDrawArrays(GL_TRIANGLES,first,count)); }
-void DrawLines(int vertexCount){ if(!ready||vertexCount<=0) return; setupState(vertexCount); W3D_GLC(glDrawArrays(GL_LINES,0,vertexCount)); }
-void DrawLineStrip(int vertexCount){ if(!ready||vertexCount<=0) return; setupState(vertexCount); W3D_GLC(glDrawArrays(GL_LINE_STRIP,0,vertexCount)); }
-void DrawPoints(int vertexCount){ if(!ready||vertexCount<=0) return; setupState(vertexCount); W3D_GLC(glDrawArrays(GL_POINTS,0,vertexCount)); }
+// ============================================================================
+//  LOTE (con un programa por draw: la VideoCore IV de Android 2.3). En ese driver cada draw cuesta ~0.15 ms y la UI hace
+//  ~150 por cuadro (un texto, un fondo, un icono: un draw cada uno). Los draws de triangulos sin indices, sin luz,
+//  niebla, recorte ni mezcla, se juntan -ya pasados por la modelview en la CPU, con su color- y salen en UN draw cuando
+//  cambia algo de lo que no se junta (la textura, la proyeccion...). Cualquier llamada a GL dibuja antes lo juntado
+//  (W3D_GLC): nada se adelanta a un draw pendiente. DibujarPendiente lo dibuja antes del swap
+// ============================================================================
+struct Lote { bool tex; int env; float alphaRef; unsigned textura; Matrix4 proj, texm; };
+static Lote lote;
+static std::vector<float> lotePos, loteUV, loteCol;
+static const int kLoteMax = 6000;   // vertices
+static void LoteVaciar(){
+    if(!loteN) return;
+    const int n = loteN; loteN = 0;   // (antes de cualquier llamada a GL: W3D_GLC volveria a entrar aca)
+    // el estado de cuando se junto (lo que el lote no admite, apagado); el de ahora se repone al final
+    const bool tex0=cap_tex, luz0=cap_light, fog0=cap_fog, spr0=pointSprite, tg0=texGenEsfera, mez0=mezclaOn;
+    const int env0=texEnv, clip0=clipN, aa0=alfaAbajo, prim0=primDraw;
+    const float ar0=alphaRef, blur0=blurY;
+    const Matrix4 proj0=curProj, mv0=curMV, texm0=curTex;
+    const Arr pos0=aPos, nrm0=aNrm, uv0=aUV, col0=aCol;
+    cap_tex=lote.tex; cap_light=cap_fog=pointSprite=texGenEsfera=mezclaOn=false; texEnv=lote.env; clipN=0; alfaAbajo=0;
+    alphaRef=lote.alphaRef; blurY=0.0f;
+    curProj=lote.proj; curMV.Identity(); curTex=lote.texm;
+    const Arr p={true,3,GL_FLOAT,0,&lotePos[0],0}, c={true,4,GL_FLOAT,0,&loteCol[0],0};
+    const Arr u={lote.tex,2,GL_FLOAT,0,lote.tex ? &loteUV[0] : 0,0}, nada={false,3,GL_FLOAT,0,0,0};
+    aPos=p; aCol=c; aUV=u; aNrm=nada;
+    Prim(GL_TRIANGLES); setupState(n);
+    g_statDrawTris++; g_statIndices += n; g_statDcCat[gStatCat]++;
+    W3D_GLC(glDrawArrays(GL_TRIANGLES,0,n));
+    cap_tex=tex0; cap_light=luz0; cap_fog=fog0; pointSprite=spr0; texGenEsfera=tg0; mezclaOn=mez0;
+    texEnv=env0; clipN=clip0; alfaAbajo=aa0; primDraw=prim0; alphaRef=ar0; blurY=blur0;
+    curProj=proj0; curMV=mv0; curTex=texm0;
+    aPos=pos0; aNrm=nrm0; aUV=uv0; aCol=col0;
+}
+void DibujarPendiente(){ LoteVaciar(); }
+// un draw de triangulos sin indices (vertices first .. first+n-1) al lote, si se puede; false = se dibuja solo
+static bool AlLote(int first, int n){
+    if(!porDraw || n > kLoteMax) return false;
+    if(cap_light || cap_fog || pointSprite || (mezclaOn && mezclaTex) || clipN>0 || blurY>0.0f || alfaAbajo || (texGenEsfera && cap_tex)) return false;
+    if(!aPos.on || !aPos.ptr || aPos.vbo || aPos.type!=GL_FLOAT || (aPos.size!=2 && aPos.size!=3)) return false;
+    if(cap_tex && (!aUV.on || !aUV.ptr || aUV.vbo || aUV.type!=GL_FLOAT || aUV.size!=2)) return false;
+    const bool colArr = aCol.on && (aCol.ptr || aCol.vbo);
+    if(colArr && (aCol.vbo || aCol.size!=4 || (aCol.type!=GL_UNSIGNED_BYTE && aCol.type!=GL_FLOAT))) return false;
+    const float* M = curMV.m;
+    if(M[3]!=0.0f || M[7]!=0.0f || M[11]!=0.0f || M[15]!=1.0f) return false;   // (solo modelview afin)
+    if(loteN){
+        bool igual = lote.tex==cap_tex && lote.alphaRef==alphaRef && loteN + n <= kLoteMax && memcmp(lote.proj.m, curProj.m, sizeof(curProj.m))==0;
+        if(igual && cap_tex) igual = lote.env==texEnv && lote.textura==boundTex && memcmp(lote.texm.m, curTex.m, sizeof(curTex.m))==0;
+        if(!igual) LoteVaciar();
+    }
+    if(!loteN){ lote.tex=cap_tex; lote.env=texEnv; lote.alphaRef=alphaRef; lote.textura=boundTex; lote.proj=curProj; lote.texm=curTex; }
+    lotePos.resize((size_t)(loteN+n)*3); loteCol.resize((size_t)(loteN+n)*4);
+    if(cap_tex) loteUV.resize((size_t)(loteN+n)*2);
+    // posiciones por la modelview
+    const int sp = aPos.stride ? aPos.stride : aPos.size*4;
+    const unsigned char* bp = (const unsigned char*)aPos.ptr + (size_t)first*sp;
+    float* dp = &lotePos[(size_t)loteN*3];
+    for(int i=0;i<n;i++, dp+=3){
+        const float* v = (const float*)(bp + (size_t)i*sp);
+        const float x=v[0], y=v[1], z=(aPos.size==3) ? v[2] : 0.0f;
+        dp[0]=M[0]*x+M[4]*y+M[8]*z+M[12]; dp[1]=M[1]*x+M[5]*y+M[9]*z+M[13]; dp[2]=M[2]*x+M[6]*y+M[10]*z+M[14];
+    }
+    if(cap_tex){
+        const int su = aUV.stride ? aUV.stride : 8;
+        const unsigned char* bu = (const unsigned char*)aUV.ptr + (size_t)first*su;
+        float* du = &loteUV[(size_t)loteN*2];
+        for(int i=0;i<n;i++, du+=2){ const float* t=(const float*)(bu + (size_t)i*su); du[0]=t[0]; du[1]=t[1]; }
+    }
+    float* dc = &loteCol[(size_t)loteN*4];
+    if(colArr && aCol.type==GL_UNSIGNED_BYTE){   // (GL los normaliza igual: c / 255)
+        const int sc = aCol.stride ? aCol.stride : 4;
+        const unsigned char* bc = (const unsigned char*)aCol.ptr + (size_t)first*sc;
+        for(int i=0;i<n;i++, dc+=4){ const unsigned char* k=bc + (size_t)i*sc; for(int j=0;j<4;j++) dc[j]=k[j]/255.0f; }
+    } else if(colArr){
+        const int sc = aCol.stride ? aCol.stride : 16;
+        const unsigned char* bc = (const unsigned char*)aCol.ptr + (size_t)first*sc;
+        for(int i=0;i<n;i++, dc+=4){ const float* k=(const float*)(bc + (size_t)i*sc); for(int j=0;j<4;j++) dc[j]=k[j]; }
+    } else for(int i=0;i<n;i++, dc+=4) for(int j=0;j<4;j++) dc[j]=curColor[j];
+    loteN += n;
+    return true;
+}
+
+void DrawTrianglesArray(int vertexCount){ if(!ready||vertexCount<=0) return; if(AlLote(0,vertexCount)) return; Prim(GL_TRIANGLES); setupState(vertexCount); g_statDrawTris++; g_statIndices += vertexCount; g_statDcCat[gStatCat]++; W3D_GLC(glDrawArrays(GL_TRIANGLES,0,vertexCount)); }
+void DrawTrianglesArrayFrom(int first,int count){ if(!ready||count<=0) return; if(AlLote(first,count)) return; Prim(GL_TRIANGLES); setupState(first+count); g_statDrawTris++; g_statIndices += count; g_statDcCat[gStatCat]++; W3D_GLC(glDrawArrays(GL_TRIANGLES,first,count)); }
+void DrawLines(int vertexCount){ if(!ready||vertexCount<=0) return; Prim(GL_LINES); setupState(vertexCount); W3D_GLC(glDrawArrays(GL_LINES,0,vertexCount)); }
+void DrawLineStrip(int vertexCount){ if(!ready||vertexCount<=0) return; Prim(GL_LINE_STRIP); setupState(vertexCount); W3D_GLC(glDrawArrays(GL_LINE_STRIP,0,vertexCount)); }
+void DrawPoints(int vertexCount){ if(!ready||vertexCount<=0) return; Prim(GL_POINTS); setupState(vertexCount); W3D_GLC(glDrawArrays(GL_POINTS,0,vertexCount)); }
 
 void Wireframe(bool){}              // ES2 no tiene glPolygonMode: se dibuja relleno (como GLES1). Wireframe real = draw de aristas.
 void PointSpriteCoordReplace(bool on){ pointSprite=on; } // samplear la textura con gl_PointCoord (point sprites)
@@ -1074,6 +1498,9 @@ void GLES2Init(void* (*getProc)(const char*)){
     glVertexAttrib4fv=(PFvertexAttrib4fv)getProc("glVertexAttrib4fv");
     glActiveTexture=(PFactiveTexture)getProc("glActiveTexture");
     glBindAttribLocation=(PFbindAttribLocation)getProc("glBindAttribLocation");
+    glDeleteShader=(PFdeleteShader)getProc("glDeleteShader");
+    glDeleteBuffers=(PFdeleteBuffers)getProc("glDeleteBuffers");
+    glDeleteProgram=(PFdeleteProgram)getProc("glDeleteProgram");
     // GL de escritorio: el tamanio del punto lo da el shader y el sprite tiene gl_PointCoord (en ES2 ya es asi)
     glEnable(GL_VERTEX_PROGRAM_POINT_SIZE);
     glEnable(GL_POINT_SPRITE);
@@ -1081,6 +1508,8 @@ void GLES2Init(void* (*getProc)(const char*)){
     (void)getProc;
 #endif
     curProj.Identity(); curMV.Identity(); curTex.Identity();
+    // (un contexto nuevo arranca con todo lo de fabrica)
+    cap_depth=cap_cull=cap_blend=cap_scissor=cap_offset=false; boundTex=0; EstadoGLOlvidar();
     buildProgram();
     { GLint v[4]={0,0,1,1}; glGetIntegerv(GL_VIEWPORT,v); for(int i=0;i<4;i++) vpActual[i]=(float)v[i]; }
 }

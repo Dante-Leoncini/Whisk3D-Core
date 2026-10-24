@@ -16,6 +16,7 @@
 //  multiplica por kAjuste (ver abajo) y los rectangulos del viewport y el scissor se giran al ponerlos.
 // ============================================================================
 #include "w3dGraphics.h"
+#include "w3dlog.h"
 #include "c3d/w3dC3D.h"
 #include "c3d/w3dC3DInterno.h"
 #include "math/Matrix4.h"
@@ -137,6 +138,9 @@ int  C3DAnchoPantalla(int p) { return p == PantallaArriba ? 400 : 320; }
 bool C3DEnCuadro() { return gEnCuadro; }
 
 bool C3DInit() {
+    bool n3ds = false;
+    APT_CheckNew3DS(&n3ds);
+    w3dLogf("[c3d] %s", n3ds ? "New 3DS" : "3DS (la vieja)");
     if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4)) return false;
     gTarget[PantallaArriba] = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
     gTarget[PantallaAbajo]  = C3D_RenderTargetCreate(240, 320, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
@@ -175,6 +179,38 @@ void C3DFin() {
     C3D_Fini();
 }
 
+// ============================================================================
+//  EL VIGILANTE DE LA GPU: en la consola de verdad, un cuadro que la GPU no puede terminar la deja colgada (y a la
+//  consola con ella); el emulador lo dibuja igual. Se anotan los draws de cada cuadro (que, cuantos vertices, con que
+//  estado y, lo armado en la CPU, hasta donde llega en la pantalla). Si la GPU no termina un cuadro en 2 segundos, la
+//  lista del cuadro colgado va al log (que en la 3DS queda en la SD) y se sigue esperando
+// ============================================================================
+struct RegistroDraw { char tipo; int n, mezcla, zFunc; unsigned combiner; float maxNdc, minW; };
+enum { kRegMax = 128 };
+static RegistroDraw gReg[kRegMax];
+static int gRegN = 0, gRegTotal = 0;
+static void ReportarGPUColgada() {
+    w3dLogfE("[c3d] la GPU no termino el cuadro en 2 segundos (en la consola de verdad, colgada). Sus %d draws:", gRegTotal);
+    for (int i = 0; i < gRegN; i++) {
+        const RegistroDraw& r = gReg[i];
+        if (r.maxNdc >= 0.0f)
+            w3dLogfE("[c3d]   %c %d vertices, mezcla %d, z %d, combiner %x, |x/w| hasta %.1f, w desde %.4f",
+                     r.tipo, r.n, r.mezcla, r.zFunc, r.combiner, r.maxNdc, r.minW);
+        else w3dLogfE("[c3d]   %c %d vertices, mezcla %d, z %d, combiner %x", r.tipo, r.n, r.mezcla, r.zFunc, r.combiner);
+    }
+    if (gRegTotal > gRegN) w3dLogfE("[c3d]   (y %d draws mas)", gRegTotal - gRegN);
+}
+// C3D_FrameBegin, que espera a que la GPU termine lo anterior: si tarda mas de 2 segundos, avisa (una vez)
+static void EmpezarConEspera(u8 flags) {
+    if (C3D_FrameBegin(flags | C3D_FRAME_NONBLOCK)) return;
+    const u64 t0 = svcGetSystemTick();
+    bool avisado = false;
+    while (!C3D_FrameBegin(C3D_FRAME_NONBLOCK)) {
+        svcSleepThread(1000000LL);   // 1 ms
+        if (!avisado && svcGetSystemTick() - t0 > 2000ULL * (u64)CPU_TICKS_PER_MSEC) { avisado = true; ReportarGPUColgada(); }
+    }
+}
+
 static void PonerViewport();
 static void PonerScissor();
 static void LoteVaciar();
@@ -183,7 +219,8 @@ static void LoteVaciar();
 static int gVpPuesto[4] = { -1, -1, -1, -1 }, gScPuesto[5] = { -1, -1, -1, -1, -1 };
 void C3DCuadroEmpezar() {
     if (gEnCuadro) return;
-    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+    EmpezarConEspera(C3D_FRAME_SYNCDRAW);
+    gRegN = 0; gRegTotal = 0;
     gEnCuadro = true;
     gLimpia[0] = gLimpia[1] = false;
     gAnilloAct ^= 1;
@@ -435,6 +472,7 @@ void EstadoFotoTomar() {}
 void EstadoFotoReponer() {}
 unsigned int ErrorGL() { return 0u; }
 void Finish() {}
+void DibujarPendiente() {}
 bool g_auditarEscena = false;
 int  g_auditDesyncs = 0;
 int  AuditarEstado() { return 0; }
@@ -839,19 +877,30 @@ static void PonerEstado(bool yaEnRecorte) {
 }
 
 // un arreglo de cliente al anillo: los vertices [desde, hasta). Devuelve el puntero en memoria lineal (o NULL)
-static const void* CopiarArreglo(const Arr& a, int desde, int hasta, int& pasoOut) {
-    const int elem = a.tam * Bytes(a.tipo);
+// En el anillo cada arreglo va empaquetado y lo que se declara de cada vertice ocupa el paso entero: lo de 3 bytes
+// (las normales de las mallas) va como 4 componentes, con la cuarta en cero (el shader no la lee). Con 3 bytes y paso
+// 4 el emulador dibujaba bien, pero en la consola el cubo salia sombreado como con las normales soldadas: la PICA de
+// verdad no parece saltear los bytes que no estan descriptos (picaGL tambien agrega relleno hasta completar el paso).
+// 'compsOut' = cuantas componentes declarar
+static const void* CopiarArreglo(const Arr& a, int desde, int hasta, int& pasoOut, int& compsOut) {
+    const int b = Bytes(a.tipo);
+    const int elem = a.tam * b;
     const int paso = a.paso ? a.paso : elem;
     const int n = hasta - desde;
     if (n <= 0 || !a.ptr) return NULL;
-    // al anillo empaquetado (sin el relleno del paso): la PICA lee 'elem' bytes por vertice
-    const int elemAlin = (elem + 1) & ~1;   // (los short y los float quedan alineados)
-    u8* dst = (u8*)AnilloPedir((u32)(elemAlin * n));
+    const int comps = (b == 1 && a.tam == 3) ? 4 : a.tam;
+    const int elemDst = comps * b;
+    u8* dst = (u8*)AnilloPedir((u32)(elemDst * n));
     if (!dst) return NULL;
     const u8* src = (const u8*)a.ptr + (size_t)desde * paso;
-    if (paso == elemAlin) memcpy(dst, src, (size_t)elemAlin * n);
-    else for (int i = 0; i < n; i++) memcpy(dst + (size_t)i * elemAlin, src + (size_t)i * paso, (size_t)elem);
-    pasoOut = elemAlin;
+    if (paso == elemDst && elem == elemDst) memcpy(dst, src, (size_t)elemDst * n);
+    else for (int i = 0; i < n; i++) {
+        u8* d = dst + (size_t)i * elemDst;
+        memcpy(d, src + (size_t)i * paso, (size_t)elem);
+        if (elemDst > elem) memset(d + elem, 0, (size_t)(elemDst - elem));
+    }
+    pasoOut = elemDst;
+    compsOut = comps;
     return dst;
 }
 // los atributos del draw: los cinco del shader en orden (posicion, normal, UV, color, UV de la unidad 1), cada uno
@@ -868,10 +917,10 @@ static bool PonerAtributos(int desde, int hasta) {
     for (int i = 0; i < 4; i++) {
         const Arr& a = *arr[i];
         if (a.on && a.ptr) {
-            int paso = 0;
-            const void* p = CopiarArreglo(a, desde, hasta, paso);
+            int paso = 0, comps = 0;
+            const void* p = CopiarArreglo(a, desde, hasta, paso, comps);
             if (!p) return false;
-            const int id = AttrInfo_AddLoader(ai, i, FormatoGPU(a.tipo), a.tam);
+            const int id = AttrInfo_AddLoader(ai, i, FormatoGPU(a.tipo), comps);
             BufInfo_Add(bi, p, paso, 1, (u64)id);
             if (i == 1 && a.tipo == TipoByte) esc[1] = 1.0f / 127.0f;
             if (i == 3 && a.tipo == TipoUByte) esc[3] = 1.0f / 255.0f;
@@ -885,10 +934,10 @@ static bool PonerAtributos(int desde, int hasta) {
     // la UV de la unidad 1: la propia (2 floats) o la misma de la unidad 0
     if (mezclaOn && mezclaTex && (mezclaUV || (aUV.on && aUV.ptr))) {
         Arr u1 = mezclaUV ? Arr{ true, 2, TipoFloat, 0, mezclaUV } : aUV;
-        int paso = 0;
-        const void* p = CopiarArreglo(u1, desde, hasta, paso);
+        int paso = 0, comps = 0;
+        const void* p = CopiarArreglo(u1, desde, hasta, paso, comps);
         if (!p) return false;
-        const int id = AttrInfo_AddLoader(ai, 4, FormatoGPU(u1.tipo), u1.tam);
+        const int id = AttrInfo_AddLoader(ai, 4, FormatoGPU(u1.tipo), comps);
         BufInfo_Add(bi, p, paso, 1, (u64)id);
     } else {
         AttrInfo_AddFixed(ai, 4);
@@ -935,6 +984,26 @@ static VertRecorte* gLote = NULL;          // (memoria comun: al anillo se copia
 static int gLoteN = 0;
 static EstadoDraw gLoteEstado;
 static std::vector<VertRecorte> gArmado;   // (donde se arman las lineas, los puntos y el clear)
+// (el vigilante: este draw, con el estado que quedo puesto. Lo armado en la CPU dice hasta donde llega en la pantalla;
+// la interfaz, con w = 1, sin dividir)
+static void Registrar(char tipo, int n, const VertRecorte* v) {
+    gRegTotal++;
+    if (gRegN >= kRegMax) return;
+    RegistroDraw& r = gReg[gRegN++];
+    r.tipo = tipo; r.n = n; r.mezcla = gPuesto.mezcla; r.zFunc = (int)gPuesto.zFunc; r.combiner = gPuesto.combiner;
+    r.maxNdc = -1.0f; r.minW = -1.0f;
+    if (!v) return;
+    float m = 0.0f, mw = 1e30f;
+    for (int i = 0; i < n; i++) {
+        const float w = v[i].w;
+        float ax = fabsf(v[i].x), ay = fabsf(v[i].y);
+        if (w != 1.0f) { const float inv = (w > 0.0f) ? 1.0f / w : 0.0f; ax *= inv; ay *= inv; }
+        if (ax > m) m = ax;
+        if (ay > m) m = ay;
+        if (w < mw) mw = w;
+    }
+    r.maxNdc = m; r.minW = mw;
+}
 // n vertices armados en la CPU a la GPU, en un draw propio con el estado que ya esta puesto
 static void DibujarRecorte(const VertRecorte* v, int n) {
     VertRecorte* d = (VertRecorte*)AnilloPedir((u32)(n * sizeof(VertRecorte)));
@@ -954,6 +1023,7 @@ static void DibujarRecorte(const VertRecorte* v, int n) {
     BufInfo_Add(bi, d, sizeof(VertRecorte), 3, 0x320);  // (los atributos 0, 2 y 3 entrelazados)
     PonerEscala(1.0f, 1.0f, 1.0f, 1.0f / 255.0f);
     C3D_DrawArrays(GPU_TRIANGLES, 0, n);
+    Registrar('R', n, v);
     g_statDrawTris++; g_statDcCat[gStatCat]++;
 }
 static void LoteVaciar() {
@@ -1037,6 +1107,29 @@ static void Recortar(float* a, const float* b) {   // la punta detras del plano 
     const float da = a[2] + a[3], db = b[2] + b[3], t = da / (da - db);
     for (int k = 0; k < 4; k++) a[k] = a[k] + (b[k] - a[k]) * t;
 }
+// EL MARGEN: lo armado en la CPU no pasa de 2 veces la pantalla para cada lado. La PICA recorta solo contra el plano
+// cercano: una linea que lo cruza (la grilla debajo de la camara, con el plano cercano a 0,01) llegaba con la punta a
+// miles de pantallas de distancia (|x/w| de mas de 3000: cientos de miles de pixeles). Afuera del margen no se ve nada
+static const float kBanda = 2.0f;
+// el tramo [a, b] (ya delante del plano cercano) recortado a |x| <= kBanda w, |y| <= kBanda w. false si queda afuera
+static bool RecortarBanda(float* a, float* b) {
+    float t0 = 0.0f, t1 = 1.0f;
+    for (int k = 0; k < 4; k++) {
+        const int eje = k >> 1;
+        const float s = (k & 1) ? -1.0f : 1.0f;   // (x <= kBanda w, x >= -kBanda w, lo mismo con y)
+        const float da = kBanda * a[3] - s * a[eje], db = kBanda * b[3] - s * b[eje];
+        if (da < 0.0f && db < 0.0f) return false;
+        if (da < 0.0f) { const float t = da / (da - db); if (t > t0) t0 = t; }
+        else if (db < 0.0f) { const float t = da / (da - db); if (t < t1) t1 = t; }
+    }
+    if (t0 > t1) return false;
+    if (t0 > 0.0f || t1 < 1.0f) {
+        float na[4], nb[4];
+        for (int k = 0; k < 4; k++) { na[k] = a[k] + (b[k] - a[k]) * t0; nb[k] = a[k] + (b[k] - a[k]) * t1; }
+        memcpy(a, na, sizeof(na)); memcpy(b, nb, sizeof(nb));
+    }
+    return true;
+}
 static void ArmarLineas(const int* idx, int n, bool tira, std::vector<VertRecorte>& v) {
     float PM[16]; Matrix4 m = curProj * curMV; memcpy(PM, m.m, sizeof(PM));
     const float hx = (lineWidth > 1.0f ? lineWidth : 1.0f) / (float)(vpActual[2] > 0 ? vpActual[2] : 320);
@@ -1049,6 +1142,7 @@ static void ArmarLineas(const int* idx, int n, bool tira, std::vector<VertRecort
         const bool fa = a[2] < -a[3], fb = b[2] < -b[3];
         if (fa && fb) continue;
         if (fa) Recortar(a, b); else if (fb) Recortar(b, a);
+        if (!RecortarBanda(a, b)) continue;
         float dx = b[0] / b[3] - a[0] / a[3], dy = b[1] / b[3] - a[1] / a[3];
         // (la direccion en pixeles, para que el ancho sea parejo en las dos direcciones)
         float px = dx / hx, py = dy / hy, l = sqrtf(px * px + py * py);
@@ -1067,6 +1161,7 @@ static void ArmarPuntos(const int* idx, int n, std::vector<VertRecorte>& v) {
         float p[4]; unsigned char c[4];
         TransformarAlRecorte(i, PM, p);
         if (p[3] <= 0.0f || p[2] < -p[3]) continue;
+        if (fabsf(p[0]) > kBanda * p[3] || fabsf(p[1]) > kBanda * p[3]) continue;   // (afuera del margen: no se ve)
         ColorDe(i, c);
         // (UV de 0 a 1 en las esquinas: los iconos son point sprites; la v de GL va de abajo a arriba)
         Esquina(v, p, -hx, hy, 0, 1, c); Esquina(v, p, -hx, -hy, 0, 0, c); Esquina(v, p, hx, -hy, 1, 0, c);
@@ -1097,6 +1192,7 @@ static void DibujarArray(GPU_Primitive_t prim, int primero, int n) {
     PonerEstado(false);
     if (!PonerAtributos(primero, primero + n)) return;
     C3D_DrawArrays(prim, 0, n);
+    Registrar('A', n, NULL);
     g_statDrawTris++; g_statIndices += n; g_statDcCat[gStatCat]++;
     if (cap_blend) g_statTrisBlend += n / 3; else g_statTrisOpacos += n / 3;
 }
@@ -1114,6 +1210,7 @@ template <typename T> static void DibujarIndices(GPU_Primitive_t prim, int n, co
     PonerEstado(false);
     if (!PonerAtributos(lo, hi + 1)) return;
     C3D_DrawElements(prim, n, C3D_UNSIGNED_SHORT, d);   // (los indices, relativos a lo)
+    Registrar('I', n, NULL);
     g_statDrawTris++; g_statIndices += n; g_statDcCat[gStatCat]++;
     if (cap_blend) g_statTrisBlend += n / 3; else g_statTrisOpacos += n / 3;
 }
@@ -1218,9 +1315,10 @@ static void LimpiarConRectangulo(int bits) {
 
 // ============================================================================
 //  LA SELECCION POR COLOR (Pick3D): ReadPixelsBegin abre una pasada aparte, en una superficie del tamano de la
-//  pantalla de abajo que no se ve; ReadPixelsRGBA la manda a la GPU, espera que termine y lee esos pixeles directo de
-//  la VRAM (la CPU la ve). Si habia un cuadro a medio dibujar, sigue despues como estaba. Fuera de una pasada abierta
-//  la lectura da negro (la pantalla real no se lee)
+//  pantalla de abajo que no se ve; ReadPixelsRGBA la manda a la GPU, la copia de la VRAM a memoria lineal con el motor
+//  de transferencias (el mismo que lleva cada cuadro a la pantalla) y lee ahi esos pixeles. La CPU no lee la VRAM
+//  directo: en el emulador andaba, en la consola de verdad no es seguro. Si habia un cuadro a medio dibujar, sigue
+//  despues como estaba. Fuera de una pasada abierta la lectura da negro (la pantalla real no se lee)
 // ============================================================================
 static C3D_RenderTarget* gTargetSel = NULL;
 static bool gSelActiva = false, gSelEnCuadro = false;
@@ -1233,7 +1331,7 @@ void ReadPixelsBegin(int, int, int, int) {
     gSelEnCuadro = gEnCuadro;
     if (gEnCuadro) LoteVaciar();
     else {
-        if (!C3D_FrameBegin(0)) return;   // (espera a que la GPU termine el cuadro anterior: su anillo queda libre)
+        EmpezarConEspera(0);   // (espera a que la GPU termine el cuadro anterior: su anillo queda libre)
         gEnCuadro = true;
     }
     gSelActiva = true;
@@ -1244,13 +1342,7 @@ void ReadPixelsBegin(int, int, int, int) {
     PonerViewport();
     PonerScissor();
 }
-// el pixel (x, y) de GL (y desde abajo) en el framebuffer de la PICA: girado como la pantalla (la fila de la memoria
-// es la columna de la pantalla), en bloques de 8x8 con los pixeles en orden Morton adentro
-static u32 IndiceFB(int x, int y) {
-    const u32 fila = (u32)x, col = (u32)y;
-    const u32 m = (col & 1) | ((fila & 1) << 1) | ((col & 2) << 1) | ((fila & 2) << 2) | ((col & 4) << 2) | ((fila & 4) << 3);
-    return ((fila >> 3) * (240 / 8) + (col >> 3)) * 64u + m;
-}
+static u8* gSelCopia = NULL;   // (la superficie copiada a memoria lineal: 240 x 320 RGBA8, sin bloques)
 void ReadPixelsRGBA(int x, int y, int w, int h, unsigned char* p) {
     if (!p || w <= 0 || h <= 0) return;
     if (!gSelActiva) { memset(p, 0, (size_t)w * h * 4); return; }
@@ -1262,29 +1354,38 @@ void ReadPixelsRGBA(int x, int y, int w, int h, unsigned char* p) {
     if (gTarget[0]) gTarget[0]->used = false;
     if (gTarget[1]) gTarget[1]->used = false;
     C3D_FrameEnd(GX_CMDLIST_FLUSH);
-    C3D_FrameBegin(0);   // (espera a que la GPU termine)
-    const u8* fb = (const u8*)gTargetSel->frameBuf.colorBuf;
+    // esperar a que la GPU termine (con el vigilante) y salir del cuadro: la copia sincronica va fuera de un cuadro
+    EmpezarConEspera(0);
+    C3D_FrameEnd(GX_CMDLIST_FLUSH);   // (vacio: no dibuja ni manda nada a las pantallas)
+    const u32 bytes = 240u * 320u * 4u;
+    if (!gSelCopia) gSelCopia = (u8*)linearAlloc(bytes);
+    if (gSelCopia) {
+        // de bloques a lineal, como la salida a la pantalla: la fila gx de la copia es la columna gx de la pantalla
+        // y adentro, de abajo hacia arriba
+        C3D_SyncDisplayTransfer((u32*)gTargetSel->frameBuf.colorBuf, GX_BUFFER_DIM(240, 320), (u32*)gSelCopia,
+                                GX_BUFFER_DIM(240, 320), DISPLAY_TRANSFER_FLAGS);
+        GSPGPU_InvalidateDataCache(gSelCopia, bytes);   // (lo que la CPU tuviera en cache de la copia anterior)
+    }
     for (int j = 0; j < h; j++)
         for (int i = 0; i < w; i++) {
             unsigned char* o = p + ((size_t)j * w + i) * 4;
             const int gx = x + i, gy = y + j;
-            if (gx < 0 || gx >= 320 || gy < 0 || gy >= 240) { o[0] = o[1] = o[2] = 0; o[3] = 255; continue; }
-            const u8* q = fb + IndiceFB(gx, gy) * 4;   // (RGBA8 guardado como A, B, G, R)
+            if (!gSelCopia || gx < 0 || gx >= 320 || gy < 0 || gy >= 240) { o[0] = o[1] = o[2] = 0; o[3] = 255; continue; }
+            const u8* q = gSelCopia + ((size_t)gx * 240 + (size_t)gy) * 4;   // (RGBA8 guardado como A, B, G, R)
             o[0] = q[3]; o[1] = q[2]; o[2] = q[1]; o[3] = q[0];
         }
     gSelActiva = false;
     gPantalla = gSelPantalla;
     if (gSelEnCuadro) {
+        // el cuadro que se estaba dibujando sigue (sus pantallas, con lo que ya tenian, salen al terminarlo)
+        EmpezarConEspera(0);
         if (gTarget[0]) gTarget[0]->used = usada0;
         if (gTarget[1]) gTarget[1]->used = usada1;
         C3D_FrameDrawOn(gTarget[gPantalla]);
         OlvidarVpSc();
         PonerViewport();
         PonerScissor();
-    } else {
-        C3D_FrameEnd(GX_CMDLIST_FLUSH);   // (vacio: no dibuja ni manda nada a las pantallas)
-        gEnCuadro = false;
-    }
+    } else gEnCuadro = false;
 }
 
 // ============================================================================

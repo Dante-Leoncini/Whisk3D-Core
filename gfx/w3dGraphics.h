@@ -502,6 +502,9 @@ namespace w3dEngine {
     extern StatsDeCuadro g_statCuadro;
     void StatsCuadro();
     void Finish();               // glFinish: drena el pipeline (medicion real de GPU en el bench)
+    // lo que el backend tenga juntado sin dibujar (el lote de la UI de GLES2 en la VideoCore IV) se dibuja YA: antes del
+    // swap y antes de tocar una textura o el framebuffer con GL crudo (los backends que no juntan no hacen nada)
+    void DibujarPendiente();
 
     // Backend ES2/WebGL: la app lo llama UNA vez tras crear el contexto GL para cargar las
     // funciones GL2.0 (getProc = SDL_GL_GetProcAddress) y compilar el shader. Solo lo define

@@ -20,7 +20,7 @@ INC="-I$CORE -I$CORE/base -I$CORE/gfx -I$CORE/io -I$CORE/thirdparty"
 
 echo "== 1/2  cada header, solo, en C++03 =="
 ok=0; mal=0
-for h in $(cd "$CORE" && find base gfx io objects math animation audio video -name '*.h' | sort); do
+for h in $(cd "$CORE" && find base gfx io objects math animation audio video net -name '*.h' | sort); do
     printf '#include "%s"\nint main(){return 0;}\n' "$h" > "$TMP/t.cpp"
     if g++ -std=c++03 -fsyntax-only $INC "$TMP/t.cpp" 2> "$TMP/e.txt"; then
         ok=$((ok+1))
