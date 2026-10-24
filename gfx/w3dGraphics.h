@@ -495,12 +495,18 @@ namespace w3dEngine {
         int llamadas[StatCatCount_];
         int total, draws, binds, estados, tris;
         unsigned cuadros;
-        StatsDeCuadro() : total(0), draws(0), binds(0), estados(0), tris(0), cuadros(0) {
+        // (con g_medirDraws, el backend de GLES2) cuanto tardo la CPU adentro de los draws y el mas lento: sus indices,
+        // los vertices que leyo y si eran de un VBO
+        float msDraws, msDrawMax;
+        int drawMaxIdx, drawMaxVerts, drawMaxVBO;
+        StatsDeCuadro() : total(0), draws(0), binds(0), estados(0), tris(0), cuadros(0), msDraws(0), msDrawMax(0),
+                          drawMaxIdx(0), drawMaxVerts(0), drawMaxVBO(0) {
             for (int i = 0; i < StatCatCount_; i++) llamadas[i] = 0;
         }
     };
     extern StatsDeCuadro g_statCuadro;
     void StatsCuadro();
+    extern bool g_medirDraws;   // medir el tiempo de cada draw (el medidor del juego compilado en modo debug)
     void Finish();               // glFinish: drena el pipeline (medicion real de GPU en el bench)
     // lo que el backend tenga juntado sin dibujar (el lote de la UI de GLES2 en la VideoCore IV) se dibuja YA: antes del
     // swap y antes de tocar una textura o el framebuffer con GL crudo (los backends que no juntan no hacen nada)

@@ -462,13 +462,12 @@ class Mesh : public Object {
         // CACHE CSR de pesos por CONTROL-POINT (no por render-vert): se arma UNA vez, no por frame. Un mesh de juego
         // duplica cada control-point en varios render-verts por seams de UV/normal/material (banana: 42840 render pero
         // solo 7186 CP = 6x). Los render-verts de un mismo CP comparten bind + pesos -> el MISMO skinning. Por eso el
-        // blend caro de matrices se hace 1 vez POR CP (skinCpMat) y se ESCALEA a los render-verts (6x menos matematica).
+        // blend caro de matrices se hace 1 vez POR CP (en registros, SkinPunto) y se ESCALEA a los render-verts.
         // Invalida via firma de topologia (skinFlatSig). vertCtrlPoint[render] -> CP da el mapeo al escalear.
         std::vector<int>    skinCpBone;   // indices de hueso (valores CSR, por CP)
         std::vector<float>  skinCpW;      // pesos 0..1 normalizados a suma 1 (CSR, paralelo a skinCpBone)
         std::vector<int>    skinCpOff;    // offset por control-point (size skinNCtrl+1)
         int                 skinNCtrl;    // cantidad de control-points (max vertCtrlPoint + 1)
-        std::vector<float>  skinCpMat;    // TEMP por-frame: matriz de skin MEZCLADA 4x3 (12 floats) por CP (reusado, sin realloc)
         unsigned            skinFlatSig;  // firma de la topologia con la que se armo el CSR (0 = sin armar)
         unsigned            skinGeomVersion;// se incrementa en CalcularBordes (regenerar geometria); entra en skinFlatSig
                                             // para invalidar el CSR si GenerarRender reindexa vertex[] con igual tamaño
@@ -498,6 +497,7 @@ class Mesh : public Object {
         unsigned     vboPoseSerial;    // poseSerial subido al VBO de pos/nor (se re-sube si cambia; capta posar/elegir clip
         unsigned     vboPoseSerialPrev;// en el mismo frame, donde vboSkinFrame no alcanzaba). Prev = el del render anterior.
         int          vboVertN, vboIdxN; // cantidades subidas (para no re-crear si no cambio el tamaño)
+        unsigned     vboIdxGeomVer; // skinGeomVersion con el que se subio el IBO (lo usa tambien el dibujo de client arrays)
         unsigned     vboPvsVer;    // RETIRADO (P3): el IBO ya no se re-sube por cambio de sector; los indices
                                    // del subconjunto van de CLIENTE (DrawTrianglesClientIdx). Queda declarado
                                    // para no tocar el layout; nadie lo consulta.

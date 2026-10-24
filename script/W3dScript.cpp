@@ -26,6 +26,9 @@
 #include <stdio.h>   // snprintf: formatear el default numerico / el dump de compartido()
 #include <string.h>
 #include <time.h>    // time(): fuente que VARIA entre ejecuciones para la semilla del random
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>   // tactil(): el navegador dice si la pantalla se toca
+#endif
 
 extern "C" {
 #include "lua.h"
@@ -225,7 +228,24 @@ bool W3dScriptBotonPadLeer(const char* nombre) {
     return it != gBotonesPad.end() && it->second;
 }
 void W3dScriptToque(float x, float y, bool activo) { gDedoX[0]=x; gDedoY[0]=y; gDedoAct[0]=activo; } // dedo 0 (compat)
-void W3dScriptDedo(int i, float x, float y, bool activo) { if (i>=0 && i<W3D_MAXDEDOS){ gDedoX[i]=x; gDedoY[i]=y; gDedoAct[i]=activo; } }
+// TACTIL: la pantalla se toca. Lo sabe la plataforma (Android; el navegador de un telefono) o se aprende con el primer
+// dedo: aca solo llegan dedos de verdad (el mouse va por W3dScriptToque)
+static bool gTactil = false;
+void W3dScriptDedo(int i, float x, float y, bool activo) {
+    if (i>=0 && i<W3D_MAXDEDOS){ gDedoX[i]=x; gDedoY[i]=y; gDedoAct[i]=activo; }
+    if (activo) gTactil = true;
+}
+static bool TactilDePlataforma() {
+#if defined(__ANDROID__)
+    return true;
+#elif defined(__EMSCRIPTEN__)
+    static int si = -1;
+    if (si < 0) si = EM_ASM_INT({ return (navigator.maxTouchPoints > 0 || ('ontouchstart' in window)) ? 1 : 0; });
+    return si != 0;
+#else
+    return false;
+#endif
+}
 // RATON: posicion del mouse en el lienzo del juego (px, centro 0,0) SIN necesidad de clic -> mouse-over
 // de los menus. 'dentro' = el mouse esta sobre la pantalla del juego. El clic llega por dedo(1)/toque().
 static float gRatonX = 0, gRatonY = 0; static bool gRatonDentro = false;
@@ -305,6 +325,7 @@ Object* (*W3dInstanciarPrefabHook)(const char* nombre, const float* posMotor) = 
 // ...y el de los prefabs del proyecto (io/Prefabs) + quien corre la partida (ver W3dScript.h)
 W3dPrefabInstanciarFn W3dPrefabInstanciarHook = 0;
 Object* W3dPrefabInstanciarDuenio = 0;
+Object* W3dPrefabInstanciarPadre = 0;
 // ...y los de los scripts de una LIBRERIA externa (ver W3dScript.h)
 std::string (*W3dScriptLibreriaHook)(Object* duenio) = 0;
 std::string (*W3dScriptRutaSueltaHook)(const std::string& libreria, const std::string& ruta) = 0;
@@ -395,8 +416,11 @@ static int LInstanciar(lua_State* L) {
         lua_getfield(L, LUA_REGISTRYINDEX, "w3d_duenio");
         W3dPrefabInstanciarDuenio = lua_islightuserdata(L, -1) ? (Object*)lua_touserdata(L, -1) : 0;
         lua_pop(L, 1);
+        // (el padre, si vino: un objeto vivo; otra cosa = la raiz activa)
+        W3dPrefabInstanciarPadre = (lua_gettop(L) >= 6) ? W3dScriptParamObjeto((void*)L, 6) : 0;
         o = W3dPrefabInstanciarHook(n, pp, rotY);
         W3dPrefabInstanciarDuenio = 0;
+        W3dPrefabInstanciarPadre = 0;
         if (o && gObjetoNuevoFn) gObjetoNuevoFn(o);   // sus scripts, sus cuerpos: los arranca la partida
     }
     if (!o && W3dInstanciarPrefabHook) o = W3dInstanciarPrefabHook(n, pp);
@@ -826,6 +850,26 @@ static int LGatillo(lua_State* L) {
     return 1;
 }
 // toque() -> x, y, tocando: el dedo/mouse sobre el juego (px del lienzo, centro 0,0)
+// ---- inclinacion() y vibrar() (ver W3dScript.h) ----
+static float gIncl[3] = { 0.0f, 0.0f, 0.0f };
+static bool gInclHay = false;
+void W3dScriptInclinacion(float x, float y, float z) { gIncl[0] = x; gIncl[1] = y; gIncl[2] = z; gInclHay = true; }
+static int LInclinacion(lua_State* L) {
+    if (!gInclHay) { lua_pushnil(L); return 1; }
+    lua_pushnumber(L, gIncl[0]); lua_pushnumber(L, gIncl[1]); lua_pushnumber(L, gIncl[2]);
+    return 3;
+}
+void (*W3dScriptVibrarHook)(int ms, float fuerza) = 0;
+void (*W3dScriptMandosVibrarHook)(int ms, float fuerza) = 0;
+static int LVibrar(lua_State* L) {
+    const int ms = (int)luaL_optinteger(L, 1, 40);
+    float f = (float)luaL_optnumber(L, 2, 1.0);
+    f = f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
+    if (ms <= 0) return 0;
+    if (W3dScriptVibrarHook) W3dScriptVibrarHook(ms, f);
+    else if (W3dScriptMandosVibrarHook) W3dScriptMandosVibrarHook(ms, f);
+    return 0;
+}
 static int LToque(lua_State* L) {
     lua_pushnumber(L, gDedoX[0]);
     lua_pushnumber(L, gDedoY[0]);
@@ -846,6 +890,12 @@ static int LDedo(lua_State* L) {
     lua_pushnumber(L, gDedoY[i]);
     lua_pushboolean(L, gDedoAct[i]);
     return 3;
+}
+// tactil(): la pantalla se toca (un telefono, una tableta, el navegador de un telefono) o ya se la toco: el juego
+// puede mostrar controles en pantalla
+static int LTactil(lua_State* L) {
+    lua_pushboolean(L, gTactil || TactilDePlataforma());
+    return 1;
 }
 // ratonRel() -> dx, dy: movimiento del mouse capturado (px) desde la ultima llamada; lo consume (queda en 0,0)
 static int LRatonRel(lua_State* L) {
@@ -1977,7 +2027,10 @@ static void RegistrarAPI(lua_State* L) {
     lua_pushcfunction(L, LStick);  lua_setglobal(L, "stick");
     lua_pushcfunction(L, LGatillo); lua_setglobal(L, "gatillo");
     lua_pushcfunction(L, LToque);  lua_setglobal(L, "toque");
+    lua_pushcfunction(L, LInclinacion); lua_setglobal(L, "inclinacion");
+    lua_pushcfunction(L, LVibrar); lua_setglobal(L, "vibrar");
     lua_pushcfunction(L, LDedo);   lua_setglobal(L, "dedo");
+    lua_pushcfunction(L, LTactil); lua_setglobal(L, "tactil");
     lua_pushcfunction(L, LRaton);  lua_setglobal(L, "raton");
     lua_pushcfunction(L, LRatonRel); lua_setglobal(L, "ratonRel");
     lua_pushcfunction(L, LCapturarRaton); lua_setglobal(L, "capturarRaton");

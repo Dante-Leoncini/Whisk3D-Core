@@ -47,10 +47,11 @@ class Object;
 extern Object* (*W3dInstanciarPrefabHook)(const char* nombre, const float* posMotor);
 
 // ---- PREFABS DEL PROYECTO (instanciar / destruir de lua; ver main/io/Prefabs.h) ----------------
-//   instanciar("Enemigo", x, y, z [, rotY])  -> la INSTANCIA nueva (sus hijos ya generados) o nil.
+//   instanciar("Enemigo", x, y, z [, rotY [, padre]])  -> la INSTANCIA nueva (sus hijos ya generados) o nil.
 //       Primero se busca un prefab del proyecto (este hook, lo instala io/Prefabs en el editor y en
 //       el juego compilado); si no hay, el de la Biblioteca del formato texto (el hook de arriba).
-//       pos = {x,y,z} del motor (NULL = el origen); rotY en grados.
+//       pos = {x,y,z} del motor (NULL = el origen); rotY en grados. Con 'padre' la instancia cuelga de ese objeto
+//       (pos y rotY relativos a el): una rutina con el paso "Dibujar hijos" la dibuja con su estado.
 //   destruir(obj)  -> DIFERIDO al final del frame (W3dScriptFinFrame): nada se libera en medio de
 //       un actualizar() (el objeto puede ser el mismo que esta corriendo). Devuelve true si quedo pedido.
 typedef Object* (*W3dPrefabInstanciarFn)(const char* nombre, const float* pos, float rotYGrados);
@@ -58,6 +59,8 @@ extern W3dPrefabInstanciarFn W3dPrefabInstanciarHook;
 // mientras corre el hook de arriba: el DUENO del script que llamo a instanciar() (NULL fuera de el). Un script de
 // una LIBRERIA externa (su dueno lo genero un proxy de ella) nombra primero los prefabs de SU libreria
 extern Object* W3dPrefabInstanciarDuenio;
+// mientras corre el hook de arriba: el PADRE que pidio instanciar() (su 6to argumento; NULL = la raiz activa)
+extern Object* W3dPrefabInstanciarPadre;
 
 // ---- STREAMING (main/io/Streaming.h): cargar(obj) / descargar(obj) / cargaAuto(obj) / cargado(obj) -----------------
 // 'pedido': 1 = cargar (la FIJA cargada: la distancia deja de decidir), -1 = descargar (la fija descargada), 2 = volver a
@@ -220,6 +223,15 @@ bool W3dScriptBotonPadLeer(const char* nombre);
 // TOQUE/arrastre (dedo o mouse) en coordenadas del LIENZO del juego (px, centro
 // en 0,0 como posPx). activo=false al soltar. Lua: toque() -> x, y, tocando
 void W3dScriptToque(float x, float y, bool activo);      // dedo 0 (compat)
+// la INCLINACION del equipo (el acelerometro, en g) en los ejes de la PANTALLA como se la ve (la plataforma ya la giro):
+// lua: inclinacion() -> x, y, z. x = cuanto esta girada a la derecha, como un volante (sen del angulo); y = 1 parada y
+// derecha; z = 1 acostada boca arriba. Sin llamar nunca a esto (sin sensor) inclinacion() da nil
+void W3dScriptInclinacion(float x, float y, float z);
+// vibrar(ms [, fuerza 0..1]) de lua: el vibrador del EQUIPO (base/W3dVibrar.cpp lo instala solo donde se compila: el
+// telefono, la web; respeta la opcion "vibracion" y tambien hace vibrar los mandos) y el de los MANDOS
+// (SDL_GameControllerRumble: lo pone quien los abre, el editor o el juego compilado). Sin el primero el bind usa el segundo
+extern void (*W3dScriptVibrarHook)(int ms, float fuerza);
+extern void (*W3dScriptMandosVibrarHook)(int ms, float fuerza);
 void W3dScriptDedo(int i, float x, float y, bool activo); // multi-touch: dedo i (0-based)
 void W3dScriptRaton(float x, float y, bool dentro);       // mouse-over (posicion sin clic)
 void W3dScriptRatonRel(float dx, float dy);               // mouse CAPTURADO (PC, juego estilo FPS): acumula el delta en px para ratonRel() de lua

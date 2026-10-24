@@ -725,6 +725,7 @@ void StatRaw(int n) { g_statLlamadas[gStatCat] += n; }
 // el CUADRO: lo que se llamo desde el cierre anterior, por categoria, y los demas contadores como diferencia (no se
 // ponen en 0: los que miden por diferencia -el bench, el perfil de las rutinas- siguen andando)
 StatsDeCuadro g_statCuadro;
+bool g_medirDraws = false;   // (solo el backend de GLES2 mide los draws)
 static int gCuadroDraws0 = 0, gCuadroBinds0 = 0, gCuadroEstados0 = 0, gCuadroIdx0 = 0;
 void StatsCuadro() {
     StatsDeCuadro& c = g_statCuadro;
@@ -1070,6 +1071,9 @@ void ReadPixelsRGBA(int x, int y, int w, int h, unsigned char* p) {
     W3D_GLC(glReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, p));
 }
 #endif
+// (GL de escritorio, GLES 1.1 y GLdc copian la pantalla como dice GL: la fila 0 es la de abajo)
+bool CopiaPantallaDadaVuelta() { return false; }
+int CopiaPantallaFila(int y, int) { return y; }
 void Color4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a) {
     gColKnown = false;   // otra precision: el cache de Color4f deja de valer
     if (gCapOn[ColorMaterial]) { gMatKnown[MatAmbient] = false; gMatKnown[MatDiffuse] = false; }

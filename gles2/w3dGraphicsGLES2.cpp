@@ -27,6 +27,11 @@
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>   // getenv (W3D_GLES2_POR_DRAW)
+#include <time.h>     // clock_gettime (g_medirDraws)
+#ifdef __ANDROID__
+#include <dlfcn.h>    // el alto de la ventana por EGL (CopiaPantallaFila)
+#endif
 
 #ifdef __EMSCRIPTEN__
     #include <GLES2/gl2.h>
@@ -151,6 +156,9 @@ namespace w3dEngine {
 // dibuja. Aca no hay cache de estado: un draw cuesta ~45 llamadas (uniforms, atributos, programa)
 int g_statLlamadas[StatCatCount_] = { 0 };
 static int gStatCat = StatCatEditor;
+// (g_medirDraws, ver StatsCuadro) cuanto tarda cada draw: se mide entero con un MedirDraw al principio
+struct MedirDraw { double t0; MedirDraw(); ~MedirDraw(); };
+static int gUltimoIdx = 0, gUltimoVerts = 0, gUltimoVBO = 0;   // (los del draw en curso)
 // la TRAZA (medir), misma que el backend GLES 1.1: con g_trazaGL cada llamada suma en su texto ("glBindTexture(...)")
 // y TrazaGLVer la imprime ordenada; con g_trazaGLSec ademas sale cada llamada en orden, con su categoria
 bool g_trazaGL = false;
@@ -289,7 +297,9 @@ static const char* VS =
 "#ifdef W3D_SPRITE\n"
 "  vCentro=(gl_Position.xy/gl_Position.w*0.5+0.5)*uViewport.zw+uViewport.xy; vTam=uPointSize;\n"
 "#endif\n"
+"#if !defined(W3D_ESPECIAL) || defined(W3D_PUNTOS)\n"   // (el tamanio del punto, solo dibujando puntos)
 "  gl_PointSize=uPointSize;\n"
+"#endif\n"
 "#ifdef W3D_CLIP\n"
 "  vP=eye.xyz;\n"
 "#endif\n"
@@ -310,7 +320,11 @@ static const char* VS =
 "    uv=vec4(r.x/m+0.5,r.y/m+0.5,0.0,1.0);\n"
 "  }\n"
 "#endif\n"
+"#if defined(W3D_ESPECIAL) && !defined(W3D_TEXM)\n"   // (la matriz de textura es la identidad)
+"  vT=uv.xy;\n"
+"#else\n"
 "  vec4 t=uTexM*uv; vT=t.xy/t.w;\n"
+"#endif\n"
 "#endif\n"
 "  vec4 c=aCol;\n"
 "#ifdef W3D_LUZ\n"
@@ -379,7 +393,11 @@ static const char* FS =
 "#endif\n"
 "  vec4 col = vC;\n"   // sin textura: el color primario (la luz, o el color del vertice)
 "#ifdef W3D_TEX\n"
+"#ifdef W3D_ESPECIAL\n"   // (con un programa por draw, W3D_TEX ya es "hay textura")
+"  {\n"
+"#else\n"
 "  if(uUseTex==1){\n"
+"#endif\n"
 "    vec4 tex;\n"
 "#ifdef W3D_BLUR\n"
 "    if(uBlurY > 0.0){\n"                       // 9 muestras a lo largo de V (motion blur)
@@ -401,27 +419,55 @@ static const char* FS =
 "      tex.a = texture2D(uTex, vec2(uv.x, uv.y - 0.5)).r;\n"  // la mascara, media textura mas abajo
 "    }\n"
 "#endif\n"
+"#if defined(W3D_ENV)\n"   // (el modo, constante del programa)
+"#if W3D_ENV==1\n    col=tex;\n"
+"#elif W3D_ENV==2\n    col=vec4(vec3(clamp(dot(tex.rgb*2.0-1.0,vC.rgb*2.0-1.0),0.0,1.0)),tex.a*vC.a);\n"
+"#elif W3D_ENV==3\n    col=vec4(vC.rgb,tex.a*vC.a);\n"
+"#else\n    col=vC*tex;\n#endif\n"
+"#else\n"
 "    if(uEnv==1) col=tex;\n"                                                         // GL_REPLACE
 "    else if(uEnv==2) col=vec4(vec3(clamp(dot(tex.rgb*2.0-1.0,vC.rgb*2.0-1.0),0.0,1.0)),tex.a*vC.a);\n" // GL_DOT3_RGB
 "    else if(uEnv==3) col=vec4(vC.rgb,tex.a*vC.a);\n"                              // solo alfa (por el del color)
 "    else col=vC*tex;\n"                                                            // GL_MODULATE
+"#endif\n"
 "  }\n"
 "#endif\n"
 "#ifdef W3D_MEZCLA\n"
+"#ifdef W3D_MEZCLA_MODO\n"
+"  { vec4 b=texture2D(uTex1,vT1);\n"
+"#if W3D_MEZCLA_MODO==0\n    col.rgb=mix(col.rgb,b.rgb,uMezclaK);\n"
+"#elif W3D_MEZCLA_MODO==3\n    col.rgb=max(col.rgb-b.rgb,0.0);\n"
+"#elif W3D_MEZCLA_MODO==2\n    col.rgb=min(col.rgb*b.rgb*2.0,1.0);\n"
+"#else\n    col.rgb=min(col.rgb*b.rgb,1.0);\n#endif\n"
+"  }\n"
+"#else\n"
 "  if(uMezcla>=0){ vec4 b=texture2D(uTex1,vT1);\n"   // la unidad 1 sobre lo que salio de la 0 (el alfa no cambia)
 "    if(uMezcla==0) col.rgb=mix(col.rgb,b.rgb,uMezclaK);\n"
 "    else if(uMezcla==3) col.rgb=max(col.rgb-b.rgb,0.0);\n"
 "    else col.rgb=min(col.rgb*b.rgb*((uMezcla==2)?2.0:1.0),1.0); }\n"
 "#endif\n"
+"#endif\n"
 "#ifdef W3D_NIEBLA\n"
+"#ifdef W3D_NIEBLA_MODO\n"
+"  { float f;\n"
+"#if W3D_NIEBLA_MODO==1\n    f=exp(-uFogDens*vFogZ);\n"
+"#elif W3D_NIEBLA_MODO==2\n    float e=uFogDens*vFogZ; f=exp(-e*e);\n"
+"#else\n    f=(uFogEnd-vFogZ)/(uFogEnd-uFogStart);\n#endif\n"
+"    col.rgb=mix(uFogColor.rgb,col.rgb,clamp(f,0.0,1.0)); }\n"
+"#else\n"
 "  if(uFogOn==1){ float f;\n"
 "    if(uFogModo==1) f=exp(-uFogDens*vFogZ);\n"                                   // GL_EXP
 "    else if(uFogModo==2){ float e=uFogDens*vFogZ; f=exp(-e*e); }\n"            // GL_EXP2
 "    else f=(uFogEnd-vFogZ)/(uFogEnd-uFogStart);\n"                              // GL_LINEAR
 "    col.rgb=mix(uFogColor.rgb,col.rgb,clamp(f,0.0,1.0)); }\n"
 "#endif\n"
+"#endif\n"
 "#ifdef W3D_DESCARTE\n"
+"#ifdef W3D_ESPECIAL\n"
+"  if(col.a < uAlphaRef) discard;\n"
+"#else\n"
 "  if(uAlphaRef > 0.0 && col.a < uAlphaRef) discard;\n"   // no pinta NI escribe z-buffer
+"#endif\n"
 "#endif\n"
 "  gl_FragColor=col;\n"
 "}\n";
@@ -528,11 +574,27 @@ static bool porDraw = false;    // un programa por draw (el entero no entra en l
 // del siguiente (los rotulos "X" "Y" "Z" de Properties salian "X" "Z" "Z"), y ademas cuesta mas
 static bool sinVBO = false;
 static unsigned verLuces = 1;   // sube cada vez que cambian las luces
+// (W3D_PRUEBA_RELLENO=1, para medir: cada draw y cada limpieza solo en el pixel de abajo a la izquierda. La GPU casi no
+// pinta y lo que queda es la geometria, la CPU y el swap: separa lo que cuestan los pixeles)
+static bool sinRelleno = false;
+static void SoloUnPixel(){ glEnable(GL_SCISSOR_TEST); glScissor(0,0,1,1); }
 
 // los #define de un programa: sus funciones y LUCES = LUZ(0) LUZ(1) ... con sus luces
 static void DefsPrograma(Clave clave, char* d, int tam){
     int n = 0;
     for(int b=0;b<PLuces;b++) if(clave&(1ull<<b)) n += snprintf(d+n, tam-n, "#define %s\n", kDefFuncion[b]);
+    // UN PROGRAMA POR DRAW: los modos que el programa entero elige con uniforms van como constantes (ver ElegirPrograma).
+    // El compilador de la VideoCore IV no saltea las ramas de un if por uniform: hacia las cuentas de todas (la niebla
+    // con dos exp por pixel aunque fuera lineal). Medido en el Galaxy Ace: ~13 ms por cuadro de la GPU son los pixeles
+    const Clave e = clave >> PEstado;
+    if(e){
+        n += snprintf(d+n, tam-n, "#define W3D_ESPECIAL\n");
+        if((e & 3) == 0) n += snprintf(d+n, tam-n, "#define W3D_PUNTOS\n");
+        if(clave & PTex){ n += snprintf(d+n, tam-n, "#define W3D_ENV %d\n", (int)((e >> 31) & 3));
+                          if((e >> 33) & 1) n += snprintf(d+n, tam-n, "#define W3D_TEXM\n"); }
+        if(clave & PNiebla) n += snprintf(d+n, tam-n, "#define W3D_NIEBLA_MODO %d\n", (int)((e >> 34) & 3));
+        if(clave & PMezcla) n += snprintf(d+n, tam-n, "#define W3D_MEZCLA_MODO %d\n", (int)((e >> 36) & 3));
+    }
     n += snprintf(d+n, tam-n, "#define LUCES");
     for(int i=0;i<(int)((clave>>PLuces)&15);i++) n += snprintf(d+n, tam-n, " LUZ(%d)", i);
     snprintf(d+n, tam-n, "\n");
@@ -602,14 +664,106 @@ static bool entra(GLuint p){
     AttrOlvidar();
     return si;
 }
+// LA COPIA DE LA PANTALLA, DADA VUELTA? GL copia un rectangulo de la pantalla a una textura (glCopyTexSubImage2D: las
+// capturas de los juegos) con la fila de ABAJO en la fila 0, y el que la muestra la da vuelta con las UV. En el Galaxy
+// Ace (VideoCore IV, Android 2.3) el fundido de los cortes salia patas arriba. Se prueba una vez al armar el backend:
+// abajo a la izquierda dos pixeles (el de abajo rojo, el de arriba azul) y arriba dos mas (verde y amarillo), copiados
+// los dos de abajo a una textura de 2x2 que se lee con un FBO. Si la fila 0 sale azul, el driver la copio al reves y las
+// UV de la captura se dan vuelta (CopiaPantallaDadaVuelta). Si sale amarillo (la de mas arriba), el driver cuenta las
+// filas DESDE ARRIBA (el Ace: "fila 0 amarillo, fila 1 verde"): copia al reves y de otro lugar, asi que ademas se le
+// pide la fila espejada (CopiaPantallaFila, con el alto de la ventana). En la PC no se prueba (sin FBO sin extensiones)
+static bool copiaDadaVuelta = false, copiaDesdeArriba = false;
+#if defined(__ANDROID__)
+// el alto de la ventana (la superficie de EGL), para la copia de un driver que cuenta las filas desde arriba. Por dlsym:
+// el editor y los juegos no linkean libEGL (la abre SDL)
+static int AltoVentana(){
+    typedef void* (*FnDisplay)();
+    typedef void* (*FnSuperficie)(int);
+    typedef unsigned (*FnConsultar)(void*, void*, int, int*);
+    static FnDisplay display = 0; static FnSuperficie superficie = 0; static FnConsultar consultar = 0;
+    static bool buscado = false;
+    if(!buscado){
+        buscado = true;
+        void* lib = dlopen("libEGL.so", RTLD_NOW);
+        if(lib){
+            display = (FnDisplay)dlsym(lib, "eglGetCurrentDisplay");
+            superficie = (FnSuperficie)dlsym(lib, "eglGetCurrentSurface");
+            consultar = (FnConsultar)dlsym(lib, "eglQuerySurface");
+        }
+    }
+    int alto = 0;
+    if(display && superficie && consultar && consultar(display(), superficie(0x3059 /*EGL_DRAW*/), 0x3056 /*EGL_HEIGHT*/,
+                                                       &alto)) return alto;
+    return 0;
+}
+#endif
+#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+static const char* ColorDe(const unsigned char* p){
+    const bool r = p[0] > 128, g = p[1] > 128, b = p[2] > 128;
+    return (r && !g && !b) ? "rojo" : (!r && !g && b) ? "azul" : (!r && g && !b) ? "verde" : (r && g && !b) ? "amarillo"
+                                                                                                        : "otro";
+}
+static void ProbarCopiaDePantalla(){
+    GLint caja[4], vp[4]; W3D_GLC(glGetIntegerv(GL_SCISSOR_BOX,caja)); W3D_GLC(glGetIntegerv(GL_VIEWPORT,vp));
+    const GLboolean recorte = glIsEnabled(GL_SCISSOR_TEST);
+    GLfloat fondo[4]; W3D_GLC(glGetFloatv(GL_COLOR_CLEAR_VALUE,fondo));
+    const int alto = vp[3] > 4 ? vp[1] + vp[3] : 4;   // (al empezar, el viewport es la ventana)
+    static const struct { int y; float r, g, b; } kPintar[4] = {
+        {0, 1,0,0}, {1, 0,0,1}, {-2, 0,1,0}, {-1, 1,1,0} };   // (negativos: desde arriba)
+    W3D_GLC(glBindFramebuffer(GL_FRAMEBUFFER,0));
+    W3D_GLC(glEnable(GL_SCISSOR_TEST));
+    for(int i=0;i<4;i++){
+        W3D_GLC(glScissor(0,kPintar[i].y >= 0 ? kPintar[i].y : alto + kPintar[i].y,1,1));
+        W3D_GLC(glClearColor(kPintar[i].r,kPintar[i].g,kPintar[i].b,1)); W3D_GLC(glClear(GL_COLOR_BUFFER_BIT));
+    }
+    unsigned char lectura[4] = {0,0,0,0};
+    W3D_GLC(glReadPixels(0,0,1,1,GL_RGBA,GL_UNSIGNED_BYTE,lectura));
+    GLuint t = 0, f = 0;
+    W3D_GLC(glGenTextures(1,&t)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,t));
+    W3D_GLC(glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,2,2,0,GL_RGB,GL_UNSIGNED_SHORT_5_6_5,NULL));
+    W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST));
+    W3D_GLC(glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST));
+    W3D_GLC(glCopyTexSubImage2D(GL_TEXTURE_2D,0,0,0,0,0,1,2));
+    W3D_GLC(glGenFramebuffers(1,&f)); W3D_GLC(glBindFramebuffer(GL_FRAMEBUFFER,f));
+    W3D_GLC(glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,t,0));
+    unsigned char copia[8] = {0,0,0,0, 0,0,0,0};
+    const bool fbo = glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE;
+    if(fbo) W3D_GLC(glReadPixels(0,0,1,2,GL_RGBA,GL_UNSIGNED_BYTE,copia));
+    W3D_GLC(glBindFramebuffer(GL_FRAMEBUFFER,0)); W3D_GLC(glDeleteFramebuffers(1,&f));
+    W3D_GLC(glDeleteTextures(1,&t)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,boundTex));
+    W3D_GLC(glScissor(caja[0],caja[1],caja[2],caja[3]));
+    if(!recorte) W3D_GLC(glDisable(GL_SCISSOR_TEST));
+    W3D_GLC(glClearColor(fondo[0],fondo[1],fondo[2],fondo[3]));
+    for(int i=0;i<8 && glGetError()!=GL_NO_ERROR;i++){}
+    if(!fbo){ w3dLogf("[w3dGLES2] la copia de la pantalla: sin FBO para probarla (se supone bien)"); return; }
+    const char* c0 = ColorDe(copia); const char* c1 = ColorDe(copia + 4);
+    copiaDesdeArriba = strcmp(c0,"amarillo")==0;
+    copiaDadaVuelta = copiaDesdeArriba || strcmp(c0,"azul")==0;
+    w3dLogf("[w3dGLES2] la copia de la pantalla: fila 0 %s, fila 1 %s (%s); la lectura de abajo: %s", c0, c1,
+            copiaDesdeArriba ? "CUENTA LAS FILAS DESDE ARRIBA: se le pide la espejada y las UV se dan vuelta" :
+            copiaDadaVuelta ? "DADA VUELTA: las UV de las capturas se dan vuelta" : "bien", ColorDe(lectura));
+}
+#endif
+bool CopiaPantallaDadaVuelta(){ return copiaDadaVuelta; }
+int CopiaPantallaFila(int y, int h){
+#if defined(__ANDROID__)
+    if(copiaDesdeArriba){ const int alto = AltoVentana(); if(alto > 0) return alto - y - h; }
+#endif
+    (void)h;
+    return y;
+}
+
 static void buildProgram(){
     W3D_GLC(glGenBuffers(1,&vboP)); W3D_GLC(glGenBuffers(1,&vboN)); W3D_GLC(glGenBuffers(1,&vboT)); W3D_GLC(glGenBuffers(1,&vboC));
     W3D_GLC(glGenBuffers(1,&vboT1)); W3D_GLC(glGenBuffers(1,&ibo));
     // (de nuevo si el contexto GL se perdio y se volvio a armar: lo de antes ya no existe)
     progUso = 0; porDraw = false; sinVBO = false;
+    { const char* r = getenv("W3D_PRUEBA_RELLENO"); sinRelleno = r && r[0] == '1'; }
     ArmarPrograma(programas[0], (Clave)(PTodo | (LucesMax << PLuces)));
     nProgramas = 1;
-    if(entra(programas[0].id)){
+    // (W3D_GLES2_POR_DRAW=1: el camino de la VideoCore IV en cualquier GPU, para probarlo en la PC)
+    const char* forzar = getenv("W3D_GLES2_POR_DRAW");
+    if(!(forzar && forzar[0] == '1') && entra(programas[0].id)){
         UsarPrograma(programas[0]);
     } else {
         // (y no siempre: con los formatos de los atributos y el blending el driver le agrega instrucciones, y uno que
@@ -620,6 +774,9 @@ static void buildProgram(){
         porDraw = true;
         sinVBO = true;
     }
+#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+    ProbarCopiaDePantalla();
+#endif
     LucesDeFabrica();
     ready=true;
 }
@@ -691,7 +848,7 @@ void Perspective(float fovy,float aspect,float n,float f){ cur() = cur() * mPers
 // ============================================================================
 void ClearColor(float r,float g,float b,float a){ W3D_GLC(glClearColor(r,g,b,a)); }
 void Clear(int bits){ GLbitfield m=0; if(bits&ColorBuffer) m|=GL_COLOR_BUFFER_BIT; if(bits&DepthBuffer) m|=GL_DEPTH_BUFFER_BIT;
-                      if(bits&StencilBuffer) m|=GL_STENCIL_BUFFER_BIT; W3D_GLC(glClear(m)); }
+                      if(bits&StencilBuffer) m|=GL_STENCIL_BUFFER_BIT; if(sinRelleno) SoloUnPixel(); W3D_GLC(glClear(m)); }
 
 // ---- planos de recorte: el pipeline fijo los hace en hardware (GL_CLIP_PLANEi);
 //      aca es un discard en el shader. La ecuacion llega en el espacio de la
@@ -756,13 +913,8 @@ void LineWidth(float px){ if(porDraw && lineWidthGL==px) return; W3D_GLC(glLineW
 void FrontFace(bool ccw){ if(porDraw && frontFaceGL==(ccw?1:0)) return; W3D_GLC(glFrontFace(ccw?GL_CCW:GL_CW)); frontFaceGL=ccw?1:0; }
 void CullCarasFrontales(bool on){ W3D_GLC(glCullFace(on?GL_FRONT:GL_BACK)); }
 void PolygonOffset(float factor,float units){ W3D_GLC(glPolygonOffset(factor,units)); }
-void DepthRange(float n,float f){
-#if defined(__EMSCRIPTEN__) || defined(__ANDROID__)
-    W3D_GLC(glDepthRangef(n,f));
-#else
-    W3D_GLC(glDepthRange(n,f));
-#endif
-}
+static void AjustarProyeccion(float sesgo, float n, float f);
+void DepthRange(float n,float f){ AjustarProyeccion(-1e30f, n, f); }   // (en la proyeccion: ver AjustarProyeccion)
 void ReadPixelsBegin(int,int,int,int){}   // (lee el framebuffer de verdad)
 void ReadPixelsRGBA(int x,int y,int w,int h,unsigned char* px){ W3D_GLC(glReadPixels(x,y,w,h,GL_RGBA,GL_UNSIGNED_BYTE,px)); }
 void BlurY(float amt){ blurY = (amt > 0.0f) ? amt : 0.0f; }   // blur vertical por shader
@@ -807,16 +959,30 @@ void SetMezcla(int m){
 void SmoothShading(bool){}   // ES2 siempre interpola (smooth); FLAT seria un shader aparte -> TODO
 void FastPerspective(){}     // ES2 corrige perspectiva siempre
 void Invalidate(){ texGenCache = -1; matcapCache = -1; }   // (solo los caches de la matriz de textura, como el fijo)
-void SesgoMetros(float m){   // (sin cache de la proyeccion: EstadoBase la vuelve a 0 en cada cuadro)
-    static float base[16]; static float puesto = 0.0f;
-    if (m == puesto) return;
-    if (puesto == 0.0f) GetMatrix(Projection, base);
-    float P[16]; for (int i = 0; i < 16; i++) P[i] = base[i];
-    P[14] -= P[10] * m;
+// LA PROYECCION AJUSTADA: el sesgo en metros (SesgoMetros) y el RANGO DE PROFUNDIDAD (DepthRange) se ponen en la matriz
+// de proyeccion, sobre la del pase (la que estaba puesta mientras los dos eran neutros; EstadoBase los vuelve a neutros en
+// cada cuadro). El rango no va con glDepthRangef: el driver de la VideoCore IV (Galaxy Ace, Android 2.3) dejaba mal la
+// profundidad de lo que se dibujaba despues de un rango (1,1) -el cielo de Daytona- y el asfalto translucido tapaba la
+// parte de abajo de los autos. En la matriz: z' = (f - n) z + (f + n - 1) w (y el lejano un pelo antes del plano de
+// corte: con z = w justo, el redondeo lo recortaba)
+static float gAjBase[16];
+static float gAjSesgo = 0.0f, gAjN = 0.0f, gAjF = 1.0f;
+static void AjustarProyeccion(float sesgo, float n, float f) {
+    if (sesgo == -1e30f) sesgo = gAjSesgo;   // (DepthRange: el sesgo queda)
+    if (n < 0.0f) n = 0.0f; if (f > 1.0f) f = 1.0f;
+    if (sesgo == gAjSesgo && n == gAjN && f == gAjF) return;
+    if (gAjSesgo == 0.0f && gAjN == 0.0f && gAjF == 1.0f) GetMatrix(Projection, gAjBase);
+    float P[16]; for (int i = 0; i < 16; i++) P[i] = gAjBase[i];
+    P[14] -= P[10] * sesgo;
+    if (!(n == 0.0f && f == 1.0f)) {
+        const float a = f - n, b = (f + n - 1.0f) * 0.99999f;
+        for (int c = 0; c < 4; c++) P[c * 4 + 2] = a * P[c * 4 + 2] + b * P[c * 4 + 3];   // (fila z; la w: c*4+3)
+    }
     MatrixMode(Projection); LoadMatrix(P); MatrixMode(ModelView);
-    puesto = m;
+    gAjSesgo = sesgo; gAjN = n; gAjF = f;
 }
-void EstadoBase(){ SesgoMetros(0.0f); AlphaTest(0.0f); Disable(PolygonOffsetFill); Disable(Lighting); Disable(ColorMaterial); }
+void SesgoMetros(float m){ AjustarProyeccion(m, gAjN, gAjF); }
+void EstadoBase(){ AjustarProyeccion(0.0f, 0.0f, 1.0f); AlphaTest(0.0f); Disable(PolygonOffsetFill); Disable(Lighting); Disable(ColorMaterial); }
 bool EstadoFotoSoportada(){ return false; }   // sin cache: el constructor de las rutinas corre en cada cuadro
 void EstadoFotoTomar(){}
 void EstadoFotoReponer(){}
@@ -1078,6 +1244,12 @@ static void ElegirPrograma(int nV){
     if(f & (PLuz|PTexGen)) e |= (Clave)FirmaAttr(aNrm, nV) << 20;
     if(f & PTex)           e |= (Clave)FirmaAttr(aUV, nV) << 25;
     if(uv1)                e |= (Clave)1 << 30;
+    // (los modos, constantes del programa: ver DefsPrograma)
+    if(f & PTex){ static const float kIdent[16]={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+                  e |= (Clave)(texEnv & 3) << 31;
+                  if(memcmp(curTex.m, kIdent, sizeof(kIdent)) != 0) e |= (Clave)1 << 33; }
+    if(f & PNiebla)        e |= (Clave)(fogModo & 3) << 34;
+    if(f & PMezcla)        e |= (Clave)(mezclaModo & 3) << 36;
     const Clave clave = (Clave)f | (e << PEstado);
     if(progUso && progUso->clave == clave) return;
     for(int i=0;i<nProgramas;i++) if(programas[i].clave == clave){ UsarPrograma(programas[i]); return; }
@@ -1087,6 +1259,8 @@ static void ElegirPrograma(int nV){
     }
     ArmarPrograma(programas[nProgramas], clave);
     UsarPrograma(programas[nProgramas++]);
+    // (cada uno nuevo le cuesta al driver ~35 ms la primera vez que dibuja: el log dice cuantos hay y cuando aparecen)
+    w3dLogf("[w3dGLES2] programa %d (clave %08x%08x)", nProgramas, (unsigned)(clave >> 32), (unsigned)clave);
 }
 // las luces prendidas, juntas al principio de los arreglos del shader (solo cuando cambiaron o el programa todavia no
 // las tiene: los uniforms quedan en cada programa)
@@ -1111,11 +1285,13 @@ static void SubirLuces(){
     progUso->verLuces=verLuces;
 }
 static void setupState(int nV){
-    LoteVaciar();   // (lo juntado sale ANTES de elegir nada para este draw: vaciarlo a mitad de camino pisaria el programa)
+    LoteVaciar();
+    gUltimoVerts = nV;   // (lo juntado sale ANTES de elegir nada para este draw: vaciarlo a mitad de camino pisaria el programa)
     Matrix4 mvp = curProj * curMV;
     float nmat[9]; MatrizNormal(nmat);
     ElegirPrograma(nV);
     if(progActivo != prog){ W3D_GLC(glUseProgram(prog)); progActivo = prog; }
+    if(sinRelleno) SoloUnPixel();
     if(uClipN>=0){
         U_1I(uClipN, clipN);
         for(int i=0;i<clipN;i++) if(uClip[i]>=0 && UNuevo(progUso->c_uClip[i], clipEq[i], 16)) W3D_GLC(glUniform4fv(uClip[i],1,clipEq[i]));
@@ -1186,6 +1362,7 @@ static void setupState(int nV){
 }
 // dibujo INDEXADO (indices ushort; convierte desde MeshIndex/ubyte)
 static void drawIndexed(GLenum mode,int count,const unsigned short* idx16){
+    gUltimoIdx = count; gUltimoVBO = 0;
     const GLint b = sinVBO ? 0 : (GLint)ibo;
     if(bufIndicesGL != b){ W3D_GLC(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,(GLuint)b)); bufIndicesGL = b; }
     if(!sinVBO) W3D_GLC(glBufferData(GL_ELEMENT_ARRAY_BUFFER,(GLsizeiptr)(count*2),idx16,GL_DYNAMIC_DRAW));
@@ -1197,6 +1374,7 @@ static int maxIndexU16(const unsigned short* ind,int count){ int n=0; for(int i=
 
 void DrawTriangles(int count,const MeshIndex* indices){
     if(!ready || count<=0 || !indices) return;
+    MedirDraw medir;
     Prim(GL_TRIANGLES); setupState(maxIndex(indices,count));
     static std::vector<unsigned short> idx; idx.resize(count);
     for(int i=0;i<count;i++) idx[i]=(unsigned short)indices[i];
@@ -1204,6 +1382,7 @@ void DrawTriangles(int count,const MeshIndex* indices){
 }
 void DrawElements(Primitiva p,int count,const MeshIndex* indices){
     if(!ready || count<=0 || !indices) return;
+    MedirDraw medir;
     static const GLenum kModo[7]={GL_POINTS,GL_LINES,GL_LINE_STRIP,GL_LINE_LOOP,GL_TRIANGLES,GL_TRIANGLE_STRIP,GL_TRIANGLE_FAN};
     Prim(kModo[(int)p>=0&&(int)p<7?(int)p:4]); setupState(maxIndex(indices,count));
     static std::vector<unsigned short> idx; idx.resize(count);
@@ -1212,6 +1391,7 @@ void DrawElements(Primitiva p,int count,const MeshIndex* indices){
 }
 void DrawElements16(Primitiva p,int count,const unsigned short* indices){
     if(!ready || count<=0 || !indices) return;
+    MedirDraw medir;
     static const GLenum kModo[7]={GL_POINTS,GL_LINES,GL_LINE_STRIP,GL_LINE_LOOP,GL_TRIANGLES,GL_TRIANGLE_STRIP,GL_TRIANGLE_FAN};
     int nV=0; for(int i=0;i<count;i++) if((int)indices[i]+1>nV) nV=(int)indices[i]+1;
     Prim(kModo[(int)p>=0&&(int)p<7?(int)p:4]); setupState(nV);
@@ -1224,6 +1404,7 @@ void DrawElementsVBO(Primitiva p,int count,int firstIndex){
 }
 void DrawTrianglesByte(int count,const unsigned char* indices){
     if(!ready || count<=0 || !indices) return;
+    MedirDraw medir;
     int nV=0; for(int i=0;i<count;i++) if((int)indices[i]+1>nV) nV=(int)indices[i]+1;   // bytes: sin overload
     Prim(GL_TRIANGLES); setupState(nV);
     static std::vector<unsigned short> idx; idx.resize(count);
@@ -1248,6 +1429,7 @@ void DrawLineStripIndexed(int count,const unsigned short* indices){
 // ---------------------------------------------------------------------------
 void DrawTrianglesClientIdx(int count,const MeshIndex* indices){
     if(!ready || count<=0 || !indices) return;
+    MedirDraw medir;
     Prim(GL_TRIANGLES); setupState(maxIndex(indices,count));
     static std::vector<unsigned short> idx; idx.resize(count);
     for(int i=0;i<count;i++) idx[i]=(unsigned short)indices[i];
@@ -1274,8 +1456,32 @@ StatCat StatCategoriaActual() { return (StatCat)gStatCat; }
 void StatRaw(int n) { g_statLlamadas[gStatCat] += n; }
 StatsDeCuadro g_statCuadro;
 static int gCuadroDraws0 = 0, gCuadroIdx0 = 0;
+// EL TIEMPO DE LOS DRAWS (g_medirDraws): cuanto tarda la CPU adentro de cada uno (elegir el programa, los uniforms, los
+// atributos, la llamada de GL: con arreglos del cliente, el driver copia los vertices ahi) y el mas lento del cuadro
+bool g_medirDraws = false;
+static double gMsDraws = 0, gMsDrawMax = 0;
+static int gDrawMaxIdx = 0, gDrawMaxVerts = 0, gDrawMaxVBO = 0;
+static double RelojMs() {
+#if defined(_WIN32)
+    return 0.0;
+#else
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec * 1000.0 + (double)t.tv_nsec * 1e-6;
+#endif
+}
+MedirDraw::MedirDraw() : t0(g_medirDraws ? RelojMs() : 0.0) {}
+MedirDraw::~MedirDraw() {
+    if (!g_medirDraws || t0 == 0.0) return;
+    const double d = RelojMs() - t0;
+    gMsDraws += d;
+    if (d > gMsDrawMax) { gMsDrawMax = d; gDrawMaxIdx = gUltimoIdx; gDrawMaxVerts = gUltimoVerts; gDrawMaxVBO = gUltimoVBO; }
+}
 void StatsCuadro() {
     StatsDeCuadro& c = g_statCuadro;
+    c.msDraws = (float)gMsDraws; c.msDrawMax = (float)gMsDrawMax;
+    c.drawMaxIdx = gDrawMaxIdx; c.drawMaxVerts = gDrawMaxVerts; c.drawMaxVBO = gDrawMaxVBO;
+    gMsDraws = gMsDrawMax = 0; gDrawMaxIdx = gDrawMaxVerts = gDrawMaxVBO = 0;
     c.total = 0;
     for (int i = 0; i < StatCatCount_; i++) { c.llamadas[i] = g_statLlamadas[i]; c.total += g_statLlamadas[i]; g_statLlamadas[i] = 0; }
     c.draws = g_statDrawTris - gCuadroDraws0; gCuadroDraws0 = g_statDrawTris;
@@ -1359,6 +1565,7 @@ void BindIndexVBO(unsigned int h){ iboVBO=h; }
 // del IBO bindeado: 'first' indices adelante
 static void DrawDesdeIBO(GLenum modo, int count, int first){
     if(!ready || count<=0 || !iboVBO) return;
+    MedirDraw medir; gUltimoIdx = count; gUltimoVBO = 1;
     std::map<GLuint,BufInfo>::const_iterator it = buffers.find(iboVBO);
     const int nV = (it != buffers.end()) ? it->second.verts : 0;
     const bool u32 = (it != buffers.end()) && it->second.u32;
@@ -1457,8 +1664,8 @@ static bool AlLote(int first, int n){
     return true;
 }
 
-void DrawTrianglesArray(int vertexCount){ if(!ready||vertexCount<=0) return; if(AlLote(0,vertexCount)) return; Prim(GL_TRIANGLES); setupState(vertexCount); g_statDrawTris++; g_statIndices += vertexCount; g_statDcCat[gStatCat]++; W3D_GLC(glDrawArrays(GL_TRIANGLES,0,vertexCount)); }
-void DrawTrianglesArrayFrom(int first,int count){ if(!ready||count<=0) return; if(AlLote(first,count)) return; Prim(GL_TRIANGLES); setupState(first+count); g_statDrawTris++; g_statIndices += count; g_statDcCat[gStatCat]++; W3D_GLC(glDrawArrays(GL_TRIANGLES,first,count)); }
+void DrawTrianglesArray(int vertexCount){ if(!ready||vertexCount<=0) return; MedirDraw medir; gUltimoIdx = vertexCount; gUltimoVBO = 0; if(AlLote(0,vertexCount)) return; Prim(GL_TRIANGLES); setupState(vertexCount); g_statDrawTris++; g_statIndices += vertexCount; g_statDcCat[gStatCat]++; W3D_GLC(glDrawArrays(GL_TRIANGLES,0,vertexCount)); }
+void DrawTrianglesArrayFrom(int first,int count){ if(!ready||count<=0) return; MedirDraw medir; gUltimoIdx = count; gUltimoVBO = 0; if(AlLote(first,count)) return; Prim(GL_TRIANGLES); setupState(first+count); g_statDrawTris++; g_statIndices += count; g_statDcCat[gStatCat]++; W3D_GLC(glDrawArrays(GL_TRIANGLES,first,count)); }
 void DrawLines(int vertexCount){ if(!ready||vertexCount<=0) return; Prim(GL_LINES); setupState(vertexCount); W3D_GLC(glDrawArrays(GL_LINES,0,vertexCount)); }
 void DrawLineStrip(int vertexCount){ if(!ready||vertexCount<=0) return; Prim(GL_LINE_STRIP); setupState(vertexCount); W3D_GLC(glDrawArrays(GL_LINE_STRIP,0,vertexCount)); }
 void DrawPoints(int vertexCount){ if(!ready||vertexCount<=0) return; Prim(GL_POINTS); setupState(vertexCount); W3D_GLC(glDrawArrays(GL_POINTS,0,vertexCount)); }

@@ -13,6 +13,8 @@
 //  Esta cabecera NO expone tipos de GL a proposito (el id es un unsigned int)
 // ============================================================================
 
+#include <stddef.h>   // size_t (las texturas desde memoria)
+
 namespace w3dEngine {
 
     // Carga 'path' del disco y la sube como textura. Devuelve true y deja en
@@ -26,8 +28,13 @@ namespace w3dEngine {
     // DecodeImage la reconocen por la extension en todas las plataformas: cargarla es leer y subir, sin decodificar
     bool EsW3dt(const char* path);
     bool LoadTextureW3dt(const char* path, unsigned int& outId, int* outW = 0, int* outH = 0);
+    // el mismo, de un .w3dt que ya esta en memoria (un paquete de texturas); 'nombre' solo para el log
+    bool LoadTextureW3dtMemoria(const unsigned char* datos, size_t largo, unsigned int& outId, int* outW = 0,
+                                int* outH = 0, const char* nombre = 0);
     // su nivel 0 (o el primero que entra en 'maxLado', si > 0) a RGBA 8888, en un buffer de FreeImage
     bool DecodeW3dt(const char* path, int maxLado, unsigned char** outRGBA, int* outW, int* outH);
+    bool DecodeW3dtMemoria(const unsigned char* datos, size_t largo, int maxLado, unsigned char** outRGBA, int* outW,
+                           int* outH);
 
     // Sube pixeles RGBA 8888 ya decodificados como textura 2D y devuelve su id
     // (0 si falla). 'filtrado' = LINEAR si true, NEAREST si false. Formato
@@ -89,6 +96,12 @@ namespace w3dEngine {
     // es para un cuadro de vez en cuando, no para cada cuadro
     unsigned int ReservarPantalla(unsigned int id, int w, int h);
     void CopiarPantalla(unsigned int id, int x, int y, int w, int h);
+    // ...salvo en un driver que la copia al reves (la fila 0 es la de ARRIBA): la VideoCore IV de Android 2.3. Lo prueba
+    // el backend al arrancar (lo implementa cada backend: solo el de GLES2 puede dar true); el que da las UV de una
+    // captura las da vuelta. Ese mismo driver cuenta las filas desde ARRIBA: CopiaPantallaFila da la 'y' que hay que
+    // pedirle para copiar las filas y..y+h contadas desde abajo (en el resto, la misma)
+    bool CopiaPantallaDadaVuelta();
+    int CopiaPantallaFila(int y, int h);
 
     // Decodifica una imagen del disco a pixeles RGBA 8888 en el heap, sin
     // subirla a GL. Util cuando se necesitan los PIXELES (no solo el id), p.ej.

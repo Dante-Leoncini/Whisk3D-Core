@@ -63,7 +63,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     chromeExpPos = NULL; chromeExpUV = NULL; chromeExpCount = 0; chromeUVValid = false; chromeCacheEq = true; // reflejo (lazy)
     genChromeExpPos = NULL; genChromeExpUV = NULL; genChromeCount = 0; genChromeValid = false; // reflejo de la malla generada (lazy)
     tangents = NULL; nmColors = NULL; tangentsValid = false; // normal mapping (lazy)
-    vboPos = vboNor = vboCol = vboUV = vboIdx = 0; vboGeomVer = 0; vboSkinFrame = -999999; vboSkinFramePrev = -999999; vboPoseSerial = 0; vboPoseSerialPrev = 0; vboVertN = 0; vboIdxN = 0; vboRenderActivo = false; vboPoseSkinneada = false; crudoVBO = false; // VBOs (lazy)
+    vboPos = vboNor = vboCol = vboUV = vboIdx = 0; vboGeomVer = 0; vboSkinFrame = -999999; vboSkinFramePrev = -999999; vboPoseSerial = 0; vboPoseSerialPrev = 0; vboVertN = 0; vboIdxN = 0; vboIdxGeomVer = 0; vboRenderActivo = false; vboPoseSkinneada = false; crudoVBO = false; // VBOs (lazy)
     pvsFaces = NULL; pvsFacesSize = 0; pvsVersion = 0; vboPvsVer = 0; pvsOrdenado = false; // sin override PVS (malla completa; vboPvsVer retirado por P3, ver Mesh.h)
     enLoteEstatico = 0; // (P4) sin sello: la malla se dibuja sola
     uvDesplU = uvDesplV = 0.0f; // desplazarUV: sin base capturada (uvDesplBase vacia)
@@ -494,9 +494,16 @@ void Mesh::ActualizarToonUV(const GLbyte* nor) {
     const GLfloat* filas = UVDeCapa(1);
     toonUV.resize((size_t)vertexSize * 2);
     GLfloat* t = &toonUV[0];
+    // EN ENTEROS (fijo 8.24): la normal es de 8 bits, asi que n . l son tres multiplicaciones enteras y el recorte va en
+    // enteros; queda UNA conversion a float por vertice. En el ARM11 cada conversion y cada comparacion de floats cuesta
+    // (medido en el Galaxy Ace: 0.6 ms por cuadro con Goku y Freezer). |l| <= 0.5/127: n . l entra de sobra en 32 bits
+    const float kFijo = 16777216.0f;
+    const int lx = (int)(l.x * kFijo), ly = (int)(l.y * kFijo), lz = (int)(l.z * kFijo);
+    const int medio = 1 << 23, uno = 1 << 24;
     for (int v = 0; v < vertexSize; v++) {
-        const float s = 0.5f + nor[v*3] * l.x + nor[v*3+1] * l.y + nor[v*3+2] * l.z;
-        t[v*2]   = s < 0.0f ? 0.0f : (s > 1.0f ? 1.0f : s);
+        int s = medio + nor[v*3] * lx + nor[v*3+1] * ly + nor[v*3+2] * lz;
+        if (s < 0) s = 0; else if (s > uno) s = uno;
+        t[v*2]   = (float)s * (1.0f / kFijo);
         t[v*2+1] = filas ? filas[v*2+1] : 0.5f;
     }
 }
@@ -1294,7 +1301,7 @@ void Mesh::SubirVBO(const GLfloat* posBuf, const GLbyte* norBuf, bool soloPose) 
     // (DrawTrianglesClientIdx): cambiar de celda/sector no re-especifica ningun
     // buffer. Antes aca se subia el subconjunto del sector y el cambio de sector
     // re-subia el IBO entero (el anti-patron del stall del tiler MBX).
-    if (faces && facesSize > 0 && !(comp & W3DMD_FACES)) { if (!vboIdx) vboIdx = gfx::GenBuffer(); gfx::IndexBufferData(vboIdx, faces, facesSize * (int)sizeof(MeshIndex)); vboIdxN = facesSize; }
+    if (faces && facesSize > 0 && !(comp & W3DMD_FACES)) { if (!vboIdx) vboIdx = gfx::GenBuffer(); gfx::IndexBufferData(vboIdx, faces, facesSize * (int)sizeof(MeshIndex)); vboIdxN = facesSize; vboIdxGeomVer = skinGeomVersion; }
 }
 
 // ===========================================================================
@@ -2061,6 +2068,23 @@ void Mesh::RenderObject() {
         }
         if (talVezVBO && !drawVBO) PunterosRAM(posBuf, norBuf, vertexColor, uv);   // (no fue por VBO: los de RAM ahora)
         vboRenderActivo = drawVBO; // AplicarMaterial bindea el uv VBO (no client-uv) mientras esto este activo
+        // LOS INDICES EN LA GPU AUNQUE LOS VERTICES VAYAN DE RAM (una malla skinneada animando, o con toon, contorno o
+        // capas): el IBO es estatico (la malla completa, se sube una vez con la geometria, o el del recurso) y el dibujo
+        // ya no convierte ni recorre sus indices. En el ARM11 del Galaxy Ace eso era ~4% de la CPU (dos pasadas por
+        // dibujo sobre los 10 mil indices de Goku, el cuerpo y el contorno)
+        unsigned int iboRam = 0;
+        if (!drawVBO && !usePvs && gfx::VBOSoportado() && !useGen && !weightPaintOn && !vertexPaintOn && !editActiva &&
+            faces && facesSize >= 3) {
+            if (malla && (datosComp & W3DMD_FACES) && W3dMallaRecursoAsegurarVBO(malla) && malla->vboIdx) iboRam = malla->vboIdx;
+            else {
+                if (!vboIdx || vboIdxGeomVer != skinGeomVersion || vboIdxN != facesSize) {
+                    if (!vboIdx) vboIdx = gfx::GenBuffer();
+                    gfx::IndexBufferData(vboIdx, faces, facesSize * (int)sizeof(MeshIndex));
+                    vboIdxN = facesSize; vboIdxGeomVer = skinGeomVersion;
+                }
+                iboRam = vboIdx;
+            }
+        }
 
         // override PVS/Vis (modificador Culling por triangulo): dibuja SOLO los indices
         // del sector/celda activo (usePvs se decidio arriba, antes del setup del VBO).
@@ -2154,6 +2178,9 @@ void Mesh::RenderObject() {
                     gfx::DrawTrianglesClientIdx(dgrp.indicesDrawnCount, &pvsFaces[dgrp.startDrawn]);
                 else
                     gfx::DrawTrianglesVBO(dgrp.indicesDrawnCount, dgrp.startDrawn); // malla completa: desde el IBO estatico en GPU
+            } else if (iboRam) {
+                gfx::BindIndexVBO(iboRam);   // (las lineas o una pasada de indices de RAM lo desbindean)
+                gfx::DrawTrianglesVBO(dgrp.indicesDrawnCount, dgrp.startDrawn);
             } else {
                 gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxDraw[dgrp.startDrawn]);
             }
@@ -2281,7 +2308,9 @@ void Mesh::RenderObject() {
                     Material* mt = materialsGroup[g].material;
                     if (!mt || mt->contorno <= 0.0f) continue;
                     const MaterialGroup& dgrp = usePvs ? pvsGroups[g] : materialsGroup[g];
-                    if (dgrp.indicesDrawnCount >= 3) gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxC[dgrp.startDrawn]);
+                    if (dgrp.indicesDrawnCount < 3) continue;
+                    if (iboRam) { gfx::BindIndexVBO(iboRam); gfx::DrawTrianglesVBO(dgrp.indicesDrawnCount, dgrp.startDrawn); }
+                    else gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxC[dgrp.startDrawn]);
                 }
                 gfx::CullCarasFrontales(false);
                 gfx::VertexPointer3f(0, posBuf);

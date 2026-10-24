@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <stdio.h>  // sprintf GLOBAL (C99): en Symbian/STLport <cstdio> puede dejarlo solo en std::
 #include <cmath>
+#include <cstring>  // memcpy (los floats como enteros: SkinOrden)
 #include <vector>
 #include <map>
 #include <utility>
@@ -880,26 +881,127 @@ static const float* SkinFormasCompletas(Mesh* m, int nv, bool formas){
 
 // AABB LOCAL de la pose recien skinneada (para el autocull por frustum de RenderObject): un pase
 // barato sobre skinVertex. Corre SOLO cuando se (re)calculo la pose, no por frame.
+// (comparando los floats como ENTEROS: los bits de un float positivo ordenan igual que el numero, y los de uno negativo
+// al reves; con el xor quedan en orden. En el ARM11 cada comparacion de floats vacia el pipeline del VFP: ~10 ciclos,
+// seis por vertice. Las posiciones son finitas: SkinPunto deja en el bind lo de un hueso roto)
+static inline int SkinOrden(GLfloat f){ int i; memcpy(&i, &f, 4); return i >= 0 ? i : (int)(i ^ 0x7fffffff); }
+static inline float SkinDesorden(int i){ if (i < 0) i = (int)(i ^ 0x7fffffff); float f; memcpy(&f, &i, 4); return f; }
 static void SkinActualizarAabb(Mesh* m){
     const int nv = m->vertexSize;
     if (!m->skinVertex || nv <= 0){ m->skinAabbOk = false; return; }
-    float mnx = m->skinVertex[0], mny = m->skinVertex[1], mnz = m->skinVertex[2];
-    float mxx = mnx, mxy = mny, mxz = mnz;
+    const GLfloat* v = m->skinVertex;
+    int mnx = SkinOrden(v[0]), mny = SkinOrden(v[1]), mnz = SkinOrden(v[2]);
+    int mxx = mnx, mxy = mny, mxz = mnz;
     for (int i = 1; i < nv; i++){
-        const GLfloat* p = &m->skinVertex[i*3];
-        if (p[0] < mnx) mnx = p[0]; else if (p[0] > mxx) mxx = p[0];
-        if (p[1] < mny) mny = p[1]; else if (p[1] > mxy) mxy = p[1];
-        if (p[2] < mnz) mnz = p[2]; else if (p[2] > mxz) mxz = p[2];
+        const int x = SkinOrden(v[i*3]), y = SkinOrden(v[i*3+1]), z = SkinOrden(v[i*3+2]);
+        if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+        if (y < mny) mny = y; if (y > mxy) mxy = y;
+        if (z < mnz) mnz = z; if (z > mxz) mxz = z;
     }
-    m->skinAabbMin = Vector3(mnx, mny, mnz);
-    m->skinAabbMax = Vector3(mxx, mxy, mxz);
+    m->skinAabbMin = Vector3(SkinDesorden(mnx), SkinDesorden(mny), SkinDesorden(mnz));
+    m->skinAabbMax = Vector3(SkinDesorden(mxx), SkinDesorden(mxy), SkinDesorden(mxz));
     m->skinAabbOk = true;
 }
 
+// LAS MATRICES DE LOS HUESOS JUNTAS: los 12 numeros que usa el skinning (3x3 + traslacion) de cada hueso seguidos, y
+// si el hueso esta sano (todo finito y no enorme). Se arman una vez por SkinearMesh: el bucle por punto ya no salta por
+// el W3dBone entero ni compara cada vertice (en el ARM11 cada comparacion de floats vacia el pipeline del VFP; medido en
+// el Galaxy Ace: el skinning de Goku y Freezer bajo de 10.6 a 3.5 ms con SkinPunto)
+// (los punteros del bucle no se pisan entre si: el compilador puede dejar los valores en registros. Solo donde el
+// compilador lo entiende: el de Symbian para el emulador no)
+#if defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER) || defined(__ARMCC_VERSION)
+#define W3D_SIN_ALIAS __restrict
+#else
+#define W3D_SIN_ALIAS
+#endif
+static std::vector<float> gSkinMats;
+static std::vector<unsigned char> gSkinSano;
+static void SkinJuntarHuesos(Armature* a){
+    const size_t nb = a->bones.size();
+    gSkinMats.resize(nb * 12 + 12); gSkinSano.resize(nb + 1);
+    for (size_t b = 0; b < nb; b++){
+        const float* mm = a->bones[b].skinMatrix.m; float* d = &gSkinMats[b * 12];
+        d[0]=mm[0]; d[1]=mm[1]; d[2]=mm[2]; d[3]=mm[4]; d[4]=mm[5]; d[5]=mm[6];
+        d[6]=mm[8]; d[7]=mm[9]; d[8]=mm[10]; d[9]=mm[12]; d[10]=mm[13]; d[11]=mm[14];
+        bool sano = true;
+        for (int k = 0; k < 12; k++) if (!(d[k] < 1e6f && d[k] > -1e6f)) sano = false;   // (un NaN tampoco pasa)
+        gSkinSano[b] = sano ? 1 : 0;
+    }
+}
+// UN PUNTO de control: su matriz mezclada (en registros) aplicada a su bind (+ las formas) y a la normal de cada
+// render-vert suyo. Un punto sin peso, o con un hueso roto (NaN, infinito), queda en el bind: el vertice no se va al
+// infinito. La normal no se divide por 127: se normaliza igual y la escala no cambia el resultado
+static inline void SkinPunto(Mesh* m, int c, int nb, const float* cpd, bool doN){
+    const int* W3D_SIN_ALIAS rv = &m->skinCpRv[0];
+    const int rs = m->skinCpRvOff[(size_t)c], re = m->skinCpRvOff[(size_t)c + 1];
+    if (rs >= re) return;   // punto sin render-verts (huerfano)
+    const float* W3D_SIN_ALIAS vert = m->vertex;
+    const GLbyte* W3D_SIN_ALIAS nor = m->normals;
+    GLfloat* W3D_SIN_ALIAS sv = m->skinVertex;
+    GLbyte* W3D_SIN_ALIAS sn = m->skinNormals;
+    const float* W3D_SIN_ALIAS mats = &gSkinMats[0];
+    const unsigned char* W3D_SIN_ALIAS sano = &gSkinSano[0];
+    const int s = m->skinCpOff[(size_t)c], e = m->skinCpOff[(size_t)c + 1];
+    float M0=0,M1=0,M2=0,M3=0,M4=0,M5=0,M6=0,M7=0,M8=0,M9=0,M10=0,M11=0;
+    bool pesa = s < e;
+    if (pesa && e - s == 1){   // un hueso (la mayoria): su matriz tal cual (el peso normalizado es 1)
+        const int b = m->skinCpBone[(size_t)s];
+        if (b < 0 || b >= nb || !sano[b]) pesa = false;
+        else { const float* mm = &mats[b * 12];
+            M0=mm[0]; M1=mm[1]; M2=mm[2]; M3=mm[3]; M4=mm[4]; M5=mm[5];
+            M6=mm[6]; M7=mm[7]; M8=mm[8]; M9=mm[9]; M10=mm[10]; M11=mm[11]; }
+    } else if (pesa){
+        const int* W3D_SIN_ALIAS bn = &m->skinCpBone[0];
+        const float* W3D_SIN_ALIAS wt = &m->skinCpW[0];
+        for (int k = s; k < e; k++){
+            const int b = bn[k];
+            if (b < 0 || b >= nb) continue;   // (defensa si el rig encogio: la firma del CSR igual lo invalida)
+            if (!sano[b]){ pesa = false; break; }
+            const float* mm = &mats[b * 12]; const float w = wt[k];
+            M0+=mm[0]*w; M1+=mm[1]*w; M2+=mm[2]*w; M3+=mm[3]*w; M4+=mm[4]*w; M5+=mm[5]*w;
+            M6+=mm[6]*w; M7+=mm[7]*w; M8+=mm[8]*w; M9+=mm[9]*w; M10+=mm[10]*w; M11+=mm[11]*w;
+        }
+    }
+    // la POSICION es la misma para todos los render-verts del punto (comparten bind): 1 mat*vec
+    const int ri0 = rv[rs];
+    float vx = vert[ri0*3], vy = vert[ri0*3+1], vz = vert[ri0*3+2];
+    if (cpd){ vx += cpd[(size_t)c*3]; vy += cpd[(size_t)c*3+1]; vz += cpd[(size_t)c*3+2]; }   // la base con las formas
+    float px = vx, py = vy, pz = vz;
+    if (pesa){
+        px = M0*vx + M3*vy + M6*vz + M9;
+        py = M1*vx + M4*vy + M7*vz + M10;
+        pz = M2*vx + M5*vy + M8*vz + M11;
+    }
+    for (int t = rs; t < re; t++){
+        const int ri = rv[t];
+        sv[ri*3] = px; sv[ri*3+1] = py; sv[ri*3+2] = pz;
+        if (!doN) continue;
+        // NORMAL: la 3x3 mezclada del punto * la normal de bind del render-vert (distinta por seam)
+        const float nx = nor[ri*3], ny = nor[ri*3+1], nz = nor[ri*3+2];
+        const float anx = M0*nx + M3*ny + M6*nz;
+        const float any = M1*nx + M4*ny + M7*nz;
+        const float anz = M2*nx + M5*ny + M8*nz;
+        const float l2 = anx*anx + any*any + anz*anz;
+        if (pesa && l2 > 1.6e-8f){ const float sc = 127.0f * FastInvSqrt(l2);   // (1e-12 de la normal de largo 1, por 127^2)
+            sn[ri*3]=(GLbyte)(anx*sc); sn[ri*3+1]=(GLbyte)(any*sc); sn[ri*3+2]=(GLbyte)(anz*sc); }
+        else { sn[ri*3]=nor[ri*3]; sn[ri*3+1]=nor[ri*3+1]; sn[ri*3+2]=nor[ri*3+2]; }
+    }
+}
+
+// MEDICION FINA (el medidor del juego compilado en modo debug): con un reloj de alta resolucion instalado, cuanto
+// tardan en total los SkinearMesh del cuadro y, de eso, evaluar la pose del esqueleto (las curvas y las matrices)
+double (*g_skinRelojAlto)() = 0;
+double g_skinTotalMs = 0, g_skinPoseMs = 0;
+namespace { struct MedirSkin { double t0; MedirSkin() : t0(g_skinRelojAlto ? g_skinRelojAlto() : 0) {}
+    ~MedirSkin() { if (g_skinRelojAlto) g_skinTotalMs += g_skinRelojAlto() - t0; } }; }
+
 void SkinearMesh(Mesh* m){
     if (!m || !m->skinArmature || !m->vertex || m->vertexSize <= 0) return;
+    MedirSkin medir;
     Armature* a = m->skinArmature;
+    const double tPose = g_skinRelojAlto ? g_skinRelojAlto() : 0;
     EvaluarPoseEsqueleto(a, CurrentFrame); // asegura skinMatrix de cada hueso al frame actual (cacheado)
+    if (g_skinRelojAlto) g_skinPoseMs += g_skinRelojAlto() - tPose;
     // ya skinneado para ESTA pose? cache por (frame, poseSerial): si la pose se recalculo (posar/elegir clip en el mismo
     // frame) el serial cambio -> re-skinnea aunque el frame sea el mismo (antes solo miraba el frame -> quedaba stale).
     if (m->lastSkinFrame == CurrentFrame && m->skinPoseSerial == a->poseSerial && m->skinVertex &&
@@ -1013,7 +1115,6 @@ void SkinearMesh(Mesh* m){
             int base = m->skinCpOff[c];
             for (size_t k = 0; k < it->second.size(); k++){ m->skinCpBone[base+(int)k]=it->second[k].first; m->skinCpW[base+(int)k]=it->second[k].second; }
         }
-        m->skinCpMat.assign((size_t)(nCtrl>0?nCtrl:0)*12, 0.0f); // buffer temp por-frame (matriz mezclada por CP; reusado)
         // ---- INVERSOS para el skinning INCREMENTAL: hueso -> CPs que influye, y CP -> render-verts.
         //      Con esto "se movio el hueso B / la forma K" se traduce directo a la lista EXACTA de
         //      vertices a recalcular, sin recorrer la malla entera. Mismo ciclo de vida que el CSR. ----
@@ -1112,10 +1213,6 @@ void SkinearMesh(Mesh* m){
             // completo solo gana cuando casi TODO esta sucio Y hay mucha deduplicacion (nCtrl << nv): ahi su pase1
             // por-CP es chico. Umbral 95%: el habla con gestos (60-90% sucio) ahora va por el incremental.
             if ((long)sucios.size() <= (long)nCtrlI * 19 / 20) {
-                const int*   cpOffI = &m->skinCpOff[0];
-                const int*   cpBnI  = m->skinCpBone.empty() ? NULL : &m->skinCpBone[0];
-                const float* cpWtI  = m->skinCpW.empty()    ? NULL : &m->skinCpW[0];
-                float*       cpMatI = m->skinCpMat.empty()  ? NULL : &m->skinCpMat[0];
                 // 4) formas: delta persistente por DIFERENCIA (sus CPs ya quedaron marcados arriba)
                 for (size_t q = 0; q < kch.size(); q++){ int k = kch[q];
                     float dw = m->shapePesos[(size_t)k] - m->skinPrevPesos[(size_t)k];
@@ -1131,50 +1228,11 @@ void SkinearMesh(Mesh* m){
                 }
                 const float* cpdI = m->shapeCpDelta.empty() ? NULL : &m->shapeCpDelta[0];
                 // 5) SOLO los CPs sucios: re-mezclar su matriz y re-aplicarla a SUS render-verts
+                SkinJuntarHuesos(a);
+                const bool doNI = doN && m->skinNormals;
                 for (size_t q = 0; q < sucios.size(); q++){
-                    int c = sucios[q]; m->skinCpDirty[(size_t)c] = 0;
-                    int s = cpOffI[c], e = cpOffI[c+1];
-                    const float* M = NULL;
-                    if (s < e && cpMatI){
-                        float* Mw = &cpMatI[(size_t)c*12];
-                        Mw[0]=Mw[1]=Mw[2]=Mw[3]=Mw[4]=Mw[5]=Mw[6]=Mw[7]=Mw[8]=Mw[9]=Mw[10]=Mw[11]=0.0f;
-                        for (int k = s; k < e; k++){
-                            int bi = cpBnI[k]; if (bi < 0 || bi >= nbI) continue;
-                            const float* mm = a->bones[bi].skinMatrix.m; float w = cpWtI[k];
-                            Mw[0]+=mm[0]*w;  Mw[1]+=mm[1]*w;  Mw[2]+=mm[2]*w;
-                            Mw[3]+=mm[4]*w;  Mw[4]+=mm[5]*w;  Mw[5]+=mm[6]*w;
-                            Mw[6]+=mm[8]*w;  Mw[7]+=mm[9]*w;  Mw[8]+=mm[10]*w;
-                            Mw[9]+=mm[12]*w; Mw[10]+=mm[13]*w; Mw[11]+=mm[14]*w;
-                        }
-                        M = Mw;
-                    }
-                    // la POSICION es la misma para todos los render-verts del punto (comparten bind): 1 mat*vec
-                    const int rs = m->skinCpRvOff[(size_t)c], re = m->skinCpRvOff[(size_t)c+1];
-                    if (rs >= re) continue;
-                    const int ri0 = m->skinCpRv[(size_t)rs];
-                    float vx = m->vertex[ri0*3], vy = m->vertex[ri0*3+1], vz = m->vertex[ri0*3+2];
-                    if (cpdI){ vx += cpdI[(size_t)c*3]; vy += cpdI[(size_t)c*3+1]; vz += cpdI[(size_t)c*3+2]; }
-                    float px, py, pz; bool okp;
-                    if (!M){ px = vx; py = vy; pz = vz; okp = true; }   // punto sin peso: bind + forma
-                    else {
-                        px = M[0]*vx + M[3]*vy + M[6]*vz + M[9];
-                        py = M[1]*vx + M[4]*vy + M[7]*vz + M[10];
-                        pz = M[2]*vx + M[5]*vy + M[8]*vz + M[11];
-                        okp = (px==px && py==py && pz==pz && px<1e6f&&px>-1e6f && py<1e6f&&py>-1e6f && pz<1e6f&&pz>-1e6f);
-                    }
-                    for (int t = rs; t < re; t++){
-                        int ri = m->skinCpRv[(size_t)t];
-                        if (okp){ m->skinVertex[ri*3]=px; m->skinVertex[ri*3+1]=py; m->skinVertex[ri*3+2]=pz; }
-                        if (M && doN && m->skinNormals){
-                            float nx=m->normals[ri*3]/127.0f, ny=m->normals[ri*3+1]/127.0f, nz=m->normals[ri*3+2]/127.0f;
-                            float anx = M[0]*nx + M[3]*ny + M[6]*nz;
-                            float any = M[1]*nx + M[4]*ny + M[7]*nz;
-                            float anz = M[2]*nx + M[5]*ny + M[8]*nz;
-                            float l2 = anx*anx + any*any + anz*anz;
-                            if (l2 > 1e-12f && l2==l2){ float sc = 127.0f * FastInvSqrt(l2);
-                                m->skinNormals[ri*3]=(GLbyte)(anx*sc); m->skinNormals[ri*3+1]=(GLbyte)(any*sc); m->skinNormals[ri*3+2]=(GLbyte)(anz*sc); }
-                        }
-                    }
+                    const int c = sucios[q]; m->skinCpDirty[(size_t)c] = 0;
+                    SkinPunto(m, c, nbI, cpdI, doNI);
                 }
                 // 6) la referencia avanza SOLO para los huesos aplicados (anti-deriva del resto)
                 for (size_t q = 0; q < bch.size(); q++){ int b = bch[q];
@@ -1192,73 +1250,18 @@ void SkinearMesh(Mesh* m){
             for (size_t q = 0; q < sucios.size(); q++) m->skinCpDirty[(size_t)sucios[q]] = 0;
         }
     }
-    // ---- pase COMPLETO: base = bind (+formas de cero) y las dos pasadas de siempre ----
+    // ---- pase COMPLETO: cada punto de control, con la matriz de sus huesos mezclada UNA vez (los render-verts de un
+    //      punto comparten bind y pesos: W3dMallaCalcularPuntos agrupa por posicion exacta), ver SkinPunto ----
     const float* cpd = SkinFormasCompletas(m, nv, formas);
-    for (int i = 0; i < fc; i++) m->skinVertex[i] = m->vertex[i]; // default = bind (verts sin peso quedan)
-    if (cpd) for (int ri = 0; ri < nv && ri < (int)m->vertCtrlPoint.size(); ri++) {   // la forma, tambien sin peso
-        const int c = m->vertCtrlPoint[ri]; if (c < 0) continue;
-        m->skinVertex[ri*3] += cpd[c*3]; m->skinVertex[ri*3+1] += cpd[c*3+1]; m->skinVertex[ri*3+2] += cpd[c*3+2];
+    const int nCtrl = m->skinNCtrl;   // cacheado en el ultimo rebuild (no se recomputa por frame)
+    // los render-verts que no son de ningun punto no estan en el CSR inverso: quedan en el bind (en una malla comun no hay)
+    if (m->skinCpRvOff.size() <= (size_t)nCtrl || m->skinCpRvOff[(size_t)nCtrl] < nv) {
+        for (int i = 0; i < fc; i++) m->skinVertex[i] = m->vertex[i];
+        if (doN) for (int i = 0; i < fc; i++) m->skinNormals[i] = m->normals[i];
     }
-    if (doN) for (int i = 0; i < fc; i++) m->skinNormals[i] = m->normals[i]; // default = bind
-
-    // ---- PASE 1: por CONTROL-POINT con peso, mezcla la matriz de skin (4x3) UNA vez -> skinCpMat[c]. Este es el blend
-    //      CARO (leer + acumular cada skinMatrix de hueso) y ahora corre nCtrl veces (7186) en vez de nv (42840): 6x
-    //      menos. skinMatrix es el delta en espacio NODO = espacio de la geometria -> se aplica DIRECTO. Los pesos ya
-    //      suman 1. Como los render-verts de un CP comparten pesos+huesos, comparten la MISMA matriz mezclada. ----
-    const int    nCtrl = m->skinNCtrl;   // cacheado en el ultimo rebuild (no se recomputa por frame)
-    const int    nb    = (int)a->bones.size();
-    const int*   cpOff = &m->skinCpOff[0];
-    const int*   cpBn  = m->skinCpBone.empty() ? NULL : &m->skinCpBone[0];
-    const float* cpWt  = m->skinCpW.empty()    ? NULL : &m->skinCpW[0];
-    float*       cpMat = m->skinCpMat.empty()  ? NULL : &m->skinCpMat[0];
-    for (int c = 0; c < nCtrl; c++){
-        int s = cpOff[c], e = cpOff[c+1];
-        if (s == e) continue;                       // CP sin peso -> sus render-verts quedan en bind
-        float* M = &cpMat[c*12];
-        M[0]=M[1]=M[2]=M[3]=M[4]=M[5]=M[6]=M[7]=M[8]=M[9]=M[10]=M[11]=0.0f;
-        for (int k = s; k < e; k++){
-            int bi = cpBn[k]; if (bi<0||bi>=nb) continue; // defensa si el rig encogio (la firma del CSR igual lo invalidaria)
-            const float* mm = a->bones[bi].skinMatrix.m; float w = cpWt[k];
-            M[0]+=mm[0]*w;  M[1]+=mm[1]*w;  M[2]+=mm[2]*w;    // columna X (rotacion)
-            M[3]+=mm[4]*w;  M[4]+=mm[5]*w;  M[5]+=mm[6]*w;    // columna Y
-            M[6]+=mm[8]*w;  M[7]+=mm[9]*w;  M[8]+=mm[10]*w;   // columna Z
-            M[9]+=mm[12]*w; M[10]+=mm[13]*w; M[11]+=mm[14]*w; // traslacion
-        }
-    }
-    // ---- PASE 2: por PUNTO (control-point), aplica la matriz mezclada a su bind UNA vez y COPIA la posicion a
-    //      todos sus render-verts. Los render-verts de un punto comparten la MISMA posicion de bind (es la
-    //      definicion del control-point: W3dMallaCalcularPuntos agrupa por posicion exacta) -> su posicion
-    //      skinneada es IDENTICA, asi que el mat*vec (9 mult) se hace 1 vez por punto (~1695) y no 1 por
-    //      render-vert (~10170): 6x menos en estas mallas. La NORMAL si difiere por render-vert (seams de
-    //      smoothing), asi que esa rotacion queda en el loop interno, pero SOLO si hay luz (doN). ----
-    for (int c = 0; c < nCtrl; c++){
-        if (cpOff[c] == cpOff[c+1]) continue;       // punto sin peso -> sus render-verts quedan en bind
-        const int rs = m->skinCpRvOff[c], re = m->skinCpRvOff[c+1];
-        if (rs >= re) continue;                     // punto sin render-verts (huerfano)
-        const float* M = &cpMat[c*12];
-        const int ri0 = m->skinCpRv[rs];            // representante: su bind es el de TODOS (misma posicion)
-        float vx=m->vertex[ri0*3], vy=m->vertex[ri0*3+1], vz=m->vertex[ri0*3+2];
-        if (cpd) { vx += cpd[c*3]; vy += cpd[c*3+1]; vz += cpd[c*3+2]; }   // la base con las formas de la cara
-        float px = M[0]*vx + M[3]*vy + M[6]*vz + M[9];
-        float py = M[1]*vx + M[4]*vy + M[7]*vz + M[10];
-        float pz = M[2]*vx + M[5]*vy + M[8]*vz + M[11];
-        // POSICION: guard NaN/inf (una matriz degenerada no debe mandar el vert al infinito -> queda en bind)
-        const bool okp = (px==px && py==py && pz==pz && px<1e6f&&px>-1e6f && py<1e6f&&py>-1e6f && pz<1e6f&&pz>-1e6f);
-        for (int t = rs; t < re; t++){
-            const int ri = m->skinCpRv[t];
-            if (okp){ m->skinVertex[ri*3]=px; m->skinVertex[ri*3+1]=py; m->skinVertex[ri*3+2]=pz; }
-            // NORMAL: la 3x3 mezclada del punto * la normal de bind del render-vert (distinta por seam)
-            if (doN){
-                float nx=m->normals[ri*3]/127.0f, ny=m->normals[ri*3+1]/127.0f, nz=m->normals[ri*3+2]/127.0f;
-                float anx = M[0]*nx + M[3]*ny + M[6]*nz;
-                float any = M[1]*nx + M[4]*ny + M[7]*nz;
-                float anz = M[2]*nx + M[5]*ny + M[8]*nz;
-                float l2 = anx*anx + any*any + anz*anz;
-                if (l2 > 1e-12f && l2==l2){ float sc = 127.0f * FastInvSqrt(l2);
-                    m->skinNormals[ri*3]=(GLbyte)(anx*sc); m->skinNormals[ri*3+1]=(GLbyte)(any*sc); m->skinNormals[ri*3+2]=(GLbyte)(anz*sc); }
-            }
-        }
-    }
+    SkinJuntarHuesos(a);
+    const int nb = (int)a->bones.size();
+    for (int c = 0; c < nCtrl; c++) SkinPunto(m, c, nb, cpd, doN);
     // REFERENCIA del skinning incremental: la pose/formas que ESTE pase completo dejo aplicadas
     {
         const int nbF = (int)a->bones.size();

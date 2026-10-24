@@ -452,7 +452,8 @@ void CopiarPantalla(unsigned int id, int x, int y, int w, int h) {
 #endif
     w3dEngine::DibujarPendiente();   // (la copia tiene que ver todo lo que ya se mando a dibujar)
     w3dEngine::BindTexture(id);
-    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, y, w, h);
+    // (la fila que entiende este driver: el del Galaxy Ace cuenta desde arriba, ver CopiaPantallaFila)
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, CopiaPantallaFila(y, h), w, h);
 }
 
 // ----------------------------------------------------------------------------
@@ -497,19 +498,19 @@ namespace {
 struct W3dtCab { int formato, w, h, niveles; };
 inline unsigned short W3dtU16(const unsigned char* p) { return (unsigned short)(p[0] | (p[1] << 8)); }
 int W3dtBpp(int formato) { return formato <= 3 ? 2 : (formato == 4 ? 3 : 4); }
-bool W3dtCabecera(const std::vector<unsigned char>& d, W3dtCab& c) {
-    if (d.size() < 16 || memcmp(&d[0], "W3DT", 4) != 0 || W3dtU16(&d[4]) != 1) return false;
+bool W3dtCabecera(const unsigned char* d, size_t largo, W3dtCab& c) {
+    if (!d || largo < 16 || memcmp(d, "W3DT", 4) != 0 || W3dtU16(&d[4]) != 1) return false;
     c.formato = W3dtU16(&d[6]); c.w = W3dtU16(&d[8]); c.h = W3dtU16(&d[10]); c.niveles = d[12];
     return c.formato >= 1 && c.formato <= 5 && c.w > 0 && c.h > 0 && c.niveles >= 1;
 }
 // el offset de cada nivel (y su tamano); false si el archivo no los trae enteros
-bool W3dtNiveles(const std::vector<unsigned char>& d, const W3dtCab& c, std::vector<size_t>& off) {
+bool W3dtNiveles(size_t largo, const W3dtCab& c, std::vector<size_t>& off) {
     off.clear();
     size_t p = 16;
     int w = c.w, h = c.h;
     for (int k = 0; k < c.niveles; k++) {
         const size_t n = (size_t)w * h * W3dtBpp(c.formato);
-        if (p > d.size() || d.size() - p < n) return false;
+        if (p > largo || largo - p < n) return false;
         off.push_back(p);
         p = (p + n + 3) & ~(size_t)3;
         w = w > 1 ? w / 2 : 1; h = h > 1 ? h / 2 : 1;
@@ -541,11 +542,15 @@ bool EsW3dt(const char* path) {
     return e[0] == '.' && (e[1] | 32) == 'w' && e[2] == '3' && (e[3] | 32) == 'd' && (e[4] | 32) == 't';
 }
 
-bool LoadTextureW3dt(const char* path, unsigned int& outId, int* outW, int* outH) {
+// un .w3dt que ya esta en memoria (un paquete de texturas de un juego): 'nombre' solo para el log. Lo mismo que
+// LoadTextureW3dt, que lee el archivo y llama a esta
+bool LoadTextureW3dtMemoria(const unsigned char* datos, size_t largo, unsigned int& outId, int* outW, int* outH,
+                            const char* nombre) {
+    const char* path = nombre ? nombre : "(memoria)";
 #ifdef W3D_TEX_POT_RGBA
     {   // GLdc no toma los 16 bits del archivo (5551/4444 en ese orden): se decodifica a RGBA y sube como cualquier otra
         unsigned char* rgba = 0; int w = 0, h = 0;
-        if (!DecodeW3dt(path, 1024, &rgba, &w, &h) || !rgba) return false;
+        if (!DecodeW3dtMemoria(datos, largo, 1024, &rgba, &w, &h) || !rgba) return false;
         outId = UploadRGBA(rgba, w, h, !PixeladoGlobal(), false, true, false);
         delete[] rgba;
         if (outW) *outW = w;
@@ -553,11 +558,11 @@ bool LoadTextureW3dt(const char* path, unsigned int& outId, int* outW, int* outH
         return outId != 0;
     }
 #endif
-    std::vector<unsigned char> d;
+    const unsigned char* d = datos;
     W3dtCab c;
     std::vector<size_t> off;
-    if (!w3dFileSystem::ReadFileBytes(path ? path : "", d) || !W3dtCabecera(d, c) || !W3dtNiveles(d, c, off)) {
-        w3dLogfE("[textura] %s no es un .w3dt que este Whisk3D pueda leer", path ? path : "");
+    if (!W3dtCabecera(d, largo, c) || !W3dtNiveles(largo, c, off)) {
+        w3dLogfE("[textura] %s no es un .w3dt que este Whisk3D pueda leer", path);
         return false;
     }
     const bool pot = ((c.w & (c.w - 1)) == 0) && ((c.h & (c.h - 1)) == 0);
@@ -613,12 +618,24 @@ bool LoadTextureW3dt(const char* path, unsigned int& outId, int* outW, int* outH
     return true;
 }
 
+bool LoadTextureW3dt(const char* path, unsigned int& outId, int* outW, int* outH) {
+    std::vector<unsigned char> d;
+    if (!w3dFileSystem::ReadFileBytes(path ? path : "", d) || d.empty()) {
+        w3dLogfE("[textura] %s no es un .w3dt que este Whisk3D pueda leer", path ? path : "");
+        return false;
+    }
+    return LoadTextureW3dtMemoria(&d[0], d.size(), outId, outW, outH, path);
+}
+
 bool DecodeW3dt(const char* path, int maxLado, unsigned char** outRGBA, int* outW, int* outH) {
     std::vector<unsigned char> d;
+    if (!outRGBA || !w3dFileSystem::ReadFileBytes(path ? path : "", d) || d.empty()) return false;
+    return DecodeW3dtMemoria(&d[0], d.size(), maxLado, outRGBA, outW, outH);
+}
+bool DecodeW3dtMemoria(const unsigned char* d, size_t largo, int maxLado, unsigned char** outRGBA, int* outW, int* outH) {
     W3dtCab c;
     std::vector<size_t> off;
-    if (!outRGBA || !w3dFileSystem::ReadFileBytes(path ? path : "", d) || !W3dtCabecera(d, c) || !W3dtNiveles(d, c, off))
-        return false;
+    if (!outRGBA || !W3dtCabecera(d, largo, c) || !W3dtNiveles(largo, c, off)) return false;
     // (una miniatura sale del nivel que ya entra: la piramide esta hecha)
     int k = 0;
     while (maxLado > 0 && k + 1 < c.niveles && ((c.w >> k) > maxLado || (c.h >> k) > maxLado)) k++;

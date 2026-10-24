@@ -45,6 +45,13 @@ bool VibrarActiva();
 // opcion en un escritorio, donde no tendria sentido.
 bool VibrarDisponible();
 
+// Una vibracion de 'ms' milisegundos con 'fuerza' 0..1 (lo que pide un juego: el golpe de un choque, el traqueteo del
+// pasto). Android: el vibrador del telefono (la actividad del juego tiene vibrar(int); la fuerza no se puede elegir y
+// acorta el pulso); web: navigator.vibrate; y siempre el motor de los MANDOS (W3dScriptMandosVibrarHook de
+// script/W3dScript.h, lo pone quien los abre). Respeta la opcion. Es lo que llama vibrar() de lua (este .cpp se instala
+// solo en W3dScriptVibrarHook)
+void VibrarMs(int ms, float fuerza);
+
 } // namespace w3dEngine
 
 #endif // W3D_VIBRAR_H

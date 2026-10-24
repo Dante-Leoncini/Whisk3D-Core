@@ -64,7 +64,12 @@ CW3dAudioStream::~CW3dAudioStream() { delete iStream; }
 void CW3dAudioStream::MaoscOpenComplete(TInt aError) {
     if (aError != KErrNone) { CActiveScheduler::Stop(); return; }   // sin stream no hay quien vea s_stop: cortar el hilo ya
     TInt sr = TMdaAudioDataSettings::ESampleRate22050Hz;
-    if      (iRate == 11025) sr = TMdaAudioDataSettings::ESampleRate11025Hz;
+    if      (iRate == 8000)  sr = TMdaAudioDataSettings::ESampleRate8000Hz;
+    else if (iRate == 11025) sr = TMdaAudioDataSettings::ESampleRate11025Hz;
+    else if (iRate == 12000) sr = TMdaAudioDataSettings::ESampleRate12000Hz;
+    else if (iRate == 16000) sr = TMdaAudioDataSettings::ESampleRate16000Hz;   // (el mixer a 16 kHz de la demo del N95)
+    else if (iRate == 24000) sr = TMdaAudioDataSettings::ESampleRate24000Hz;
+    else if (iRate == 32000) sr = TMdaAudioDataSettings::ESampleRate32000Hz;
     else if (iRate == 44100) sr = TMdaAudioDataSettings::ESampleRate44100Hz;
     else if (iRate == 48000) sr = TMdaAudioDataSettings::ESampleRate48000Hz;
     iStream->SetAudioPropertiesL(sr, TMdaAudioDataSettings::EChannelsStereo);

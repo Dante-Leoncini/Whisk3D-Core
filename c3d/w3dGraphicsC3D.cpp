@@ -1342,6 +1342,8 @@ void ReadPixelsBegin(int, int, int, int) {
     PonerViewport();
     PonerScissor();
 }
+bool CopiaPantallaDadaVuelta() { return false; }   // (las capturas de los juegos todavia no: ver w3dGLc3d.cpp)
+int CopiaPantallaFila(int y, int) { return y; }
 static u8* gSelCopia = NULL;   // (la superficie copiada a memoria lineal: 240 x 320 RGBA8, sin bloques)
 void ReadPixelsRGBA(int x, int y, int w, int h, unsigned char* p) {
     if (!p || w <= 0 || h <= 0) return;
@@ -1416,6 +1418,7 @@ void StatCategoria(StatCat c) { gStatCat = (int)c; }
 StatCat StatCategoriaActual() { return (StatCat)gStatCat; }
 void StatRaw(int n) { g_statLlamadas[gStatCat] += n; }
 StatsDeCuadro g_statCuadro;
+bool g_medirDraws = false;   // (solo el backend de GLES2 mide los draws)
 static int gCuadroDraws0 = 0, gCuadroIdx0 = 0;
 void StatsCuadro() {
     StatsDeCuadro& c = g_statCuadro;

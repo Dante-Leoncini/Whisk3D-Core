@@ -8,8 +8,10 @@
 //      (iOS 17.4+): el sistema hace su "tic" al cambiarlo. No se puede elegir
 //      intensidad ni duracion, y Apple lo puede cerrar cuando quiera; por eso
 //      todo esto vive detras de una API que promete poco.
+//  ANDROID: el vibrador del telefono por JNI, con el metodo vibrar(int) de la
+//  actividad del juego (lo genera Compilar juego).
 //  SYMBIAN/otros: el hueco esta listo (ver el #else) para engancharlo con la
-//  API de vibracion del sistema o con el rumble de un mando.
+//  API de vibracion del sistema; los MANDOS vibran por W3dScriptMandosVibrarHook.
 // ============================================================================
 #include "W3dVibrar.h"
 #include "W3dConfig.h"
@@ -17,11 +19,26 @@
 #ifdef __EMSCRIPTEN__
     #include <emscripten.h>
 #endif
+#ifdef __ANDROID__
+    #include <jni.h>
+    #include <SDL2/SDL.h>   // SDL_AndroidGetJNIEnv / SDL_AndroidGetActivity
+#endif
+
+// (script/W3dScript.cpp: el vibrar() de lua y el motor de los mandos)
+extern void (*W3dScriptVibrarHook)(int ms, float fuerza);
+extern void (*W3dScriptMandosVibrarHook)(int ms, float fuerza);
 
 namespace w3dEngine {
 
 static bool gActiva = true;
 static bool gListo  = false;
+
+// (la fuerza en un vibrador que solo prende y apaga: el pulso dura menos)
+static int MsConFuerza(int ms, float f) {
+    if (f < 0.0f) f = 0.0f; if (f > 1.0f) f = 1.0f;
+    const int m = (int)(ms * (0.35f + 0.65f * f) + 0.5f);
+    return m < 1 ? 1 : m;
+}
 
 #ifdef __EMSCRIPTEN__
 
@@ -78,6 +95,54 @@ void Vibrar(VibFuerza f) {
 
 bool VibrarDisponible() { if (!gListo) VibrarInit(); return w3dVibJS_Disponible() != 0; }
 
+void VibrarMs(int ms, float fuerza) {
+    if (!gListo) VibrarInit();
+    if (!gActiva || ms <= 0) return;
+    w3dVibJS_Vibrar(MsConFuerza(ms, fuerza));
+    if (W3dScriptMandosVibrarHook) W3dScriptMandosVibrarHook(ms, fuerza);
+}
+
+#elif defined(__ANDROID__)   // ---------------- Android: el vibrador del telefono ----------------
+
+// el metodo vibrar(int) de la actividad (JuegoActivity, la genera Compilar juego). El editor de Android no lo tiene:
+// la primera vez que falta no se pregunta mas
+static bool gSinMetodo = false;
+static void VibrarAndroid(int ms) {
+    if (gSinMetodo || ms <= 0) return;
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+    jobject act = (jobject)SDL_AndroidGetActivity();
+    if (!env || !act) return;
+    jclass cl = env->GetObjectClass(act);
+    jmethodID mid = cl ? env->GetMethodID(cl, "vibrar", "(I)V") : 0;
+    if (mid) env->CallVoidMethod(act, mid, (jint)ms);
+    else gSinMetodo = true;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (cl) env->DeleteLocalRef(cl);
+    env->DeleteLocalRef(act);
+}
+
+void VibrarInit() {
+    if (gListo) return;
+    gListo = true;
+    ConfigLoad();
+    gActiva = ConfigGetInt("vibracion", 1) != 0;
+}
+
+void Vibrar(VibFuerza f) {
+    if (!gListo) VibrarInit();
+    if (!gActiva) return;
+    VibrarAndroid((f == VibGolpe) ? 32 : (f == VibToque ? 18 : 10));
+}
+
+bool VibrarDisponible() { if (!gListo) VibrarInit(); return !gSinMetodo; }
+
+void VibrarMs(int ms, float fuerza) {
+    if (!gListo) VibrarInit();
+    if (!gActiva || ms <= 0) return;
+    VibrarAndroid(MsConFuerza(ms, fuerza));
+    if (W3dScriptMandosVibrarHook) W3dScriptMandosVibrarHook(ms, fuerza);   // (un mando conectado al telefono)
+}
+
 #else   // ---------------- escritorio / Symbian / consolas ----------------
 
 void VibrarInit() {
@@ -91,7 +156,13 @@ void VibrarInit() {
 // escritorio con el rumble del mando. Mientras tanto no hace nada y nadie se rompe.
 void Vibrar(VibFuerza /*f*/) { if (!gListo) VibrarInit(); }
 
-bool VibrarDisponible() { return false; }
+bool VibrarDisponible() { return W3dScriptMandosVibrarHook != 0; }
+
+void VibrarMs(int ms, float fuerza) {
+    if (!gListo) VibrarInit();
+    if (!gActiva || ms <= 0) return;
+    if (W3dScriptMandosVibrarHook) W3dScriptMandosVibrarHook(ms, fuerza);
+}
 
 #endif
 
@@ -103,5 +174,11 @@ void VibrarSetActiva(bool activa) {
 }
 
 bool VibrarActiva() { if (!gListo) VibrarInit(); return gActiva; }
+
+// vibrar() de lua: donde se compila este .cpp manda el (respeta la opcion)
+namespace {
+struct InstalarVibrar { InstalarVibrar() { W3dScriptVibrarHook = w3dEngine::VibrarMs; } };
+static InstalarVibrar gInstalarVibrar;
+}
 
 } // namespace w3dEngine

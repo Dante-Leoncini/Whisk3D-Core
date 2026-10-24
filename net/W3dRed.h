@@ -79,6 +79,11 @@ Estado EstadoActual();
 const std::string& Error();
 int MiId();                              // 0 el host, 1.. los demas; -1 sin sesion
 const std::vector<Jugador>& Jugadores();
+// hace cuantos segundos no llega nada de ese jugador (-1: del que hace mas; el que se une solo oye al host, asi que
+// para el es el silencio del host). Con mas de LimiteSilencio() se lo da por ido. Un juego lo usa para esperar al otro
+// (pausar y avisar) en vez de seguir como si nada mientras la red se traba
+double Silencio(int id);
+double LimiteSilencio();
 
 // --- los mensajes: para = el id de un jugador o -1 (todos los demas) ---
 bool Enviar(int para, const void* datos, int bytes, bool confiable);

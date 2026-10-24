@@ -14,8 +14,12 @@
 //    ADIOS       me voy
 //  Los confiables se reenvian cada 0,25 s hasta su ACK y se entregan en orden (los que llegan adelantados
 //  esperan a los que faltan).
+//
+//  DREAMCAST: los sockets de KallistiOS (el adaptador de banda ancha; el juego arranca la red: eth_init + net_init).
+//  Sin Lua (-DW3D_RED_SIN_LUA): el juego arma y lee los valores con W3dRedValor.h, el mismo formato.
 // ============================================================================
 #include "W3dRed.h"
+#include "W3dRedValor.h"
 #include "base/w3dlog.h"
 #include <string.h>
 #include <stdio.h>
@@ -33,8 +37,8 @@
     #include <windows.h>
     typedef SOCKET SocketRed;
     #define SOCKET_NULO INVALID_SOCKET
-#elif defined(__EMSCRIPTEN__) || defined(W3D_DREAMCAST) || defined(W3D_3DS)
-    // (el navegador no tiene UDP; Dreamcast y 3DS, todavia no)
+#elif defined(__EMSCRIPTEN__) || defined(W3D_3DS)
+    // (el navegador no tiene UDP; la 3DS, todavia no)
     #define W3D_RED_NINGUNA 1
     typedef int SocketRed;
     #define SOCKET_NULO (-1)
@@ -50,8 +54,16 @@
     #include <errno.h>
     #include <time.h>
     #include <sys/time.h>
-    // (Symbian: los sockets de Open C, sin la lista de interfaces; Android, desde la API 24)
-    #if !defined(W3D_SYMBIAN) && (!defined(__ANDROID__) || (defined(__ANDROID_API__) && __ANDROID_API__ >= 24))
+    #if defined(W3D_DREAMCAST)
+        #include <kos/net.h>      // net_default_dev: la IP del adaptador
+        #include <arch/timer.h>   // timer_us_gettime64
+    #endif
+    #ifndef INADDR_LOOPBACK
+        #define INADDR_LOOPBACK 0x7F000001u   // (KallistiOS no lo trae)
+    #endif
+    // (Symbian: los sockets de Open C, sin la lista de interfaces; Android, desde la API 24; la Dreamcast tampoco)
+    #if !defined(W3D_SYMBIAN) && !defined(W3D_DREAMCAST) && \
+        (!defined(__ANDROID__) || (defined(__ANDROID_API__) && __ANDROID_API__ >= 24))
         #include <ifaddrs.h>
         #include <net/if.h>
         #define W3D_RED_IFADDRS 1
@@ -60,10 +72,12 @@
     #define SOCKET_NULO (-1)
 #endif
 
+#if !defined(W3D_RED_SIN_LUA)
 extern "C" {
 #include "lua.h"
 #include "lauxlib.h"
 }
+#endif
 
 namespace w3dRed {
 
@@ -90,6 +104,8 @@ double Ahora() {
     LARGE_INTEGER c;
     QueryPerformanceCounter(&c);
     return (double)c.QuadPart / (double)f.QuadPart;
+#elif defined(W3D_DREAMCAST)
+    return (double)timer_us_gettime64() * 1e-6;
 #elif defined(W3D_RED_POSIX) && !defined(W3D_SYMBIAN)
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
@@ -729,6 +745,9 @@ std::string NombrePorDefecto() {
         if (WSAStartup(MAKEWORD(2, 2), &w) == 0) gWinsock = true;
     }
 #endif
+#if defined(W3D_DREAMCAST)
+    defecto = "Dreamcast";   // (la consola no tiene nombre)
+#else
     char h[128];
     if (gethostname(h, sizeof(h)) == 0) {
         h[sizeof(h) - 1] = 0;
@@ -737,6 +756,7 @@ std::string NombrePorDefecto() {
         if (punto && punto != h) *punto = 0;
         defecto = h;
     }
+#endif
 #endif
     if (defecto.empty() || defecto == "localhost") {
         char s[32];
@@ -761,6 +781,13 @@ std::string DireccionLocal() {
     }
     freeifaddrs(lista);
     return r;
+#elif defined(W3D_DREAMCAST)
+    // (la que le dio el DHCP al adaptador)
+    const netif_t* n = net_default_dev;
+    if (!n || !n->ip_addr[0]) return std::string();
+    char s[20];
+    sprintf(s, "%d.%d.%d.%d", n->ip_addr[0], n->ip_addr[1], n->ip_addr[2], n->ip_addr[3]);
+    return s;
 #elif !defined(W3D_RED_NINGUNA)
     // (sin la lista de interfaces: la que usaria para salir; conectar un socket UDP no manda nada)
     std::string error;
@@ -899,6 +926,21 @@ bool Recibir(int& de, std::string& datos) {
     return true;
 }
 
+double Silencio(int id) {
+    if (G.estado != ESPERANDO && G.estado != CONECTADO) return 0;
+    if (id >= 0 && id == G.miId) return 0;
+    const double ahora = Ahora();
+    double peor = 0;
+    for (std::map<int, Enlace>::iterator it = G.enlaces.begin(); it != G.enlaces.end(); ++it) {
+        // (el host mira el enlace de ese jugador; el que se une tiene uno solo, el del host, y todo pasa por ahi)
+        if (G.miId == 0 && id >= 0 && it->first != id) continue;
+        if (ahora - it->second.oido > peor) peor = ahora - it->second.oido;
+    }
+    return peor;
+}
+
+double LimiteSilencio() { return SE_FUE; }
+
 void Actualizar() {
     if (G.estado == NADA || G.estado == FALLO) return;
     Leer();
@@ -942,12 +984,15 @@ void Actualizar() {
 }
 
 // =================================================================================================== Lua
+#if defined(W3D_RED_SIN_LUA)
+void RegistrarBinds(void*) {}
+#else
 namespace {
 
 // LOS VALORES DE LUA EN BYTES (redEnviar / redRecibir): nil, booleanos, numeros (enteros de 1, 2 o 4 bytes; los
 // demas en float de 4: posiciones, tiempos), textos y tablas (cualquier clave). Una tabla que se repite o se
-// contiene a si misma no viaja (va nil). Los objetos de la escena tampoco (son punteros de este programa)
-enum { V_NIL = 0, V_FALSO, V_VERDADERO, V_I8, V_I16, V_I32, V_F32, V_TEXTO, V_TABLA, V_F64 };
+// contiene a si misma no viaja (va nil). Los objetos de la escena tampoco (son punteros de este programa). Los tipos
+// son los de W3dRedValor.h (el mismo formato, para un juego en C++)
 
 void EscribirValor(lua_State* L, int i, Escritor& e, int prof) {
     const int t = lua_type(L, i);
@@ -1132,6 +1177,13 @@ int LJugadores(lua_State* L) {
     }
     return 1;
 }
+// redSilencio([id]) -> segundos sin noticias de ese jugador (sin id: del que hace mas), el limite (despues, se fue)
+int LSilencio(lua_State* L) {
+    Actualizar();
+    lua_pushnumber(L, Silencio(lua_isnoneornil(L, 1) ? -1 : (int)luaL_checkinteger(L, 1)));
+    lua_pushnumber(L, LimiteSilencio());
+    return 2;
+}
 // redEnviar(valor [, para [, confiable]]) -> bool. para: el id de un jugador (nil = todos); confiable por defecto
 int LEnviar(lua_State* L) {
     Escritor e;
@@ -1176,9 +1228,11 @@ void RegistrarBinds(void* Lv) {
     lua_pushcfunction(L, LEstado);      lua_setglobal(L, "redEstado");
     lua_pushcfunction(L, LYo);          lua_setglobal(L, "redYo");
     lua_pushcfunction(L, LJugadores);   lua_setglobal(L, "redJugadores");
+    lua_pushcfunction(L, LSilencio);    lua_setglobal(L, "redSilencio");
     lua_pushcfunction(L, LEnviar);      lua_setglobal(L, "redEnviar");
     lua_pushcfunction(L, LRecibir);     lua_setglobal(L, "redRecibir");
     lua_pushcfunction(L, LCerrar);      lua_setglobal(L, "redCerrar");
 }
+#endif // W3D_RED_SIN_LUA
 
 } // namespace w3dRed
