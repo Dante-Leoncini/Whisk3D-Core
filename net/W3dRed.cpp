@@ -40,6 +40,8 @@
 #elif defined(__EMSCRIPTEN__) || defined(W3D_3DS)
     // (el navegador no tiene UDP; la 3DS, todavia no)
     #define W3D_RED_NINGUNA 1
+    #include <netinet/in.h>   // (htonl/ntohs e INADDR_LOOPBACK: las direcciones se arman y se muestran igual)
+    #include <arpa/inet.h>
     typedef int SocketRed;
     #define SOCKET_NULO (-1)
 #else
