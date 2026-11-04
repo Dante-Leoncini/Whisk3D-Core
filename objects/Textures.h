@@ -88,6 +88,12 @@ void     TexturaRenombrar(Texture* t, const std::string& nuevo);
 void     TexturaRetener(Texture* t);
 // -1 ref. Al llegar a 0 la libera de verdad (GL + objeto + vector global).
 void     TexturaSoltar(Texture* t);
+// HUERFANAS: con esto prendido (el EDITOR), una textura que se queda sin usuarios NO se libera: sigue cargada en la
+// biblioteca como huerfana hasta que algo la purgue a proposito (Purge Orphans, cerrar el proyecto). Sacarle la
+// textura a un material la borraba de la biblioteca y ya no se podia volver a elegir. El juego compilado lo deja
+// apagado: ahi lo que nadie usa se libera solo (la memoria del telefono)
+void     TexturasConservarHuerfanas(bool on);
+bool     TexturasConservanHuerfanas();
 // EL MATERIAL RETIENE SUS TEXTURAS (refcount real): cada RANURA de un material (la textura base, el normal map, la
 // textura de cada capa) es duena de UNA referencia a lo que apunta. Poner otra textura en la ranura retiene la nueva
 // y suelta la anterior (que se libera de verdad si nadie mas la tenia). Asi, cuando el streaming descarga lo ultimo

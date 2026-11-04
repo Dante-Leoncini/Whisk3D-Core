@@ -16,6 +16,7 @@
 #include <vector>
 #include <string>
 #include <set>
+#include <map>
 #ifdef W3D_SYMBIAN
     #include <GLES/gl.h>
 #else
@@ -202,6 +203,8 @@ private: // no copiable (es dueno de punteros): la lista guarda Armature2D*
 // pero la realidad es que no me termina de gustar esta logica y lo quiero cambiar... me gustaria que el Core quede lo mas simple y limpio posible
 // pero toda la logica de modificadores, capas, etc etc solo lo complico de mas al pedo.
 class Modifier;
+struct InsetOpciones;   // (main/edit/MeshEdit.h) las opciones de Inset Faces
+struct BevelOpciones;   // (main/edit/MeshEdit.h) las opciones del Bevel
 
 // cara LOGICA (poligono): triangulo / quad / ngon. La malla de RENDER la
 // triangula en faces[]; el overlay (y a futuro la edicion de mallas) la usa
@@ -472,19 +475,6 @@ class Mesh : public Object {
         unsigned            skinGeomVersion;// se incrementa en CalcularBordes (regenerar geometria); entra en skinFlatSig
                                             // para invalidar el CSR si GenerarRender reindexa vertex[] con igual tamaño
 
-        // ---- CACHE de vertex-animation (bake del skinning): guarda el resultado del skinning (posiciones + normales si
-        //      hay luz) por-frame para NO recomputarlo en cada reproduccion. LAZY: la 1ra vuelta skinnea y guarda (lento,
-        //      ~4fps), despues solo copia/interpola el snapshot (rapido -> se acerca al techo de render). 'skip' decima
-        //      frames para ahorrar memoria (interpola los intermedios). Se activa desde el modificador Armature. ----
-        struct SkinSnapshot { GLfloat* pos; GLbyte* nor; }; // pos = vertexSize*3 floats; nor = vertexSize*3 bytes o NULL (unlit)
-        std::vector<SkinSnapshot> skinCache; // por slot (frame-skinCacheStart)/(skip+1); pos==NULL = todavia no bakeado
-        bool     skinCacheOn;       // flag del modificador Armature (default OFF)
-        int      skinCacheSkip;     // 0 = todos los frames; 1 = 1 si 1 no (interpola el intermedio); N = guarda cada N+1
-        int      skinCacheStart, skinCacheEnd; // rango cubierto por el cache (= StartFrame..EndFrame al (re)validar)
-        bool     skinCacheConLuz;   // se guardaron normales en los snapshots?
-        unsigned skinCacheSig;      // firma de invalidacion (geom + clip + rig + rango + skip + luz)
-        void LiberarSkinCache();    // libera todos los snapshots (pos/nor) y vacia el vector
-
         // ---- VBOs de render (buffer objects): la malla se sube 1 vez a memoria de GPU y se dibuja desde ahi, en vez
         //      de re-transferir los client-arrays de RAM en cada glDrawElements. 0 = sin crear. Solo para el caso
         //      "simple" (solido / materiales sin chrome-normalmap, sin gen/weightpaint/xray); el resto sigue client-side. ----
@@ -523,6 +513,18 @@ class Mesh : public Object {
         // el array de render de la capa UV 'i' (0 = la base): uv[] si es la activa (o no hay capas), sino
         // uvExtra[i]; NULL si esa capa no esta en el render (el que dibuja cae a uv[]).
         const GLfloat* UVDeCapa(int i) const;
+        // EL UV DE UN MAPA DEL MATERIAL EN ESTE OBJETO: por defecto el INDICE del material (Material::uvMapa, compartido
+        // por todos los que lo usan); un objeto puede elegir uno PERSONALIZADO, por NOMBRE de su capa UV, para un mapa de
+        // un material ("" = usa el indice). Clave del .w3d: "uvMateriales"
+        // (o un INDICE propio: la capa UV en esa posicion de ESTA malla, en vez del indice del material)
+        std::map<std::string, std::string> uvPersonal;   // "material\x1fmapa" -> nombre de la capa UV
+        std::map<std::string, int>         uvPersonalIdx; // "material\x1fmapa" -> indice propio (0 = la primera)
+        std::string UVPersonalizado(const Material* m, int mapa) const;
+        void FijarUVPersonalizado(const Material* m, int mapa, const std::string& uv);
+        int  UVPersonalIndice(const Material* m, int mapa) const;            // -1 = no tiene
+        void FijarUVPersonalIndice(const Material* m, int mapa, int indice); // -1 = lo quita
+        bool UVEsPersonal(const Material* m, int mapa) const { return !UVPersonalizado(m, mapa).empty() || UVPersonalIndice(m, mapa) >= 0; }
+        const GLfloat* UVDeMapa(const Material* m, int mapa) const;   // la del personalizado o la del indice (NULL = la base)
         // los DOS grupos de pesos (ver el bloque VertexGroup/UVGroup arriba): por
         // CONTROL-POINT (3D, armature 3D) y por CORNER (editor UV, armature 2D).
         std::vector<VertexGroup*> vertexGroups; int grupoActivo;
@@ -665,6 +667,8 @@ class Mesh : public Object {
         std::vector<MaterialGroup> genMaterialsGroup;
         std::vector<GLfloat> genBordesBuf; // aristas de POLIGONO de la malla generada (sin diagonales de tri) para el
                                            // CONTORNO de seleccion (subdiv/screw): sino el objeto seleccionado no muestra borde
+        std::vector<MeshIndex> genLineasIdx; // las mismas aristas, como pares de indices de la malla generada: las
+                                             // LINEAS del material (Material::lineas) sin las diagonales de los triangulos
         bool genValido; // true = hay malla generada por modificadores -> usarla en el render
         // VERSION DE LA GEOMETRIA EDITABLE: sube cada vez que algo cambia vertex[]/faces3d por las dos
         // puertas al render (RefrescarRender / GenerarRender, en el editor). El Core no la usa: es para
@@ -1226,6 +1230,20 @@ class Mesh : public Object {
         // "tapa" (offset epsilon) y la deja seleccionada para que el editor la mueva.
         // outDirLocal = direccion (normal); outConstrain=false si no hay caras (libre).
         bool ExtruirEdit(Vector3& outDirLocal, bool& outConstrain);
+        // INSET FACES (I en Edit Mode, menu Face; main/edit/MeshEdit.cpp): achica hacia adentro las caras
+        // 'selFace3d' (una marca por faces3d) dejando un anillo de caras nuevas en el contorno. Las opciones son las
+        // del panel "Inset Faces" (InsetOpciones, main/edit/MeshEdit.h). Deja seleccionadas las caras de adentro (o el
+        // anillo, con "Select Outer"). No captura undo: lo hace el modal al confirmar
+        bool InsetEdit(const InsetOpciones& o, const std::vector<char>& selFace3d);
+        // las faces3d que forma la seleccion de la UI (todas sus esquinas seleccionadas); false si no hay ninguna
+        bool CarasSeleccionadas3d(std::vector<char>& selFace3d);
+        // BEVEL (Ctrl+B; main/edit/MeshEdit.cpp): redondea las aristas 'aristas' (o los vertices 'selRep', con afecta = 0)
+        // con un perfil de N segmentos. Las opciones son las del panel "Bevel" (BevelOpciones). Deja seleccionadas las
+        // caras nuevas. No captura undo: lo hace el modal al confirmar. BevelSeleccion lee la seleccion de la UI
+        bool BevelEdit(const BevelOpciones& o, const std::vector<char>& selRep, const std::vector<std::pair<int,int> >& aristas);
+        bool BevelSeleccion(std::vector<char>& selRep, std::vector<std::pair<int,int> >& aristas);
+        // selecciona (vertices/aristas/caras) las caras de la EDICION cuyo centro coincide con alguno de 'centros'
+        void SeleccionarCarasPorCentro(const std::vector<Vector3>& centros);
 
         // reconstruye la malla de edicion y deja seleccionados los verts marcados en
         // selVertNuevo (indice GPU nuevo). Lo usan extrude/duplicate/delete.
@@ -1330,6 +1348,9 @@ class Mesh : public Object {
         // Igual que las calcomanias, esas mallas no se dibujan en el recorrido del
         // arbol: se anotan y se dibujan al final (ver W3dLucesDibujarPendientes).
         bool EsSoloLuz() const;
+        bool EsSoloPantalla() const;
+        std::vector<float> vertCPUPos;          // las posiciones movidas por el @vertice en la CPU (ShaderCPU.h), de este dibujo
+        std::vector<signed char> vertCPUNor;    // y sus normales   // todos sus materiales tienen un shader escrito que lee la pantalla (se dibuja al final)
         // dibuja los bordes (edges) como GL_LINES. pushBack empuja el zbuffer
         // atras (para el contorno verde: tapa las lineas internas, deja el borde).
         void RenderBordes(const float* color, float width, bool pushBack);

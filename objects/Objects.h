@@ -77,8 +77,12 @@ struct ObjectType {
         proxy,          // PROXY W3D: una instancia de un prefab o de una escena de una LIBRERIA externa (otro .w3d de
                         // solo lectura). Genera sus hijos como una instancia de prefab (misma maquinaria, misma frontera
                         // de scope) pero nada de lo generado se edita ni se guarda (main/objects/ProxyW3d.h)
-        rutina          // RUTINA (objeto avanzado): una LISTA DE PASOS del render (apilar, trasladar, textura, luz,
+        rutina,         // RUTINA (objeto avanzado): una LISTA DE PASOS del render (apilar, trasladar, textura, luz,
                         // dibujar una malla...) sin transformacion propia (main/objects/Rutina.h)
+        sonido,         // SONIDO puesto en la escena: suena con el timeline (en SEGUNDOS, no en frames) o en el juego;
+                        // posicional (3D, desde donde esta) o como musica (main/objects/Sonido.h)
+        postproceso     // POSTPROCESADO puesto en el arbol: sus efectos se aplican a lo ya dibujado en ese punto
+                        // (main/objects/PostprocesoObj.h)
     };
     Enum v;
     ObjectType(Enum e) : v(e) {}
@@ -96,6 +100,9 @@ extern std::vector<Object*> ObjSelects;
 // del pase de escena; el Core lo LEE en Object::Render. En el runtime del juego queda en false/NULL (gratis).
 extern bool g_localViewActivo;
 extern const std::set<Object*>* g_localViewVisibles; // objetos a traversar/dibujar (NULL = no filtrar)
+extern const std::set<Object*>* g_localViewPaso;     // los PADRES de lo aislado: se atraviesan (su matriz) pero no se dibujan
+bool W3dVistaLocalOculta(Object* o);                  // fuera de la vista local (ni se dibuja ni se atraviesa)
+bool W3dVistaLocalSoloPaso(Object* o);                // padre de lo aislado: se atraviesa pero no se dibuja
 extern Object* CollectionActive;
 extern Object* ObjActivo;
 

@@ -1,4 +1,8 @@
 #include "Light.h"
+#include <math.h>   // sqrtf: el alcance
+#ifdef W3D_MULTIBACKEND
+#include "w3dBackend.h"   // las luces por el shader si el backend ACTIVO los usa (varios backends)
+#endif
 #include "w3dGraphics.h" // flags de estado de render (w3dRenderLuces)
 #include <cstdio>
 
@@ -25,12 +29,14 @@ Light::Light(Object* parent, float x, float y, float z)
     attConstant = 0.5f; attLinear = 0.1f; attQuadratic = 0.0f;
     spotCutoff = 180.0f;                       // 180 = sin cono (punto). <90 -> spotlight
     spotExponent = 0.0f;
-    rtRadio = 0.0f; rtRayos = 0.0f;            // trazado de rayos: puntual (sombra dura), rayos = el global
+    intensidad = 1.0f;
+    distancia = 0.0f;
+    rtRadio = 0.2f; rtRayos = 0.0f;            // trazado de rayos: una lampara chica (penumbra suave al prender el trazado), rayos = el global
 }
 
 // Método Create
 Light* Light::Create(Object* parent, float x, float y, float z) {
-    if (Lights.size() >= MAX_LIGHTS) {
+    if (Lights.size() >= MAX_LUCES_ESCENA) {
         printf("WARNING: Máximo de luces alcanzado.\n");
         return NULL;
     }
@@ -47,7 +53,7 @@ Light* Light::Create(Object* parent, float x, float y, float z) {
     }
     int libre = 0;
     while (libre < MAX_LIGHTS && usado[libre]) libre++;
-    if (libre >= MAX_LIGHTS) libre = 0; // (no deberia pasar por el limite)
+    if (libre >= MAX_LIGHTS) libre = (int)(Lights.size() % MAX_LIGHTS);   // (todas tomadas: comparte una, en rueda)
     l->SetLightID(GL_LIGHT0 + (GLenum)libre);
     Lights.push_back(l);
     return l;
@@ -121,7 +127,12 @@ void Light::RenderObject() {
     // Las luces de la ESCENA se aplican SOLO en RENDER preview (esto es algo mas del editor 3d puede quitarse en el futuro)
     // Con el PRE-PASE hecho, el recorrido normal no las re-aplica (solo el gizmo); el pre-pase no dibuja gizmo.
     bool aplicar = w3dRenderLuces && (!g_lucesPrepase || gAplicandoPrepase || !ignorarOrden);
-#ifdef W3D_SYMBIAN
+    // (la INTENSIDAD multiplica el difuso y el especular que van a GL)
+    const float I = intensidad < 0.0f ? 0.0f : intensidad;
+    float difI[4] = { diffuse[0] * I, diffuse[1] * I, diffuse[2] * I, diffuse[3] };
+    float speI[4] = { specular[0] * I, specular[1] * I, specular[2] * I, specular[3] };
+    (void)difI; (void)speI;
+#if defined(W3D_SYMBIAN) && !defined(W3D_GLES2)   // (el N8 con ES 2.0 va por la rama de shaders de abajo)
     // misma logica de luz que PC: la luz de ESCENA se enciende aca (bajo la matriz del objeto: position local =
     // origen del objeto). El icono lo dibuja render.cpp (RenderIcons3D).
     if (aplicar) {
@@ -134,16 +145,23 @@ void Light::RenderObject() {
         } else { pos[0] = position[0]; pos[1] = position[1]; pos[2] = position[2]; pos[3] = 1.0f; }
         w3dEngine::MatricesSincronizar();   // (GL transforma la posicion con SU modelview: la perezosa tiene que estar)
         W3D_GL_CRUDO(glLightfv(LightID, GL_POSITION, pos));
-        W3D_GL_CRUDO(glLightfv(LightID, GL_DIFFUSE,  diffuse));
+        W3D_GL_CRUDO(glLightfv(LightID, GL_DIFFUSE,  difI));
         W3D_GL_CRUDO(glLightfv(LightID, GL_AMBIENT,  ambient));
-        W3D_GL_CRUDO(glLightfv(LightID, GL_SPECULAR, specular));
+        W3D_GL_CRUDO(glLightfv(LightID, GL_SPECULAR, speI));
         W3D_GL_CRUDO(glLightf(LightID, GL_CONSTANT_ATTENUATION, attConstant));
         W3D_GL_CRUDO(glLightf(LightID, GL_LINEAR_ATTENUATION,   attLinear));
         // QUADRATIC + SPOT: SOLO en PC. El GLES1 del N95 nunca los ejecuto (el bloque viejo no los tenia) y
         // parecen colgar el driver -> los dejamos afuera de Symbian (la luz queda puntual/direccional, sin cono).
     }
     return;
-#elif defined(W3D_WEBGL) || defined(__ANDROID__)
+#else
+#if defined(W3D_WEBGL) || defined(__ANDROID__) || defined(W3D_MULTIBACKEND)
+  // (con varios backends en el ejecutable, solo si el ACTIVO dibuja con shaders: gfx/w3dBackend.h)
+#ifdef W3D_MULTIBACKEND
+  if (w3dEngine::BackendConShaders()) {
+#else
+  {
+#endif
     // WebGL/ES2: el backend emula las 8 luces del pipeline fijo en el shader. Cada luz va a SU numero (el de su
     // LightID) con lo mismo que la rama de PC: posicion (transformada con la matriz actual, como glLightfv),
     // colores, atenuacion y cono.
@@ -155,9 +173,9 @@ void Light::RenderObject() {
             pos[0] = 0.0f; pos[1] = 1.0f; pos[2] = 0.0f; pos[3] = 0.0f;
         } else { pos[0] = position[0]; pos[1] = position[1]; pos[2] = position[2]; pos[3] = 1.0f; }
         w3dEngine::LightNfv(n, w3dEngine::LightPosition, pos);
-        w3dEngine::LightNfv(n, w3dEngine::LightDiffuse,  diffuse);
+        w3dEngine::LightNfv(n, w3dEngine::LightDiffuse,  difI);
         w3dEngine::LightNfv(n, w3dEngine::LightAmbient,  ambient);
-        w3dEngine::LightNfv(n, w3dEngine::LightSpecular, specular);
+        w3dEngine::LightNfv(n, w3dEngine::LightSpecular, speI);
         w3dEngine::LightNf(n, w3dEngine::LightConstantAtt,  attConstant);
         w3dEngine::LightNf(n, w3dEngine::LightLinearAtt,    attLinear);
         w3dEngine::LightNf(n, w3dEngine::LightQuadraticAtt, attQuadratic);
@@ -167,7 +185,9 @@ void Light::RenderObject() {
     // GIZMO de la luz (overlay del editor): igual que en desktop
     if (g_lightOverlayHook && !gAplicandoPrepase) g_lightOverlayHook(this);
     return;
-#else
+  }
+#endif
+#if !defined(W3D_WEBGL) && !defined(__ANDROID__)
 
     if (aplicar){
         w3dEngine::SetLightEnabled(LightID, true);   // (por el motor: lleva el cache de las luces)
@@ -181,9 +201,9 @@ void Light::RenderObject() {
         // GL transforma la posicion y la direccion del spot con SU modelview: la perezosa tiene que estar en GL
         w3dEngine::MatricesSincronizar();
         W3D_GL_CRUDO(glLightfv(LightID, GL_POSITION, pos));
-        W3D_GL_CRUDO(glLightfv(LightID, GL_DIFFUSE,  diffuse));
+        W3D_GL_CRUDO(glLightfv(LightID, GL_DIFFUSE,  difI));
         W3D_GL_CRUDO(glLightfv(LightID, GL_AMBIENT,  ambient));
-        W3D_GL_CRUDO(glLightfv(LightID, GL_SPECULAR, specular));
+        W3D_GL_CRUDO(glLightfv(LightID, GL_SPECULAR, speI));
         // atenuacion editable (solo afecta a la puntual/spot; la direccional la ignora OpenGL)
         W3D_GL_CRUDO(glLightf(LightID, GL_CONSTANT_ATTENUATION,  attConstant));
         W3D_GL_CRUDO(glLightf(LightID, GL_LINEAR_ATTENUATION,    attLinear));
@@ -198,5 +218,14 @@ void Light::RenderObject() {
     // GIZMO de la luz (linea + color de seleccion): overlay del EDITOR, lo dibuja el hook (render.cpp),
     // NO el Core. En Symbian el path de arriba retorna sin llamarlo (el icono lo hace RenderIcons3D).
     if (g_lightOverlayHook && !gAplicandoPrepase) g_lightOverlayHook(this);
+#endif
 #endif // !W3D_SYMBIAN
 }
+
+void W3dLuzPonerTipo(Light* l, int tipo) {
+    if (!l) return;
+    l->direccional = (tipo == 1);
+    if (tipo == 2) { if (l->spotCutoff >= 179.5f) { l->spotCutoff = 45.0f; if (l->spotExponent < 1.0f) l->spotExponent = 8.0f; } }
+    else if (tipo == 0) l->spotCutoff = 180.0f;
+}
+

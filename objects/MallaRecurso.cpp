@@ -24,6 +24,7 @@ namespace gfx = w3dEngine;
 
 const char* const W3D_EDICION_DEL_RECURSO = "@recurso";
 Material* (*W3dMallaMaterialPorNombreHook)(const std::string& nombre) = 0;
+void (*W3dMallaAntesDeVincularHook)(Mesh* m, MallaRecurso* r) = 0;
 bool (*W3dMallaTextoABinHook)(const unsigned char* datos, size_t n, const std::string& nombre, std::string& out) = 0;
 
 // el registro del proyecto: dueno de los MallaRecurso (viven hasta cerrar el proyecto)
@@ -848,7 +849,6 @@ static void AplicarAMalla(Mesh* m, MallaRecurso* r, bool conservarEdicion) {
     m->lastSkinFrame = -999999;
     m->skinFlatSig = 0;
     m->skinShapeSerial = 0xFFFFFFFFu;
-    m->LiberarSkinCache();
     m->tangentsValid = false;
     m->chromeUVValid = false;
     m->genChromeValid = false;
@@ -919,6 +919,7 @@ bool W3dMallaRecursoVivo(const MallaRecurso* r) {
 
 bool W3dMallaVincular(Mesh* m, MallaRecurso* r, bool conservarEdicion) {
     if (!m || !r) return false;
+    if (W3dMallaAntesDeVincularHook) W3dMallaAntesDeVincularHook(m, r);
     // la referencia NUEVA antes de soltar la vieja (si es el mismo recurso, no se descarga en el medio)
     W3dRecurso* d = AdquirirMalla(r);
     if (!d) return false;
@@ -943,6 +944,7 @@ bool W3dMallaVincular(Mesh* m, MallaRecurso* r, bool conservarEdicion) {
 
 bool W3dMallaMudar(Mesh* m, MallaRecurso* r) {
     if (!m || !r) return false;
+    if (W3dMallaAntesDeVincularHook) W3dMallaAntesDeVincularHook(m, r);
     if (m->malla == r) return true;
     W3dRecurso* d = AdquirirMalla(r);
     if (!d) return false;

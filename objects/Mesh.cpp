@@ -8,6 +8,8 @@
 #include "RenderColors.h"   // paleta de render del CORE (sin depender de la UI)
 #include "MallaRecurso.h"   // la malla 3D como recurso: vinculo, VBO compartidos
 #include "objects/Light.h"  // Lights: la luz que sombrea el toon (ToonHaciaLaLuz)
+#include "ShaderEscrito.h"   // el shader escrito de un material (Material::shaderOn)
+#include "ShaderCPU.h"       // su @vertice corrido en la CPU (backends sin shaders: GLES 1.1, GL fijo)
 #include <math.h> // C puro: compila en RVCT y PC por igual
 #include <algorithm> // sort/unique: dedup de aristas del material con `lineas`
 #include <map>    // Armature2DAplicar: peso por control-point de cada hueso 2D
@@ -34,7 +36,6 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     skinAabbMin = Vector3(0,0,0); skinAabbMax = Vector3(0,0,0); skinAabbOk = false; skinCullSeguidos = 0; // autocull
     skinEpsPos = 0.0f; skinEpsRot = 0.0f; skinIncOk = false; skinPrevConLuz = false; // skinning incremental
     shapeSerial = 0; skinShapeSerial = 0xFFFFFFFFu;   // shape keys: ninguna forma, nada calculado
-    skinCacheOn = false; skinCacheSkip = 0; skinCacheStart = 0; skinCacheEnd = -1; skinCacheConLuz = false; skinCacheSig = 0; // cache de vertex-animation (lazy, off)
     meshTipo = -1;       // no es una primitiva regenerable por defecto
     meshSize = 2.0f;
     meshSize2 = 0.0f;
@@ -114,7 +115,6 @@ Mesh::~Mesh() {
     LiberarModificadores(); // definida en el editor (como InvalidarEdit): libera el stack de modificadores
     LiberarMallaModificada(); // libera las gen buffers
     delete[] skinVertex; delete[] skinNormals; // buffers de skinning (deform por esqueleto)
-    LiberarSkinCache(); // snapshots del cache de vertex-animation
     delete[] pvsFaces; pvsFaces = NULL; // override de indices del PVS (modificador Culling)
     // VBOs de render (buffer objects en GPU)
     namespace gfx = w3dEngine;
@@ -270,14 +270,6 @@ void Mesh::RefrescarBordesDesdeVertex() {
     }
 }
 
-// libera todos los snapshots del cache de vertex-animation (posiciones + normales). Se llama al cambiar de clip,
-// invalidar por geometria/rango, apagar el cache, o destruir la malla. Deja el cache vacio (skinCache.empty()).
-void Mesh::LiberarSkinCache() {
-    for (size_t i = 0; i < skinCache.size(); i++) { delete[] skinCache[i].pos; delete[] skinCache[i].nor; }
-    skinCache.clear();
-    skinCacheSig = 0; skinCacheEnd = -1;
-}
-
 // ===================================================
 // Liberar memoria
 // ===================================================
@@ -339,6 +331,38 @@ void Mesh::SoltarDatosCompartidos() {
     if (malla) W3dMallaDesvincular(this);
 }
 
+static std::string ClaveUVPersonal(const Material* m, int mapa) {
+    return (m ? m->name : std::string()) + "\x1f" + W3dMatMapaClave(mapa);
+}
+std::string Mesh::UVPersonalizado(const Material* m, int mapa) const {
+    if (uvPersonal.empty()) return std::string();
+    std::map<std::string, std::string>::const_iterator it = uvPersonal.find(ClaveUVPersonal(m, mapa));
+    return it == uvPersonal.end() ? std::string() : it->second;
+}
+void Mesh::FijarUVPersonalizado(const Material* m, int mapa, const std::string& uvNom) {
+    if (uvNom.empty()) uvPersonal.erase(ClaveUVPersonal(m, mapa));
+    else uvPersonal[ClaveUVPersonal(m, mapa)] = uvNom;
+}
+int Mesh::UVPersonalIndice(const Material* m, int mapa) const {
+    if (uvPersonalIdx.empty()) return -1;
+    std::map<std::string, int>::const_iterator it = uvPersonalIdx.find(ClaveUVPersonal(m, mapa));
+    return it == uvPersonalIdx.end() ? -1 : it->second;
+}
+void Mesh::FijarUVPersonalIndice(const Material* m, int mapa, int indice) {
+    if (indice < 0) uvPersonalIdx.erase(ClaveUVPersonal(m, mapa));
+    else uvPersonalIdx[ClaveUVPersonal(m, mapa)] = indice;
+}
+const GLfloat* Mesh::UVDeMapa(const Material* m, int mapa) const {
+    const std::string nom = UVPersonalizado(m, mapa);
+    if (!nom.empty())
+        for (size_t j = 0; j < uvMaps.size(); j++)
+            if (uvMaps[j] && uvMaps[j]->nombre == nom) { const GLfloat* p = UVDeCapa((int)j); if (p) return p; }
+    const int propio = UVPersonalIndice(m, mapa);   // (el indice propio de este objeto)
+    if (propio > 0) return UVDeCapa(propio);
+    if (propio == 0) return 0;
+    if (m && mapa >= 0 && mapa < W3D_MAPAS && m->uvMapa[mapa] > 0) return UVDeCapa(m->uvMapa[mapa]);
+    return 0;
+}
 const GLfloat* Mesh::UVDeCapa(int i) const {
     if (i <= 0 && uvMapActivo <= 0) return uv;
     const int activa = (uvMapActivo >= 0) ? uvMapActivo : 0;
@@ -659,8 +683,15 @@ static bool gFondoActivo = false;
 // ===================================================
 // aplica TODO el estado GL de un material, leyendolo DEL material (nada
 // hardcodeado). RenderObject la llama solo cuando el material cambia.
+// la malla que se esta dibujando hace la pasada DOT3 del normal map (la tiene solo el camino sin modificadores). Si no,
+// un material con normal map se dibuja con la luz de siempre: antes la base iba SIN luz esperando una pasada que con un
+// Subdivision no existia y la malla quedaba BLANCA
+static bool gNormalMapConPasada = true;   // (la apaga el loop de grupos de RenderObject mientras dibuja una malla generada)
+
 void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetEdit) {
     namespace gfx = w3dEngine;
+    // (con normal map de verdad: el pase DOT3 de RenderObject va a correr con una textura subida y UV)
+    const bool nmPasada = mat && mat->normalMap && gNormalMapConPasada;
     // X-RAY: la malla se dibuja al 50% para poder ver lo que queda detras. Se aplica sobre el
     // ALPHA (copias locales: el material REAL no se toca), asi vale igual en Solid, Material y
     // Rendered sin duplicar cada camino de dibujo.
@@ -684,9 +715,24 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     if (!colorVertice) gfx::Disable(gfx::ColorMaterial);
     gfx::Material(gfx::MatAmbient,  amb);
     gfx::Material(gfx::MatDiffuse,  dif);
-    gfx::Material(gfx::MatSpecular, mat->specular);
-    gfx::Material(gfx::MatEmission, emi);
-    gfx::MaterialShininess(mat->shininess);
+    // EL BRILLO de GL (el especular y su exponente) sale de la RUGOSIDAD y el METALICO del material (los valores PBR que
+    // edita el panel: el mismo material sirve al pipeline fijo, a los shaders y al trazado de rayos). Liso = brillo chico
+    // e intenso; rugoso = ancho y debil; metalico = el brillo toma el color del material
+    {
+        float rug = mat->rtRugosidad, met = mat->rtMetalico;
+        if (rug < 0.0f) rug = 0.0f; if (rug > 1.0f) rug = 1.0f;
+        if (met < 0.0f) met = 0.0f; if (met > 1.0f) met = 1.0f;
+        const float liso = 1.0f - rug;
+        float spec[4];
+        for (int c = 0; c < 3; c++) {
+            const float base = 0.5f * liso * liso * (1.0f - met) + mat->diffuse[c] * met;
+            spec[c] = base * (0.25f + 0.75f * liso);
+        }
+        spec[3] = 1.0f;
+        gfx::Material(gfx::MatSpecular, spec);
+        gfx::Material(gfx::MatEmission, emi);
+        gfx::MaterialShininess(2.0f + liso * liso * 126.0f);
+    }
 
     // color por vertice (via ColorMaterial) o el difuso plano del material
     if (tintaNoEditable) {
@@ -703,7 +749,7 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         gfx::Enable(gfx::ColorMaterial);
     } else {
         // con NORMAL MAP la base va sin luz -> la tiño con el COLOR de la luz aca (sino el N.L sale BLANCO).
-        if (mat->normalMap)
+        if (nmPasada)
             gfx::Color4f(mat->diffuse[0]*g_renderLightColor.x, mat->diffuse[1]*g_renderLightColor.y,
                          mat->diffuse[2]*g_renderLightColor.z, dif[3]);
         else
@@ -759,6 +805,7 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         if (matcap) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer3b(normals, vertexSize); } // normales -> texcoords
         else if (sw) { ActualizarChromeUV(eq); // build los arrays por-corner (equirect o sphere); bind/draw en el loop
                   gfx::EnableArray(gfx::TexCoordArray); if (eq) gfx::TexWrap(true); } // REPEAT solo equirect (costura)
+        else if (UVDeMapa(mat, W3D_MAPA_BASE)) gfx::TexCoordPointer2f(0, UVDeMapa(mat, W3D_MAPA_BASE)); // la UV que eligio el material (o la PERSONALIZADA del objeto)
         else if (uv) { if (vboRenderActivo && vboUVEnUso) gfx::TexCoordVBO(vboUVEnUso); else gfx::TexCoordPointer2f(0, uv); } // UV del modelo (VBO o RAM)
     } else {
         gfx::Disable(gfx::Texture2D);
@@ -780,10 +827,15 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     else gfx::DisableArray(gfx::NormalArray);
     // la iluminacion en si solo si el material la pide (el chrome con GL_REPLACE la ignora -> espejo perfecto).
     // Con NORMAL MAP la base va SIN luz (albedo plano): el pass DOT3 de abajo aporta toda la iluminacion (N.L).
-    if (conLuz && mat->lighting && !mat->normalMap && !toonOn) gfx::Enable(gfx::Lighting);
+    if (conLuz && mat->lighting && !nmPasada && !toonOn) gfx::Enable(gfx::Lighting);
     else gfx::Disable(gfx::Lighting);
+    gfx::SombreadoPorPixel(mat->porPixel);   // (solo vale con shaders y con la luz prendida)
 
     if (mat->culling)     gfx::Enable(gfx::CullFace);  else gfx::Disable(gfx::CullFace);
+    // LAS DOS CARAS CON LUZ: un material sin culling (pelo, hojas, telas) se ve tambien por atras, y esa cara se
+    // iluminaba con la normal del FRENTE, que mira para el otro lado: quedaba negra (solo el ambiente). Asi la cara
+    // de atras usa la normal dada vuelta (GL fijo y GL ES 1.1; el backend de shaders ilumina una cara)
+    gfx::LightModelTwoSide(!mat->culling);
     // z-test: lo decide el MATERIAL, salvo en el pase del espejo. Ahi manda el
     // espejo (ver w3dPaseEspejoSinZ en w3dGraphics.h): el reflejo del agua queda
     // MAS HONDO que el fondo opaco del estanque, asi que si el material vuelve a
@@ -846,7 +898,13 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         gfx::PolygonOffset(unidades < 0.0f ? -1.0f : 1.0f, unidades);
     } else if (offsetEdit) {
         gfx::Enable(gfx::PolygonOffsetFill);
+#if defined(W3D_SYMBIAN) && defined(W3D_GLES2)
+        // z de 16 bits en el N8 (VideoCore III): con 4 unidades las caras seleccionadas peleaban con la malla y salian
+        // RAYADAS a 45 grados. ~4x, como el sesgo de los materiales de arriba
+        gfx::PolygonOffset(2.0f, 16.0f);
+#else
         gfx::PolygonOffset(2.0f, 4.0f);
+#endif
     } else {
         gfx::PolygonOffset(0.0f, 0.0f);
         gfx::Disable(gfx::PolygonOffsetFill);
@@ -866,6 +924,16 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     else if (g_xray) { gfx::Enable(gfx::Blend); gfx::BlendAlpha(); gfx::DepthMask(false); }
     else                    gfx::Disable(gfx::Blend);
     gfx::AlphaTest(mat->alphaTest);   // recorte por alfa (rejas, alambrados): 0 = apagado
+    // SHADER ESCRITO (objects/ShaderEscrito.h): los triangulos de este material van con el programa del archivo. No en
+    // Solid ni en los pases de depuracion (normales, alfa): esos muestran otra cosa. El epilogo de RenderObject lo apaga
+    {
+        const int sh = (!solido && !w3dRenderAlpha && !w3dRenderNormalColor) ? W3dShaderMaterial(mat) : 0;
+        if (sh) {
+            float p[gfx::ShaderEscritoParams];
+            W3dShaderParametros(p, mat->ior, mat->transmision, mat->rtRugosidad, mat->rtMetalico);
+            gfx::ShaderEscritoUsar(sh, p);
+        } else gfx::ShaderEscritoUsar(0, NULL);
+    }
 }
 
 // hook de overlays del editor (lo registra el editor al arrancar; NULL en una app sin editor)
@@ -1362,6 +1430,9 @@ bool w3dReflejando = false;
 unsigned g_w3dPase = 0;
 static std::vector<Mesh*> gDecalPend;
 static std::vector<Mesh*> gLuzPend;
+// las mallas cuyo shader escrito LEE LA PANTALLA (w3d_Pantalla: vidrio, agua, distorsion): van despues de todo lo demas
+// (las luces incluidas), si no la copia de la pantalla no tendria lo que esta detras
+static std::vector<Mesh*> gPantallaPend;
 
 // true si TODOS los grupos de material de la malla son calcomania (orden_pasada
 // 1). Una malla mixta (bicho + su blob horneado) NO se difiere: para esa ya
@@ -1388,14 +1459,24 @@ bool Mesh::EsSoloLuz() const {
 }
 
 void W3dDecalesLimpiarPendientes() { gDecalPend.clear(); }
-void W3dLucesLimpiarPendientes()   { gLuzPend.clear(); }
+void W3dLucesLimpiarPendientes()   { gLuzPend.clear(); gPantallaPend.clear(); }
+
+// true si TODOS los grupos de material tienen un shader escrito (compilado) que lee la pantalla
+bool Mesh::EsSoloPantalla() const {
+    if (materialsGroup.empty() || w3dRenderSolido) return false;
+    for (size_t g = 0; g < materialsGroup.size(); g++) {
+        Material* mt = materialsGroup[g].material;
+        if (!mt || !mt->shaderOn || !W3dShaderMaterial(mt) || !mt->shaderPantalla) return false;
+    }
+    return true;
+}
 
 // El flush de las LUCES: mismo esqueleto que el de calcomanias (afirma su
 // estado, arma la matriz de VISTA y dibuja cada malla con su matriz de mundo).
 // Corre DESPUES de las calcomanias y ANTES de las particulas: sombra -> luz de
 // malla -> billboards.
 void W3dLucesDibujarPendientes() {
-    if (gLuzPend.empty()) return;
+    if (gLuzPend.empty() && gPantallaPend.empty()) return;
     namespace gfx = w3dEngine;
     CameraBase cam;
     cam.pos = g_renderCamPos; cam.rot = g_renderCamRot;
@@ -1422,8 +1503,19 @@ void W3dLucesDibujarPendientes() {
         m->RenderObject();
         gfx::PopMatrix();
     }
+    // (y al final las que leen la pantalla: ya esta todo lo de atras)
+    for (size_t i = 0; i < gPantallaPend.size(); i++) {
+        Mesh* m = gPantallaPend[i];
+        if (!m) continue;
+        Matrix4 W; m->GetWorldMatrix(W);
+        gfx::PushMatrix();
+        gfx::LoadMatrix(V.m);
+        gfx::MultMatrix(W.m);
+        m->RenderObject();
+        gfx::PopMatrix();
+    }
     w3dDecalesInline = inlineAntes;
-    gLuzPend.clear();
+    gLuzPend.clear(); gPantallaPend.clear();
     // el estado que toca AplicarMaterial queda como lo dejo la ultima luz:
     // devolverlo al baseline que espera el resto del frame.
     gfx::DepthFunc(gfx::DepthLess);
@@ -1522,6 +1614,63 @@ static void W3dDibujarLineasMat(const MeshIndex* idx, int count, float grosor) {
     gfx::DrawLinesClientIdx((int)lineas.size(), &lineas[0]);
     gfx::DepthFunc(gfx::DepthLess);
     gfx::LineWidth(1.0f);
+}
+
+// LAS LINEAS DE POLIGONO del material: las aristas de las caras (faces3d) de ese mesh part -sin las diagonales con que
+// se triangulan los quads, que el usuario no dibujo- y, en el primer mesh part con Lineas, las aristas SUELTAS (las que
+// no tienen cara: una polilinea, un perfil). Los indices son los del render, sobre los atributos ya bindeados.
+static void W3dDibujarLineasIdx(const std::vector<MeshIndex>& lineas, float grosor) {
+    namespace gfx = w3dEngine;
+    if (lineas.size() < 2) return;
+    gfx::LineWidth(grosor < 1.0f ? 1.0f : grosor);
+    gfx::DepthFunc(gfx::DepthLEqual);   // coplanar con su propio relleno
+    gfx::DrawLinesClientIdx((int)lineas.size(), &lineas[0]);
+    gfx::DepthFunc(gfx::DepthLess);
+    gfx::LineWidth(1.0f);
+}
+static void W3dLineasPoligono(const Mesh* m, int grupo, bool sueltas, std::vector<MeshIndex>& out) {
+    static std::vector<unsigned long long> claves;
+    claves.clear(); out.clear();
+    for (size_t f = 0; f < m->faces3d.size(); f++) {
+        if (m->faces3d[f].mat != grupo) continue;
+        const std::vector<int>& p = m->faces3d[f].idx; const size_t n = p.size();
+        for (size_t k = 0; k < n; k++) {
+            const int a = p[k], b = p[(k + 1) % n];
+            if (a == b || a < 0 || b < 0 || a >= m->vertexSize || b >= m->vertexSize) continue;
+            const unsigned long long lo = (unsigned long long)(a < b ? a : b), hi = (unsigned long long)(a < b ? b : a);
+            claves.push_back((lo << 32) | hi);
+        }
+    }
+    std::sort(claves.begin(), claves.end());
+    claves.erase(std::unique(claves.begin(), claves.end()), claves.end());
+    out.reserve(claves.size() * 2 + (sueltas ? m->looseEdges.size() : 0));
+    for (size_t i = 0; i < claves.size(); i++) { out.push_back((MeshIndex)(claves[i] >> 32)); out.push_back((MeshIndex)(claves[i] & 0xffffffffull)); }
+    if (sueltas)
+        for (size_t i = 0; i + 1 < m->looseEdges.size(); i += 2) {
+            const int a = m->looseEdges[i], b = m->looseEdges[i + 1];
+            if (a < 0 || b < 0 || a >= m->vertexSize || b >= m->vertexSize || a == b) continue;
+            out.push_back((MeshIndex)a); out.push_back((MeshIndex)b);
+        }
+}
+// las caras (faces3d) sirven para las lineas de poligono: hay algo que corregir (un ngon -cuyas diagonales no se
+// dibujan- o aristas sueltas) y describen EXACTAMENTE lo que se dibuja (sus triangulos = el index buffer). Una malla
+// recien abierta puede traer caras que no coinciden con el render (una tira degenerada que el re-merge colapso): ahi
+// van las aristas de los triangulos, como siempre
+static bool W3dLineasPorPoligono(const Mesh* m) {
+    if (m->faces3d.empty()) return !m->looseEdges.empty() && m->facesSize == 0;   // (solo aristas sueltas)
+    bool hayNgon = false; int tris = 0;
+    for (size_t f = 0; f < m->faces3d.size(); f++) {
+        const int n = (int)m->faces3d[f].idx.size();
+        if (n > 3) hayNgon = true;
+        if (n >= 3) tris += n - 2;
+    }
+    if (!hayNgon && m->looseEdges.empty()) return false;
+    return tris * 3 == m->facesSize;
+}
+// el primer mesh part cuyo material tiene Lineas (el que lleva las aristas sueltas y las de la malla generada)
+static size_t W3dPrimerGrupoLineas(const std::vector<MaterialGroup>& gs) {
+    for (size_t g = 0; g < gs.size(); g++) if (gs[g].material && gs[g].material->lineas) return g;
+    return (size_t)-1;
 }
 
 // ===========================================================================
@@ -1651,6 +1800,11 @@ void Mesh::RenderObject() {
         gLuzPend.push_back(this);
         return;
     }
+    // VIDRIO / AGUA con shader escrito que lee la pantalla: al final de todo (ver gPantallaPend)
+    if (!w3dDecalesInline && (Object*)this != g_editMesh && EsSoloPantalla()) {
+        gPantallaPend.push_back(this);
+        return;
+    }
     const bool editActiva = ((Object*)this == g_editMesh); // esta malla en Edit Mode
     // sin vertices no hay nada. Sin CARAS propias igual hay que dibujar: en Edit (edit mesh: verts+bordes), o si
     // hay malla GENERADA por modificadores (ej. Screw sobre un perfil sin caras -> la botella vive en genValido),
@@ -1750,12 +1904,54 @@ void Mesh::RenderObject() {
         else if (!toonUV.empty()) toonUV.clear();
     }
 
+    // EL @vertice DE UN SHADER ESCRITO EN LA CPU (objects/ShaderCPU.h): en los backends sin shaders (GLES 1.1 del N95, el
+    // GL fijo) el MISMO codigo que en GLES 2.0 corre la GPU mueve aca las posiciones (y normales) de la malla, despues del
+    // skinning, a un arreglo propio de este dibujo. Vale si TODAS las partes usan el mismo shader (lo comun: el agua, una
+    // bandera). Con la malla generada por modificadores se mueve esa. Va de RAM (sin VBO: cambia en cada cuadro)
+    bool vertCPU = false;
+    struct RestaurarGen {   // (la malla generada se apunta a la movida solo durante este dibujo)
+        Mesh* m; GLfloat* v; GLbyte* n; bool activo;
+        RestaurarGen(Mesh* mm) : m(mm), v(mm->genVertex), n(mm->genNormals), activo(false) {}
+        ~RestaurarGen() { if (activo) { m->genVertex = v; m->genNormals = n; } }
+    } restaurarGen(this);
+    if (!w3dRenderSolido && !w3dRenderNormalColor && !w3dRenderAlpha && !materialsGroup.empty() && !editActiva) {
+        Material* vm = materialsGroup[0].material;
+        const W3dVertCPU* prog = (vm && vm->shaderOn) ? W3dShaderVerticeCPU(vm) : NULL;
+        for (size_t g = 1; g < materialsGroup.size() && prog; g++) {
+            Material* mg = materialsGroup[g].material;
+            if (mg != vm && (!mg || !mg->shaderOn || mg->shaderArchivo != vm->shaderArchivo)) prog = NULL;
+        }
+        if (prog) {
+            W3dVertCPUEntradas en;
+            en.tiempo = W3dShaderReloj(); en.ior = vm->ior; en.transmision = vm->transmision;
+            en.rugosidad = vm->rtRugosidad; en.metalico = vm->rtMetalico;
+            const bool gen = hayGen && genVertex && genVertexSize > 0;
+            const int nv = gen ? genVertexSize : vertexSize;
+            const GLfloat* src = gen ? genVertex : posBuf;
+            const GLbyte* srcN = gen ? genNormals : norBuf;
+            vertCPUPos.resize((size_t)nv * 3);
+            if (srcN) vertCPUNor.resize((size_t)nv * 3);
+            if (W3dVertCPUAplicar(prog, en, src, (const signed char*)srcN, nv, &vertCPUPos[0], srcN ? (signed char*)&vertCPUNor[0] : NULL)) {
+                vertCPU = true;
+                if (gen) {
+                    restaurarGen.activo = true;
+                    genVertex = &vertCPUPos[0];
+                    if (srcN) genNormals = (GLbyte*)&vertCPUNor[0];
+                } else {
+                    posBuf = &vertCPUPos[0];
+                    if (srcN) norBuf = (GLbyte*)&vertCPUNor[0];
+                }
+            }
+        }
+    }
+
     // punteros de los datos de la malla (una sola vez). Si el relleno va a ir por los VBO (el caso comun) NO: el camino del
     // VBO los pisaba enseguida (los punteros de RAM y su bind 0, de mas en cada dibujo). Ahi los pone ese camino (de
     // RAM los arrays sin VBO) o, si al final no va por VBO (un esqueleto animando), PunterosRAM despues del bloque del VBO
     bool anyFancy = false;   // (chrome / normal map / capas: re-apuntan arrays por pasada, van de RAM)
     if (!w3dRenderSolido) for (size_t gg = 0; gg < materialsGroup.size(); gg++){ Material* mt = materialsGroup[gg].material;
         if (mt && (mt->chrome || mt->normalMap || !mt->capas.empty() || mt->toon || mt->contorno > 0.0f)) { anyFancy = true; break; } }
+    if (vertCPU) anyFancy = true;   // (las posiciones del @vertice cambian en cada cuadro: de RAM, sin VBO)
     const bool talVezVBO = gfx::g_punterosCache && gfx::VBOSoportado() && !hayGen && !weightPaintOn && !vertexPaintOn &&
                            !editActiva && !w3dRenderWireframe && !w3dRenderNormalColor && !w3dRenderSinLuz && !w3dRenderAlpha &&
                            !anyFancy && faces && facesSize >= 3;
@@ -1832,7 +2028,13 @@ void Mesh::RenderObject() {
         const bool useGen = paseBlanco && (genValido && genVertex && genFaces);
         gfx::VertexPointer3f(0, useGen ? genVertex : posBuf);
 
-        if (paseNormal && norBuf) {
+        const bool normalShader = paseNormal && norBuf && gfx::PasesConShader();
+        if (normalShader) {
+            // CON SHADERS (ES 2.0 / Vulkan): las normales van como siempre y el pase las pasa a color en cada pixel
+            gfx::DisableArray(gfx::ColorArray);
+            gfx::EnableArray(gfx::NormalArray); gfx::NormalPointer3b(norBuf);
+            gfx::PaseEspecial(gfx::PaseNormal, NULL);
+        } else if (paseNormal && norBuf) {
             static std::vector<unsigned char> nvcol; // reusado entre frames (sin alloc)
             nvcol.resize((size_t)vertexSize * 4);
             Matrix4 W; GetWorldMatrix(W);
@@ -1882,6 +2084,7 @@ void Mesh::RenderObject() {
         }
 
         // limpieza: que el estado del pase plano no leakee al proximo objeto / overlay
+        if (normalShader) { gfx::PaseEspecial(gfx::PaseNinguno, NULL); gfx::DisableArray(gfx::NormalArray); }
         gfx::TexEnvAlphaOnly(false);
         gfx::Disable(gfx::Texture2D);
         gfx::Disable(gfx::Blend);
@@ -2115,6 +2318,20 @@ void Mesh::RenderObject() {
                     if (op == pasada) ordenG.push_back(gg);
                 }
         }
+        // SOLIDO CON SHADERS (ES 2.0 / Vulkan): todo es el mismo material -> el programa chico del pase Solido y, si los
+        // rangos de los grupos van uno detras del otro, un solo draw para la malla entera (en vez de uno por grupo)
+        const bool solidoShader = solido && gfx::PasesConShader();
+        int solidoIni = -1, solidoCant = 0;
+        if (solidoShader && !useGen && !usePvs && ordenG.empty() && ng > 1) {
+            solidoIni = materialsGroup[0].startDrawn;
+            int fin = solidoIni;
+            for (size_t gg = 0; gg < ng && solidoIni >= 0; gg++) {
+                if (materialsGroup[gg].startDrawn != fin) solidoIni = -1;
+                else fin += materialsGroup[gg].indicesDrawnCount;
+            }
+            if (solidoIni >= 0) solidoCant = fin - solidoIni;
+        }
+        if (solidoShader) gfx::PaseEspecial(gfx::PaseSolido, NULL);
         for (size_t gi = 0; gi < ng; gi++) {
             const size_t g = ordenG.empty() ? gi : ordenG[gi];
             const MaterialGroup& grp = useGen ? genMaterialsGroup[g] : materialsGroup[g];
@@ -2126,7 +2343,19 @@ void Mesh::RenderObject() {
             // LIVE de materialsGroup[g] (mismo indice de grupo; gen copia el orden). Solo cambia el material, no la geo.
             Material* mat = (useGen && g < materialsGroup.size()) ? materialsGroup[g].material : grp.material;
             if (solido || !mat) mat = MaterialDefecto;
-            if (mat != ultimo) { AplicarMaterial(mat, conLuz, solido, editActiva); ultimo = mat; }
+            if (mat != ultimo) {
+                gNormalMapConPasada = !useGen;   // (la pasada DOT3 de abajo es solo del camino sin modificadores)
+                AplicarMaterial(mat, conLuz, solido, editActiva); ultimo = mat;
+                gNormalMapConPasada = true;
+            }
+            if (solidoCant > 0) {   // (solido con shaders, grupos contiguos: la malla entera de una vez)
+                if (gi == 0) {
+                    if (drawVBO) gfx::DrawTrianglesVBO(solidoCant, solidoIni);
+                    else if (iboRam) { gfx::BindIndexVBO(iboRam); gfx::DrawTrianglesVBO(solidoCant, solidoIni); }
+                    else gfx::DrawTriangles(solidoCant, &faces[solidoIni]);
+                }
+                continue;
+            }
             if (useGen) { // malla generada
                 // REFLEJO por SOFTWARE (equirect mode 2, o sphere-sw sin texgen): dibuja los corners NO-INDEXADOS
                 // con las UV de reflejo calculadas desde la GEO GENERADA. Asi el reflejo se ve sin "aplicar" el
@@ -2158,9 +2387,12 @@ void Mesh::RenderObject() {
                 // con las UV del perfil, mal indexadas). Con texgen (sphereHW) NO forzamos genUV.
                 if (!sphereHW && genUV) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer2f(0, genUV); }
                 gfx::DrawTriangles(grp.indicesDrawnCount, &genFaces[grp.startDrawn]);
-                // LINEAS del material (aristas encima del relleno, mismo estado)
-                if (!solido && mat->lineas && grp.indicesDrawnCount >= 3) {
-                    W3dDibujarLineasMat(&genFaces[grp.startDrawn], grp.indicesDrawnCount, mat->grosorLinea);
+                // LINEAS del material (aristas encima del relleno, mismo estado): las de POLIGONO de la malla
+                // generada (sin las diagonales de la triangulacion), una vez, con el primer material que tenga Lineas
+                if (!solido && mat->lineas) {
+                    if (!genLineasIdx.empty()) {
+                        if (g == W3dPrimerGrupoLineas(materialsGroup)) W3dDibujarLineasIdx(genLineasIdx, mat->grosorLinea);
+                    } else if (grp.indicesDrawnCount >= 3) W3dDibujarLineasMat(&genFaces[grp.startDrawn], grp.indicesDrawnCount, mat->grosorLinea);
                     ultimo = NULL; // el trazo toco el z-func: re-aplicar el proximo material
                 }
                 continue;
@@ -2188,8 +2420,15 @@ void Mesh::RenderObject() {
             // dibujado, con el mismo estado de material. Los indices van de CLIENTE
             // (la copia en RAM existe siempre: idxDraw) sobre los atributos que
             // esten bindeados (VBO o client arrays).
-            if (!solido && mat->lineas && dgrp.indicesDrawnCount >= 3) {
-                W3dDibujarLineasMat(&idxDraw[dgrp.startDrawn], dgrp.indicesDrawnCount, mat->grosorLinea);
+            // Con las caras (faces3d): las aristas de POLIGONO de este mesh part (sin las diagonales de los quads) y las
+            // SUELTAS en el primero con Lineas. Sin caras (o con el subconjunto del PVS): las de los triangulos
+            static std::vector<MeshIndex> lineasPoli;
+            const bool porPoligono = !usePvs && W3dLineasPorPoligono(this);
+            if (!solido && mat->lineas && (porPoligono || dgrp.indicesDrawnCount >= 3)) {
+                if (porPoligono) {
+                    W3dLineasPoligono(this, (int)g, g == W3dPrimerGrupoLineas(materialsGroup), lineasPoli);
+                    W3dDibujarLineasIdx(lineasPoli, mat->grosorLinea);
+                } else W3dDibujarLineasMat(&idxDraw[dgrp.startDrawn], dgrp.indicesDrawnCount, mat->grosorLinea);
                 // DrawLinesClientIdx desbindea el ELEMENT_ARRAY: si el resto de la
                 // malla dibuja desde el IBO estatico, volver a bindearlo
                 if (drawVBO && !usePvs && vboIdxEnUso) gfx::BindIndexVBO(vboIdxEnUso);
@@ -2211,7 +2450,8 @@ void Mesh::RenderObject() {
                     gfx::TexFilter(!gfx::PixeladoGlobal() && mat->filtrado); gfx::TexWrap(mat->repeat);
                     gfx::TexEnvDot3(true);                                  // combiner N.L
                     gfx::EnableArray(gfx::ColorArray); gfx::ColorPointer4ub(nmColors); // L como primary color
-                    gfx::TexCoordPointer2f(0, uv);                         // mismas UV que la base
+                    { const GLfloat* nuv = UVDeMapa(mat, W3D_MAPA_NORMAL);
+                      gfx::TexCoordPointer2f(0, nuv ? nuv : uv); }            // la capa UV del normal map (default: la base)
                     gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxDraw[dgrp.startDrawn]);
                     gfx::TexEnvDot3(false);
                     // el pase del espejo dibuja SIN escribir z: restaurar DepthMask(true)
@@ -2252,6 +2492,7 @@ void Mesh::RenderObject() {
                 ultimo = NULL; // textura/blend/luz cambiaron -> re-AplicarMaterial el proximo grupo
             }
         }
+        if (solidoShader) gfx::PaseEspecial(gfx::PaseNinguno, NULL);
         // (E3) TRANSPARENTES EN ORDEN DE LISTA: con pvsOrdenado, los tris transparentes
         // NO se dibujaron en el loop de grupos (sus pvsGroups quedaron con count 0):
         // salen ACA, run por run, en el ORDEN del dato precalculado (lejos->cerca = el
@@ -2323,6 +2564,7 @@ void Mesh::RenderObject() {
         gfx::PolygonOffset(0.0f, 0.0f);
         gfx::Disable(gfx::PolygonOffsetFill);
         gfx::AlphaTest(0.0f);   // el recorte por alfa de un material (rejas) no leakea a la UI ni a la proxima malla
+        gfx::ShaderEscritoUsar(0, NULL);   // (idem el shader escrito de un material)
         gfx::MezclaTexturasOff();   // (idem la unidad 1 de un material con mezcla de texturas)
         // el estado que puede haber dejado un material DECAL / ADITIVO: si no se restaura,
         // la proxima malla (o la UI) hereda "no escribas z" o "sumale al fondo".

@@ -104,8 +104,8 @@ void VibrarMs(int ms, float fuerza) {
 
 #elif defined(__ANDROID__)   // ---------------- Android: el vibrador del telefono ----------------
 
-// el metodo vibrar(int) de la actividad (JuegoActivity, la genera Compilar juego). El editor de Android no lo tiene:
-// la primera vez que falta no se pregunta mas
+// el metodo vibrar(int) de la actividad (JuegoActivity, la genera Compilar juego; Whisk3DActivity, el editor). Si una
+// actividad no lo tiene, la primera vez que falta no se pregunta mas
 static bool gSinMetodo = false;
 static void VibrarAndroid(int ms) {
     if (gSinMetodo || ms <= 0) return;

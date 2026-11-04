@@ -12,7 +12,6 @@
 #include <vector>
 #include <map>
 #include <utility>
-#include <new>      // new (std::nothrow): reservar el cache de animacion SIN crashear si el telefono se queda sin RAM
 
 // ===== FK: evaluar la pose del esqueleto en un frame =====
 static const float TL_PI = 3.14159265358979f;
@@ -594,6 +593,7 @@ int W3dArmatureClipPorNombre(const Armature* a, const std::string& nombre){
     return -1;
 }
 
+float g_poseFraccion = 0.0f;   // (ver SkeletalAnimation.h)
 void EvaluarPoseEsqueleto(Armature* a, int frame){
     if (!a) return;
     // GATING de playback: este armature reproduce su clip SOLO si es la animacion ACTIVA (ActiveAnimKind 1 + este
@@ -607,6 +607,29 @@ void EvaluarPoseEsqueleto(Armature* a, int frame){
     // truncado un clip de 30 fps dibujado a 45-55 fps avanzaba 1,1,0,1,0... (micro saltos en las cinematicas).
     float frameF = (float)frame;
     bool continuo = false;
+    // UNA ESCENA con TIRAS de esqueleto (SceneAnimation::esqueletos): el clip que le toca a este armature, en el frame
+    // de la escena (asi el timeline de la escena mueve a todos, como una pelicula)
+    if (ActiveAnimKind == 0 && animPlay < 0 && SceneAnimActiva >= 0 && SceneAnimActiva < (int)SceneAnimations.size()) {
+        const SceneAnimation* e = SceneAnimations[SceneAnimActiva];
+        if (e && !e->esClip)
+            for (size_t t = 0; t < e->esqueletos.size(); t++) {
+                if (e->esqueletos[t].armature != a->name) continue;
+                const int c = W3dArmatureClipPorNombre(a, e->esqueletos[t].clip);
+                if (c < 0) break;
+                const SkeletalAnimation* cl = a->animations[c];
+                int f = cl->startFrame + (frame - e->esqueletos[t].frame);
+                if (f < cl->startFrame) f = cl->startFrame;
+                if (f > cl->endFrame) f = cl->endFrame;
+                animPlay = c; frame = f; frameF = (float)f;
+                break;
+            }
+    }
+    // (el desenfoque trazado: el instante entre este cuadro y el siguiente)
+    if (g_poseFraccion > 0.0f && animPlay >= 0 && animPlay < (int)a->animations.size()) {
+        frameF = (float)frame + g_poseFraccion;
+        if (frameF > (float)a->animations[animPlay]->endFrame) frameF = (float)a->animations[animPlay]->endFrame;
+        continuo = true;
+    }
     if (ActiveAnimKind == 2 && a->animActiva >= 0 && a->animActiva < (int)a->animations.size()) {
         animPlay = a->animActiva;
         frame = a->animations[animPlay]->startFrame + (int)a->juegoFrame;
@@ -774,81 +797,11 @@ BoneTrack& SkeletalAnimation::TrackDe(int bone){
 // ===== SKINNING: deforma m->skinVertex a la pose del esqueleto (linear blend por vertex groups) =====
 // Liviano (N95): solo posiciones; y solo recalcula si cambio el frame. Conjuga la skinMatrix (espacio escena) al
 // espacio LOCAL de la malla (MLi * skin * ML) para que el render aplique el transform del objeto como siempre.
-// ===== CACHE de vertex-animation (bake del skinning) =====
-// Reproduce snapshots por-frame en vez de recomputar el skinning. LAZY: la 1ra vuelta skinnea y guarda cada frame;
-// despues copia/interpola. Un SOLO clip cacheado a la vez: la firma incluye animActiva -> al cambiar de animacion se
-// libera el cache viejo y se re-dimensiona para el rango del clip nuevo (memoria bounded, distintos clips distinto
-// tamaño). OOM-SAFE: si new falla (telefono sin RAM), no se guarda ese frame (se re-skinnea, sin crash).
-static unsigned SkinCacheFirma(Mesh* m){
-    Armature* a = m->skinArmature;
-    unsigned s = 2166136261u; // FNV-ish
-    s = (s ^ m->skinGeomVersion)                 * 16777619u; // geometria (regen -> invalida)
-    s = (s ^ (unsigned)(a ? a->animActiva + 1 : 0)) * 16777619u; // CLIP activo (cambiar de animacion invalida)
-    s = (s ^ (unsigned)(size_t)a)                * 16777619u; // rig
-    s = (s ^ (unsigned)StartFrame)               * 16777619u; // rango del clip
-    s = (s ^ (unsigned)EndFrame)                 * 16777619u;
-    s = (s ^ (unsigned)m->skinCacheSkip)         * 16777619u; // decimacion
-    s = (s ^ (unsigned)(m->skinConLuz ? 1 : 0))  * 16777619u; // se cachean normales?
-    return s ? s : 1u; // 0 reservado para "sin cache"
-}
-// dimensiona el cache para el clip/rango ACTUAL; si la firma cambio libera el anterior y crea slots vacios (16B c/u;
-// las posiciones/normales se allocan lazy). false si el rango es invalido. Aca es donde se "reserva al seleccionar".
-static bool SkinCacheValidar(Mesh* m){
-    unsigned sig = SkinCacheFirma(m);
-    if (m->skinCacheSig == sig && !m->skinCache.empty()) return true; // ya valido para este clip
-    m->LiberarSkinCache();                                            // libera el clip anterior (otro tamaño de memoria)
-    if (EndFrame < StartFrame) return false;
-    int stride = m->skinCacheSkip + 1; if (stride < 1) stride = 1;
-    int slots = (EndFrame - StartFrame) / stride + 1;
-    if (slots < 1 || slots > 100000) return false;                   // guarda de sanidad
-    Mesh::SkinSnapshot vacio; vacio.pos = NULL; vacio.nor = NULL;
-    m->skinCache.assign((size_t)slots, vacio);                       // slots vacios (se llenan al reproducir 1 vez)
-    m->skinCacheStart = StartFrame; m->skinCacheEnd = EndFrame;
-    m->skinCacheConLuz = m->skinConLuz; m->skinCacheSig = sig;
-    return true;
-}
-// copia/interpola el snapshot de CurrentFrame a skinVertex(+skinNormals). true si el slot estaba bakeado.
-static bool SkinCacheReproducir(Mesh* m){
-    int idx = CurrentFrame - m->skinCacheStart;
-    if (idx < 0 || CurrentFrame > m->skinCacheEnd) return false;
-    int stride = m->skinCacheSkip + 1; if (stride < 1) stride = 1;
-    int q = idx / stride, r = idx % stride;
-    if (q < 0 || q >= (int)m->skinCache.size() || !m->skinCache[q].pos) return false; // slot todavia sin bakear
-    int fc = m->vertexSize * 3;
-    if (m->skinVertex && m->skinVertexCap != fc){ delete[] m->skinVertex; m->skinVertex = NULL; if (m->skinNormals){ delete[] m->skinNormals; m->skinNormals = NULL; } }
-    if (!m->skinVertex){ m->skinVertex = new (std::nothrow) GLfloat[fc + 16]; if (!m->skinVertex){ m->skinVertexCap = 0; return false; } m->skinVertexCap = fc; }
-    const Mesh::SkinSnapshot& A = m->skinCache[q];
-    bool doN = m->skinCacheConLuz && A.nor;
-    if (doN && !m->skinNormals){ m->skinNormals = new (std::nothrow) GLbyte[fc + 32]; if (!m->skinNormals) doN = false; }
-    bool interp = (r != 0) && (q + 1 < (int)m->skinCache.size()) && m->skinCache[q+1].pos;
-    if (!interp){
-        for (int i = 0; i < fc; i++) m->skinVertex[i] = A.pos[i];                       // frame exacto -> copia directa
-        if (doN) for (int i = 0; i < fc; i++) m->skinNormals[i] = A.nor[i];
-    } else {
-        const Mesh::SkinSnapshot& B = m->skinCache[q+1];                                 // intermedio -> lerp con el vecino
-        float t = (float)r / (float)stride;
-        for (int i = 0; i < fc; i++) m->skinVertex[i] = A.pos[i] + (B.pos[i] - A.pos[i]) * t;
-        if (doN && B.nor) for (int i = 0; i < fc; i++){ float av=(float)A.nor[i], bv=(float)B.nor[i]; m->skinNormals[i] = (GLbyte)(av + (bv-av)*t); }
-        else if (doN) for (int i = 0; i < fc; i++) m->skinNormals[i] = A.nor[i];
-    }
-    return true;
-}
-// guarda el resultado ACTUAL de skinVertex/skinNormals como snapshot del slot q. OOM-safe.
-static void SkinCacheGuardar(Mesh* m, int q){
-    if (q < 0 || q >= (int)m->skinCache.size() || m->skinCache[q].pos || !m->skinVertex) return;
-    int fc = m->vertexSize * 3;
-    GLfloat* p = new (std::nothrow) GLfloat[fc]; if (!p) return;      // sin RAM -> no cachear (se re-skinnea, sin crash)
-    for (int i = 0; i < fc; i++) p[i] = m->skinVertex[i];
-    GLbyte* nb = NULL;
-    if (m->skinCacheConLuz && m->skinNormals){ nb = new (std::nothrow) GLbyte[fc]; if (nb) for (int i=0;i<fc;i++) nb[i] = m->skinNormals[i]; }
-    m->skinCache[q].pos = p; m->skinCache[q].nor = nb;
-}
-
 // SKINNING INCREMENTAL (interruptor A/B del harness 'skininc'): recalcular SOLO los vertices cuyos
 // huesos o formas se MOVIERON de verdad desde su ultima aplicacion. Default ON. Ver SkinearMesh.
 bool g_skinIncremental = true;
 // diagnostico del harness (skinverify): que camino tomo el ULTIMO SkinearMesh de cada malla.
-// 0=early-out(frame/pose/shape iguales) 1=cache-hit 2=nada-se-movio 3=salpicado 4=completo 5=sin-mapeo
+// 0=early-out(frame/pose/shape iguales) 2=nada-se-movio 3=salpicado 4=completo 5=sin-mapeo
 int g_skinUltimoCamino = -1;
 // PERF EN EL DEVICE: ms acumulados skinneando (los mide el caller del render, Mesh::RenderObject,
 // con este reloj; NULL = sin medicion, costo cero). La plataforma instala su reloj de ms (el N95
@@ -1010,23 +963,7 @@ void SkinearMesh(Mesh* m){
     m->skinShapeSerial = m->shapeSerial;
     g_skinUltimoCamino = 4;   // default: completo (los otros caminos lo pisan al salir)
     // SHAPE KEYS: con alguna forma prendida la base del skinning es vertex + suma(peso * forma), por punto de control.
-    // El cache de snapshots por frame no sabe de pesos: con formas activas se saltea (se skinnea cada frame).
     const bool formas = m->HayFormasActivas() && !m->vertCtrlPoint.empty();
-    // ---- CACHE de vertex-animation: reproducir el snapshot si esta bakeado; si no, skinnear y guardarlo (lazy) ----
-    int slotAGuardar = -1;
-    // JUGANDO (kind 2) el cache NO sirve: sus slots se indexan por CurrentFrame (el frame del TIMELINE) pero la pose
-    // sale del cabezal de cada armature (juegoFrame, continuo) y de sus capas -> reproducia poses de otro frame/clip.
-    extern int ActiveAnimKind;
-    const bool cacheValido = (ActiveAnimKind != 2);
-    if (m->skinCacheOn && !formas && cacheValido){
-        if (SkinCacheValidar(m)){
-            if (SkinCacheReproducir(m)){ m->lastSkinFrame = CurrentFrame; m->skinIncOk = false; SkinActualizarAabb(m); g_skinUltimoCamino = 1; return; } // HIT (el snapshot piso skinVertex: la referencia incremental ya no vale)
-            int idx = CurrentFrame - m->skinCacheStart, stride = m->skinCacheSkip + 1; if (stride < 1) stride = 1;
-            if (idx >= 0 && CurrentFrame <= m->skinCacheEnd && (idx % stride) == 0) slotAGuardar = idx / stride; // keyframe slot -> guardar tras skinnear
-        }
-    } else if (!m->skinCache.empty() && cacheValido) {
-        m->LiberarSkinCache(); // el cache se apago -> liberar la memoria (jugando se conserva para el editor)
-    }
     m->lastSkinFrame = CurrentFrame;
     // OJO: vertexSize = cantidad de VERTICES (no de floats). Los arrays vertex/normals/skin* son vertexSize*3.
     int nv = m->vertexSize;      // vertices
@@ -1188,7 +1125,6 @@ void SkinearMesh(Mesh* m){
                 if (d > 0.0005f) kch.push_back((int)k);
             }
             if (bch.empty() && kch.empty()){   // NADA se movio de verdad: cero trabajo este frame
-                if (slotAGuardar >= 0) SkinCacheGuardar(m, slotAGuardar);   // la pose vigente VALE para este frame
                 g_skinUltimoCamino = 2;
                 return;
             }
@@ -1239,7 +1175,6 @@ void SkinearMesh(Mesh* m){
                     const float* mm = a->bones[(size_t)b].skinMatrix.m; float* pv = &m->skinPrevMat[(size_t)b*12];
                     pv[0]=mm[0]; pv[1]=mm[1]; pv[2]=mm[2];  pv[3]=mm[4];  pv[4]=mm[5];  pv[5]=mm[6];
                     pv[6]=mm[8]; pv[7]=mm[9]; pv[8]=mm[10]; pv[9]=mm[12]; pv[10]=mm[13]; pv[11]=mm[14]; }
-                if (slotAGuardar >= 0) SkinCacheGuardar(m, slotAGuardar);
                 SkinActualizarAabb(m);
                 g_skinUltimoCamino = 3;
                 return;
@@ -1275,8 +1210,6 @@ void SkinearMesh(Mesh* m){
         m->skinPrevConLuz = doN;
         m->skinIncOk = true;
     }
-    // CACHE: si este frame era un keyframe slot no bakeado, guardar el resultado del skinning (lazy: se paga 1 vez)
-    if (slotAGuardar >= 0) SkinCacheGuardar(m, slotAGuardar);
     SkinActualizarAabb(m);   // AABB de ESTA pose (lo usa el autocull por frustum de RenderObject)
 }
 

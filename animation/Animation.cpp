@@ -39,7 +39,6 @@ int AnimFPS = 30;             // fps de reproduccion de animaciones (default 30)
 int StartFrame = 1;
 int EndFrame = 250;
 bool AnimEsJuego = false;          // "Es un juego": timeline infinito (sin Fin)
-bool AnimConservarEstados = false; // play hacia adelante no pisa lo ya grabado
 int CurrentFrame = 1;
 
 // === Animaciones de ESCENA + seleccion de animacion activa a nivel app ===
@@ -856,8 +855,16 @@ void W3dAnimEscenaFijar(float frame) {
 
 // ---- SHAPE KEYS animadas: canal AnimShape, componente = indice de la forma ----
 void (*g_animPasoHook)(Object* rutina, int componente, float valor) = 0;
+void (*g_animSonidoHook)(Object* sonido, int componente, float valor) = 0;
 void W3dAplicarFormas(Object* o, std::vector<AnimProperty>& props, int frame) {
     if (!o) return;
+    if (o->getType() == ObjectType::sonido) {   // el VOLUMEN / el tono / la reverb de un sonido (AnimSonido)
+        if (g_animSonidoHook)
+            for (size_t p = 0; p < props.size(); p++)
+                if (props[p].Property == AnimSonido && !props[p].keyframes.empty())
+                    g_animSonidoHook(o, props[p].component, props[p].Eval(frame, 0.0f));
+        return;
+    }
     if (o->getType() == ObjectType::rutina) {   // los PASOS de una rutina (AnimPaso)
         if (g_animPasoHook)
             for (size_t p = 0; p < props.size(); p++)
@@ -970,6 +977,9 @@ static void AplicarCurvasJuegoCanales(Object* o, std::vector<AnimProperty>& prop
                 break;
             }
     // LUZ: los colores, la atenuacion y el spot (el cambio de GL_LIGHTn / direccional es del editor)
+    if (o->getType() == ObjectType::light)
+        for (size_t p = 0; p < props.size(); p++)
+            if (props[p].Property == AnimLuzIntens && !props[p].keyframes.empty()) { ((Light*)o)->intensidad = props[p].EvalF(fr, 1.0f); break; }
     if (o->getType() == ObjectType::light && (hayCol || hayAmb || haySpec || hayAtt || haySpot)) {
         Light* l = (Light*)o;
         if (hayCol)  { Vector3 d(l->diffuse[0], l->diffuse[1], l->diffuse[2]);

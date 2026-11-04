@@ -472,6 +472,7 @@ void EstadoFotoTomar() {}
 void EstadoFotoReponer() {}
 unsigned int ErrorGL() { return 0u; }
 void Finish() {}
+void Flush() {}
 void DibujarPendiente() {}
 bool g_auditarEscena = false;
 int  g_auditDesyncs = 0;
@@ -515,6 +516,7 @@ void Light0fv(LightFv p, const float* v) { LightNfv(0, p, v); }
 void Light0f(LightF p, float v) { LightNf(0, p, v); }
 void SetLightEnabled(unsigned int id, bool on) { if (id >= 0x4000u && id < 0x4000u + (unsigned)LucesMax) LightN((int)(id - 0x4000u), on); }
 void LightModelAmbient(const float* c) { for (int k = 0; k < 4; k++) ambGlobal[k] = c[k]; materialSucio = true; }
+void LightModelTwoSide(bool) {}   // (el citro3d ilumina una cara)
 void Material(MatParam p, const float* rgba) {
     float* d = (p == MatDiffuse) ? matDiff : (p == MatAmbient) ? matAmb : (p == MatSpecular) ? matSpec : matEmis;
     if (memcmp(d, rgba, sizeof(float) * 4) == 0) return;
@@ -527,6 +529,17 @@ void MaterialShininess(float s) { if (s != matShine) { matShine = s; materialSuc
 //  Textura / texenv / matriz de textura
 // ============================================================================
 void BindTexture(unsigned int id) { boundTex = id; ::W3dC3DBindTextura(id); }
+void SombreadoPorPixel(bool){}                 // (pipeline fijo: la luz es por vertice, siempre)
+bool SombreadoPorPixelSoportado(){ return false; }
+// (sin shaders: los pases van por la CPU y el postprocesado tambien; ver gfx/w3dGraphics.h)
+bool PasesConShader(){ return false; }
+void PaseEspecial(int, const float*){}
+void AnteriorPointer3f(const float*){}
+bool PostEfecto(int, unsigned int, unsigned int, int, int, const float*, const float*){ return false; }
+bool ShadersEscritos(){ return false; }
+int  ShaderEscritoCompilar(const char*, const char*, char* log, int logMax){ if(log && logMax > 0) log[0] = 0; return 0; }
+void ShaderEscritoBorrar(int){}
+void ShaderEscritoUsar(int, const float*){}
 void TexEnvDot3(bool on) { texEnv = on ? 2 : 0; }
 void TexEnvReplace(bool on) { texEnv = on ? 1 : 0; }
 void TexEnvAlphaOnly(bool on) { texEnv = on ? 3 : 0; }
@@ -547,6 +560,7 @@ void MezclaTexturasOff() { mezclaOn = false; mezclaUV = 0; }
 bool MezclaTexturasActiva() { return mezclaOn; }
 void MezclaTexturasUV(const float* p) { mezclaUV = p; }
 void MezclaTexturasUVVBO(unsigned int) { mezclaUV = 0; }
+void MezclaTexturasUV2s(const short*) { mezclaUV = 0; }
 void MezclaTexturaBorrada(unsigned int id) { if (id && id == mezclaTex) { mezclaTex = 0; mezclaOn = false; } }
 void TexGenSphere(bool on) {
     if (texGenCache == (on ? 1 : 0)) return;
@@ -595,12 +609,14 @@ void DisableArray(VArray a) { if (a == VertexArray) aPos.on = false; else if (a 
 int  ArrayEstado(VArray a) { return (a == VertexArray ? aPos.on : a == NormalArray ? aNrm.on : a == TexCoordArray ? aUV.on : aCol.on) ? 1 : 0; }
 void VertexPointer2f(int s, const float* p) { aPos.tam = 2; aPos.tipo = TipoFloat; aPos.paso = s; aPos.ptr = p; }
 void VertexPointer3f(int s, const float* p) { aPos.tam = 3; aPos.tipo = TipoFloat; aPos.paso = s; aPos.ptr = p; }
+void VertexPointer4f(int s, const float* p) { aPos.tam = 4; aPos.tipo = TipoFloat; aPos.paso = s; aPos.ptr = p; }
 void VertexPointer3s(int s, const short* p) { aPos.tam = 3; aPos.tipo = TipoShort; aPos.paso = s; aPos.ptr = p; }
 void VertexPointer2s(int s, const short* p) { aPos.tam = 2; aPos.tipo = TipoShort; aPos.paso = s; aPos.ptr = p; }
 void NormalPointer3b(const signed char* p) { aNrm.tam = 3; aNrm.tipo = TipoByte; aNrm.paso = 0; aNrm.ptr = p; }
 void ColorPointer4ub(const unsigned char* p) { aCol.tam = 4; aCol.tipo = TipoUByte; aCol.paso = 0; aCol.ptr = p; }
 void ColorPointer4f(int s, const float* p) { aCol.tam = 4; aCol.tipo = TipoFloat; aCol.paso = s; aCol.ptr = p; }
 void TexCoordPointer2f(int s, const float* p) { aUV.tam = 2; aUV.tipo = TipoFloat; aUV.paso = s; aUV.ptr = p; }
+void TexCoordPointer2s(int s, const short* p) { aUV.tam = 2; aUV.tipo = TipoShort; aUV.paso = s; aUV.ptr = p; }
 void TexCoordPointer3b(const signed char* p, int) { aUV.tam = 3; aUV.tipo = TipoByte; aUV.paso = 0; aUV.ptr = p; }
 
 // ============================================================================
@@ -1403,6 +1419,8 @@ void VertexVBO(unsigned int) {}
 void NormalVBO(unsigned int) {}
 void ColorVBO(unsigned int) {}
 void TexCoordVBO(unsigned int) {}
+void TexCoordVBO2s(unsigned int) {}
+void VertexVBO3s(unsigned int) {}
 void BindIndexVBO(unsigned int) {}
 void DrawTrianglesVBO(int, int) {}
 void UnbindVBOs() {}

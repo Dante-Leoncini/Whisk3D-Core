@@ -249,6 +249,10 @@ extern bool (*W3dMallaTextoABinHook)(const unsigned char* datos, size_t n, const
 // malla YA tiene su edicion y coincide con el recurso (acaba de publicarlo o de guardarse).
 // false = el recurso no se pudo cargar: la malla NO se toca.
 bool W3dMallaVincular(Mesh* m, MallaRecurso* r, bool conservarEdicion = false);
+// lo llaman W3dMallaVincular y W3dMallaMudar ANTES de tocar nada: el editor publica ahi las mallas que
+// salieron de Edit con la edicion sin publicar (la malla 'm' o un usuario de 'r'), asi quien se vincula
+// ve el contenido al dia. NULL = sin editor (el runtime del juego).
+extern void (*W3dMallaAntesDeVincularHook)(Mesh* m, MallaRecurso* r);
 // MUDA el vinculo de la malla a otro recurso SIN tocar sus datos: lo que compartia pasa a
 // ser propio (copia) y la malla sigue con su edicion y su jaula (la malla en Edit Mode que un
 // guardado separo a otro recurso). false = el recurso no se pudo cargar (no cambia nada).

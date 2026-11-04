@@ -57,6 +57,10 @@ class Armature; // objects/Armature.h
 // evalua la POSE del esqueleto en 'frame' con el clip ACTIVO (FK): llena bone.poseHead/poseTail.
 // Si no hay clip activo (o el hueso no esta animado) la pose = rest. Lo llama el render del armature.
 void EvaluarPoseEsqueleto(Armature* a, int frame);
+// UNA FRACCION DE CUADRO para la pose (0..1, 0 = el cuadro entero de siempre): el desenfoque de movimiento trazado evalua
+// el esqueleto en el instante exacto de cada pase (con las rotaciones interpoladas: un giro rapido no corta camino por
+// el centro como pasaba interpolando los vertices). Quien la pone la vuelve a 0 y descarta el cache de la pose
+extern float g_poseFraccion;
 // RETARGET POR TAMANO (animRetarget de lua / W3dArmatureRetarget): un personaje mas alto o mas chico con la MISMA
 // jerarquia de nombres de huesos reproduce el mismo clip sin deformarse.
 //   W3D_RETARGET_COMPLETO   (0, el de siempre) el clip tal cual: traslaciones, rotaciones y escalas.

@@ -16,6 +16,7 @@
 
 #include "crossplatform.h" // MeshIndex (16 bits N95 / 32 bits escritorio)
 
+#include "w3dBackend.h"   // (W3D_BACKEND_ABRIR / CERRAR: varios backends en un ejecutable)
 namespace w3dEngine {
 
     // --- capacidades que se prenden / apagan ---
@@ -36,8 +37,10 @@ namespace w3dEngine {
         Multisample,    // anti-aliasing MSAA (hay que APAGARLO en el color-ID pick)
         CapCount_       // (cantidad; dejalo ultimo, los backends dimensionan arrays con esto)
     };
+W3D_BACKEND_ABRIR
     void Enable(Cap c);
     void Disable(Cap c);
+W3D_BACKEND_CERRAR
 
     // comparacion del depth test
     //  DepthEqual : pasadas extra sobre la MISMA superficie (normal map, capas)
@@ -48,18 +51,26 @@ namespace w3dEngine {
     //               spec GL 2.1 §4.2.3): un Clear ahi borraria la profundidad de
     //               TODA la ventana y el agua se dibujaria encima de todo.
     enum DepthCmp { DepthLess, DepthLEqual, DepthEqual, DepthAlways };
+W3D_BACKEND_ABRIR
     void DepthFunc(DepthCmp c);
+W3D_BACKEND_CERRAR
 
     // --- arrays de vertices del pipeline fijo ---
     enum VArray { VertexArray, TexCoordArray, NormalArray, ColorArray };
+W3D_BACKEND_ABRIR
     void EnableArray(VArray a);
     void DisableArray(VArray a);
     int  ArrayEstado(VArray a);   // lo que sabe el cache: 1 prendido, 0 apagado, -1 no se sabe (el editor valida con esto)
+W3D_BACKEND_CERRAR
 
     // --- buffers ---
+W3D_BACKEND_ABRIR
     void ClearColor(float r, float g, float b, float a);
+W3D_BACKEND_CERRAR
     enum { ColorBuffer = 1, DepthBuffer = 2, StencilBuffer = 4 };
+W3D_BACKEND_ABRIR
     void Clear(int bits); // ColorBuffer | DepthBuffer | StencilBuffer
+W3D_BACKEND_CERRAR
 
     // --- PLANOS DE RECORTE (user clip planes) ---
     // Cortan la geometria por planos ARBITRARIOS: se dibuja solo el semiespacio
@@ -73,8 +84,10 @@ namespace w3dEngine {
     //     como M^T * plano. ***
     // n = 0 los apaga todos. Pipeline fijo: GL_CLIP_PLANEi. GLES2/WebGL: discard
     // en el shader (los primeros PlanosRecorteMax()).
+W3D_BACKEND_ABRIR
     int  PlanosRecorteMax();                        // cuantos soporta el backend/driver
     void PlanosRecorte(int n, const float* eq4);    // n planos, 4 floats cada uno
+W3D_BACKEND_CERRAR
 
     // --- ESTENCIL: recorte por FORMA ---
     // La unica forma de acotar una pasada a algo que NO es un rectangulo de
@@ -85,27 +98,36 @@ namespace w3dEngine {
     // reflejo no se pinta encima del puente).
     // EstencilBits() = 0 cuando el contexto se creo sin buffer de estencil: el
     // que llama tiene que poder seguir sin el (el espejo cae al recorte por planos).
+W3D_BACKEND_ABRIR
     int  EstencilBits();
     void EstencilLimpiar(int valor);   // pone TODO el buffer en 'valor'
     void EstencilMarcar(int valor);    // test siempre pasa y ESCRIBE 'valor' donde se dibuje
     void EstencilDentro(int valor);    // dibuja SOLO donde el buffer vale 'valor' (no escribe)
     void EstencilApagar();             // desactiva el test (y deja el buffer sin escribir)
+W3D_BACKEND_CERRAR
 
     // --- viewport y recorte (coordenadas ya en el sistema del backend) ---
+W3D_BACKEND_ABRIR
     void Viewport(int x, int y, int w, int h);
     void Scissor(int x, int y, int w, int h);
+W3D_BACKEND_CERRAR
     // lectura del estado actual (para guardar y reponer: un objeto que dibuja en un sub-rectangulo)
+W3D_BACKEND_ABRIR
     void GetViewport(int xywh[4]);
     void GetScissor(int xywh[4]);
     bool ScissorActivo();
+W3D_BACKEND_CERRAR
 
     // --- matrices del pipeline fijo ---
     enum Matrix { Projection, ModelView, TextureMatrix };
+W3D_BACKEND_ABRIR
     void MatrixMode(Matrix m);
     void LoadIdentity();
+W3D_BACKEND_CERRAR
 
     // pila de matrices + traslacion (la UI 2D posiciona asi). El backend GL las hace con
     // glPushMatrix/glTranslatef; un backend Vulkan/DX las haria con Matrix4 explicita.
+W3D_BACKEND_ABRIR
     void PushMatrix();
     void PopMatrix();
     void Translatef(float x, float y, float z);
@@ -113,10 +135,13 @@ namespace w3dEngine {
     void Scalef(float x, float y, float z);
     void MultMatrix(const float* m16);  // multiplica la matriz actual por m (column-major)
     void GetMatrix(Matrix m, float* out16); // la matriz ACTUAL de ese stack: de la SOMBRA en la CPU (sin glGet, que en el N95 espera al GPU)
+W3D_BACKEND_CERRAR
     extern bool g_invalidarPorMalla;        // Invalidate() en cada malla (el editor de Symbian; ver Mesh::RenderObject)
     extern bool g_matrizAuditar;            // (harness 'matrizaudit') cada GetMatrix compara la sombra con GL...
     extern int  g_matrizDesyncs;            // ...y cuenta las que no dan igual
+W3D_BACKEND_ABRIR
     void LoadMatrix(const float* m16);   // carga m como matriz actual (ej: la vista de CameraBase)
+W3D_BACKEND_CERRAR
     // PILA PEREZOSA de la MODELVIEW (pipeline fijo): Push/Pop/Mult/Load/LoadIdentity/Translatef/Rotatef/Scalef solo
     // cambian la SOMBRA en la CPU; la matriz llega a GL (UN glLoadMatrixf, si cambio) recien antes de lo que la usa:
     // los Draw*, la posicion de las luces (Light0fv/LightNfv) y los planos de recorte. Un objeto que no dibuja (su malla
@@ -125,53 +150,123 @@ namespace w3dEngine {
     // un glDraw*, un glGet de la matriz): MatricesSincronizar() antes. GLES2/WebGL ya era perezoso (su pila vive en la
     // CPU y va por uniforms en cada draw): ahi Sincronizar no hace nada
     extern bool g_matricesPerezosas;     // default true; false = cada operacion va a GL como antes (A/B: harness 'perezosas')
+W3D_BACKEND_ABRIR
     void MatricesSincronizar();
+W3D_BACKEND_CERRAR
     // el SESGO EN METROS: la proyeccion del pase con la profundidad corrida m metros de camara (+ aleja, - acerca) sin
     // mover la geometria en pantalla. Estado como los demas: solo llama al driver si cambia (0 = la del pase)
+W3D_BACKEND_ABRIR
     void SesgoMetros(float m);
+W3D_BACKEND_CERRAR
 
     // proyecciones (cargan/multiplican la matriz PROJECTION activa)
+W3D_BACKEND_ABRIR
     void Ortho(float l, float r, float b, float t, float n, float f);
     void Frustum(float l, float r, float b, float t, float n, float f);
     void Perspective(float fovYDeg, float aspect, float n, float f); // via Frustum (sin GLU)
+W3D_BACKEND_CERRAR
 
     // --- estado suelto ---
+W3D_BACKEND_ABRIR
     void DepthMask(bool escribir);     // permitir/escribir el z-buffer
     void LineWidth(float px);
     void SmoothShading(bool suave);    // GL_SMOOTH (true) / GL_FLAT (false)
     void FastPerspective();            // hint de correccion de perspectiva rapida
     void FrontFace(bool ccw);          // winding de la cara frontal (true=CCW)
     void CullCarasFrontales(bool on);  // descartar las caras FRONTALES (glCullFace(GL_FRONT)) en vez de las traseras: el
+W3D_BACKEND_CERRAR
                                        // contorno de casco invertido (Material::contorno). Vale con cualquier winding
+W3D_BACKEND_ABRIR
     void ColorMask(bool r, bool g, bool b, bool a); // permitir/bloquear canales de color
     void PointSpriteCoordReplace(bool on); // genera coords de textura por punto (point sprites)
+W3D_BACKEND_CERRAR
 
     // --- textura activa (con CACHE: ver abajo) ---
     // Bindea la textura 2D. El motor recuerda cual esta puesta: si ya es esa,
     // NO hace la llamada GL (ahorra el bind, que es caro). id 0 = ninguna.
+W3D_BACKEND_ABRIR
     void BindTexture(unsigned int id);
+W3D_BACKEND_CERRAR
 
     // CHROME (env-map esferico / matcap): genera las UV desde el normal -> reflejo falso. PC = GL_SPHERE_MAP
     // del pipeline fijo (hardware). Symbian/GLES1 NO tiene glTexGen: queda como stub (UV por software TODO).
+W3D_BACKEND_ABRIR
     void TexGenSphere(bool on);
+W3D_BACKEND_CERRAR
 
     // MATCAP por HARDWARE sin texgen (anda en GLES1/N95): arma la matriz de TEXTURA = rotacion del modelview x
     // escala/bias (+ flip-V), y las NORMALES se mandan como texcoords (TexCoordPointer3b) -> la GPU calcula la UV
     // del matcap por vertice. on=arma la matriz; off=la resetea a identidad. (Es el "normal del ojo", aprox del
     // GL_SPHERE_MAP exacto.) NO mezclar con TexGenSphere (los dos tocan la matriz de textura).
+W3D_BACKEND_ABRIR
     void TexMatrixMatcap(bool on);
+W3D_BACKEND_CERRAR
     // la matriz de textura como DESPLAZAMIENTO y ESCALA de las UV (u' = u*su + du): mover un reflejo o una cinta sin
     // reescribir las UV. (0,0,1,1) = identidad. Comparte el cache del matcap: TexMatrixMatcap(false) la resetea
+W3D_BACKEND_ABRIR
     void TexMatrixUV(float du, float dv, float su, float sv);
+W3D_BACKEND_CERRAR
 
     // true si hay glTexGen (sphere-map EXACTO por hardware: PC). false en GLES1 (N95) -> ese modo cae a software.
+W3D_BACKEND_ABRIR
     bool TieneTexGen();
+W3D_BACKEND_CERRAR
 
     // chrome = espejo: textura DIRECTA (GL_REPLACE), independiente de la luz. false = GL_MODULATE normal.
     // Lo usan los dos modos de chrome (matcap y equirect). Anda en PC y GLES1 (glTexEnvi existe en ambos).
+W3D_BACKEND_ABRIR
     void TexEnvReplace(bool on);
     void TexEnvDot3(bool on); // DOT3 normal mapping: combiner N.L (textura=N, color=L). Reset=MODULATE
+W3D_BACKEND_CERRAR
+    // SOMBREADO POR PIXEL: la iluminacion se calcula en cada pixel (fragment shader) en vez de en cada vertice y
+    // interpolarse. Solo los backends con shaders (GLES 2.0 / WebGL); en el pipeline fijo (GLES 1.1, la PC fija, la 3DS)
+    // no existe: Soportado() da false y el editor ni ofrece la opcion
+W3D_BACKEND_ABRIR
+    void SombreadoPorPixel(bool on);
+    bool SombreadoPorPixelSoportado();
     void TexEnvAlphaOnly(bool on); // pases planos: RGB=color de vertice, ALPHA=alpha de la textura. Reset=MODULATE
+W3D_BACKEND_CERRAR
+
+    // PASES CON SHADER (GLES 2.0 / WebGL / Vulkan). Lo que en el pipeline fijo se pinta POR VERTICE desde la CPU (la normal
+    // hecha color, el movimiento en la pantalla) lo calcula la GPU en cada pixel, y la vista Solido usa un programa chico.
+    // Con PasesConShader() en false (GL 1.1, GLES 1.1, la 3DS) el editor sigue con el camino de la CPU. Mientras un pase
+    // esta prendido, los TRIANGULOS lo usan (las lineas y los puntos no). Los parametros de PaseVectores / PaseDatos:
+    // [0..15] la matriz PROYECCION x VISTA del cuadro anterior, [16] [17] el ancho y el alto de la imagen (px), [18] el
+    // lejos (m: la escala de la profundidad de PaseDatos), [19..34] la PROYECCION x VISTA de la imagen ENTERA de ahora (en
+    // un render por tiles la de GL es la del tile). Las posiciones del anterior van en AnteriorPointer3f (las
+    // mismas del draw, en el mismo orden; NULL = quieto)
+    enum PaseShader { PaseNinguno = 0, PaseNormal = 1, PaseSolido = 2, PaseVectores = 3, PaseDatos = 4 };
+    // PaseDatos = la PROFUNDIDAD (distancia / lejos) en 24 bits: R alta, G media, B baja (sin alfa: la pantalla puede no
+    // tenerlo). POSTPROCESADO con shader (PostEfecto): un quad sobre el viewport con el efecto, leyendo la imagen y sus
+    // datos (la profundidad de PaseDatos o el movimiento de PaseVectores) de texturas copiadas de la pantalla. uv4 = el
+    // rectangulo de la imagen en la textura (u0, v0 abajo a la izquierda; u1, v1 arriba a la derecha)
+    // (el BLOOM son dos: el desenfoque de un eje -que en la primera pasada filtra el brillo- y la mezcla con la imagen)
+    enum PostShader { PostCopiar = 0, PostGrano = 1, PostFoco = 2, PostMovimiento = 3, PostBloomDifuminar = 4, PostBloomMezcla = 5 };
+W3D_BACKEND_ABRIR
+    bool PasesConShader();
+    void PaseEspecial(int modo, const float* p);
+    void AnteriorPointer3f(const float* p);
+    bool PostEfecto(int efecto, unsigned int texImg, unsigned int texDat, int texW, int texH, const float* uv4, const float* p8);
+W3D_BACKEND_CERRAR
+
+    // SHADERS ESCRITOS (el "Shader personalizado" de un material; docs/manual/<idioma>/editor/shaders.md). El usuario
+    // escribe solo SUS funciones (Fragmento y, si quiere, Vertice) con los nombres de Whisk3D (w3d_uv, w3d_normal,
+    // w3d_Pantalla...): el BACKEND les pone adelante lo suyo (el prologo) y el main. Asi el mismo archivo anda en todos los
+    // backends con shaders (GLES 2.0 de Android/web/N8 y Vulkan); los otros (GL fijo, GLES 1.1, la 3DS) dicen false en
+    // ShadersEscritos y el material se dibuja como siempre.
+    //   ShaderEscritoCompilar: > 0 = el programa; 0 = no compilo (el error en log, con los renglones del archivo)
+    //   ShaderEscritoUsar: los TRIANGULOS de los draws que siguen lo usan (0 = apagado). p[ShaderEscritoParams]:
+    //     [0] tiempo (s), [1] ior, [2] transmision, [3] rugosidad, [4] metalico, [8..16] la rotacion de la VISTA al
+    //     MUNDO (mat3 por columnas: w3d_vistaAMundo, para leer un mapa de entorno). Si el shader lee la pantalla
+    //     (w3d_Pantalla), cada draw la copia antes
+    // Las lineas y los puntos no lo usan; un pase especial (PaseEspecial) le gana.
+    enum { ShaderEscritoParams = 20 };
+W3D_BACKEND_ABRIR
+    bool ShadersEscritos();
+    int  ShaderEscritoCompilar(const char* vertice, const char* fragmento, char* log, int logMax);
+    void ShaderEscritoBorrar(int id);
+    void ShaderEscritoUsar(int id, const float* p);
+W3D_BACKEND_CERRAR
 
     // MEZCLA DE TEXTURAS en UNA pasada (multitextura): la unidad 1 interpola SU textura (B) con lo que salio de la
     // unidad 0 (la textura del material con su luz / color / modo): fragmento = B * k + unidad0 * (1 - k). k (0..1)
@@ -184,73 +279,105 @@ namespace w3dEngine {
     // pasada, k no se usa); 2 = MULTIPLY 2x (unidad0 * B * 2: el lightmap con overbright, GL_RGB_SCALE); 3 = SUBTRACT
     // (unidad0 - B: la rampa del sombreado toon, Material::toon); 4 = MULTIPLY SIMPLE (unidad0 * B con el GL_MODULATE
     // clasico, sin el combiner: el toon "multiplicar", que anda en cualquier driver GL ES 1.1).
+W3D_BACKEND_ABRIR
     bool MezclaTexturasSoportada();
     void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int modo = 0);
     void MezclaTexturasOff();
     bool MezclaTexturasActiva();
+W3D_BACKEND_CERRAR
     // la unidad 1 con SUS PROPIAS UV (el unwrap de un lightmap) en vez de replicar las de la unidad 0: un puntero de RAM
     // (2 floats por vertice) o un VBO. NULL / 0 = vuelve a las mismas UV que la unidad 0. Off las olvida.
+W3D_BACKEND_ABRIR
     void MezclaTexturasUV(const float* p);
+    void MezclaTexturasUV2s(const short* p);   // (2 short por vertice: la escala, en la TextureMatrix de la unidad 1)
     void MezclaTexturasUVVBO(unsigned int h);
+W3D_BACKEND_CERRAR
     // (DeleteTexture la llama: GL desbindea lo borrado de todas las unidades y el cache de la 1 lo tiene que saber)
+W3D_BACKEND_ABRIR
     void MezclaTexturaBorrada(unsigned int id);
+W3D_BACKEND_CERRAR
     // el ultimo error de GL (glGetError; 0 = ninguno). Lo usa quien sube buffers grandes (MundoBsp) para saber si el
     // driver los acepto: en el N95 un glBufferData que no entra falla EN SILENCIO y el VBO queda vacio
+W3D_BACKEND_ABRIR
     unsigned int ErrorGL();
+W3D_BACKEND_CERRAR
 
     // --- color uniforme del pipeline fijo (cuando NO hay array de color) ---
+W3D_BACKEND_ABRIR
     void Color4f(float r, float g, float b, float a);
     void Color4fv(const float* rgba);
     void Color4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a);
+W3D_BACKEND_CERRAR
 
     // --- MATERIAL del pipeline fijo ---
     // El motor resuelve float (GL escritorio / GL ES 1.1 de Symbian) vs punto
     // fijo (GL ES 1.0 de Android viejo, glMaterialx*) adentro: quien lo use
     // pasa siempre float y NO necesita #ifdef ANDROID. Cara = FRONT_AND_BACK.
     enum MatParam { MatAmbient, MatDiffuse, MatSpecular, MatEmission };
+W3D_BACKEND_ABRIR
     void Material(MatParam p, const float* rgba); // 4 floats
     void MaterialShininess(float s);
+W3D_BACKEND_CERRAR
 
     // --- niebla (fog) del pipeline fijo ---
+W3D_BACKEND_ABRIR
     void FogMode(bool linear);          // GL_FOG_MODE: true=LINEAR
     void FogStart(float z);
     void FogEnd(float z);
     void FogColor(const float* rgba);
+W3D_BACKEND_CERRAR
     // modo completo (el objeto Niebla): 0 = LINEAL (start/end), 1 = EXP, 2 = EXP2 (densidad). GL fijo lo
     // calcula por vertice (barato en el N95); el backend GLES2 lo replica en el shader.
+W3D_BACKEND_ABRIR
     void FogModo(int modo);
     void FogDensidad(float d);
+W3D_BACKEND_CERRAR
 
     // --- luz 0 del pipeline fijo ---
     enum LightFv { LightAmbient, LightDiffuse, LightSpecular, LightPosition };
+W3D_BACKEND_ABRIR
     void Light0fv(LightFv p, const float* v);
+W3D_BACKEND_CERRAR
     enum LightF { LightConstantAtt, LightLinearAtt, LightQuadraticAtt };
+W3D_BACKEND_ABRIR
     void Light0f(LightF p, float v);
     void SetLightEnabled(unsigned int glLightId, bool on); // habilita/apaga una luz por su id GL
+W3D_BACKEND_CERRAR
     // --- luces por NUMERO (0..LucesMax-1 = GL_LIGHT0..7): las usa la Rutina, que fija cada estado suelto. La
     //     posicion se transforma con la modelview ACTIVA (como glLightfv): w = 0 direccional, 1 puntual. Fuera de
     //     rango = nada. GLES2/WebGL las emula en el shader con la misma cuenta del pipeline fijo (por vertice). ---
     enum { LucesMax = 8 };
+W3D_BACKEND_ABRIR
     void LightNfv(int i, LightFv p, const float* v);
     void LightNf(int i, LightF p, float v);        // atenuacion de la luz i (glLightf)
+W3D_BACKEND_CERRAR
     // cono de la luz i: corte en grados (180 = sin cono), exponente de concentracion y direccion (en la modelview
     // ACTIVA, como glLightfv(GL_SPOT_DIRECTION))
+W3D_BACKEND_ABRIR
     void LightNSpot(int i, float corte, float exponente, const float* dir3);
     void LightN(int i, bool on);                   // glEnable/glDisable(GL_LIGHTi) (la 0 pasa por el cache: Light0)
     void LightModelAmbient(const float* rgba);     // glLightModelfv(GL_LIGHT_MODEL_AMBIENT)
+    void LightModelTwoSide(bool on);               // glLightModelf(GL_LIGHT_MODEL_TWO_SIDE): las caras de atras con la normal dada vuelta
+W3D_BACKEND_CERRAR
 
     // query: usa el CACHE del motor (NO llama glIsEnabled, que flushea el GPU en el N95)
+W3D_BACKEND_ABRIR
     bool IsEnabled(Cap c);
+W3D_BACKEND_CERRAR
 
     // leer pixeles (render-a-imagen / picking por color). ReadPixelsBegin avisa ANTES de dibujar que zona se va a
     // leer: donde no se puede leer el framebuffer (la PVR de la Dreamcast arma el cuadro recien al cerrarlo), lo que
     // se dibuja hasta el ReadPixelsRGBA va por software a esa zona. En el resto no hace nada.
+W3D_BACKEND_ABRIR
     void ReadPixelsBegin(int x, int y, int w, int h);
     void ReadPixelsRGBA(int x, int y, int w, int h, unsigned char* pixels);
+W3D_BACKEND_CERRAR
 
     // mezcla alfa estandar: SRC_ALPHA, ONE_MINUS_SRC_ALPHA (para Blend)
+W3D_BACKEND_ABRIR
     void BlendAlpha();
     void BlendMode(int modo); // capa multi-pass (W3dCapaMezcla): 0=Mix(alpha encima), 1=Multiply, 2=Add,
+W3D_BACKEND_CERRAR
                               // 3=Multiply 2x (dst*src*2, lightmaps con overbright), 4=Subtract, 5=Screen
 
     // --- MODOS DE MEZCLA (blend) ---
@@ -271,25 +398,35 @@ namespace w3dEngine {
     // BLUR VERTICAL por shader (motion blur de rodillos, etc). 'amt' en fraccion de la textura
     // (0 = apagado). SOLO tiene efecto en el backend GL ES 2.0 / WebGL (shaders); en el pipeline
     // fijo (desktop GL / GL ES 1.1 / N95) es un no-op silencioso.
+W3D_BACKEND_ABRIR
     void BlurY(float amt);
+W3D_BACKEND_CERRAR
 
     // DESCARTE POR ALPHA: los pixeles con alpha < ref no se dibujan NI escriben en el z-buffer
     // (ref = 0 lo apaga). Sirve, por ejemplo, para dibujar con z-buffer cosas con bordes
     // recortados (esquinas redondeadas): por el agujero se sigue viendo lo de atras.
     // GLES2 -> 'discard' en el shader. Fija -> GL_ALPHA_TEST.
+W3D_BACKEND_ABRIR
     void AlphaTest(float ref);
+W3D_BACKEND_CERRAR
 
     // VIDEO CON ALPHA EMPAQUETADO: la textura trae el COLOR en la mitad de arriba y la MASCARA
     // (en gris) en la mitad de abajo. Sirve para reproducir animaciones con transparencia en
     // plataformas cuyo decodificador de video no entrega canal alpha a la textura (Safari/iOS con
     // VP9-alpha, por ejemplo). Solo tiene efecto en el backend con shaders (GLES2/WebGL).
+W3D_BACKEND_ABRIR
     void AlfaEmpaquetado(bool activado);
+W3D_BACKEND_CERRAR
 
+W3D_BACKEND_ABRIR
     void SetMezcla(int m);          // configura glBlendFunc/Equation segun el modo
+W3D_BACKEND_CERRAR
 
     // --- parametros de la textura 2D ACTIVA (la del ultimo BindTexture) ---
+W3D_BACKEND_ABRIR
     void TexFilter(bool linear); // true=LINEAR, false=NEAREST (min y mag)
     void TexWrap(bool repeat);   // true=REPEAT, false=CLAMP_TO_EDGE (S y T)
+W3D_BACKEND_CERRAR
 
     // --- PIXELADO GLOBAL (opcion de ESCENA, no de material) ---
     // Reporte del dueno: "pixela todas las texturas y no uses filtros de textura".
@@ -318,8 +455,14 @@ namespace w3dEngine {
     // Igual que el pixelado, se lee al SUBIR: cambiarlo no re-arma lo ya cargado.
     bool MipmapsGlobal();
     void SetMipmapsGlobal(bool on);
+    // con mipmaps: mezclar los dos niveles mas cercanos (trilineal, por defecto) o usar solo el mas cercano (en el MBX
+    // del N95 lee la mitad de texeles)
+    bool MipmapsTrilineal();
+    void SetMipmapsTrilineal(bool on);
     bool TexTieneMips(unsigned int id);
+W3D_BACKEND_ABRIR
     void TexBaseLevel(int nivel);   // ver un nivel puntual de la piramide (0 = normal; PC solamente)
+W3D_BACKEND_CERRAR
 
     // CACHE de parametros POR TEXTURA (glTexParameter = estado del OBJETO textura,
     // no del contexto: re-mandar el mismo filtro/wrap por malla era churn puro).
@@ -331,15 +474,19 @@ namespace w3dEngine {
     void TexParamsOlvidar(unsigned int id);
 
     // --- punteros de los arrays del pipeline fijo (stride en BYTES) ---
+W3D_BACKEND_ABRIR
     void VertexPointer2f(int strideBytes, const float* p);         // 2 float (UI 2D)
     void VertexPointer3f(int strideBytes, const float* p);         // 3 float
+    void VertexPointer4f(int strideBytes, const float* p);         // 4 float (x*w, y*w, z*w, w: 2D con perspectiva en las UV)
     void VertexPointer3s(int strideBytes, const short* p);         // 3 short (verts enteros)
     void VertexPointer2s(int strideBytes, const short* p);         // 2 short (UI 2D entera)
     void ColorPointer4ub(const unsigned char* p);                  // 4 ubyte
     void ColorPointer4f(int strideBytes, const float* p);          // 4 float (GLdc: su camino rapido es todo float)
     void NormalPointer3b(const signed char* p);                    // 3 byte
     void TexCoordPointer2f(int strideBytes, const float* p);       // 2 float
+    void TexCoordPointer2s(int strideBytes, const short* p);       // 2 short (enteros: la escala, en la TextureMatrix)
     void TexCoordPointer3b(const signed char* p, int count);       // 3 byte (normales como texcoords, matcap HW). count=vertices (desktop convierte a GL_SHORT)
+W3D_BACKEND_CERRAR
 #ifdef W3D_DREAMCAST
     // GLdc define GLbyte como 'char' (no 'signed char'): las normales en bytes de las mallas llegan como char*
     inline void NormalPointer3b(const char* p) { NormalPointer3b((const signed char*)p); }
@@ -350,19 +497,29 @@ namespace w3dEngine {
     //     re-transferir los client-arrays de RAM en CADA glDrawElements. GL ES 1.1 (N95/MBX) y GL ES 2 (WebGL) los
     //     traen en el core; en desktop GL 1.1 (Windows) se cargan via wglGetProcAddress. handle 0 = ninguno.
     //     La malla ESTATICA sube 1 vez cuando cambia la geometria -> gran salto de FPS (sobre todo en el MBX). ---
+W3D_BACKEND_ABRIR
     bool VBOSoportado();                                          // true si el backend/driver tiene buffer objects
     unsigned int GenBuffer();                                     // crea un buffer object (0 si falla / no soportado)
     void DeleteBuffer(unsigned int h);                            // lo libera
     void ArrayBufferData(unsigned int h, const void* data, int bytes);  // sube atributos a GL_ARRAY_BUFFER (STATIC_DRAW)
     void IndexBufferData(unsigned int h, const void* data, int bytes);  // sube indices a GL_ELEMENT_ARRAY_BUFFER (STATIC_DRAW)
     long VBOMemoria();                                            // bytes de los buffer objects vivos (lo ultimo subido a cada uno)
+W3D_BACKEND_CERRAR
     // setup del draw DESDE VBOs (cada atributo en su propio buffer -> puntero con offset 0):
+W3D_BACKEND_ABRIR
     void VertexVBO(unsigned int h);    // bind + glVertexPointer(3,FLOAT,0,0)
     void NormalVBO(unsigned int h);    // bind + glNormalPointer(BYTE,0,0)
     void ColorVBO(unsigned int h);     // bind + glColorPointer(4,UBYTE,0,0)
     void TexCoordVBO(unsigned int h);  // bind + glTexCoordPointer(2,FLOAT,0,0)
+W3D_BACKEND_CERRAR
+    // los mismos con ENTEROS (3 / 2 short): la mitad de memoria y, en el N95 (el MBX sin VGP transforma en la CPU),
+    // menos trabajo para el driver. La escala va en la matriz (ModelView / TextureMatrix)
+W3D_BACKEND_ABRIR
+    void VertexVBO3s(unsigned int h);  // bind + glVertexPointer(3,SHORT,0,0)
+    void TexCoordVBO2s(unsigned int h);// bind + glTexCoordPointer(2,SHORT,0,0)
     void BindIndexVBO(unsigned int h); // bind del IBO (GL_ELEMENT_ARRAY_BUFFER)
     void DrawTrianglesVBO(int count, int firstIndex); // glDrawElements desde el IBO bindeado (offset = firstIndex indices)
+W3D_BACKEND_CERRAR
     // (P3) INDICES DE CLIENTE sobre ATRIBUTOS EN VBO: el subconjunto de indices
     // viaja por el bus en el draw (como la PSX mandaba su display list) y los
     // atributos quedan ESTATICOS en GPU. Es el camino de la visibilidad por
@@ -371,11 +528,15 @@ namespace w3dEngine {
     // buffer que el tiler todavia lee = sync stall). Desbindea el ELEMENT_ARRAY
     // (los indices se leen de RAM) y deja los atributos como esten. Suma los
     // bytes de indices a g_statUploadBytes (es LO que cruza el bus por frame).
+W3D_BACKEND_ABRIR
     void DrawTrianglesClientIdx(int count, const MeshIndex* indices);
+W3D_BACKEND_CERRAR
     // el gemelo en GL_LINES: aristas de un material con `lineas` sobre los
     // atributos que esten bindeados (VBO o client arrays; mismo contrato).
+W3D_BACKEND_ABRIR
     void DrawLinesClientIdx(int count, const MeshIndex* indices);
     void UnbindVBOs();                 // vuelve a client-side arrays (bind ARRAY/ELEMENT a 0; perezoso con g_punterosCache)
+W3D_BACKEND_CERRAR
     // CACHE DE PUNTEROS Y DE BINDS (pipeline fijo): un puntero (RAM o VBO) igual al que GL ya tiene no llama al driver
     // (ni al bind que lo precede: GL guarda con cada puntero el buffer que estaba bindeado), BindIndexVBO del IBO ya
     // bindeado tampoco, y UnbindVBOs no hace nada: el 0 se bindea recien antes de un puntero de RAM (ARRAY_BUFFER) o de
@@ -388,13 +549,18 @@ namespace w3dEngine {
     //     triangulos (mas indices, mas lento). ---
     enum Primitiva { PrimPuntos = 0, PrimLineas, PrimTiraLineas, PrimLazoLineas, PrimTriangulos, PrimTiraTriangulos,
                      PrimAbanico };
+W3D_BACKEND_ABRIR
     void DrawElements(Primitiva p, int count, const MeshIndex* indices);   // indices en RAM (client-side)
+W3D_BACKEND_CERRAR
     // indices de 16 bits en RAM, en todas las plataformas (MeshIndex es de 32 bits fuera del N95): un juego que ya
     // trae sus indices en 16 bits (la Dreamcast: GLdc los lee directo) no los convierte ni los recorre
+W3D_BACKEND_ABRIR
     void DrawElements16(Primitiva p, int count, const unsigned short* indices);
     void DrawElementsVBO(Primitiva p, int count, int firstIndex);          // del IBO bindeado (offset en indices)
+W3D_BACKEND_CERRAR
 
     // dibuja triangulos indexados (indices ushort)
+W3D_BACKEND_ABRIR
     void DrawTriangles(int count, const MeshIndex* indices); // index buffer 16/32 bits (ver crossplatform.h)
     void DrawTrianglesArray(int vertexCount); // glDrawArrays(GL_TRIANGLES): la UI 2D no indexa
     void DrawTrianglesArrayFrom(int first, int count); // glDrawArrays con offset (chrome equirect por-corner)
@@ -407,10 +573,13 @@ namespace w3dEngine {
     void DrawLinesIndexed(int count, const unsigned short* indices); // glDrawElements(GL_LINES)
     void DepthRange(float n, float f); // empuja el zbuffer (contorno de seleccion)
     void PolygonOffset(float factor, float units); // glPolygonOffset (slope-aware)
+W3D_BACKEND_CERRAR
 
     // wireframe (relleno por lineas). Solo GL de escritorio tiene glPolygonMode;
     // en GL ES es no-op (la malla sale rellena, como hoy en Symbian/Android).
+W3D_BACKEND_ABRIR
     void Wireframe(bool on);
+W3D_BACKEND_CERRAR
 
     // --- cache de estado ---
     // Enable/Disable, BindTexture Y el estado fino (depth func/mask, blend,
@@ -421,24 +590,32 @@ namespace w3dEngine {
     // motor para resincronizar. El pase de ESCENA se resincroniza UNA vez por
     // frame (antes del traversal), no por malla: nada de lo que corre adentro
     // del pase puede tocar GL crudo (lo vigila AuditarEstado en debug).
+W3D_BACKEND_ABRIR
     void Invalidate();
+W3D_BACKEND_CERRAR
     // el estado de MATERIAL que la escena (una rutina, una malla) puede dejar puesto y lo que se dibuja despues
     // (overlays, HUD, paneles) no repone: alpha test, sesgo de poligonos, matriz y modo de textura, sombreado, luz y
     // color de vertice. Por el cache: si ya esta asi, no llama al driver. Lo llama el cierre del pase de escena
+W3D_BACKEND_ABRIR
     void EstadoBase();
+W3D_BACKEND_CERRAR
     // FOTO del estado cacheado (el CONSTRUCTOR de una Rutina en modo solo-juego corre UNA vez): Tomar guarda lo que
     // el motor cree puesto (caps, textura, z, mezcla, texenv, alpha, arrays, material, color, polygon offset);
     // Reponer lo vuelve a poner PASANDO POR EL CACHE: solo llama al driver por lo que algo cambio desde la foto
     // (el HUD 2D de cada cuadro, por ejemplo). Los parametros que el cache no lleva (niebla, luces, clear color)
     // siguen puestos si nadie los toca. EstadoFotoSoportada() = false en un backend sin cache (GLES2): ahi el
     // constructor corre en cada cuadro.
+W3D_BACKEND_ABRIR
     bool EstadoFotoSoportada();
     void EstadoFotoTomar();
     void EstadoFotoReponer();
+W3D_BACKEND_CERRAR
     // auditoria del cache (PC/debug): compara el cache contra GL real via
     // glIsEnabled/glGet (flush en tilers: JAMAS por frame en dispositivo).
     // Devuelve la cantidad de desincronizaciones (0 = coherente) y las loguea.
+W3D_BACKEND_ABRIR
     int  AuditarEstado();
+W3D_BACKEND_CERRAR
     // el harness la prende ('glaudit'): el pase de escena audita al cerrar cada
     // frame y acumula los desyncs aca. Default off (cero costo).
     extern bool g_auditarEscena;
@@ -467,6 +644,7 @@ namespace w3dEngine {
     // del editor), el pase de escena es Escena, el flush de particulas se marca solo y el HUD del juego es UI.
     enum StatCat { StatCatEscena = 0, StatCatParticulas, StatCatUI, StatCatEditor, StatCatCount_ };
     extern int g_statDcCat[StatCatCount_];   // draws de triangulos por categoria
+W3D_BACKEND_ABRIR
     void StatCategoria(StatCat c);
     StatCat StatCategoriaActual();
     struct StatScope {                       // cambia la categoria en un bloque y al salir la repone
@@ -475,17 +653,22 @@ namespace w3dEngine {
         ~StatScope() { StatCategoria(antes); }
     };
     void StatsReset();
+W3D_BACKEND_CERRAR
     // TODAS las llamadas al driver (cada gl* = 1, tambien las que los contadores de arriba no ven: clear, viewport,
     // scissor, color, niebla, lineas...) por categoria, en el cuadro que esta corriendo. El GL crudo que queda fuera
     // del motor (el layout de Symbian, el cursor) se suma con StatRaw
     extern int g_statLlamadas[StatCatCount_];
+W3D_BACKEND_ABRIR
     void StatRaw(int n);
+W3D_BACKEND_CERRAR
     // la TRAZA (medir): con g_trazaGL cada llamada suma en su texto ("glBindTexture(...)"); TrazaGLVer la imprime
     // ordenada de mas a menos y la vacia. Solo el backend de pipeline fijo
     extern bool g_trazaGL;
     extern bool g_trazaGLSec;
+W3D_BACKEND_ABRIR
     void TrazaGL(const char* llamada);
     void TrazaGLVer();
+W3D_BACKEND_CERRAR
     // GL CRUDO fuera del motor (las luces, el layout y el cursor de Symbian, el video): W3D_GL_CRUDO(glXxx(...)) la
     // cuenta (mejor pasarlo por el motor: el cache de estado no lo ve)
     #define W3D_GL_CRUDO(llamada) (w3dEngine::StatRaw(1), (llamada))
@@ -505,17 +688,33 @@ namespace w3dEngine {
         }
     };
     extern StatsDeCuadro g_statCuadro;
+W3D_BACKEND_ABRIR
     void StatsCuadro();
+W3D_BACKEND_CERRAR
     extern bool g_medirDraws;   // medir el tiempo de cada draw (el medidor del juego compilado en modo debug)
+W3D_BACKEND_ABRIR
     void Finish();               // glFinish: drena el pipeline (medicion real de GPU en el bench)
+W3D_BACKEND_CERRAR
+    // glFlush: que la GPU empiece con lo mandado sin esperarla. En un PowerVR (el N95) el cuadro se rasteriza recien al
+    // presentar: llamandola al terminar de dibujar, la CPU puede ir preparando el cuadro siguiente mientras tanto
+W3D_BACKEND_ABRIR
+    void Flush();
+W3D_BACKEND_CERRAR
     // lo que el backend tenga juntado sin dibujar (el lote de la UI de GLES2 en la VideoCore IV) se dibuja YA: antes del
     // swap y antes de tocar una textura o el framebuffer con GL crudo (los backends que no juntan no hacen nada)
+W3D_BACKEND_ABRIR
     void DibujarPendiente();
+W3D_BACKEND_CERRAR
 
     // Backend ES2/WebGL: la app lo llama UNA vez tras crear el contexto GL para cargar las
     // funciones GL2.0 (getProc = SDL_GL_GetProcAddress) y compilar el shader. Solo lo define
     // el backend gles2 (w3dGraphicsGLES2.cpp); el backend de pipeline fijo no lo usa.
     void GLES2Init(void* (*getProc)(const char*));
+    // Backend ES2: alguien toco GL DIRECTO (viewport, scissor, la textura atada, las capacidades) sin pasar por el motor.
+    // Con un programa por draw (las GPU chicas: el N8, la VideoCore IV) el backend recuerda ese estado para no pedirlo
+    // de nuevo, y el GL crudo lo deja desincronizado: un viewport o un scissor que "ya estaba" no se vuelve a poner y
+    // se dibuja donde no va (los menus flotantes del N8 arruinaban toda la pantalla). Esto lo vuelve a poner en regla.
+    void GLES2Resincronizar();
     // true SOLO durante el render FINAL (la foto/los pases): los objetos con
     // renderizable=false se saltean (en el viewport se ven igual)
     extern bool w3dRenderFinal;

@@ -19,6 +19,13 @@ Object* SceneCollection = 0;
 // LOCAL VIEW (ver Objects.h): el editor los publica por-frame; Object::Render los lee para AISLAR la seleccion.
 bool g_localViewActivo = false;
 const std::set<Object*>* g_localViewVisibles = 0;
+const std::set<Object*>* g_localViewPaso = 0;
+bool W3dVistaLocalSoloPaso(Object* o){
+    return g_localViewActivo && g_localViewVisibles && !g_localViewVisibles->count(o) && g_localViewPaso && g_localViewPaso->count(o);
+}
+bool W3dVistaLocalOculta(Object* o){
+    return g_localViewActivo && g_localViewVisibles && !g_localViewVisibles->count(o) && !(g_localViewPaso && g_localViewPaso->count(o));
+}
 
 #ifdef W3D_SYMBIAN
 // Symbian: GLES + utilidades de C que en PC llegan por otros headers.
@@ -1294,14 +1301,19 @@ void Object::Render(){
     if (w3dEngine::g_trazaGLSec) printf("      [glsec] -- %s\n", name.c_str());   // (harness) la traza en orden: de quien es cada llamada
 #endif
     // LOCAL VIEW: si un viewport esta aislando, solo se traversa/dibuja lo que esta en el set (seleccion +
-    // descendencia + cadena de padres para poder ALCANZAR a los seleccionados). Fuera del editor: false -> gratis.
-    if (g_localViewActivo && g_localViewVisibles && !g_localViewVisibles->count(this)) return;
+    // descendencia). Los PADRES de lo aislado (g_localViewPaso) se atraviesan para ALCANZAR a los seleccionados con su
+    // matriz, pero no se dibujan: el armature de una malla elegida no tiene que aparecer. Fuera del editor: false -> gratis.
+    // (las RUTINAS son pasos del render -limpiar la pantalla, la camara, la niebla-, no cosas de la escena: siguen)
+    if (g_localViewActivo && !sinTransformacion && W3dVistaLocalOculta(this)) return;
+    const bool soloPaso = g_localViewActivo && !sinTransformacion && W3dVistaLocalSoloPaso(this);
     // nada que dibujar en todo el subarbol visible (los vacios que mueve un script y que dibuja una rutina, o con todo lo
     // de adentro oculto): ni push, ni mult, ni pop
-    if (!DibujaAlgo() && !HijosDibujan(this)) return;
+    if ((soloPaso || !DibujaAlgo()) && !HijosDibujan(this)) return;
     // sin transformacion propia (la Rutina): ni push, ni mult, ni pop (3 llamadas GL menos por objeto)
     if (sinTransformacion) {
-        if (SaltarEsteCuadro()) return;
+        // (el CONSTRUCTOR ya corrido en modo solo-juego: su estado se repuso; lo que cuelga de el -la rutina que limpia
+        //  la pantalla, por ejemplo- corre en cada cuadro igual, como en el editor)
+        if (SaltarEsteCuadro()) { RenderHijos(); return; }
         RenderObject();
         if (!DibujaSusHijos()) RenderHijos();
         DespuesDeRender();
@@ -1331,8 +1343,8 @@ void Object::Render(){
     const bool espeja = (scale.x * scale.y * scale.z) < 0.0f;
     if (espeja) { gEspejosAbiertos++; w3dEngine::FrontFace((gEspejosAbiertos & 1) == 0); }
 
-    // Si es visible y no es un mesh, lo dibuja
-    RenderObject();
+    // Si es visible y no es un mesh, lo dibuja (el padre de lo aislado en la vista local, no)
+    if (!soloPaso) RenderObject();
 
     // Procesar cada hijo (virtual: LOD/Culling deciden cuales y en que orden)
     RenderHijos();
@@ -1385,6 +1397,8 @@ const char* W3dNombreTipo(ObjectType t){
         case ObjectType::prefab:     return "prefab";
         case ObjectType::proxy:      return "proxy";
         case ObjectType::rutina:     return "rutina";
+        case ObjectType::sonido:     return "sonido";
+        case ObjectType::postproceso: return "postproceso";
     }
     return "objeto";
 }

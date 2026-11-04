@@ -32,3 +32,8 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# las librerias OPCIONALES de terceros: las baja tools/bajar_terceros.ps1 (del editor), no van en git
+thirdparty/oidn/
+thirdparty/optix/
+thirdparty/nrd/

@@ -206,6 +206,10 @@ void TexturaRetener(Texture* t) {
     else t->refs++;                      // copia sin descriptor: refcount local
 }
 
+static bool gConservarHuerfanas = false;
+void TexturasConservarHuerfanas(bool on) { gConservarHuerfanas = on; }
+bool TexturasConservanHuerfanas() { return gConservarHuerfanas; }
+
 void TexturaSoltar(Texture* t) {
     if (!t) return;
     // una PURGADA en caliente es del CEMENTERIO (sus referencias se cerraron al purgarla y el objeto lo libera el
@@ -216,12 +220,16 @@ void TexturaSoltar(Texture* t) {
         // espejo ANTES de soltar: si el refcount llega a 0 el almacen libera
         // de verdad (y `t` deja de existir; si esta FIJADA queda con refs 0).
         t->refs = (r->refTotal > 0) ? (r->refTotal - 1) : 0;
+        if (gConservarHuerfanas && r->refTotal <= 1) {   // la ultima: queda cargada, huerfana (ver el .h)
+            r->refTotal = 0; r->refTransitoria = 0;
+            return;
+        }
         W3dRecursoSoltar(r, W3DREC_PERMANENTE);
         return;
     }
     // sin descriptor (una copia vieja del camino A/B off): refcount local
     if (t->refs > 0) t->refs--;
-    if (t->refs > 0) return;
+    if (t->refs > 0 || gConservarHuerfanas) return;
     LiberarDeVerdad(t);
 }
 
@@ -336,6 +344,7 @@ int TexturasLiberarEscena() {
         if (m->texture       && seVan.count(m->texture))       m->texture = NULL;
         if (m->normalTexture && seVan.count(m->normalTexture)) m->normalTexture = NULL;
         if (m->texturaB && seVan.count(m->texturaB)) m->texturaB = NULL;
+        for (int k = W3D_MAPA_EMISION; k < W3D_MAPAS; k++) if (m->mapaTex[k] && seVan.count(m->mapaTex[k])) m->mapaTex[k] = NULL;
         for (size_t c = 0; c < m->capas.size(); c++)
             if (m->capas[c].tex && seVan.count(m->capas[c].tex)) m->capas[c].tex = NULL;
     }
@@ -348,6 +357,7 @@ int TexturasLiberarEscena() {
         if (m->texture       && seVan.count(m->texture))       m->texture = NULL;
         if (m->normalTexture && seVan.count(m->normalTexture)) m->normalTexture = NULL;
         if (m->texturaB && seVan.count(m->texturaB)) m->texturaB = NULL;
+        for (int k = W3D_MAPA_EMISION; k < W3D_MAPAS; k++) if (m->mapaTex[k] && seVan.count(m->mapaTex[k])) m->mapaTex[k] = NULL;
         for (size_t c = 0; c < m->capas.size(); c++)
             if (m->capas[c].tex && seVan.count(m->capas[c].tex)) m->capas[c].tex = NULL;
     }

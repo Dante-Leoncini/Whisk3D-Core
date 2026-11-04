@@ -43,6 +43,12 @@ class Light : public Object {
         //   rtRayos: rayos de sombra por impacto hacia esta lampara; 0 = usar el global de la pestania Render.
         float rtRadio;
         float rtRayos;
+        // INTENSIDAD: multiplica el color (difuso y especular) de la luz, en GL y en el trazado de rayos. 1 = el color
+        // tal cual; mas = mas fuerte (el color queda en 0..1 como siempre y esto la sube). Animable (AnimLuzIntens)
+        float intensidad;
+        // DISTANCIA en metros: hasta donde alumbra una puntual/foco (el largo del cono que se dibuja). 0 = sin limite.
+        // En el trazado de rayos la luz se apaga suave hasta llegar a 0 ahi; el GL fijo no la corta (solo atenua)
+        float distancia;
 
         static Light* Create(Object* parent = NULL, float x = 0, float y = 0, float z = 0);
 
@@ -66,9 +72,15 @@ extern void (*g_lightOverlayHook)(Light*);
 extern std::vector<Light*> Lights;
 
 // Máximo de luces
-const int MAX_LIGHTS = 8;
+const int MAX_LIGHTS = 8;     // las de GL (GL_LIGHT0..7): las que el pipeline fijo / los shaders prenden a la vez
+// las de la ESCENA: pasadas las 8, las nuevas COMPARTEN un GL light (en OpenGL se ven 8 a la vez; el trazado de rayos
+// las usa todas: un escenario con muchos focos)
+const int MAX_LUCES_ESCENA = 256;
 
 // PRE-PASE DE LUCES (Light.cpp): encender TODAS las luces visibles antes de dibujar la geometria del pase
 void W3dLucesPrepase(Object* raiz);
 void W3dLucesPrepaseFin();
+// EL TIPO de una luz: 0 Punto (para todos lados), 1 Sol (direccional), 2 Foco (un cono de 45 grados si no tenia)
+void W3dLuzPonerTipo(Light* l, int tipo);
+
 #endif

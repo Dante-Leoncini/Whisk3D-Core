@@ -15,6 +15,7 @@
 
 #include <stddef.h>   // size_t (las texturas desde memoria)
 
+#include "w3dBackend.h"   // (W3D_BACKEND_ABRIR / CERRAR: varios backends en un ejecutable)
 namespace w3dEngine {
 
     // Carga 'path' del disco y la sube como textura. Devuelve true y deja en
@@ -100,8 +101,10 @@ namespace w3dEngine {
     // el backend al arrancar (lo implementa cada backend: solo el de GLES2 puede dar true); el que da las UV de una
     // captura las da vuelta. Ese mismo driver cuenta las filas desde ARRIBA: CopiaPantallaFila da la 'y' que hay que
     // pedirle para copiar las filas y..y+h contadas desde abajo (en el resto, la misma)
+W3D_BACKEND_ABRIR
     bool CopiaPantallaDadaVuelta();
     int CopiaPantallaFila(int y, int h);
+W3D_BACKEND_CERRAR
 
     // Decodifica una imagen del disco a pixeles RGBA 8888 en el heap, sin
     // subirla a GL. Util cuando se necesitan los PIXELES (no solo el id), p.ej.

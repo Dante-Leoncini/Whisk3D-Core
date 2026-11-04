@@ -87,6 +87,20 @@ class TexLayer {
         TexLayer() : tex(NULL), blend(0), uvMapa(0), on(true) {}
 };
 
+// LOS MAPAS del material (la tarjeta Material de Properties, de arriba a abajo): el color base, el normal map y los del
+// trazado de rayos / PBR (emision, rugosidad, metalico, alfa). Cada uno se lee con SU capa UV de la malla (uvMapa) y los
+// de valor (emision..alfa) pueden ser un NUMERO para toda la superficie o una TEXTURA. Claves del .w3d: "mapas".
+enum W3dMatMapa {
+    W3D_MAPA_BASE = 0,      // la textura del color (Material::texture)
+    W3D_MAPA_NORMAL,        // el normal map (Material::normalTexture)
+    W3D_MAPA_EMISION,       // numero: el color de emision (emission[]); textura: su RGB
+    W3D_MAPA_RUGOSIDAD,     // numero: rtRugosidad; textura: su R (0 = espejo, 1 = mate)
+    W3D_MAPA_METALICO,      // numero: rtMetalico; textura: su R
+    W3D_MAPA_ALFA,          // numero: diffuse[3]; textura: su R (o su alfa si es RGBA)
+    W3D_MAPAS
+};
+const char* W3dMatMapaClave(int mapa);            // "base", "normal", "emision", "rugosidad", "metalico", "alfa"
+int         W3dMatMapaDeClave(const std::string& c);  // -1 = no es un mapa
 class Material {
     public:
         // defaults en el constructor (Materials.cpp): los inicializadores
@@ -159,6 +173,9 @@ class Material {
         // es el grosor como fraccion de la distancia a la camara (ancho parejo en pantalla: 0.004 ~ 1 px en 240 lineas
         // con fov 55). Duplica los triangulos de la malla. Clave del .w3d: "contorno"; glTF: extras w3d_contorno.
         float    contorno;
+        // SOMBREADO POR PIXEL (solo con shaders, gfx::SombreadoPorPixelSoportado): la luz se calcula en cada pixel en vez
+        // de en cada vertice. Mas lindo (brillos redondos, luces cercanas) y mas caro. Clave del .w3d: "luzPorPixel"
+        bool     porPixel;
         // ---- LINEAS (aristas de la malla dibujadas encima del relleno) ----
         // Con lineas = true, cada grupo que use este material dibuja ADEMAS sus
         // ARISTAS (los 3 lados de cada triangulo, deduplicados) con glLineWidth
@@ -172,6 +189,28 @@ class Material {
         int interpolacion;
         Texture* texture;
         std::vector<TexLayer> capas; // capas de textura EXTRA encima de 'texture' (multi-pass)
+        // ---- LOS MAPAS (W3dMatMapa): BASE y NORMAL son 'texture' y 'normalTexture'; el resto, mapaTex ----
+        Texture* mapaTex[W3D_MAPAS];        // EMISION..ALFA (las de BASE y NORMAL quedan NULL aca)
+        bool     mapaConTextura[W3D_MAPAS]; // EMISION..ALFA: true = la textura; false = el NUMERO (default)
+        int      uvMapa[W3D_MAPAS];         // la capa UV de la malla con la que se lee cada mapa (0 = la primera: "UV 1")
+        float    ior;                       // indice de refraccion (trazado de rayos): 1 = nada, 1.33 = agua, 1.5 = vidrio
+        // TRANSMISION (trazado de rayos) 0..1: cuanto de la superficie es VIDRIO (deja pasar la luz doblada por el IOR).
+        // El alfa es otra cosa: lo transparente por el alfa (o por su mapa) no esta, y se ve lo de atras derecho. Con
+        // alfa 50% y transmision 1: la mitad pasa derecho y la otra mitad refractada. 0 = el IOR no hace nada
+        float    transmision;
+        // SHADER ESCRITO (objects/ShaderEscrito.h): con shaderOn, en los backends con shaders el material se dibuja con
+        // el archivo de texto 'shaderArchivo' ("shaders/vidrio.glsl" adentro del proyecto o una ruta del disco)
+        bool        shaderOn;
+        std::string shaderArchivo;
+        int         shaderId;       // el programa compilado (0 = ninguno)
+        int         shaderEstado;   // 0 = sin compilar, 1 = compilado, -1 = no compila (shaderError)
+        std::string shaderError;
+        bool        shaderPantalla; // el shader lee la pantalla (w3d_Pantalla): se dibuja al final, sobre todo lo demas
+        bool        shaderTiempo;   // usa w3d_tiempo: se anima solo
+        void*       shaderCPU;      // la seccion @vertice compilada para la CPU (objects/ShaderCPU.h): la usan los backends
+                                    // SIN shaders (GLES 1.1, GL fijo). NULL = no hay @vertice o no hace falta
+        Texture** RanuraDeMapa(int mapa);   // la ranura de la textura de ese mapa (NULL = no es un mapa)
+        Texture*  TexturaDeMapa(int mapa) const;
         float diffuse[4];
         float specular[4];
         float emission[4];

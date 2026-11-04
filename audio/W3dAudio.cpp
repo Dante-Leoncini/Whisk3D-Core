@@ -88,6 +88,8 @@ static int   s_accFrames = 0;
 static float s_limGain   = 1.0f;
 static bool  s_pausa     = false;   // W3dAudioPause: el mixer saca silencio sin avanzar las voces
 static unsigned long long s_reloj = 0;   // frames MEZCLADOS (sin contar la pausa): el reloj de las agendas
+static W3dAudioFuenteFn s_fuente = 0;    // W3dAudioFuente: lo que el juego genera por su cuenta (un stream)
+static void* s_fuenteUsuario = 0;
 
 // ---------------------------------------------------------------------------
 //  REVERB: una sala de Schroeder y Moorer (peines en paralelo con un pasa-bajos en la realimentacion -la cola pierde
@@ -482,6 +484,53 @@ float W3dSoundPos(int voice) {
     return seg;
 }
 
+void W3dSoundSetPan(int voice, float pan) {
+    if (pan < -1.0f) pan = -1.0f; if (pan > 1.0f) pan = 1.0f;
+    W3dSoundSetGanancias(voice, pan > 0.0f ? 1.0f - pan : 1.0f, pan < 0.0f ? 1.0f + pan : 1.0f);
+}
+void W3dSoundSetGanancias(int voice, float gL, float gR) {
+    if (!s_ready || voice <= 0) return;
+    if (gL < 0.0f) gL = 0.0f; if (gL > 1.0f) gL = 1.0f; if (gR < 0.0f) gR = 0.0f; if (gR > 1.0f) gR = 1.0f;
+    W3dAudioBackendLock();
+    for (int i = 0; i < MAX_VOICES; i++)
+        if (s_voices[i].active && s_voices[i].id == voice) { s_voices[i].gL = gL; s_voices[i].gR = gR; }
+    W3dAudioBackendUnlock();
+}
+float W3dSoundDuracion(const W3dSound* s) {
+    return (s && s->rate > 0) ? (float)s->frames / (float)s->rate : 0.0f;
+}
+W3dSound* W3dSoundRecortar(const W3dSound* s, float desde, float hasta) {
+    if (!s || !s->pcm || s->frames <= 0 || s->rate <= 0) return 0;
+    int a = (int)(desde * (float)s->rate), b = (hasta > 0.0f) ? (int)(hasta * (float)s->rate) : s->frames;
+    if (a < 0) a = 0; if (b > s->frames) b = s->frames;
+    if (b - a < 1) return 0;
+    W3dSound* r = new W3dSound();
+    r->frames = b - a; r->canales = s->canales; r->rate = s->rate;
+    r->pcm = new short[(size_t)r->frames * r->canales];
+    memcpy(r->pcm, s->pcm + (size_t)a * s->canales, (size_t)r->frames * r->canales * sizeof(short));
+    return r;
+}
+void W3dSoundPicos(const W3dSound* s, int n, float* picos) {
+    if (!picos || n <= 0) return;
+    for (int i = 0; i < n; i++) picos[i] = 0.0f;
+    if (!s || !s->pcm || s->frames <= 0) return;
+    for (int i = 0; i < n; i++) {
+        const long a = (long)((double)i * s->frames / n), b = (long)((double)(i + 1) * s->frames / n);
+        int m = 0;
+        for (long f = a; f < b && f < s->frames; f++)
+            for (int c = 0; c < s->canales; c++) { int v = s->pcm[(size_t)f * s->canales + c]; if (v < 0) v = -v; if (v > m) m = v; }
+        picos[i] = (float)m / 32767.0f;
+    }
+}
+void W3dSoundSetPos(int voice, float seg) {
+    if (!s_ready || voice <= 0) return;
+    if (seg < 0.0f) seg = 0.0f;
+    W3dAudioBackendLock();
+    for (int i = 0; i < MAX_VOICES; i++)
+        if (s_voices[i].active && s_voices[i].id == voice) s_voices[i].pos = seg * (float)s_voices[i].s->rate;
+    W3dAudioBackendUnlock();
+}
+
 void W3dAudioMasterVolume(float v) { s_master = v < 0 ? 0 : (v > 1 ? 1 : v); }
 
 // volumen del JUEGO (0..1): un SEGUNDO escalar, independiente del master de usuario, para que el aplicar() del
@@ -729,6 +778,7 @@ static void Mezclar(short* out, int frames) {
         }
         v.pos = fpos;
     }
+    if (s_fuente) s_fuente(acc, frames, s_fuenteUsuario);
     s_reloj += (unsigned long long)frames;
     if (conReverb) ReverbMezclar(acc, envio, frames);
     // el limitador: ataque instantaneo (nunca recorta en escalon), recuperacion exponencial ~0.3 s
@@ -752,6 +802,13 @@ static void Mezclar(short* out, int frames) {
         out[i * 2]     = (short)l;
         out[i * 2 + 1] = (short)r;
     }
+}
+
+void W3dAudioFuente(W3dAudioFuenteFn fn, void* usuario) {
+    W3dAudioBackendLock();
+    s_fuente = fn;
+    s_fuenteUsuario = usuario;
+    W3dAudioBackendUnlock();
 }
 
 void W3dAudioMix(short* out, int frames) {
@@ -796,9 +853,16 @@ bool W3dAudioPaused() { return false; }
 void W3dSoundSetVolume(int, float) {}
 void W3dSoundSetPitch(int, float) {}
 float W3dSoundPos(int) { return -1.0f; }
+void W3dSoundSetPos(int, float) {}
+void W3dSoundSetPan(int, float) {}
+void W3dSoundSetGanancias(int, float, float) {}
+float W3dSoundDuracion(const W3dSound*) { return 0.0f; }
+W3dSound* W3dSoundRecortar(const W3dSound*, float, float) { return 0; }
+void W3dSoundPicos(const W3dSound*, int n, float* picos) { for (int i = 0; i < n; i++) picos[i] = 0.0f; }
 void W3dAudioMasterVolume(float) {}
 void W3dAudioJuegoVolume(float) {}
 void W3dAudioMix(short*, int) {}
+void W3dAudioFuente(W3dAudioFuenteFn, void*) {}
 
 #endif
 

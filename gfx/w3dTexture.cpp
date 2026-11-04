@@ -36,7 +36,18 @@
     #endif
     #include "stb/stb_image.h"
 #endif
+#include "w3dGLDesvio.h"   // (con el backend Vulkan no hay contexto de GL: las texturas van por el suyo, ver ahi)
 
+// LA PIRAMIDE DE MIPMAPS en ES 2.0 (Android, la web y Symbian^3 con W3D_GLES2) la arma glGenerateMipmap: el
+// GL_GENERATE_MIPMAP de ES 1.1 / GL 1.4 no existe ahi (GL_INVALID_ENUM) y la textura quedaba sin niveles -> incompleta
+// con un filtro de mipmaps -> se muestreaba NEGRA (el N8: la UI salia gris con manchas negras).
+#if defined(__ANDROID__) || defined(__EMSCRIPTEN__) || (defined(W3D_SYMBIAN) && defined(W3D_GLES2))
+    #define W3D_MIPS_ES2
+#endif
+#if defined(W3D_SYMBIAN) && defined(W3D_GLES2)
+// Symbian^3: el header es el de ES 1.1 (como el shim de Android) y se linkea libGLESv2, que SI lo exporta
+extern "C" GL_API void GL_APIENTRY glGenerateMipmap(GLenum target);
+#endif
 #ifdef __ANDROID__
 // Android: el shim GL/gl.h trae el header de ES 1.1 (tipos y enums del backend fixed-function del core),
 // pero el contexto es ES 2.0 y se linkea libGLESv2, que exporta glGenerateMipmap (core en ES2). El header
@@ -104,6 +115,15 @@ void SetPixeladoGlobal(bool on){ g_pixeladoGlobal = on; }
 static bool g_mipmapsGlobal = true;
 bool MipmapsGlobal()          { return g_mipmapsGlobal; }
 void SetMipmapsGlobal(bool on){ g_mipmapsGlobal = on; }
+// (en el N95 el trilineal cuesta caro en el MBX: ~2,4 ms por cuadro en una escena de GH3; el bilineal entre niveles
+// no se distingue en sus 320x240)
+#if defined(W3D_SYMBIAN)
+static bool g_mipmapsTrilineal = false;
+#else
+static bool g_mipmapsTrilineal = true;
+#endif
+bool MipmapsTrilineal()          { return g_mipmapsTrilineal; }
+void SetMipmapsTrilineal(bool on){ g_mipmapsTrilineal = on; }
 
 // que texturas subieron PIRAMIDE: pedirle un min-filter mipmap a una textura sin
 // piramide la vuelve INCOMPLETA (negra), asi que TexFilter consulta aca antes.
@@ -381,7 +401,7 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
         if (opaca) interno = GL_RGB;
     }
     glTexImage2D(GL_TEXTURE_2D, 0, interno, w, h, 0, formato, tipo, datos);
-#elif defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+#elif defined(W3D_MIPS_ES2)
     glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0, formato, tipo, datos);
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
 #else
@@ -396,7 +416,7 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
 
     const GLint filtro = filtrado ? GL_LINEAR : GL_NEAREST;
     const GLint filtroMin = !mips ? filtro
-                          : (filtrado ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR);
+                          : (filtrado ? (MipmapsTrilineal() ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST) : GL_NEAREST_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtro);
     if (mips && filtrado) w3dAnisotropico();
@@ -452,8 +472,26 @@ void CopiarPantalla(unsigned int id, int x, int y, int w, int h) {
 #endif
     w3dEngine::DibujarPendiente();   // (la copia tiene que ver todo lo que ya se mando a dibujar)
     w3dEngine::BindTexture(id);
+#ifdef W3D_SYMBIAN
+    // el MBX del N95 copia mal la ventana de EGL con glCopyTexSubImage2D (la imagen sale rota): se lee con
+    // glReadPixels (RGBA 8888, lo unico que GLES 1.1 garantiza) y se sube a la textura de 565. Las filas quedan en el
+    // mismo orden que con la copia (la de abajo primero)
+    static std::vector<unsigned char> leido;
+    leido.resize((size_t)w * h * 4);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, &leido[0]);
+    unsigned short* p565 = (unsigned short*)&leido[0];
+    for (int i = 0; i < w * h; i++) {
+        const unsigned char* c = &leido[(size_t)i * 4];
+        p565[i] = (unsigned short)(((c[0] >> 3) << 11) | ((c[1] >> 2) << 5) | (c[2] >> 3));
+    }
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, p565);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+#else
     // (la fila que entiende este driver: el del Galaxy Ace cuenta desde arriba, ver CopiaPantallaFila)
     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, CopiaPantallaFila(y, h), w, h);
+#endif
 }
 
 // ----------------------------------------------------------------------------
@@ -599,7 +637,7 @@ bool LoadTextureW3dtMemoria(const unsigned char* datos, size_t largo, unsigned i
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     const bool pix = PixeladoGlobal();
     const GLint filtro = pix ? GL_NEAREST : GL_LINEAR;
-    const GLint filtroMin = !mips ? filtro : (pix ? GL_NEAREST_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_LINEAR);
+    const GLint filtroMin = !mips ? filtro : (pix ? GL_NEAREST_MIPMAP_LINEAR : (MipmapsTrilineal() ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST));
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtro);
     if (mips && !pix) w3dAnisotropico();
@@ -784,7 +822,7 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
     const bool mips = pot && w3dEngine::MipmapsGlobal();
     const GLint filtroPix = pix ? GL_NEAREST : GL_LINEAR;
     const GLint filtroMin = !mips ? filtroPix
-                          : (pix ? GL_NEAREST_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_LINEAR);
+                          : (pix ? GL_NEAREST_MIPMAP_LINEAR : (MipmapsTrilineal() ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST));
 #ifdef __ANDROID__
     if (tipo != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
     glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0,
@@ -951,7 +989,7 @@ bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char
     w3dEngine::DibujarPendiente();   // (lo juntado que la usa, con lo que tenia)
     w3dEngine::BindTexture(id);
     const bool mips = regenerarMips && TexTieneMips(id);
-#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+#if defined(W3D_MIPS_ES2)
     glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgbaRect);
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
 #else
@@ -966,7 +1004,7 @@ void RegenerarMips(unsigned int id, int x, int y, const unsigned char* px1) {
     if (!id || !px1 || !TexTieneMips(id)) return;
     w3dEngine::DibujarPendiente();
     w3dEngine::BindTexture(id);
-#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+#if defined(W3D_MIPS_ES2)
     (void)x; (void)y;
     glGenerateMipmap(GL_TEXTURE_2D);
 #else

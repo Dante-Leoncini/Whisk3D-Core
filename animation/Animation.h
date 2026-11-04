@@ -39,9 +39,6 @@ extern int EndFrame;
 // INFINITA (sin Fin, sin loop, sin Render Animation); el PLAY corre la simulacion de
 // scripts y el editor graba el estado frame a frame (ver main/script/SimJuego).
 extern bool AnimEsJuego;
-// con esto prendido, PLAY desde un frame anterior NO borra lo grabado hacia adelante:
-// lo REPRODUCE (util para revisar una partida sin perderla)
-extern bool AnimConservarEstados;
 extern int CurrentFrame;
 
 // avanza CurrentFrame un paso (si PlayAnimation) haciendo loop entre Start..End. Lo llama el main loop
@@ -67,7 +64,12 @@ extern unsigned int lastRenderTime;
 //   AnimCamActiva: la pista "CAMARA ACTIVA" de una animacion de ESCENA (SceneAnimation::camPista). El valor de
 //                  cada keyframe es un INDICE en SceneAnimation::camNombres; interpolacion CONSTANTE (un corte).
 enum { AnimPosition, AnimRotation, AnimScale, AnimVisible, AnimRender, AnimVertex, AnimFov, AnimColor,
-       AnimClip, AnimAmbient, AnimSpecular, AnimAtten, AnimSpot, AnimLightMisc, AnimCamActiva, AnimShape, AnimPaso };
+       AnimClip, AnimAmbient, AnimSpecular, AnimAtten, AnimSpot, AnimLightMisc, AnimCamActiva, AnimShape, AnimPaso,
+       AnimSonido, AnimLuzIntens, AnimCamFoco };
+//   AnimLuzIntens: LUZ, la intensidad (AnimX)
+//   AnimCamFoco: CAMARA, la distancia de foco de la profundidad de campo (AnimX, m)
+//   AnimSonido: un SONIDO (main/objects/Sonido.h): volumen=AnimX, tono (pitch)=AnimY, envio a la reverb=AnimZ. Lo
+//               aplica el gancho g_animSonidoHook (el Core no conoce la clase)
 //   AnimPaso: un PASO de una RUTINA (main/objects/Rutina.h); el COMPONENTE es id del paso * 8 + campo (0..4 = sus
 //             numeros, 5 = on/off): mover el paso no lo cambia (el id es suyo). Lo aplica el gancho g_animPasoHook.
 enum { AnimPasoCampos = 8, AnimPasoOn = 5 };
@@ -346,6 +348,12 @@ public:
     // con un global al activar la escena: vive siempre aca. Las camaras van por NOMBRE (sobreviven al guardado).
     std::vector<AnimProperty> camPista;
     std::vector<std::string>  camNombres;
+    // LAS TIRAS DE ESQUELETO de la escena (una cinematica o una pelicula, no un juego): el armature 'armature' toca
+    // su clip 'clip' desde 'frame' (el frame 'frame' de la escena es el primero del clip) mientras se reproduce el
+    // timeline, y se acomoda solo al mover la linea de tiempo; fuera del clip queda en su primera / ultima pose.
+    // (El AUDIO de una escena es un objeto Sonido: main/objects/Sonido.h)
+    struct PistaEsqueleto { std::string armature, clip; int frame; };
+    std::vector<PistaEsqueleto> esqueletos;
     // VISTA DE EDICION de un CLIP DE JERARQUIA (animation/W3dAnimSet.h: los clips que un objeto raiz usa
     // para animarse a si mismo y a sus hijos por ruta de nombres; viven COMPARTIDOS en una biblioteca). El
     // editor los edita como una animacion de escena mas -keyframes, dope sheet, curvas, Auto Key, undo- sobre
@@ -385,6 +393,7 @@ extern void (*g_animFovHook)(Object* camara, float fov);   // curva AnimFov en e
 // (g_animPasoHook: el Core no conoce la clase Rutina). Lo usan el juego y el editor.
 void W3dAplicarFormas(Object* o, std::vector<AnimProperty>& props, int frame);
 extern void (*g_animPasoHook)(Object* rutina, int componente, float valor);
+extern void (*g_animSonidoHook)(Object* sonido, int componente, float valor);
 extern std::vector<SceneAnimation*> SceneAnimations; // lista global de animaciones de escena
 extern int SceneAnimActiva;                          // indice de la escena activa (sus curvas estan en AnimationObjects)
 

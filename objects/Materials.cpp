@@ -75,13 +75,17 @@ Material::Material(const std::string& nombre, bool MaterialDefectoFlag, bool Tie
       rtRugosidad(0.5f), rtMetalico(0.0f),
       chrome(false), reflectMode(0),
       normalMap(false), normalTexture(NULL), texturaB(NULL), mezclaB(0.0f), toon(0), contorno(0.0f),
-      lineas(false), grosorLinea(1.0f),
+      porPixel(false), lineas(false), grosorLinea(1.0f),
       interpolacion(0), texture(NULL), shininess(12.0f) { // interpolacion 0 = lineal (suave), 1 = closest (pixel); igual en TODOS los sistemas
     // defaults que eran inicializadores de clase (C++11)
     diffuse[0] = diffuse[1] = diffuse[2] = diffuse[3] = 1.0f;
     specular[0] = specular[1] = specular[2] = 0.3f; specular[3] = 1.0f;
     emission[0] = emission[1] = emission[2] = 0.0f; emission[3] = 1.0f;
     ambient[0] = ambient[1] = ambient[2] = 0.3f; ambient[3] = 1.0f; // gris (como el preview)
+    for (int k = 0; k < W3D_MAPAS; k++) { mapaTex[k] = NULL; mapaConTextura[k] = false; uvMapa[k] = 0; }
+    ior = 1.0f;   // (1 = sin refraccion: lo transparente deja ver lo de atras derecho; 1.33 agua, 1.5 vidrio)
+    transmision = 0.0f;
+    shaderOn = false; shaderId = 0; shaderEstado = 0; shaderPantalla = false; shaderTiempo = false; shaderCPU = NULL;
     if (!MaterialDefectoFlag){
         // los materiales del proyecto son GLOBALES y unicos: el ctor es el unico
         // punto de alta (se auto-registra), asi que uniquificar aca cubre el
@@ -98,6 +102,25 @@ Material::Material(const std::string& nombre, bool MaterialDefectoFlag, bool Tie
 }
 
 Material::~Material() {}
+
+static const char* const kMapaClaves[W3D_MAPAS] = { "base", "normal", "emision", "rugosidad", "metalico", "alfa" };
+const char* W3dMatMapaClave(int m) { return (m >= 0 && m < W3D_MAPAS) ? kMapaClaves[m] : ""; }
+int W3dMatMapaDeClave(const std::string& c) {
+    for (int k = 0; k < W3D_MAPAS; k++) if (c == kMapaClaves[k]) return k;
+    return -1;
+}
+Texture** Material::RanuraDeMapa(int m) {
+    if (m == W3D_MAPA_BASE) return &texture;
+    if (m == W3D_MAPA_NORMAL) return &normalTexture;
+    if (m > W3D_MAPA_NORMAL && m < W3D_MAPAS) return &mapaTex[m];
+    return NULL;
+}
+Texture* Material::TexturaDeMapa(int m) const {
+    if (m == W3D_MAPA_BASE) return texture;
+    if (m == W3D_MAPA_NORMAL) return normalTexture;
+    if (m > W3D_MAPA_NORMAL && m < W3D_MAPAS) return mapaTex[m];
+    return NULL;
+}
 
 const char* W3dCapaMezclaNombre(int m) {
     switch (m) {
@@ -217,5 +240,6 @@ bool HayAnimacionActiva() {
     // tambien cuentan las animaciones UV "tira de atlas" (Mesh.cpp): el loop
     // event-driven tiene que seguir redibujando mientras haya UVs moviendose.
     extern bool HayUVAnims();
-    return !AnimatedMaterials.empty() || HayUVAnims();
+    extern bool W3dShaderHayAnimados();   // (un shader escrito que usa w3d_tiempo se mueve solo)
+    return !AnimatedMaterials.empty() || HayUVAnims() || W3dShaderHayAnimados();
 }

@@ -8,6 +8,7 @@
 // ============================================================================
 
 #include "w3dGraphics.h"
+#include "w3dBackend.h"   // el namespace propio del backend (varios en un ejecutable)
 
 #ifdef W3D_SYMBIAN
     #include <GLES/gl.h>
@@ -121,17 +122,24 @@
 #endif
 
 namespace w3dEngine {
+W3D_BACKEND_ABRIR   // (con varios backends: w3dEngine::gl)
 
 // ============================================================================
 //  EL CONTADOR DE LLAMADAS: cada llamada REAL al driver (cada gl*) pasa por W3D_GLC y suma 1 a la categoria del que
 //  esta dibujando (escena, particulas, UI del juego, editor). Las ahorradas por el cache no llegan aca. StatsCuadro()
 //  cierra el cuadro (ver w3dGraphics.h)
 // ============================================================================
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int g_statLlamadas[StatCatCount_] = { 0 };
+#endif
 static int gStatCat = StatCatEditor;   // categoria del que esta dibujando (el cuadro arranca en Editor)
 #define W3D_GLC(llamada) (g_statLlamadas[gStatCat]++, g_trazaGL ? TrazaGL(#llamada) : (void)0, (llamada))
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool g_trazaGL = false;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool g_trazaGLSec = false;           // ademas, cada llamada EN ORDEN (con su categoria): de donde sale cada una
+#endif
 static const char* gTrazaTxt[512];   // (un lugar del codigo = un texto: se compara el puntero)
 static int gTrazaN[512], gTrazaCant = 0;
 void TrazaGL(const char* l) {
@@ -181,20 +189,22 @@ static int   gSmoothCache    = -1;   // 0/1 (shade model)
 static float gAlphaRefCache  = -1e9f;
 static signed char gArrOn[4]    = { -1, -1, -1, -1 }; // client arrays: -1 desconocido / 0 / 1
 // MEZCLA DE TEXTURAS (la unidad 1, ver MezclaTexturas mas abajo): su estado cacheado y el ULTIMO puntero de UV de la
-// unidad 0, para replicarlo en la 1 (gUV0Tipo: 0 ninguno / 1 RAM de 2 floats / 2 VBO)
+// unidad 0, para replicarlo en la 1 (gUV0Tipo: 0 ninguno / 1 RAM / 2 VBO; gUV0Gl: GL_FLOAT o GL_SHORT)
 static int      gMezclaTexOn = -1;              // -1 desconocido / 0 apagada / 1 prendida
 static unsigned gMezclaTexId = 0xFFFFFFFFu;     // la textura bindeada en la unidad 1
 static float    gMezclaTexK  = -1.0f;           // el k puesto en el color constante del combiner
 static int      gMezclaTexFiltro = -1, gMezclaTexRepetir = -1;
 static int      gMezclaTexModo = -1;            // 0 interpolate / 1 multiply / 2 multiply 2x (el env puesto)
 // la UV PROPIA de la unidad 1 (0 = sigue a la unidad 0 / 1 RAM / 2 VBO)
-static int gUV1Tipo = 0; static const float* gUV1Ptr = 0; static unsigned gUV1Vbo = 0;
+static int gUV1Tipo = 0; static const void* gUV1Ptr = 0; static unsigned gUV1Vbo = 0; static unsigned gUV1Gl = 0x1406;
 // lo que la unidad 1 YA tiene puesto como puntero de UV (el puntero de cliente persiste aunque la unidad se apague y
 // se prenda): -1 = desconocido
-static int gUV1PuestoTipo = -1; static const float* gUV1PuestoPtr = 0; static int gUV1PuestoStride = 0; static unsigned gUV1PuestoVbo = 0;
+static int gUV1PuestoTipo = -1; static const void* gUV1PuestoPtr = 0; static int gUV1PuestoStride = 0; static unsigned gUV1PuestoVbo = 0;
+static unsigned gUV1PuestoGl = 0;
 static int      gMezclaSoportada = -1;          // -1 = sin preguntarle al driver
 static bool     gMezclaAlgunaVez = false;       // se prendio alguna vez en el proceso (si no, la unidad 1 esta como GL la deja: apagada)
-static int gUV0Tipo = 0; static const float* gUV0Ptr = 0; static int gUV0Stride = 0; static unsigned gUV0Vbo = 0;
+static int gUV0Tipo = 0; static const void* gUV0Ptr = 0; static int gUV0Stride = 0; static unsigned gUV0Vbo = 0;
+static unsigned gUV0Gl = 0x1406;   // (GL_FLOAT)
 static void MezclaUnidad1Array(bool on);        // el array de UV de la unidad 1 (sigue al de la 0)
 
 // ---- cache de MATERIAL y COLOR actual (por VALOR) ----
@@ -251,7 +261,9 @@ static GLenum CapGL(Cap c) {
 // contador de cambios de estado REALES (presupuesto medible, ver w3dGraphics.h).
 // Se declara aca arriba porque lo tocan Enable/Disable; se define junto al resto
 // de las estadisticas mas abajo.
+#ifndef W3D_BACKEND_NS
 extern int g_statStateChanges;
+#endif
 
 void DepthFunc(DepthCmp c) {
     if (gDepthFuncCache == (int)c) return;   // ya puesta -> ni driver ni contador
@@ -432,7 +444,9 @@ static GLenum MatGL(Matrix m) {
     return GL_MODELVIEW;
 }
 
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int g_statOtras = 0;
+#endif
 // el MODO de matriz puesto (cache: -1 desconocido) y la PROYECCION del pase sin sesgo (la base de SesgoMetros): lo que
 // toca la proyeccion por otro lado (el viewport la arma, el HUD pone su ortho) la vuelve desconocida y sin sesgo
 static int   gMatMode = -1;
@@ -450,18 +464,28 @@ enum { kSombraHondo = 32 };
 static float gSombra[2][kSombraHondo][16];        // [0] modelview, [1] proyeccion (la de textura no se lee nunca)
 static bool  gSombraOk[2][kSombraHondo];
 static int   gSombraNivel[2] = { 0, 0 };           // (puede pasar de kSombraHondo: esos niveles no se saben)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool g_matrizAuditar = false;                      // (harness 'matrizaudit') compara cada lectura con GL
+#endif
 #ifdef W3D_SYMBIAN
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool g_invalidarPorMalla = true;                   // (la plataforma lo apaga en el modo juego puro)
+#endif
 #else
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool g_invalidarPorMalla = false;
 #endif
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int  g_matrizDesyncs = 0;
+#endif
 // ---- la PILA PEREZOSA de la modelview (ver w3dGraphics.h): cada nivel de la sombra lleva la SERIE de su matriz (un
 // numero nuevo en cada cambio) y se recuerda la serie de la que GL tiene cargada: distintas = "sucia", y lo proximo que
 // use la matriz manda UN glLoadMatrixf. Un nivel abierto sin glPushMatrix (perezoso) se cierra sin glPopMatrix: todos
 // esos niveles comparten el unico de GL. Se apila de verdad solo sin la matriz en la sombra (mas honda que la sombra)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool g_matricesPerezosas = true;
+#endif
 static unsigned gSerie[kSombraHondo];           // la serie de la matriz de cada nivel de la modelview
 static bool     gNivelReal[kSombraHondo];       // ese nivel se abrio con un glPushMatrix de verdad (se cierra con glPopMatrix)
 static unsigned gSerieProxima = 1;
@@ -709,23 +733,47 @@ void SmoothShading(bool suave) {
 void FastPerspective()         { W3D_GLC(glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_FASTEST)); }
 
 // ---- ESTADISTICAS de frame (bench/overlay): contadores baratos, ver w3dGraphics.h ----
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int g_statDrawTris = 0;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int g_statDrawVBO  = 0;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int g_statIndices  = 0;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int g_statTexBinds = 0;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int g_statMeshes   = 0;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int g_statStateChanges = 0;   // cambios de estado REALES (los cacheados no cuentan)
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int g_statUploadBytes  = 0;   // bytes subidos a buffer objects este frame
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int g_statTrisOpacos   = 0;   // triangulos con Blend apagado
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int g_statTrisBlend    = 0;   // triangulos con Blend prendido
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int g_statDcCat[StatCatCount_] = { 0 };
+#endif
 void StatCategoria(StatCat c) { gStatCat = (int)c; }
 StatCat StatCategoriaActual() { return (StatCat)gStatCat; }
 void StatRaw(int n) { g_statLlamadas[gStatCat] += n; }
 // el CUADRO: lo que se llamo desde el cierre anterior, por categoria, y los demas contadores como diferencia (no se
 // ponen en 0: los que miden por diferencia -el bench, el perfil de las rutinas- siguen andando)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 StatsDeCuadro g_statCuadro;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool g_medirDraws = false;   // (solo el backend de GLES2 mide los draws)
+#endif
 static int gCuadroDraws0 = 0, gCuadroBinds0 = 0, gCuadroEstados0 = 0, gCuadroIdx0 = 0;
 void StatsCuadro() {
     StatsDeCuadro& c = g_statCuadro;
@@ -767,6 +815,7 @@ void StatsReset() {
     gStatCat = StatCatEscena;
 }
 void Finish() { W3D_GLC(glFinish()); }
+void Flush() { DibujarPendiente(); W3D_GLC(glFlush()); }
 void DibujarPendiente() {}   // (este backend dibuja cada draw en el momento)
 
 // ---- textura activa (cacheada) ----
@@ -900,6 +949,21 @@ void TexEnvReplace(bool on) {
 #ifndef GL_PRIMARY_COLOR
 #define GL_PRIMARY_COLOR  0x8577
 #endif
+void SombreadoPorPixel(bool){}                 // (pipeline fijo: la luz es por vertice, siempre)
+bool SombreadoPorPixelSoportado(){ return false; }
+// (sin shaders: los pases van por la CPU y el postprocesado tambien; ver gfx/w3dGraphics.h)
+bool PasesConShader(){ return false; }
+void PaseEspecial(int, const float*){}
+void AnteriorPointer3f(const float*){}
+bool PostEfecto(int, unsigned int, unsigned int, int, int, const float*, const float*){ return false; }
+// (shaders escritos: el pipeline fijo no tiene; el material se dibuja como siempre)
+bool ShadersEscritos(){ return false; }
+int  ShaderEscritoCompilar(const char*, const char*, char* log, int logMax){
+    if(log && logMax > 0){ strncpy(log, "this graphics backend has no shaders (use GLES 2.0 or Vulkan)", (size_t)logMax - 1); log[logMax - 1] = 0; }
+    return 0;
+}
+void ShaderEscritoBorrar(int){}
+void ShaderEscritoUsar(int, const float*){}
 void TexEnvDot3(bool on) {
     int destino = on ? 2 : 0;   // 2=dot3 0=modulate
     if (gTexEnvCache == destino) return;
@@ -1061,6 +1125,7 @@ void LightN(int i, bool on) {
     if (on) W3D_GLC(glEnable(GL_LIGHT0 + (GLenum)i)); else W3D_GLC(glDisable(GL_LIGHT0 + (GLenum)i));
 }
 void LightModelAmbient(const float* c) { g_statOtras++; W3D_GLC(glLightModelfv(GL_LIGHT_MODEL_AMBIENT, c)); }
+void LightModelTwoSide(bool on) { g_statOtras++; W3D_GLC(glLightModelf(GL_LIGHT_MODEL_TWO_SIDE, on ? 1.0f : 0.0f)); }
 
 // query del CACHE (todas las Enable/Disable pasan por el motor, asi que es fiel)
 bool IsEnabled(Cap c) { return gCapOn[c]; }
@@ -1245,7 +1310,8 @@ void TexFilter(bool linear) {
     GLint fmin = f;
     const bool conMips = MipmapsGlobal() && TexTieneMips(gTexBound);
     if (conMips)
-        fmin = linear ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR;
+        fmin = linear ? (MipmapsTrilineal() ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST)
+                      : (MipmapsTrilineal() ? GL_NEAREST_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST);
     if (gTexBound != 0xFFFFFFFFu &&
         !TexFiltroCambia(gTexBound, (linear ? 1 : 0) | (conMips ? 2 : 0))) return;
     W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, fmin));
@@ -1282,7 +1348,9 @@ static void SinVBO() { if (w3d_vboOk && gArrBuf != 0) BindArrBuf(0); }
 // CACHE DE PUNTEROS (ver w3dGraphics.h): lo que GL tiene en cada array de la unidad 0 (indice = VArray). GL guarda con
 // cada puntero el buffer bindeado al ponerlo, asi que uno igual no necesita ni el puntero ni el bind. Y el IBO bindeado
 // (0xFFFFFFFF = no se sabe). La unidad 1 (mezcla de texturas) lleva su propio cache: gUV1Puesto*
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool g_punterosCache = true;
+#endif
 struct PunteroPuesto { unsigned buf; const void* ptr; int tam; unsigned tipo; int paso; };
 static PunteroPuesto gPtr[4];
 static bool gPtrOk[4] = { false, false, false, false };
@@ -1369,26 +1437,33 @@ static void MezclaReplicarUV(bool rebindear) {
     const int tipo = gUV1Tipo ? gUV1Tipo : gUV0Tipo;
     if (tipo == 0) return;
     const unsigned vbo = gUV1Tipo ? gUV1Vbo : gUV0Vbo;
-    const float* ptr = gUV1Tipo ? gUV1Ptr : gUV0Ptr;
+    const void* ptr = gUV1Tipo ? gUV1Ptr : gUV0Ptr;
     const int stride = gUV1Tipo ? 0 : gUV0Stride;
+    const unsigned gl = gUV1Tipo ? gUV1Gl : gUV0Gl;
     // ya apunta ahi (la rutina de un mundo apaga y prende la unidad 1 entre pasadas: el puntero quedo)
-    if (gUV1PuestoTipo == tipo && (tipo == 2 ? gUV1PuestoVbo == vbo : (gUV1PuestoPtr == ptr && gUV1PuestoStride == stride))) return;
+    if (gUV1PuestoTipo == tipo && gUV1PuestoGl == gl &&
+        (tipo == 2 ? gUV1PuestoVbo == vbo : (gUV1PuestoPtr == ptr && gUV1PuestoStride == stride))) return;
     if (rebindear || gUV1Tipo) BindArrBuf(tipo == 2 ? vbo : 0u);
     W3D_GLC(GLMT_CLIENT(GL_TEXTURE1));
-    if (tipo == 2)         { W3D_GLC(glTexCoordPointer(2, GL_FLOAT, 0, (const GLvoid*)0)); }
-    else                   { W3D_GLC(glTexCoordPointer(2, GL_FLOAT, stride, ptr)); }
+    if (tipo == 2)         { W3D_GLC(glTexCoordPointer(2, gl, 0, (const GLvoid*)0)); }
+    else                   { W3D_GLC(glTexCoordPointer(2, gl, stride, ptr)); }
     W3D_GLC(GLMT_CLIENT(GL_TEXTURE0));
     g_statOtras += 3;
-    gUV1PuestoTipo = tipo; gUV1PuestoVbo = vbo; gUV1PuestoPtr = ptr; gUV1PuestoStride = stride;
+    gUV1PuestoTipo = tipo; gUV1PuestoVbo = vbo; gUV1PuestoPtr = ptr; gUV1PuestoStride = stride; gUV1PuestoGl = gl;
 }
 void MezclaTexturasUV(const float* p) {
-    if (gMezclaTexOn == 1 && gUV1Tipo == (p ? 1 : 0) && gUV1Ptr == p) return;   // (ya apunta ahi)
-    gUV1Tipo = p ? 1 : 0; gUV1Ptr = p;
+    if (gMezclaTexOn == 1 && gUV1Tipo == (p ? 1 : 0) && gUV1Ptr == p && gUV1Gl == GL_FLOAT) return;   // (ya apunta ahi)
+    gUV1Tipo = p ? 1 : 0; gUV1Ptr = p; gUV1Gl = GL_FLOAT;
+    if (gMezclaTexOn == 1) MezclaReplicarUV(true);
+}
+void MezclaTexturasUV2s(const short* p) {
+    if (gMezclaTexOn == 1 && gUV1Tipo == (p ? 1 : 0) && gUV1Ptr == p && gUV1Gl == GL_SHORT) return;
+    gUV1Tipo = p ? 1 : 0; gUV1Ptr = p; gUV1Gl = GL_SHORT;
     if (gMezclaTexOn == 1) MezclaReplicarUV(true);
 }
 void MezclaTexturasUVVBO(unsigned int h) {
-    if (gMezclaTexOn == 1 && gUV1Tipo == (h ? 2 : 0) && gUV1Vbo == h) return;
-    gUV1Tipo = h ? 2 : 0; gUV1Vbo = h;
+    if (gMezclaTexOn == 1 && gUV1Tipo == (h ? 2 : 0) && gUV1Vbo == h && gUV1Gl == GL_FLOAT) return;
+    gUV1Tipo = h ? 2 : 0; gUV1Vbo = h; gUV1Gl = GL_FLOAT;
     if (gMezclaTexOn == 1) MezclaReplicarUV(true);
 }
 void MezclaTexturasOff() {
@@ -1492,7 +1567,7 @@ void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int 
     if (bind) { W3D_GLC(glBindTexture(GL_TEXTURE_2D, (GLuint)idB)); g_statTexBinds++; gMezclaTexId = idB; }
     if (filtro) {
         const GLint f = filtrado ? GL_LINEAR : GL_NEAREST;
-        const GLint fmin = conMips ? (filtrado ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR) : f;
+        const GLint fmin = conMips ? (filtrado ? (MipmapsTrilineal() ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST) : GL_NEAREST_MIPMAP_LINEAR) : f;
         W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, fmin));
         W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f));
         g_statStateChanges += 2;
@@ -1518,6 +1593,7 @@ void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int 
 }
 void VertexPointer2f(int strideBytes, const float* p)   { if (PtrIgual(VertexArray, 0, p, 2, GL_FLOAT, strideBytes)) return; SinVBO(); g_statOtras++; W3D_GLC(glVertexPointer(2, GL_FLOAT, strideBytes, p)); }
 void VertexPointer3f(int strideBytes, const float* p)   { if (PtrIgual(VertexArray, 0, p, 3, GL_FLOAT, strideBytes)) return; SinVBO(); g_statOtras++; W3D_GLC(glVertexPointer(3, GL_FLOAT, strideBytes, p)); }
+void VertexPointer4f(int strideBytes, const float* p)   { if (PtrIgual(VertexArray, 0, p, 4, GL_FLOAT, strideBytes)) return; SinVBO(); g_statOtras++; W3D_GLC(glVertexPointer(4, GL_FLOAT, strideBytes, p)); }
 void VertexPointer3s(int strideBytes, const short* p)   { if (PtrIgual(VertexArray, 0, p, 3, GL_SHORT, strideBytes)) return; SinVBO(); W3D_GLC(glVertexPointer(3, GL_SHORT, strideBytes, p)); }
 void VertexPointer2s(int strideBytes, const short* p)   { if (PtrIgual(VertexArray, 0, p, 2, GL_SHORT, strideBytes)) return; SinVBO(); W3D_GLC(glVertexPointer(2, GL_SHORT, strideBytes, p)); }
 void ColorPointer4ub(const unsigned char* p)            { if (PtrIgual(ColorArray, 0, p, 4, GL_UNSIGNED_BYTE, 0)) return; SinVBO(); g_statOtras++; W3D_GLC(glColorPointer(4, GL_UNSIGNED_BYTE, 0, p)); }
@@ -1526,9 +1602,15 @@ void ColorPointer4f(int strideBytes, const float* p)    { if (PtrIgual(ColorArra
 void TexCoordPointer2f(int strideBytes, const float* p) {
     const bool igual = PtrIgual(TexCoordArray, 0, p, 2, GL_FLOAT, strideBytes);
     if (!igual) { SinVBO(); g_statOtras++; W3D_GLC(glTexCoordPointer(2, GL_FLOAT, strideBytes, p)); }
-    gUV0Tipo = 1; gUV0Ptr = p; gUV0Stride = strideBytes;
+    gUV0Tipo = 1; gUV0Ptr = p; gUV0Stride = strideBytes; gUV0Gl = GL_FLOAT;
     // (la unidad 1 apunta a lo mismo, salvo UV propia. Sin el puntero de recien, el ARRAY_BUFFER bindeado puede ser
     // otro: que lo bindee ella)
+    if (gMezclaTexOn == 1 && !gUV1Tipo) MezclaReplicarUV(igual);
+}
+void TexCoordPointer2s(int strideBytes, const short* p) {
+    const bool igual = PtrIgual(TexCoordArray, 0, p, 2, GL_SHORT, strideBytes);
+    if (!igual) { SinVBO(); g_statOtras++; W3D_GLC(glTexCoordPointer(2, GL_SHORT, strideBytes, p)); }
+    gUV0Tipo = 1; gUV0Ptr = p; gUV0Stride = strideBytes; gUV0Gl = GL_SHORT;
     if (gMezclaTexOn == 1 && !gUV1Tipo) MezclaReplicarUV(igual);
 }
 // normales como texcoords (matcap HW). count = cantidad de vertices (para poder convertir el tipo en desktop).
@@ -1590,9 +1672,16 @@ void ColorVBO(unsigned int h){ if (PtrIgual(ColorArray, h, 0, 4, GL_UNSIGNED_BYT
 void TexCoordVBO(unsigned int h){
     const bool igual = PtrIgual(TexCoordArray, h, 0, 2, GL_FLOAT, 0);
     if (!igual) { g_statOtras += 2; BindArrBuf(h); W3D_GLC(glTexCoordPointer(2, GL_FLOAT, 0, (const GLvoid*)0)); }
-    gUV0Tipo = 2; gUV0Vbo = h;
+    gUV0Tipo = 2; gUV0Vbo = h; gUV0Gl = GL_FLOAT;
     if (gMezclaTexOn == 1 && !gUV1Tipo) MezclaReplicarUV(igual);
 }
+void TexCoordVBO2s(unsigned int h){
+    const bool igual = PtrIgual(TexCoordArray, h, 0, 2, GL_SHORT, 0);
+    if (!igual) { g_statOtras += 2; BindArrBuf(h); W3D_GLC(glTexCoordPointer(2, GL_SHORT, 0, (const GLvoid*)0)); }
+    gUV0Tipo = 2; gUV0Vbo = h; gUV0Gl = GL_SHORT;
+    if (gMezclaTexOn == 1 && !gUV1Tipo) MezclaReplicarUV(igual);
+}
+void VertexVBO3s(unsigned int h){ if (PtrIgual(VertexArray, h, 0, 3, GL_SHORT, 0)) return; g_statOtras += 2; BindArrBuf(h); W3D_GLC(glVertexPointer(3, GL_SHORT, 0, (const GLvoid*)0)); }
 void BindIndexVBO(unsigned int h){
     if (g_punterosCache && gIdxBuf == h) return;
     gIdxBuf = h; g_statOtras++; W3D_GLC(GLB_BIND(GL_ELEMENT_ARRAY_BUFFER, (GLuint)h));
@@ -2272,8 +2361,12 @@ void EstadoFotoReponer() {
 //  OJO: usa glGet/glIsEnabled (flush en tilers) -> JAMAS en el frame normal de
 //  un dispositivo; es una herramienta de PC (harness 'glaudit' / debug).
 // ---------------------------------------------------------------------------
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool g_auditarEscena = false;   // la prende el harness ('glaudit')
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 int  g_auditDesyncs  = 0;
+#endif
 int AuditarEstado() {
 #if defined(W3D_SYMBIAN) || defined(__ANDROID__) || defined(W3D_DREAMCAST)
     return 0;   // en dispositivo no se audita (glGet = flush del tiler)
@@ -2353,28 +2446,60 @@ int AuditarEstado() {
 #endif
 }
 
+W3D_BACKEND_CERRAR   // (el namespace propio de este backend)
 } // namespace w3dEngine
 
 // w3dSetColor: API libre del engine (declarada en w3dBase.h). Vive ACA (no en el backend
 // w3dOpenGL, que es solo-PC) para compilar en PC y Symbian. Rutea por la abstraccion.
 #include "w3dBase.h"
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 void w3dSetColor(const ColorType c[4]) {
     w3dEngine::Color4f(c[0], c[1], c[2], c[3]);
+#else
+static void w3dSetColorNoUsado() {
+#endif
 
 }
 
 // estado de render (lo setea el editor desde su RenderType/view antes de dibujar la escena)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool w3dRenderWireframe = false;
+#endif
 // wireframe SOLO de lo que se dibuja (default): con visibilidad por triangulo
 // (Mesh::pvsFaces) las lineas siguen la lista ACTIVA, no la malla entera.
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool w3dRenderWireframeSoloVisible = true;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool w3dRenderSolido    = false;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool w3dRenderSinLuz    = false;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool w3dRenderLuces     = false;
+#endif
 
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool w3dRenderNormalColor = false;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool w3dRenderAlpha       = false; // pase ALPHA (matte): blanco unlit + solo el alpha de la textura
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool w3dRenderOverlays    = true;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool w3dVerSeleccion      = true;  // "Ver seleccion" (menu Select): OFF = ni contorno verde ni tinte de seleccion
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
 bool g_xray               = false; // X-Ray OFF por defecto (lo togglea el menu Overlays)
+#endif
 
+// ---- VARIOS BACKENDS en un ejecutable (gfx/w3dBackend.h): este llena SU tabla del despacho ----
+#ifdef W3D_BACKEND_NS
+#include "w3dBackendTabla.h"
+namespace w3dEngine { namespace W3D_BACKEND_NS {
+#include "w3dBackendLlenar.inc"
+} }
+#endif

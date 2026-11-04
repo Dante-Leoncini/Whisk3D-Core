@@ -21,6 +21,7 @@
 // NIVEL en tiempo de ejecucion: 3 = todo (default), 2 = avisos y errores, 1 = solo errores, 0 = nada
 extern int g_w3dLogNivel;
 void w3dLogReset();                   // trunca/abre el log (al iniciar la app)
+void w3dLogBajar();                   // baja al archivo lo que el log tenga juntado (Symbian: al salir)
 // el archivo del log (antes del primer mensaje): un juego compilado tiene el suyo y no pisa el del editor. Por
 // defecto e:\whisk3d.log en Symbian y whisk3d.log (la carpeta actual) en la PC
 void w3dLogRuta(const char* ruta);
@@ -56,6 +57,7 @@ void w3dMemoriaKB(long& heapUsado, long& heapTam, long& ramLibre);
 void w3dLogMemoria(const char* etiqueta);
 #else
 inline void w3dLogReset() {}
+inline void w3dLogBajar() {}
 inline void w3dLogRuta(const char*) {}
 inline void w3dLog(const char*) {}
 inline void w3dLogW(const char*) {}

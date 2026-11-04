@@ -77,46 +77,67 @@ const char* w3dLogRingLinea(int i) {
 #include <f32file.h>
 #include "fscompat.h" // cerrar RFs sin importar efsrv@390 (Symbian^3)
 
-static void EscribirSymbian(int nivel, const char* aMsg, bool aTruncar) {
-    RingPush(nivel, aMsg); // espejo en memoria para la UI
-    RFs fs;
-    if (fs.Connect() != KErrNone) {
-        return; // sin tarjeta E: u otro problema: no hay log, pero no molesta
-    }
-    RFile f;
+// EL ARCHIVO QUEDA ABIERTO y las lineas se JUNTAN en memoria: antes cada linea conectaba con el servidor de archivos,
+// abria el log de la tarjeta, buscaba el final, escribia, forzaba a disco y cerraba -- decenas de ms por linea en el
+// N95, y el [PERF] del modo juego escribe varias cada pocos segundos: eran los MICROCUELGUES. Ahora:
+//   INFO       se junta y baja al archivo cuando hay ~3 KB (o con el proximo WARN / ERROR);
+//   WARN       baja YA (lo de antes incluido);
+//   ERROR      baja YA y se fuerza a disco (Flush): si lo que sigue es un cuelgue, queda escrito.
+// w3dLogBajar() baja lo que haya (al salir de la app, antes de leer el log desde la PC).
+static RFs   gLogFs;
+static RFile gLogArchivo;
+static bool  gLogAbierto = false;
+static TBuf8<4096> gLogBuf;
+static bool LogAbrir(bool aTruncar) {
+    if (gLogAbierto && !aTruncar) return true;
+    if (gLogAbierto) { gLogArchivo.Close(); FsCloseCompat(gLogFs); gLogAbierto = false; }
+    if (gLogFs.Connect() != KErrNone) return false;   // sin tarjeta E: u otro problema: no hay log, pero no molesta
     TBuf<128> ruta;
     ruta.Copy(TPtrC8((const TUint8*)gRutaLog));
     TInt err;
-    if (aTruncar) {
-        err = f.Replace(fs, ruta, EFileWrite | EFileShareAny);
-    } else {
-        err = f.Open(fs, ruta, EFileWrite | EFileShareAny);
-        if (err == KErrNotFound) {
-            err = f.Create(fs, ruta, EFileWrite | EFileShareAny);
-        }
+    if (aTruncar) err = gLogArchivo.Replace(gLogFs, ruta, EFileWrite | EFileShareAny);
+    else {
+        err = gLogArchivo.Open(gLogFs, ruta, EFileWrite | EFileShareAny);
+        if (err == KErrNotFound) err = gLogArchivo.Create(gLogFs, ruta, EFileWrite | EFileShareAny);
     }
-    if (err == KErrNone) {
-        TInt pos = 0;
-        f.Seek(ESeekEnd, pos);
-        TBuf8<280> line;
-        line.AppendNum((TUint)User::NTickCount()); // timestamp en ms
-        line.Append(_L8(" ["));
-        line.Append(TPtrC8((const TUint8*)NivelTag(nivel))); // [INFO]/[WARN]/[ERROR]
-        line.Append(_L8("] "));
-        TPtrC8 m((const TUint8*)(aMsg ? aMsg : ""));
-        line.Append(m.Left(200));
-        line.Append(_L8("\r\n"));
-        f.Write(line);
-        f.Flush(); // a disco YA, por si lo proximo es el cuelgue
-        f.Close();
-    }
-    FsCloseCompat(fs);
+    if (err != KErrNone) { FsCloseCompat(gLogFs); return false; }
+    TInt pos = 0;
+    gLogArchivo.Seek(ESeekEnd, pos);
+    gLogAbierto = true;
+    return true;
+}
+static void LogBajar(bool aADisco) {
+    if (!gLogAbierto || gLogBuf.Length() == 0) return;
+    gLogArchivo.Write(gLogBuf);
+    gLogBuf.Zero();
+    if (aADisco) gLogArchivo.Flush();
+}
+void w3dLogBajar() { LogBajar(true); }
+static void EscribirSymbian(int nivel, const char* aMsg, bool aTruncar) {
+    RingPush(nivel, aMsg); // espejo en memoria para la UI
+    if (aTruncar) gLogBuf.Zero();
+    if (!LogAbrir(aTruncar)) return;
+    TBuf8<280> line;
+    line.AppendNum((TUint)User::NTickCount()); // timestamp en ms
+    line.Append(_L8(" ["));
+    line.Append(TPtrC8((const TUint8*)NivelTag(nivel))); // [INFO]/[WARN]/[ERROR]
+    line.Append(_L8("] "));
+    TPtrC8 m((const TUint8*)(aMsg ? aMsg : ""));
+    line.Append(m.Left(200));
+    line.Append(_L8("\r\n"));
+    if (gLogBuf.Length() + line.Length() > gLogBuf.MaxLength()) LogBajar(false);
+    gLogBuf.Append(line);
+    if (nivel >= 1 || aTruncar || gLogBuf.Length() > 3072) LogBajar(nivel >= 2 || aTruncar);
 }
 void w3dLogReset() { EscribirSymbian(0, "=== Whisk3D DEV LOG: inicio de sesion ===", true); }
 void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirSymbian(0, aMsg, false); }
 void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirSymbian(1, aMsg, false); }
 void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirSymbian(2, aMsg, false); }
 
+#else
+void w3dLogBajar() {}
+#endif
+#if defined(W3D_SYMBIAN)
 #elif defined(__ANDROID__)
 // ---------------------------------------------------------------------------
 //  Backend Android: a logcat (via __android_log_print). En Android no hay un

@@ -127,8 +127,29 @@ void W3dSoundSetPitch(int voice, float pitch);
 // la animacion salta a donde va el sonido). < 0 = la voz no existe (termino / handle viejo).
 // Con pitch != 1 son segundos DEL SONIDO (posicion en el wav), no de pared.
 float W3dSoundPos(int voice);
+// MOVER una voz que ya suena a 'seg' segundos del sonido (el timeline de una escena salto: el audio va con el)
+void W3dSoundSetPos(int voice, float seg);
+// PANEO de una voz que ya suena (-1 izquierda .. 1 derecha; la misma ley que W3dSoundPlayPitchPan). Un sonido 3D lo
+// cambia en cada cuadro segun donde esta respecto de quien escucha
+void W3dSoundSetPan(int voice, float pan);
+// las GANANCIAS de cada lado directo (0..1 cada una): un sonido 3D que suena ATRAS se escucha mas bajo y mas al medio
+void W3dSoundSetGanancias(int voice, float gL, float gR);
+// cuanto dura un sonido (segundos; 0 si es NULL)
+float W3dSoundDuracion(const W3dSound* s);
+// un TRAMO de un sonido como un sonido nuevo (copia: desde..hasta, en segundos; hasta <= 0 = hasta el final). Un
+// sonido recortado se repite (loop) EXACTO en la muestra: el mixer da la vuelta al llegar al final de lo que tiene
+W3dSound* W3dSoundRecortar(const W3dSound* s, float desde, float hasta);
+// los PICOS de un sonido para dibujar su forma de onda: 'n' columnas (el maximo absoluto de cada una, 0..1)
+void W3dSoundPicos(const W3dSound* s, int n, float* picos);
 void W3dAudioMasterVolume(float v);  // volumen global 0..1 (master de usuario)
 void W3dAudioJuegoVolume(float v);   // volumen del JUEGO 0..1 (lo setea la tarjeta Juego; indep. del master)
+
+// FUENTE del juego: una funcion que SUMA lo suyo (estereo intercalado, en la escala de 16 bits) al acumulador de la
+// mezcla, en el hilo de audio, despues de las voces y antes del limitador. Para un stream que no entra en la memoria
+// como W3dSound (una cancion entera comprimida que el juego decodifica de a poco); los frames que pide son el reloj
+// real de lo que se escucha. Con el mixer en pausa no se llama. NULL la saca.
+typedef void (*W3dAudioFuenteFn)(int* accEstereo, int frames, void* usuario);
+void W3dAudioFuente(W3dAudioFuenteFn fn, void* usuario);
 
 // Lo llama el BACKEND de salida para llenar su buffer (frames = pares L/R, stereo 16-bit).
 // Lo define el mixer del Core; corre en el hilo de audio (bajo exclusion del backend).
