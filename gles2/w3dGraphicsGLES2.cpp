@@ -140,6 +140,8 @@
     static PFdeleteShader        glDeleteShader;
     static PFdeleteBuffers       glDeleteBuffers;
     static PFdeleteProgram       glDeleteProgram;
+    // (glBlendEquation tambien: el de Mesa la declara y el de Windows no)
+    #define glBlendEquation w3dGlBlendEquation
     static PFblendEquation       glBlendEquation;
     #ifndef GL_TEXTURE1
         #define GL_TEXTURE1         0x84C1

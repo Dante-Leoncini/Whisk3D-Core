@@ -31,6 +31,7 @@
 #include "w3dGLdc.h"   // Dreamcast: lo que GLdc no trae (vacio en el resto)
 #include <math.h>  // tanf (Perspective)
 #include <stdio.h> // printf (AuditarEstado: reporte de desyncs del cache)
+#include <string.h> // strncpy (ShaderEscritoCompilar)
 
 #ifndef GL_CLAMP_TO_EDGE
     #define GL_CLAMP_TO_EDGE 0x812F // GL 1.2+: por si el GL/gl.h del sistema es 1.1
