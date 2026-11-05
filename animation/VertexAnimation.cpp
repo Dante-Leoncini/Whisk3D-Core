@@ -621,6 +621,7 @@ float EvalCurvaVertexAnim(const VertexFrame& A, const VertexFrame& B, float fram
     if (frame >= (float)B.frame) return 1.0f;
     if (A.interp == KfConstant) return 0.0f;          // escalon: A hasta llegar a B
     const float t = (frame - (float)A.frame) / (float)span;
+    if (KfEsEasing(A.interp)) return KfEasing(A.interp, t);   // easing: la misma curva que las de transform
     if (A.interp != KfBezier) return t;               // lineal
     // BEZIER con los handles efectivos CLAMPEADOS al rectangulo del tramo (los MISMOS
     // que dibuja/agarra el editor): los 4 puntos de control quedan en la caja
@@ -784,6 +785,7 @@ int VertexAnimSetKey(VertexAnimation& anim, int frame,
     // insertar ORDENADO por frame
     VertexFrame* nf = new VertexFrame();
     nf->positions = pos; nf->normals = nrm; nf->uvs = tuv; nf->frame = frame; nf->interp = interp;
+    if (interp == KfBezier) nf->handleType = HPlano;   // ease in/out (igual que SetKeyCurva)
     size_t ins = 0;
     while (ins < anim.frames.size() && anim.frames[ins]->frame < frame) ++ins;
     anim.frames.insert(anim.frames.begin() + ins, nf);
@@ -1653,9 +1655,9 @@ void AplicarVertexAnimTimeline(){
         int ai = va ? va->currentAnim : -1;
         if (ai >= 0 && ai < (int)ActiveAnimMesh->animations.size() && ActiveAnimMesh->animations[ai] &&
             !ActiveAnimMesh->animations[ai]->frames.empty()) {
-            static unsigned int lastSerial = 0; static int lastAnim = -1, lastFrame = -999999;
-            if (ActiveAnimMesh->serial != lastSerial || ai != lastAnim || CurrentFrame != lastFrame) {
-                lastSerial = ActiveAnimMesh->serial; lastAnim = ai; lastFrame = CurrentFrame;
+            static unsigned int lastSerial = 0, lastGen = 0; static int lastAnim = -1, lastFrame = -999999;
+            if (ActiveAnimMesh->serial != lastSerial || ai != lastAnim || CurrentFrame != lastFrame || lastGen != g_animCurvasGen) {
+                lastSerial = ActiveAnimMesh->serial; lastAnim = ai; lastFrame = CurrentFrame; lastGen = g_animCurvasGen;   // (o editaron la curva)
                 VertexAnimation* an = ActiveAnimMesh->animations[ai];
                 an->target = ActiveAnimMesh;
                 EvalVertexAnim(*an, ActiveAnimMesh, (float)CurrentFrame);

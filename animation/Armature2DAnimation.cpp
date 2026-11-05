@@ -230,7 +230,7 @@ void Armature2DEvaluarEscena(int frame) {
 // ---------------------------------------------------------------------------
 // pone (o actualiza) el keyframe de UN canal
 static void SetKey1(Bone2DTrack& tr, int prop, int comp, int frame, float v) {
-    SetKeyCurva(tr.PropertyDe(prop, comp), frame, v);
+    SetKeyCurva(tr.PropertyDe(prop, comp), frame, v, HPlano);
 }
 
 void InsertarKeyframeArm2D(Mesh* m, int canales) {
@@ -289,7 +289,7 @@ int AutoKeyHueso2D(Mesh* m, int i, float tu0, float tv0, float rot0, float sx0, 
     int n = 0;
     for (int c = 0; c < 5; c++) {
         if (!C::cambio(nuevo[c], viejo[c])) continue;
-        SetKeyCurva(tr.PropertyDe(props[c], comps[c]), CurrentFrame, nuevo[c]);
+        SetKeyCurva(tr.PropertyDe(props[c], comps[c]), CurrentFrame, nuevo[c], HPlano);
         n++;
     }
     return n;

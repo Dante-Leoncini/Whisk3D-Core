@@ -87,7 +87,25 @@ enum { AnimX = 0, AnimY = 1, AnimZ = 2 };
 //   KfLinear   = recta
 //   KfBezier   = curva; es la unica que tiene handles
 // OJO: el default de keyFrame es KfLinear, NO Constant.
-enum { KfConstant = 0, KfLinear = 1, KfBezier = 2 };
+enum { KfConstant = 0, KfLinear = 1, KfBezier = 2,
+       // EASING: curvas CALCULADAS, sin handles. El valor va de A a B segun una funcion f(t) del tiempo del tramo.
+       //   por fuerza: Sinusoidal, Cuadratica (t^2), Cubica (t^3), Cuartica (t^4), Quintica (t^5), Exponencial, Circular
+       //   efectos:    Back (se pasa un poco y vuelve), Bounce (rebota), Elastic (oscila como un resorte)
+       KfSine = 3, KfQuad = 4, KfCubic = 5, KfQuart = 6, KfQuint = 7, KfExpo = 8, KfCirc = 9,
+       KfBack = 10, KfBounce = 11, KfElastic = 12, KfInterpN = 13 };
+// El EASING de esas curvas (de que lado del tramo va el efecto) viaja en los bits 8-9 de la MISMA Interpolation:
+// asi no cambia ningun formato (.w3d, .w3da, el undo, las curvas compactas guardan el int tal cual). Solo las de
+// easing los usan: Constant / Linear / Bezier nunca los tienen (sus "== KfBezier" de siempre siguen valiendo).
+//   KfEaseAuto = el habitual de cada curva: Ease In, salvo Back / Bounce / Elastic que son Ease Out
+//   KfEaseIn   = el efecto al ARRANCAR el tramo     KfEaseOut = al LLEGAR   KfEaseInOut = en las dos puntas
+enum { KfEaseAuto = 0, KfEaseIn = 1, KfEaseOut = 2, KfEaseInOut = 3 };
+inline int  KfInterpBase(int interp)  { return interp & 0xFF; }
+inline int  KfInterpEase(int interp)  { return (interp >> 8) & 3; }
+inline int  KfInterpCon(int base, int ease) { return (base >= KfSine) ? (base | (ease << 8)) : base; }
+inline bool KfEsEasing(int interp)    { return KfInterpBase(interp) >= KfSine && KfInterpBase(interp) < KfInterpN; }
+// f(t) de una curva de easing: t en [0..1] del tramo -> fraccion del camino de A a B (0 en A, 1 en B; Back y
+// Elastic se pasan un poco de 0..1). Para las que no son de easing devuelve t.
+float KfEasing(int interp, float t);
 
 // CANALES de un "Insert Keyframe" (mascara de bits). La comparten los TRES caminos que keyframean un
 // transform: InsertarKeyframeObjeto (objetos), InsertarKeyframeEsqueleto (pose 3D) e InsertarKeyframeArm2D
@@ -104,7 +122,9 @@ enum { KfCanalLoc = 1, KfCanalRot = 2, KfCanalScl = 4, KfCanalTodos = 7 };
 //   HVector      cada lado apunta al keyframe vecino -> el tramo sale recto
 //   HAuto        pendiente suave que pasa por los vecinos (Catmull-Rom)
 //   HAutoClamped como HAuto, pero se aplana en los picos: la curva NUNCA se pasa del valor de los keyframes
-enum { HFree = 0, HAligned = 1, HVector = 2, HAuto = 3, HAutoClamped = 4 };
+//   HPlano       los dos lados HORIZONTALES (un tercio del tramo): ease in/out en cada keyframe. Es el default de
+//                un keyframe nuevo; calculado (no guarda offsets) -> las curvas siguen compactandose
+enum { HFree = 0, HAligned = 1, HVector = 2, HAuto = 3, HAutoClamped = 4, HPlano = 5 };
 
 // Keyframe de UNA curva: UN solo valor (el de su canal) + como sale de el.
 class keyFrame {
@@ -278,19 +298,29 @@ void W3dClavesEstadisticas(W3dClavesStats& st);
 
 // Una CURVA de animacion = (Property, component). Ej: (AnimPosition, AnimX) = "X Location".
 // Cada componente tiene SUS PROPIOS keyframes -> se puede mover/borrar/curvar X sin tocar Y ni Z.
+// REPETIR (modificador de la curva): que pasa ANTES del primer keyframe y DESPUES del ultimo.
+//   KfCicloNo     = se queda en el valor de la punta (como siempre)
+//   KfCicloRepite = la curva entera se repite, igual, para siempre
+//   KfCicloOffset = se repite CORRIDA: cada vuelta arranca donde termino la anterior (un paso que avanza, una
+//                   rueda que sigue girando)
+enum { KfCicloNo = 0, KfCicloRepite = 1, KfCicloOffset = 2 };
+
 class AnimProperty {
 public:
     int Property;   // AnimPosition / AnimRotation / AnimScale
     int component;  // AnimX / AnimY / AnimZ
     W3dClaves keyframes;   // por fuera, un std::vector<keyFrame>; por dentro puede estar compacta (W3dClaves)
+    int cicloAntes, cicloDespues;   // KfCicloNo / KfCicloRepite / KfCicloOffset (el modificador Repetir)
 
-    AnimProperty() : Property(AnimPosition), component(AnimX) {}
+    AnimProperty() : Property(AnimPosition), component(AnimX), cicloAntes(KfCicloNo), cicloDespues(KfCicloNo) {}
     void SortKeyFrames();
     // evalua la curva en 'frame' (devuelve def si no tiene keyframes). Clampea fuera del rango.
     float Eval(int frame, float def) const;
     // igual que Eval pero en frame CONTINUO. La animacion solo pisa frames enteros, asi que Eval(int) es este
     // mismo con t entero; el editor lo usa para dibujar.
     float EvalF(float frame, float def) const;
+    // EvalF sin el modificador Repetir (fuera del rango de los keyframes: el valor de la punta)
+    float EvalRango(float frame, float def) const;
     // Handle EFECTIVO del keyframe i, como offset (dF, dV) desde el. 'salida' = el de la derecha. Segun handleType
     // devuelve el guardado (HFree/HAligned) o lo calcula desde los vecinos (HVector/HAuto/HAutoClamped). Es el
     // UNICO lugar donde se decide donde cae un handle: lo usan la evaluacion y el editor, asi que lo que ves es
@@ -310,8 +340,33 @@ Vector3 EvalPropVec(const std::vector<AnimProperty>& props, int property, int fr
 Vector3 EvalPropVecF(const std::vector<AnimProperty>& props, int property, float frame, const Vector3& def);
 // devuelve (creando si falta) la curva (property, component) de una lista de propiedades
 AnimProperty& PropertyDeLista(std::vector<AnimProperty>& props, int property, int component);
-// pone/actualiza un keyframe en 'frame' con 'value', manteniendo la lista ordenada por frame
-void SetKeyCurva(AnimProperty& ap, int frame, float value);
+// pone/actualiza un keyframe en 'frame' con 'value', manteniendo la lista ordenada por frame. Uno NUEVO sale bezier
+// con handles 'tipoH': HAuto para lo que trae datos (importar, hornear: una clave por frame, sin frenar en cada una);
+// HPlano (ease in/out) para lo que inserta el USUARIO (la 'i', el auto key)
+void SetKeyCurva(AnimProperty& ap, int frame, float value, int tipoH = HAuto);
+// EASE de un tramo BEZIER comun (a -> b, valores va -> vb), con sus handles (sin curvas calculadas):
+//   Ease In  = sale despacio de a (handle de salida de a PLANO) y llega derecho a b (handle de entrada apuntando a a)
+//   Ease Out = sale derecho y llega despacio     Ease In and Out = los dos planos     Automatic = handles automaticos
+// Los handles de a y b tienen que estar CONCRETOS (Free/Aligned) antes de llamar, salvo con Automatic.
+template <class K> void KfEaseBezierTramo(K& a, K& b, float va, float vb, int ease) {
+    const float span = (float)(b.frame - a.frame);
+    if (span <= 0.0f) return;
+    if (ease == KfEaseAuto) { a.handleType = HAuto; b.handleType = HAuto; return; }
+    const bool planoA = (ease == KfEaseIn || ease == KfEaseInOut);
+    const bool planoB = (ease == KfEaseOut || ease == KfEaseInOut);
+    a.outDF = span / 3.0f;  a.outDV = planoA ? 0.0f : (vb - va) / 3.0f;
+    b.inDF = -span / 3.0f;  b.inDV  = planoB ? 0.0f : (va - vb) / 3.0f;
+    // alineado solo si los dos lados quedaron en la misma recta (planos los dos); si no, cada lado por libre
+    a.handleType = (a.inDV == 0.0f && a.outDV == 0.0f) ? HAligned : HFree;
+    b.handleType = (b.inDV == 0.0f && b.outDV == 0.0f) ? HAligned : HFree;
+}
+// el tramo que SALE del keyframe i de una curva (si es bezier y hay siguiente). Congela antes los handles
+// calculados de los dos keyframes (lo que se veia) para no perder el otro lado.
+void KfEaseBezier(AnimProperty& ap, size_t i, int ease);
+// de una curva de EASING (Sine...Circ, Back) a BEZIER comun CONSERVANDO LA FORMA: los handles del tramo que sale
+// del keyframe i quedan en los de la bezier que mas se parece a esa curva (Free). Bounce y Elastic no entran en una
+// sola bezier: ahi (y si el tramo no era de easing) devuelve false y no toca nada. 'interpViejo' = la de antes.
+bool KfBezierDesdeEasing(AnimProperty& ap, size_t i, int interpViejo);
 // Borra el keyframe de 'frame' tratando de MANTENER LA FORMA de la curva: ajusta los handles de los vecinos por
 // minimos cuadrados contra la curva original (conserva las direcciones, ajusta los largos). Es una simplificacion:
 // un tramo no siempre puede reproducir dos, pero los extremos y las tangentes quedan iguales.

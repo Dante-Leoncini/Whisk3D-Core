@@ -499,6 +499,7 @@ void AnimProperty::HandleEfectivo(size_t i, bool salida, float& dF, float& dV) c
         dV = K.HandleDV(i, salida);
         return;
     }
+    if (kTipo == HPlano){ dF = largo; dV = 0.0f; return; }   // horizontal: ease in/out
     if (kTipo == HVector){
         // apunta al vecino: el tramo de este lado sale RECTO
         int df = K.Frame(vec) - kFrame;
@@ -535,6 +536,46 @@ void AnimProperty::HandleEfectivo(size_t i, bool salida, float& dF, float& dV) c
         if (cp < lo) dV = lo - kValue;
         else if (cp > hi) dV = hi - kValue;
     }
+}
+
+// ---- EASING (ver KfSine... en Animation.h). Cada curva se define por su Ease IN (lenta al arrancar); el Ease
+// OUT es la misma dada vuelta (1 - in(1 - t)) y el In-Out pega la mitad de cada una.
+static float EaseRebote(float t){   // Bounce OUT: cae y rebota cada vez mas bajo hasta quedarse en 1
+    const float n = 7.5625f, d = 2.75f;
+    if (t < 1.0f / d)   return n * t * t;
+    if (t < 2.0f / d) { t -= 1.5f / d;   return n * t * t + 0.75f; }
+    if (t < 2.5f / d) { t -= 2.25f / d;  return n * t * t + 0.9375f; }
+    t -= 2.625f / d; return n * t * t + 0.984375f;
+}
+static float EaseInF(int base, float t){
+    switch (base){
+        case KfSine:  return 1.0f - cosf(t * 1.5707963f);
+        case KfQuad:  return t * t;
+        case KfCubic: return t * t * t;
+        case KfQuart: return t * t * t * t;
+        case KfQuint: return t * t * t * t * t;
+        case KfExpo:  return (powf(2.0f, 10.0f * t) - 1.0f) / 1023.0f;   // (exacto en 0 y en 1)
+        case KfCirc:  return 1.0f - sqrtf(1.0f - t * t);
+        case KfBack:  { const float s = 1.70158f; return t * t * ((s + 1.0f) * t - s); }
+        case KfBounce: return 1.0f - EaseRebote(1.0f - t);
+        case KfElastic: {
+            if (t <= 0.0f || t >= 1.0f) return t;
+            const float p = 0.3f, s = p / 4.0f, u = t - 1.0f;
+            return -powf(2.0f, 10.0f * u) * sinf((u - s) * 6.2831853f / p);
+        }
+    }
+    return t;
+}
+float KfEasing(int interp, float t){
+    if (!KfEsEasing(interp)) return t;
+    if (t <= 0.0f) return 0.0f;
+    if (t >= 1.0f) return 1.0f;
+    const int base = KfInterpBase(interp);
+    int ease = KfInterpEase(interp);
+    if (ease == KfEaseAuto) ease = (base == KfBack || base == KfBounce || base == KfElastic) ? KfEaseOut : KfEaseIn;
+    if (ease == KfEaseIn)  return EaseInF(base, t);
+    if (ease == KfEaseOut) return 1.0f - EaseInF(base, 1.0f - t);
+    return (t < 0.5f) ? EaseInF(base, 2.0f * t) * 0.5f : 1.0f - EaseInF(base, 2.0f - 2.0f * t) * 0.5f;
 }
 
 float AnimProperty::Eval(int frame, float def) const { return EvalF((float)frame, def); }
@@ -574,7 +615,26 @@ static size_t TramoDe(const W3dClaves& K, float frame) {
 
 // Una sola funcion para la curva comun y la COMPACTA (W3dClaves: Frame/Valor/Interp no expanden): despues de
 // elegir el tramo, la cuenta es el mismo codigo, asi que las dos dan los mismos bits (prueba_claves_compactas.w3s).
+// REPETIR: fuera del rango de los keyframes el frame se lleva ADENTRO (una vuelta = del primero al ultimo) y, con
+// offset, se le suma lo que avanza la curva por vuelta. Adentro del rango no cambia nada.
 float AnimProperty::EvalF(float frame, float def) const {
+    if (cicloAntes == KfCicloNo && cicloDespues == KfCicloNo) return EvalRango(frame, def);
+    const W3dClaves& K = keyframes;
+    const size_t n = K.size();
+    if (n < 2) return EvalRango(frame, def);
+    const float f0 = (float)K.Frame(0), f1 = (float)K.Frame(n-1), periodo = f1 - f0;
+    if (periodo <= 0.0f) return EvalRango(frame, def);
+    int modo = KfCicloNo;
+    if (frame > f1) modo = cicloDespues; else if (frame < f0) modo = cicloAntes;
+    if (modo == KfCicloNo) return EvalRango(frame, def);
+    const float vueltas = floorf((frame - f0) / periodo);           // cuantas vueltas enteras (negativo antes)
+    float local = frame - vueltas * periodo;                         // el frame equivalente adentro del rango
+    if (local < f0) local = f0; if (local > f1) local = f1;          // (redondeo de float en frames enormes)
+    float v = EvalRango(local, def);
+    if (modo == KfCicloOffset) v += vueltas * (K.Valor(n-1) - K.Valor(0));
+    return v;
+}
+float AnimProperty::EvalRango(float frame, float def) const {
     const W3dClaves& K = keyframes;
     const size_t n = K.size();
     if (n == 0) return def;                                         // canal sin keyframes -> su valor de reposo
@@ -592,6 +652,7 @@ float AnimProperty::EvalF(float frame, float def) const {
     int span = fb - fa;
     if (span <= 0) return vb;
     float t = (frame - (float)fa) / (float)span;
+    if (KfEsEasing(interp)) return va + (vb - va) * KfEasing(interp, t);   // easing: curva calculada
     if (interp != KfBezier)
         return va + (vb - va) * t;                                  // lineal
     return EvalBezier(i, frame);
@@ -607,6 +668,10 @@ float AnimProperty::EvalBezier(size_t i, float frame) const {
     const float x0 = (float)K.Frame(i-1), x3 = (float)K.Frame(i);
     const float span = x3 - x0;
     if (span <= 0.0f) return bValue;
+    // en las PUNTAS, el valor exacto del keyframe: con un handle pegado a la punta (x2 == x3) x(t) llega plana y
+    // en float la biseccion se frena un poco antes (el keyframe daba 9.998 en vez de 10)
+    if (frame >= x3) return bValue;
+    if (frame <= x0) return aValue;
 
     float aDF, aDV, bDF, bDV;
     HandleEfectivo(i-1, true,  aDF, aDV);   // handle de SALIDA del izquierdo
@@ -762,12 +827,68 @@ AnimProperty& PropertyDeLista(std::vector<AnimProperty>& props, int property, in
     return props.back();
 }
 
-void SetKeyCurva(AnimProperty& ap, int frame, float value) {
+void SetKeyCurva(AnimProperty& ap, int frame, float value, int tipoH) {
     for (size_t i = 0; i < ap.keyframes.size(); i++)
         if (ap.keyframes[i].frame == frame) { ap.keyframes[i].value = value; return; } // ya hay uno: se actualiza
-    keyFrame kf; kf.frame = frame; kf.value = value; kf.Interpolation = KfBezier; // default suave; los canales true/false lo pisan a KfConstant
+    keyFrame kf; kf.frame = frame; kf.value = value; kf.Interpolation = KfBezier; kf.handleType = tipoH; // los canales true/false lo pisan a KfConstant
     size_t pos = 0; while (pos < ap.keyframes.size() && ap.keyframes[pos].frame < frame) pos++;
     ap.keyframes.insert(ap.keyframes.begin() + pos, kf);   // insertado EN ORDEN (no hace falta ordenar)
+}
+
+void KfEaseBezier(AnimProperty& ap, size_t i, int ease) {
+    if (i + 1 >= ap.keyframes.size() || KfInterpBase(ap.keyframes[i].Interpolation) != KfBezier) return;
+    if (ease != KfEaseAuto) {
+        for (size_t j = i; j <= i + 1; j++) {
+            const int t = ap.keyframes[j].handleType;
+            if (t == HFree || t == HAligned) continue;
+            float idf, idv, odf, odv;
+            ap.HandleEfectivo(j, false, idf, idv); ap.HandleEfectivo(j, true, odf, odv);
+            keyFrame& k = ap.keyframes[j];
+            k.inDF = idf; k.inDV = idv; k.outDF = odf; k.outDV = odv; k.handleType = HFree;
+        }
+    }
+    KfEaseBezierTramo(ap.keyframes[i], ap.keyframes[i + 1], ap.keyframes[i].value, ap.keyframes[i + 1].value, ease);
+}
+
+// La bezier (0,0) (x1,y1) (x2,y2) (1,1) que mas se parece a cada curva de easing, en fracciones del tramo (x =
+// tiempo, y = camino de A a B). Una fila por curva desde KfSine: primero Ease In, despues Ease In and Out (simetrica:
+// el segundo handle es el primero dado vuelta); el Ease Out es el Ease In dado vuelta (punto por punto: (1-x, 1-y),
+// y los dos handles cambian de lado). Ajustadas minimizando el error MAXIMO contra KfEasing (con el mismo despeje
+// de x que EvalBezier): el peor caso es Circ In and Out, 1.9% del tramo; Cubic In y Back In son exactas.
+static const float kEaseBez[][2][4] = {
+    { { 0.1987f, 0.0182f, 0.4107f,  0.0462f }, { 0.3628f, -0.0016f, 0.6372f, 1.0016f } },   // Sine
+    { { 0.1706f, 0.0022f, 0.5361f,  0.0701f }, { 0.4843f,  0.0420f, 0.5157f, 0.9580f } },   // Quad
+    { { 0.3333f, 0.0000f, 0.6667f,  0.0000f }, { 0.6249f, -0.0405f, 0.3751f, 1.0405f } },   // Cubic (t^3 ES una cubica)
+    { { 0.4244f, 0.0074f, 0.7302f, -0.0815f }, { 0.7145f, -0.0895f, 0.2855f, 1.0895f } },   // Quart
+    { { 0.5399f, 0.0043f, 0.7785f, -0.0916f }, { 0.7742f, -0.1232f, 0.2258f, 1.1232f } },   // Quint
+    { { 0.6455f, 0.0145f, 0.8467f, -0.0457f }, { 0.8424f, -0.1194f, 0.1576f, 1.1194f } },   // Expo
+    { { 0.5536f, 0.0002f, 0.9995f,  0.4489f }, { 0.9384f,  0.2088f, 0.0616f, 0.7912f } },   // Circ
+    { { 0.3333f, 0.0000f, 0.6667f, -0.5671f }, { 0.7205f, -0.3339f, 0.2795f, 1.3339f } },   // Back (el retroceso SI entra)
+};
+bool KfBezierDesdeEasing(AnimProperty& ap, size_t i, int interpViejo) {
+    if (i + 1 >= ap.keyframes.size() || !KfEsEasing(interpViejo)) return false;
+    const int base = KfInterpBase(interpViejo);
+    if (base > KfBack) return false;                          // Bounce / Elastic: no hay una bezier que se parezca
+    int ease = KfInterpEase(interpViejo);
+    if (ease == KfEaseAuto) ease = (base == KfBack) ? KfEaseOut : KfEaseIn;   // (el mismo default que KfEasing)
+    const float* e = kEaseBez[base - KfSine][ease == KfEaseInOut ? 1 : 0];
+    float x1 = e[0], y1 = e[1], x2 = e[2], y2 = e[3];
+    if (ease == KfEaseOut) { x1 = 1.0f - e[2]; y1 = 1.0f - e[3]; x2 = 1.0f - e[0]; y2 = 1.0f - e[1]; }
+    // los OTROS lados de los dos keyframes (los tramos vecinos) se congelan como se veian
+    for (size_t j = i; j <= i + 1; j++) {
+        const int t = ap.keyframes[j].handleType;
+        if (t == HFree || t == HAligned) continue;
+        float idf, idv, odf, odv;
+        ap.HandleEfectivo(j, false, idf, idv); ap.HandleEfectivo(j, true, odf, odv);
+        keyFrame& k = ap.keyframes[j];
+        k.inDF = idf; k.inDV = idv; k.outDF = odf; k.outDV = odv;
+    }
+    keyFrame& a = ap.keyframes[i]; keyFrame& b = ap.keyframes[i + 1];
+    const float span = (float)(b.frame - a.frame), dv = b.value - a.value;
+    a.outDF = x1 * span;          a.outDV = y1 * dv;
+    b.inDF  = (x2 - 1.0f) * span; b.inDV  = (y2 - 1.0f) * dv;
+    a.handleType = HFree; b.handleType = HFree;
+    return true;
 }
 
 // AnimationObject

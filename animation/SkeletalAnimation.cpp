@@ -1262,9 +1262,9 @@ void DuplicarAnimacionActiva(Armature* a){
 // Cada componente es una curva independiente; keyar la pose las toca a las 3 en el mismo frame, pero despues
 // se pueden mover/borrar/curvar por separado desde el dope sheet.
 static void SetKey3(BoneTrack& tr, int prop, int frame, const Vector3& v){
-    SetKeyCurva(tr.PropertyDe(prop, AnimX), frame, v.x);
-    SetKeyCurva(tr.PropertyDe(prop, AnimY), frame, v.y);
-    SetKeyCurva(tr.PropertyDe(prop, AnimZ), frame, v.z);
+    SetKeyCurva(tr.PropertyDe(prop, AnimX), frame, v.x, HPlano);
+    SetKeyCurva(tr.PropertyDe(prop, AnimY), frame, v.y, HPlano);
+    SetKeyCurva(tr.PropertyDe(prop, AnimZ), frame, v.z, HPlano);
 }
 // ============================================================================
 //  MOTION TRAIL de un HUESO: por donde pasa su cabeza (poseHead), en espacio NODO, frame a frame.
@@ -1361,7 +1361,7 @@ int AutoKeyHueso(Armature* a, int i, const Vector3& T0, const Vector3& R0, const
             float vn = (c==0)?nuevo[p2].x : (c==1)?nuevo[p2].y : nuevo[p2].z;
             float vv = (c==0)?viejo[p2].x : (c==1)?viejo[p2].y : viejo[p2].z;
             if (!C::cambio(vn, vv)) continue;
-            SetKeyCurva(tr.PropertyDe(props[p2], (c==0)?AnimX:(c==1)?AnimY:AnimZ), CurrentFrame, vn);
+            SetKeyCurva(tr.PropertyDe(props[p2], (c==0)?AnimX:(c==1)?AnimY:AnimZ), CurrentFrame, vn, HPlano);
             n++;
         }
     }

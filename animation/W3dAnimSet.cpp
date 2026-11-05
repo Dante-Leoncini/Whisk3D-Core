@@ -118,6 +118,11 @@ struct Cursor {
 // Una IRREGULAR va con sus frames, salvo que resulten regulares (como las mira el camino de abajo: el lector nunca
 // las deja asi, pero los bytes no dependen de eso). Lo prueba prueba_claves_compactas.w3s (guardar sin editar da
 // el archivo identico).
+// el modificador REPETIR va en los bits 2-5 del byte de modo de los frames (antes: 2-3, despues: 4-5). Sin
+// modificador son 0: una curva sin el da los MISMOS bytes que antes.
+static unsigned CicloBits(const AnimProperty& ap) {
+    return ((unsigned)(ap.cicloAntes & 3) << 2) | ((unsigned)(ap.cicloDespues & 3) << 4);
+}
 void PonCurvaCompacta(std::string& s, const AnimProperty& ap, const W3dClavesCompactas& c) {
     PonI32(s, ap.Property);
     PonI32(s, ap.component);
@@ -130,7 +135,7 @@ void PonCurvaCompacta(std::string& s, const AnimProperty& ap, const W3dClavesCom
             if ((double)c.Frame(i) - (double)c.Frame(i - 1) != d0) regulares = false;
     }
     char modos[4];
-    modos[0] = (char)(regulares ? KF_FRAMES_REGULARES : KF_FRAMES_TODOS);
+    modos[0] = (char)((regulares ? KF_FRAMES_REGULARES : KF_FRAMES_TODOS) | CicloBits(ap));
     modos[1] = (char)KF_INT_UNO;
     modos[2] = (char)KF_INT_UNO;
     modos[3] = (char)KF_HANDLES_CERO;
@@ -170,7 +175,7 @@ void PonCurva(std::string& s, const AnimProperty& ap) {
     for (size_t i = 0; i < n && !handles; i++)
         if (BitsF32(k[i].inDF) || BitsF32(k[i].inDV) || BitsF32(k[i].outDF) || BitsF32(k[i].outDV)) handles = true;
     char modos[4];
-    modos[0] = (char)(regulares ? KF_FRAMES_REGULARES : KF_FRAMES_TODOS);
+    modos[0] = (char)((regulares ? KF_FRAMES_REGULARES : KF_FRAMES_TODOS) | CicloBits(ap));
     modos[1] = (char)(interpUno ? KF_INT_UNO : KF_INT_TODOS);
     modos[2] = (char)(tipoUno ? KF_INT_UNO : KF_INT_TODOS);
     modos[3] = (char)(handles ? KF_HANDLES_TODOS : KF_HANDLES_CERO);
@@ -193,8 +198,13 @@ bool LeerCurva(Cursor& c, AnimProperty& ap, std::string& motivo) {
     ap.Property = c.I32();
     ap.component = c.I32();
     const unsigned n = c.U32();
-    const unsigned mF = c.U8(), mI = c.U8(), mT = c.U8(), mH = c.U8();
+    unsigned mF = c.U8();
+    const unsigned mI = c.U8(), mT = c.U8(), mH = c.U8();
     if (!c.ok) { motivo = "curva cortada"; return false; }
+    // el modificador REPETIR (bits 2-5 del modo de los frames, ver CicloBits)
+    { const unsigned ca = (mF >> 2) & 3, cd = (mF >> 4) & 3;
+      if (ca > KfCicloOffset || cd > KfCicloOffset || (mF >> 6)) { motivo = "curva con un modo desconocido"; return false; }
+      ap.cicloAntes = (int)ca; ap.cicloDespues = (int)cd; mF &= 3; }
     if (mF > 1 || mI > 1 || mT > 1 || mH > 1) { motivo = "curva con un modo desconocido"; return false; }
     if (n == 0) return true;
     // cota ANTES de reservar: cada keyframe ocupa por lo menos 4 bytes (su valor)
