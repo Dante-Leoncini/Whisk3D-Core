@@ -1,11 +1,11 @@
 # ============================================================================
 #  generar_despacho.py - arma la capa de DESPACHO de los backends graficos (varios backends en UN ejecutable,
-#  el que se usa se elige al ARRANCAR: ver gfx/w3dBackend.h).
+#  el que se usa se elige al ARRANCAR: ver graphics/w3dBackend.h).
 #
-#  Lee las funciones de w3dEngine (gfx/w3dGraphics.h y gfx/w3dTexture.h) que implementan TODOS los backends y genera:
-#    gfx/w3dBackendTabla.h    la tabla de punteros (una entrada por funcion)
-#    gfx/w3dBackendLlenar.inc lo que cada backend incluye al final: llena la tabla con SUS funciones
-#    gfx/w3dDespacho.inc      w3dEngine::Foo(...) -> el backend activo (lo incluye gfx/w3dGraphicsDespacho.cpp)
+#  Lee las funciones de w3dEngine (graphics/w3dGraphics.h y graphics/w3dTexture.h) que implementan TODOS los backends y genera:
+#    graphics/w3dBackendTabla.h    la tabla de punteros (una entrada por funcion)
+#    graphics/w3dBackendLlenar.inc lo que cada backend incluye al final: llena la tabla con SUS funciones
+#    graphics/w3dDespacho.inc      w3dEngine::Foo(...) -> el backend activo (lo incluye graphics/w3dGraphicsDespacho.cpp)
 #  y marca esas declaraciones en los headers con W3D_BACKEND_ABRIR / CERRAR: en el .cpp de un backend se declaran en
 #  SU namespace (w3dEngine::gl::Foo). Si viera tambien w3dEngine::Foo, la busqueda por argumento (ADL: un parametro de
 #  un tipo de w3dEngine) encontraria las dos y la llamada seria ambigua. Los tipos y los globales quedan en w3dEngine.
@@ -22,8 +22,8 @@ def escribir(p, s):
 MARCAS = ('W3D_BACKEND_ABRIR', 'W3D_BACKEND_CERRAR')
 def sinMarcas(s): return '\n'.join(l for l in s.split('\n') if l.strip() not in MARCAS)
 # (cada header: hasta donde llega lo suyo de w3dEngine)
-HEADERS = [('gfx/w3dGraphics.h', 'extern bool w3dRenderWireframe'), ('gfx/w3dTexture.h', None)]
-BACKENDS = ['gfx/w3dGraphics.cpp', 'gles2/w3dGraphicsGLES2.cpp']
+HEADERS = [('graphics/w3dGraphics.h', 'extern bool w3dRenderWireframe'), ('graphics/w3dTexture.h', None)]
+BACKENDS = ['graphics/opengl/w3dGraphics.cpp', 'graphics/gles2/w3dGraphicsGLES2.cpp']
 
 def rango(s, marcaFin):
     i = s.index('namespace w3dEngine {')
@@ -75,16 +75,16 @@ lt = ['// GENERADO por tools/generar_despacho.py: no editar a mano.', '#ifndef W
       '#include "w3dGraphics.h"', '#include "w3dTexture.h"', 'namespace w3dEngine {', 'struct W3dBackendTabla {']
 ll = ['// GENERADO por tools/generar_despacho.py: no editar a mano. Lo incluye cada backend al FINAL (con W3D_BACKEND_NS).',
       'void W3D_BACKEND_LLENAR(W3dBackendTabla& t) {']
-ld = ['// GENERADO por tools/generar_despacho.py: no editar a mano. Lo incluye gfx/w3dGraphicsDespacho.cpp.']
+ld = ['// GENERADO por tools/generar_despacho.py: no editar a mano. Lo incluye graphics/w3dGraphicsDespacho.cpp.']
 for ret, nom, ps in tabla:
     tp, ns = params(ps)
     lt.append('    %s (*%s)(%s);' % (ret, nom, ', '.join(tp)))
     ll.append('    t.%s = &w3dEngine::W3D_BACKEND_NS::%s;' % (nom, nom))
     ld.append('%s %s(%s) { %sW3D_TABLA()->%s(%s); }' % (ret, nom, ', '.join(tp), '' if ret == 'void' else 'return ', nom, ', '.join(ns)))
 lt += ['};', '}', '#endif']; ll += ['}']
-escribir('gfx/w3dBackendTabla.h', '\n'.join(lt) + '\n')
-escribir('gfx/w3dBackendLlenar.inc', '\n'.join(ll) + '\n')
-escribir('gfx/w3dDespacho.inc', '\n'.join(ld) + '\n')
+escribir('graphics/w3dBackendTabla.h', '\n'.join(lt) + '\n')
+escribir('graphics/w3dBackendLlenar.inc', '\n'.join(ll) + '\n')
+escribir('graphics/w3dDespacho.inc', '\n'.join(ld) + '\n')
 
 # ---- las MARCAS en los headers (alrededor de cada tanda de declaraciones de la tabla; y del struct StatScope, que
 #      es inline y las llama) ----

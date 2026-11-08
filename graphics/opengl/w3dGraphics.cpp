@@ -141,15 +141,15 @@ W3D_BACKEND_ABRIR   // (con varios backends: w3dEngine::gl)
 //  esta dibujando (escena, particulas, UI del juego, editor). Las ahorradas por el cache no llegan aca. StatsCuadro()
 //  cierra el cuadro (ver w3dGraphics.h)
 // ============================================================================
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int g_statLlamadas[StatCatCount_] = { 0 };
 #endif
 static int gStatCat = StatCatEditor;   // categoria del que esta dibujando (el cuadro arranca en Editor)
 #define W3D_GLC(llamada) (g_statLlamadas[gStatCat]++, g_trazaGL ? TrazaGL(#llamada) : (void)0, (llamada))
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool g_trazaGL = false;
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool g_trazaGLSec = false;           // ademas, cada llamada EN ORDEN (con su categoria): de donde sale cada una
 #endif
 static const char* gTrazaTxt[512];   // (un lugar del codigo = un texto: se compara el puntero)
@@ -457,7 +457,7 @@ static GLenum MatGL(Matrix m) {
     return GL_MODELVIEW;
 }
 
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int g_statOtras = 0;
 #endif
 // el MODO de matriz puesto (cache: -1 desconocido) y la PROYECCION del pase sin sesgo (la base de SesgoMetros): lo que
@@ -477,26 +477,26 @@ enum { kSombraHondo = 32 };
 static float gSombra[2][kSombraHondo][16];        // [0] modelview, [1] proyeccion (la de textura no se lee nunca)
 static bool  gSombraOk[2][kSombraHondo];
 static int   gSombraNivel[2] = { 0, 0 };           // (puede pasar de kSombraHondo: esos niveles no se saben)
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool g_matrizAuditar = false;                      // (harness 'matrizaudit') compara cada lectura con GL
 #endif
 #ifdef W3D_SYMBIAN
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool g_invalidarPorMalla = true;                   // (la plataforma lo apaga en el modo juego puro)
 #endif
 #else
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool g_invalidarPorMalla = false;
 #endif
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int  g_matrizDesyncs = 0;
 #endif
 // ---- la PILA PEREZOSA de la modelview (ver w3dGraphics.h): cada nivel de la sombra lleva la SERIE de su matriz (un
 // numero nuevo en cada cambio) y se recuerda la serie de la que GL tiene cargada: distintas = "sucia", y lo proximo que
 // use la matriz manda UN glLoadMatrixf. Un nivel abierto sin glPushMatrix (perezoso) se cierra sin glPopMatrix: todos
 // esos niveles comparten el unico de GL. Se apila de verdad solo sin la matriz en la sombra (mas honda que la sombra)
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool g_matricesPerezosas = true;
 #endif
 static unsigned gSerie[kSombraHondo];           // la serie de la matriz de cada nivel de la modelview
@@ -746,34 +746,34 @@ void SmoothShading(bool suave) {
 void FastPerspective()         { W3D_GLC(glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_FASTEST)); }
 
 // ---- ESTADISTICAS de frame (bench/overlay): contadores baratos, ver w3dGraphics.h ----
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int g_statDrawTris = 0;
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int g_statDrawVBO  = 0;
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int g_statIndices  = 0;
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int g_statTexBinds = 0;
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int g_statMeshes   = 0;
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int g_statStateChanges = 0;   // cambios de estado REALES (los cacheados no cuentan)
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int g_statUploadBytes  = 0;   // bytes subidos a buffer objects este frame
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int g_statTrisOpacos   = 0;   // triangulos con Blend apagado
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int g_statTrisBlend    = 0;   // triangulos con Blend prendido
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int g_statDcCat[StatCatCount_] = { 0 };
 #endif
 void StatCategoria(StatCat c) { gStatCat = (int)c; }
@@ -781,10 +781,10 @@ StatCat StatCategoriaActual() { return (StatCat)gStatCat; }
 void StatRaw(int n) { g_statLlamadas[gStatCat] += n; }
 // el CUADRO: lo que se llamo desde el cierre anterior, por categoria, y los demas contadores como diferencia (no se
 // ponen en 0: los que miden por diferencia -el bench, el perfil de las rutinas- siguen andando)
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 StatsDeCuadro g_statCuadro;
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool g_medirDraws = false;   // (solo el backend de GLES2 mide los draws)
 #endif
 static int gCuadroDraws0 = 0, gCuadroBinds0 = 0, gCuadroEstados0 = 0, gCuadroIdx0 = 0;
@@ -964,7 +964,7 @@ void TexEnvReplace(bool on) {
 #endif
 void SombreadoPorPixel(bool){}                 // (pipeline fijo: la luz es por vertice, siempre)
 bool SombreadoPorPixelSoportado(){ return false; }
-// (sin shaders: los pases van por la CPU y el postprocesado tambien; ver gfx/w3dGraphics.h)
+// (sin shaders: los pases van por la CPU y el postprocesado tambien; ver graphics/w3dGraphics.h)
 bool PasesConShader(){ return false; }
 void PaseEspecial(int, const float*){}
 void AnteriorPointer3f(const float*){}
@@ -1361,7 +1361,7 @@ static void SinVBO() { if (w3d_vboOk && gArrBuf != 0) BindArrBuf(0); }
 // CACHE DE PUNTEROS (ver w3dGraphics.h): lo que GL tiene en cada array de la unidad 0 (indice = VArray). GL guarda con
 // cada puntero el buffer bindeado al ponerlo, asi que uno igual no necesita ni el puntero ni el bind. Y el IBO bindeado
 // (0xFFFFFFFF = no se sabe). La unidad 1 (mezcla de texturas) lleva su propio cache: gUV1Puesto*
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool g_punterosCache = true;
 #endif
 struct PunteroPuesto { unsigned buf; const void* ptr; int tam; unsigned tipo; int paso; };
@@ -2413,10 +2413,10 @@ void EstadoFotoReponer() {
 //  OJO: usa glGet/glIsEnabled (flush en tilers) -> JAMAS en el frame normal de
 //  un dispositivo; es una herramienta de PC (harness 'glaudit' / debug).
 // ---------------------------------------------------------------------------
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool g_auditarEscena = false;   // la prende el harness ('glaudit')
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 int  g_auditDesyncs  = 0;
 #endif
 int AuditarEstado() {
@@ -2504,7 +2504,7 @@ W3D_BACKEND_CERRAR   // (el namespace propio de este backend)
 // w3dSetColor: API libre del engine (declarada en w3dBase.h). Vive ACA (no en el backend
 // w3dOpenGL, que es solo-PC) para compilar en PC y Symbian. Rutea por la abstraccion.
 #include "w3dBase.h"
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 void w3dSetColor(const ColorType c[4]) {
     w3dEngine::Color4f(c[0], c[1], c[2], c[3]);
 #else
@@ -2514,41 +2514,41 @@ static void w3dSetColorNoUsado() {
 }
 
 // estado de render (lo setea el editor desde su RenderType/view antes de dibujar la escena)
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool w3dRenderWireframe = false;
 #endif
 // wireframe SOLO de lo que se dibuja (default): con visibilidad por triangulo
 // (Mesh::pvsFaces) las lineas siguen la lista ACTIVA, no la malla entera.
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool w3dRenderWireframeSoloVisible = true;
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool w3dRenderSolido    = false;
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool w3dRenderSinLuz    = false;
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool w3dRenderLuces     = false;
 #endif
 
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool w3dRenderNormalColor = false;
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool w3dRenderAlpha       = false; // pase ALPHA (matte): blanco unlit + solo el alpha de la textura
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool w3dRenderOverlays    = true;
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool w3dVerSeleccion      = true;  // "Ver seleccion" (menu Select): OFF = ni contorno verde ni tinte de seleccion
 #endif
-#ifndef W3D_BACKEND_NS   // (con varios backends lo define gfx/w3dGraphicsDespacho.cpp)
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool g_xray               = false; // X-Ray OFF por defecto (lo togglea el menu Overlays)
 #endif
 
-// ---- VARIOS BACKENDS en un ejecutable (gfx/w3dBackend.h): este llena SU tabla del despacho ----
+// ---- VARIOS BACKENDS en un ejecutable (graphics/w3dBackend.h): este llena SU tabla del despacho ----
 #ifdef W3D_BACKEND_NS
 #include "w3dBackendTabla.h"
 namespace w3dEngine { namespace W3D_BACKEND_NS {

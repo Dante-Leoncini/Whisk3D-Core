@@ -1,6 +1,6 @@
 // ============================================================================
-//  w3dVkGL.cpp - OPENGL ES 2.0 HECHO CON VULKAN. Es lo que usan el backend de shaders (gles2/w3dGraphicsGLES2.cpp,
-//  compilado otra vez como w3dEngine::vk en vk/w3dGraphicsVk.cpp) y el cargador de texturas (gfx/w3dTexture.cpp): las
+//  w3dVkGL.cpp - OPENGL ES 2.0 HECHO CON VULKAN. Es lo que usan el backend de shaders (graphics/gles2/w3dGraphicsGLES2.cpp,
+//  compilado otra vez como w3dEngine::vk en graphics/vulkan/w3dGraphicsVk.cpp) y el cargador de texturas (graphics/w3dTexture.cpp): las
 //  ~80 funciones de GL que llaman, con el mismo comportamiento. Asi el backend Vulkan dibuja EXACTAMENTE lo mismo que el
 //  de OpenGL ES 2.0 sin escribir el pipeline fijo emulado otra vez.
 //

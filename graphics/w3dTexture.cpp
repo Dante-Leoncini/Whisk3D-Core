@@ -36,7 +36,7 @@
     #endif
     #include "stb/stb_image.h"
 #endif
-#include "w3dGLDesvio.h"   // (con el backend Vulkan no hay contexto de GL: las texturas van por el suyo, ver ahi)
+#include "graphics/vulkan/w3dGLDesvio.h"   // (con el backend Vulkan no hay contexto de GL: las texturas van por el suyo, ver ahi)
 
 // LA PIRAMIDE DE MIPMAPS en ES 2.0 (Android, la web y Symbian^3 con W3D_GLES2) la arma glGenerateMipmap: el
 // GL_GENERATE_MIPMAP de ES 1.1 / GL 1.4 no existe ahi (GL_INVALID_ENUM) y la textura quedaba sin niveles -> incompleta
@@ -316,9 +316,10 @@ bool TextureSize(unsigned int id, int& w, int& h) {
 // texturas de UI que ya vienen como pixeles (cursor, atlas, etc.). Comun a
 // todos los backends GL/GLES.
 // ----------------------------------------------------------------------------
-// LAS TEXTURAS DE LA DREAMCAST (GLdc) Y DE LA 3DS (citro3d, ver c3d/w3dGLc3d.cpp): las dos GPU piden potencia de dos de
-// 8 a 1024 por lado, toman RGBA de 8 bits (cada una lo pasa a su formato) y aca van sin mipmaps
-#if defined(W3D_DREAMCAST) || defined(W3D_3DS)
+// LAS TEXTURAS DE LA DREAMCAST (GLdc), DE LA 3DS (citro3d, ver graphics/citro3d/w3dGLc3d.cpp) Y DE LA PSP (el GE, ver graphics/gu/w3dGLgu.cpp):
+// las tres GPU piden potencia de dos de 8 a 1024 por lado (la PSP, hasta 512: su backend achica las de 1024), toman RGBA
+// de 8 bits (cada una lo pasa a su formato) y aca van sin mipmaps
+#if defined(W3D_DREAMCAST) || defined(W3D_3DS) || defined(W3D_PSP)
 #define W3D_TEX_POT_RGBA 1
 #endif
 
@@ -395,7 +396,7 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
     if (de16) glPixelStorei(GL_UNPACK_ALIGNMENT, 2);   // (filas de 2 bytes por texel)
 #ifdef W3D_TEX_POT_RGBA
     // GLdc guarda GL_RGBA en ARGB4444 (4 bits por canal: bandas marcadas en una foto o en el trazado de rayos). Una
-    // imagen sin transparencia va como GL_RGB, que GLdc guarda en RGB565 (y la 3DS tambien: c3d/w3dGLc3d.cpp). Los datos
+    // imagen sin transparencia va como GL_RGB, que GLdc guarda en RGB565 (y la 3DS tambien: graphics/citro3d/w3dGLc3d.cpp). Los datos
     // siguen en RGBA de 8 bits: el backend los convierte, tambien en las actualizaciones parciales (UpdateRGBA)
     GLenum interno = formato;
     {

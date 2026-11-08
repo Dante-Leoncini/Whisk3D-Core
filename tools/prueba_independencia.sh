@@ -16,11 +16,13 @@ set -u
 CORE="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-INC="-I$CORE -I$CORE/base -I$CORE/gfx -I$CORE/io -I$CORE/thirdparty"
+INC="-I$CORE -I$CORE/base -I$CORE/graphics -I$CORE/io -I$CORE/thirdparty"
 
 echo "== 1/2  cada header, solo, en C++03 =="
 ok=0; mal=0
-for h in $(cd "$CORE" && find base gfx io objects math animation audio video net -name '*.h' | sort); do
+# (de graphics/, la API comun y el video: los backends de cada consola necesitan su SDK)
+for h in $(cd "$CORE" && { find base input io objects math animation audio net graphics/video -name '*.h';
+                           find graphics -maxdepth 1 -name '*.h'; } | sort); do
     printf '#include "%s"\nint main(){return 0;}\n' "$h" > "$TMP/t.cpp"
     if g++ -std=c++03 -fsyntax-only $INC "$TMP/t.cpp" 2> "$TMP/e.txt"; then
         ok=$((ok+1))
@@ -47,18 +49,22 @@ int main() {
 EOF
 # w3dTexture/w3dFilesystem/w3dGraphics usan C++11 a propósito fuera de Symbian (está guardado):
 # se compilan aparte para que eso no ensucie la prueba de C++03 de los headers.
-g++ -std=c++11 -c -DW3D_STB_IMPL $INC "$CORE/gfx/w3dTexture.cpp"  -o "$TMP/a.o" 2>/dev/null
+g++ -std=c++11 -c -DW3D_STB_IMPL $INC "$CORE/graphics/w3dTexture.cpp"  -o "$TMP/a.o" 2>/dev/null
 g++ -std=c++11 -c $INC "$CORE/io/w3dFilesystem.cpp"               -o "$TMP/b.o" 2>/dev/null
-g++ -std=c++11 -c $INC "$CORE/gfx/w3dGraphics.cpp"                -o "$TMP/c.o" 2>/dev/null
+g++ -std=c++11 -c $INC "$CORE/graphics/opengl/w3dGraphics.cpp"                -o "$TMP/c.o" 2>/dev/null
 g++ -std=c++03 -c $INC "$TMP/uso.cpp"                             -o "$TMP/u.o" 2>/dev/null
 
-faltan=$(g++ "$TMP/u.o" "$TMP/a.o" "$TMP/b.o" "$TMP/c.o" \
-    "$CORE"/objects/*.cpp "$CORE"/math/*.cpp "$CORE"/animation/*.cpp "$CORE"/base/*.cpp \
-    -std=c++03 $INC -lGL -lGLU -o "$TMP/uso" 2>&1 \
-    | grep -oE "(undefined reference to|referencia a) .[^'\`]*" \
+g++ "$TMP/u.o" "$TMP/a.o" "$TMP/b.o" "$TMP/c.o" \
+    "$CORE"/objects/*.cpp "$CORE"/math/*.cpp "$CORE"/animation/*.cpp "$CORE"/base/*.cpp "$CORE"/input/*.cpp \
+    -std=c++03 $INC -lGL -lGLU -o "$TMP/uso" > "$TMP/link.txt" 2>&1
+faltan=$(grep -oE "(undefined reference to|referencia a) .[^'\`]*" "$TMP/link.txt" \
     | sed -E "s/(undefined reference to|referencia a) .//" | sort -u)
-
-if [ -z "$faltan" ]; then
+# (un error de compilacion de un .cpp del Core tambien deja sin programa, sin ningun simbolo faltante)
+if [ -z "$faltan" ] && [ ! -x "$TMP/uso" ]; then
+    echo "   no se pudo armar el programa:"
+    grep -m5 "error" "$TMP/link.txt" | sed 's/^/      /'
+    faltan="(no compila)"
+elif [ -z "$faltan" ]; then
     echo "   enlaza y corre sin nada del editor"
     "$TMP/uso" && echo "   el programa corrio (exit 0)"
 else

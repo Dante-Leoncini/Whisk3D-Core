@@ -1,13 +1,13 @@
 #ifndef W3D_GL_DESVIO_H
 #define W3D_GL_DESVIO_H
 // ============================================================================
-//  w3dGLDesvio.h - lo que suben las texturas por GL directo (gfx/w3dTexture.cpp, el video) cuando el backend activo es
-//  VULKAN: no hay contexto de GL, asi que cada glFoo de esos archivos pasa a vkglFoo (vk/w3dVkGL.cpp), el GL hecho con
+//  w3dGLDesvio.h - lo que suben las texturas por GL directo (graphics/w3dTexture.cpp, el video) cuando el backend activo es
+//  VULKAN: no hay contexto de GL, asi que cada glFoo de esos archivos pasa a vkglFoo (graphics/vulkan/w3dVkGL.cpp), el GL hecho con
 //  Vulkan que usa ese backend. Con OpenGL / OpenGL ES 2.0 sigue yendo al driver. Va DESPUES de <GL/gl.h> (y glu.h).
 //  Solo con varios backends en el ejecutable y Vulkan compilado (la PC); en el resto no hace nada.
 // ============================================================================
 #if defined(W3D_MULTIBACKEND) && defined(W3D_VULKAN)
-#include "../vk/w3dVkGLApi.h"
+#include "w3dVkGLApi.h"
 #include "w3dBackend.h"
 #define W3D_DESVIO_(fn, args) (w3dEngine::BackendActivo() == w3dEngine::BackendVulkan ? vkgl##fn args : (gl##fn) args)
 #define glGenTextures(a, b) W3D_DESVIO_(GenTextures, (a, b))

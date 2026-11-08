@@ -11,6 +11,7 @@
 #include "objects/Armature.h"            // Child Of: el hueso de la fuente (W3dBone::poseWorld)
 #include "animation/SkeletalAnimation.h" // Child Of: EvaluarPoseEsqueleto (pose al frame actual)
 #include "animation/Animation.h"         // CurrentFrame
+#include <stdio.h>                        // printf: la traza del harness (g_trazaGLSec)
 
 // RAIZ de la escena. La DEFINE el Core (antes solo la declaraba y la definia el editor, asi que
 // nadie podia enlazar contra el motor sin traerse el editor entero). El editor la llena con su

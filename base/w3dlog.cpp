@@ -225,6 +225,25 @@ void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirVita(0, aMs
 void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirVita(1, aMsg); }
 void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirVita(2, aMsg); }
 
+#elif defined(W3D_PSP)
+// ---------------------------------------------------------------------------
+//  Backend PSP: la salida estandar, que sale en el log del emulador (PPSSPP) y por psplink con la consola de verdad, y
+//  un archivo al lado del EBOOT.PBP (whisk3d.log en la carpeta actual: ms0:/PSP/GAME/Whisk3D, se pisa en cada sesion),
+//  como en la 3DS y la Vita. Cada linea se escribe en el momento (si la consola se cuelga, ya esta en el archivo).
+// ---------------------------------------------------------------------------
+static void EscribirPSP(int nivel, const char* aMsg) {
+    RingPush(nivel, aMsg); // espejo en memoria para la UI
+    printf("[%s] %s\n", NivelTag(nivel), aMsg ? aMsg : "");
+    static FILE* f = NULL;
+    static bool probado = false;
+    if (!probado) { probado = true; f = fopen("whisk3d.log", "w"); }
+    if (f) { fprintf(f, "[%s] %s\n", NivelTag(nivel), aMsg ? aMsg : ""); fflush(f); }
+}
+void w3dLogReset() { EscribirPSP(0, "=== Whisk3D DEV LOG ==="); }
+void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirPSP(0, aMsg); }
+void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirPSP(1, aMsg); }
+void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirPSP(2, aMsg); }
+
 #elif defined(__EMSCRIPTEN__)
 // ---------------------------------------------------------------------------
 //  Backend WebGL / Emscripten: a la CONSOLA del browser, RESPETANDO el nivel:

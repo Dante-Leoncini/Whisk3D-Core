@@ -1,6 +1,6 @@
 // ============================================================================
 //  SHADERS ESCRITOS de los materiales: leer el archivo, partirlo en secciones y pedirle al backend que lo compile
-//  (objects/ShaderEscrito.h). Lo que se le agrega adelante a cada seccion lo pone el backend (gfx/w3dGraphics.h)
+//  (objects/ShaderEscrito.h). Lo que se le agrega adelante a cada seccion lo pone el backend (graphics/w3dGraphics.h)
 // ============================================================================
 #include "ShaderEscrito.h"
 #include "Materials.h"

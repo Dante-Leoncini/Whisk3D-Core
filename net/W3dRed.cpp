@@ -37,8 +37,8 @@
     #include <windows.h>
     typedef SOCKET SocketRed;
     #define SOCKET_NULO INVALID_SOCKET
-#elif defined(__EMSCRIPTEN__) || defined(W3D_3DS) || defined(W3D_VITA)
-    // (el navegador no tiene UDP; la 3DS y la Vita, todavia no)
+#elif defined(__EMSCRIPTEN__) || defined(W3D_3DS) || defined(W3D_VITA) || defined(W3D_PSP)
+    // (el navegador no tiene UDP; la 3DS, la Vita y la PSP, todavia no)
     #define W3D_RED_NINGUNA 1
     #include <netinet/in.h>   // (htonl/ntohs e INADDR_LOOPBACK: las direcciones se arman y se muestran igual)
     #include <arpa/inet.h>

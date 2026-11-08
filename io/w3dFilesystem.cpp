@@ -254,6 +254,11 @@ namespace w3dFileSystem {
         return std::string(); // Symbian arma el res a mano (no usa esto)
     #elif defined(W3D_VITA)
         return "app0:";   // la carpeta de la aplicacion instalada (el .vpk desarmado)
+    #elif defined(W3D_PSP)
+        // la carpeta del EBOOT.PBP (ms0:/PSP/GAME/Whisk3D): la PSP la deja como carpeta actual al arrancar. res/ va al lado
+        char cwd[PATH_MAX];
+        if (getcwd(cwd, sizeof(cwd))) return std::string(cwd);
+        return "ms0:/PSP/GAME/Whisk3D";
     #else
         char result[PATH_MAX];
         ssize_t count = readlink("/proc/self/exe", result, PATH_MAX);
@@ -624,6 +629,12 @@ namespace w3dFileSystem {
         return "sdmc:/";   // la tarjeta SD de la 3DS
     #elif defined(W3D_VITA)
         return "ux0:";   // la memoria de la Vita (la tarjeta, o la interna en los modelos que la traen)
+    #elif defined(W3D_PSP)
+        // el Memory Stick de la PSP; en la PSP Go, si el juego esta en su memoria interna (ef0:), esa: puede no tener
+        // tarjeta
+        char cwd[PATH_MAX];
+        if (getcwd(cwd, sizeof(cwd)) && std::string(cwd).compare(0, 4, "ef0:") == 0) return "ef0:/";
+        return "ms0:/";
     #elif defined(__ANDROID__)
         // almacenamiento COMPARTIDO del usuario (Descargas, DCIM, etc.), NO el
         // sandbox de la app. El permiso de lectura lo pide la app; sin permiso

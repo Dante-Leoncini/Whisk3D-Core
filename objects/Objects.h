@@ -65,7 +65,7 @@ struct ObjectType {
         // AL FINAL a proposito (el tipo nunca viaja como numero: el .w3d guarda strings)
         lod,            // dibuja UN solo hijo segun la distancia a la camara (niveles de detalle)
         culling,        // frustum culling de sus hijos por AABB (y orden adelante->atras)
-        particulas,     // emisor de PARTICULAS (billboards del Core, gfx/w3dParticles.h)
+        particulas,     // emisor de PARTICULAS (billboards del Core, graphics/w3dParticles.h)
         viszona,        // selector de CELDA de visibilidad (VisSet/.w3dvis): grilla/volumenes/curva/manual
         gridcull,       // culling ESPACIAL POR GRILLA (estilo GTA/RenderWare): celdas + frustum + distancia + LOD
         niebla,         // NIEBLA (glFog) puesta en el arbol: de ahi en adelante todo se dibuja con ella (solo Render)

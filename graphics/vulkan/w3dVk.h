@@ -6,8 +6,8 @@
 //  compilador de shaders (shaderc_shared) se abre al arrancar. Si falta cualquiera de los dos, o la GPU no tiene Vulkan,
 //  VkGLIniciar devuelve false y el editor sigue con OpenGL.
 //
-//  El backend es el MISMO de OpenGL ES 2.0 (gles2/w3dGraphicsGLES2.cpp) compilado otra vez (vk/w3dGraphicsVk.cpp) sobre
-//  vk/w3dVkGL.cpp, que hace de OpenGL ES 2.0 con Vulkan: asi se ve exactamente igual que el de shaders.
+//  El backend es el MISMO de OpenGL ES 2.0 (graphics/gles2/w3dGraphicsGLES2.cpp) compilado otra vez (graphics/vulkan/w3dGraphicsVk.cpp) sobre
+//  graphics/vulkan/w3dVkGL.cpp, que hace de OpenGL ES 2.0 con Vulkan: asi se ve exactamente igual que el de shaders.
 // ============================================================================
 #include <string>
 #include <vector>

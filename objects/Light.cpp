@@ -156,7 +156,7 @@ void Light::RenderObject() {
     return;
 #else
 #if defined(W3D_WEBGL) || defined(__ANDROID__) || defined(W3D_MULTIBACKEND)
-  // (con varios backends en el ejecutable, solo si el ACTIVO dibuja con shaders: gfx/w3dBackend.h)
+  // (con varios backends en el ejecutable, solo si el ACTIVO dibuja con shaders: graphics/w3dBackend.h)
 #ifdef W3D_MULTIBACKEND
   if (w3dEngine::BackendConShaders()) {
 #else

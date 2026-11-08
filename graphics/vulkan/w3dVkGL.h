@@ -1,8 +1,8 @@
 #ifndef W3D_VKGL_H
 #define W3D_VKGL_H
 // ============================================================================
-//  w3dVkGL.h - lo incluye el backend de OpenGL ES 2.0 (gles2/w3dGraphicsGLES2.cpp) cuando se compila como el de Vulkan
-//  (vk/w3dGraphicsVk.cpp, W3D_VKGL): cada glFoo de ese archivo pasa a ser vkglFoo (vk/w3dVkGL.cpp). Los nombres de GL
+//  w3dVkGL.h - lo incluye el backend de OpenGL ES 2.0 (graphics/gles2/w3dGraphicsGLES2.cpp) cuando se compila como el de Vulkan
+//  (graphics/vulkan/w3dGraphicsVk.cpp, W3D_VKGL): cada glFoo de ese archivo pasa a ser vkglFoo (graphics/vulkan/w3dVkGL.cpp). Los nombres de GL
 //  quedan intactos en el resto del ejecutable (el backend OpenGL los sigue llamando de opengl32 / libGL).
 // ============================================================================
 #ifdef _WIN32

@@ -8,7 +8,7 @@
 //  alfa (UploadRGBA lo hace con las opacas: la mitad de memoria, sin perder nada visible en una imagen opaca).
 // ============================================================================
 #include <GL/gl.h>
-#include "c3d/w3dC3DInterno.h"
+#include "w3dC3DInterno.h"
 #include "w3dGraphics.h"
 #include <map>
 #include <vector>

@@ -1,6 +1,6 @@
 #include "W3dVideoTex.h"
 #include "../io/w3dCompress.h"
-#include "../gfx/w3dTexture.h"
+#include "graphics/w3dTexture.h"
 #include "../base/w3dlog.h"
 #include <stdlib.h>
 #include <string.h>

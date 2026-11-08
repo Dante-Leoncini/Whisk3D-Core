@@ -1,4 +1,4 @@
-// GENERADO por tools/generar_despacho.py: no editar a mano. Lo incluye gfx/w3dGraphicsDespacho.cpp.
+// GENERADO por tools/generar_despacho.py: no editar a mano. Lo incluye graphics/w3dGraphicsDespacho.cpp.
 void Enable(Cap c) { W3D_TABLA()->Enable(c); }
 void Disable(Cap c) { W3D_TABLA()->Disable(c); }
 void DepthFunc(DepthCmp c) { W3D_TABLA()->DepthFunc(c); }

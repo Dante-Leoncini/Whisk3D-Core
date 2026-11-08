@@ -1,7 +1,7 @@
 #ifndef W3D_VKGL_API_H
 #define W3D_VKGL_API_H
 // ============================================================================
-//  w3dVkGLApi.h - las funciones de OpenGL ES 2.0 que hace vk/w3dVkGL.cpp con Vulkan (vkglFoo = glFoo). Van despues de
+//  w3dVkGLApi.h - las funciones de OpenGL ES 2.0 que hace graphics/vulkan/w3dVkGL.cpp con Vulkan (vkglFoo = glFoo). Van despues de
 //  <GL/gl.h> (los tipos GLenum, GLuint...); aca estan los enums de GL 2.0 / ES 2.0 que el gl.h 1.1 de Windows no trae.
 // ============================================================================
 #include <stddef.h>

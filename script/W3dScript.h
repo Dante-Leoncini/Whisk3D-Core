@@ -227,7 +227,7 @@ void W3dScriptToque(float x, float y, bool activo);      // dedo 0 (compat)
 // lua: inclinacion() -> x, y, z. x = cuanto esta girada a la derecha, como un volante (sen del angulo); y = 1 parada y
 // derecha; z = 1 acostada boca arriba. Sin llamar nunca a esto (sin sensor) inclinacion() da nil
 void W3dScriptInclinacion(float x, float y, float z);
-// vibrar(ms [, fuerza 0..1]) de lua: el vibrador del EQUIPO (base/W3dVibrar.cpp lo instala solo donde se compila: el
+// vibrar(ms [, fuerza 0..1]) de lua: el vibrador del EQUIPO (input/W3dVibrar.cpp lo instala solo donde se compila: el
 // telefono, la web; respeta la opcion "vibracion" y tambien hace vibrar los mandos) y el de los MANDOS
 // (SDL_GameControllerRumble: lo pone quien los abre, el editor o el juego compilado). Sin el primero el bind usa el segundo
 extern void (*W3dScriptVibrarHook)(int ms, float fuerza);

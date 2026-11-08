@@ -48,6 +48,36 @@ Whisk3D Core incluye los componentes fundamentales de un motor 3D, entre ellos:
 
 El proyecto está diseñado para facilitar la implementación de nuevos backends gráficos (como OpenGL, OpenGL ES, WebGl, Vulkan, Direct3D, Metal o renderizadores por software) sin necesidad de modificar el código de alto nivel del motor.
 
+## Estructura
+
+Cada carpeta es un módulo. Para usar el Core, los directorios de includes son su carpeta raíz (los headers se nombran desde ahí: `"graphics/w3dGraphics.h"`, `"objects/Mesh.h"`) y además `base/`, `graphics/`, `io/` y `thirdparty/`, porque varios archivos del Core se incluyen entre sí por el nombre solo (`"w3dlog.h"`, `"w3dTexture.h"`).
+
+```
+Whisk3DCore/
+├── animation/    animaciones: keyframes, esqueletos, flipbooks, locomoción
+├── audio/        sonido y música (SDL, Symbian, la web, la AICA de la Dreamcast)
+├── base/         lo común: el log, la configuración, los nombres
+├── graphics/     la API de dibujo (w3dEngine), las texturas, la pantalla y el despacho entre backends
+│   ├── opengl/   pipeline fijo: OpenGL de escritorio, OpenGL ES 1.1, GLdc (Dreamcast), vitaGL (PS Vita)
+│   ├── gles2/    shaders: OpenGL ES 2.0 y WebGL
+│   ├── vulkan/   Vulkan (el backend de shaders sobre un OpenGL ES 2.0 hecho con Vulkan)
+│   ├── citro3d/  Nintendo 3DS
+│   ├── gu/       PSP
+│   ├── pvr/      Dreamcast, dibujo directo a la PVR
+│   └── video/    video a textura (opcional)
+├── input/        pantalla táctil, mandos, inclinación, vibración, portapapeles
+├── io/           archivos, contenedores (.w3d, zip), mallas y recursos
+├── math/         vectores, matrices y cuaterniones
+├── net/          red (juegos en red)
+├── objects/      la escena: objetos, mallas, materiales, luces, cámaras
+├── physics/      física, colisiones, hitboxes, ragdolls y navegación
+├── script/       Lua
+├── thirdparty/   bibliotecas de terceros (stb, los headers de Vulkan)
+└── tools/        herramientas (el generador del despacho, la prueba de independencia)
+```
+
+Cada plataforma compila un solo backend de `graphics/`, salvo la PC, que trae varios y elige al arrancar (`graphics/w3dBackend.h`). `graphics/w3dGraphicsBackend.cmake` configura el backend y sus dependencias para CMake.
+
 ## Sus principales objetivos son:
 
 * Compatibilidad multiplataforma.

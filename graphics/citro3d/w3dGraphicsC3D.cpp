@@ -17,8 +17,8 @@
 // ============================================================================
 #include "w3dGraphics.h"
 #include "w3dlog.h"
-#include "c3d/w3dC3D.h"
-#include "c3d/w3dC3DInterno.h"
+#include "w3dC3D.h"
+#include "w3dC3DInterno.h"
 #include "math/Matrix4.h"
 #include <vector>
 #include <math.h>
@@ -531,7 +531,7 @@ void MaterialShininess(float s) { if (s != matShine) { matShine = s; materialSuc
 void BindTexture(unsigned int id) { boundTex = id; ::W3dC3DBindTextura(id); }
 void SombreadoPorPixel(bool){}                 // (pipeline fijo: la luz es por vertice, siempre)
 bool SombreadoPorPixelSoportado(){ return false; }
-// (sin shaders: los pases van por la CPU y el postprocesado tambien; ver gfx/w3dGraphics.h)
+// (sin shaders: los pases van por la CPU y el postprocesado tambien; ver graphics/w3dGraphics.h)
 bool PasesConShader(){ return false; }
 void PaseEspecial(int, const float*){}
 void AnteriorPointer3f(const float*){}

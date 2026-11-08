@@ -1,9 +1,9 @@
 // ============================================================================
-//  w3dGraphicsDespacho.cpp - VARIOS BACKENDS GRAFICOS EN UN EJECUTABLE (ver gfx/w3dBackend.h). Solo se compila con
+//  w3dGraphicsDespacho.cpp - VARIOS BACKENDS GRAFICOS EN UN EJECUTABLE (ver graphics/w3dBackend.h). Solo se compila con
 //  W3D_MULTIBACKEND (la PC). Tiene:
 //    - los GLOBALES compartidos del motor grafico (los contadores, las banderas del editor): antes los definia cada
 //      backend; ahora el de cada uno vive en su namespace y estos son los que ven todos;
-//    - w3dEngine::Foo(...) -> el backend activo (gfx/w3dDespacho.inc, generado por tools/generar_despacho.py);
+//    - w3dEngine::Foo(...) -> el backend activo (graphics/w3dDespacho.inc, generado por tools/generar_despacho.py);
 //    - la ELECCION del backend (antes de crear la ventana).
 // ============================================================================
 #include "w3dGraphics.h"
@@ -12,7 +12,7 @@
 #include <string.h>
 #include "w3dBase.h"
 #ifdef W3D_VULKAN
-#include "../vk/w3dVk.h"
+#include "graphics/vulkan/w3dVk.h"
 #endif
 // w3dSetColor (w3dBase.h): por la abstraccion, al backend activo
 void w3dSetColor(const ColorType c[4]) { w3dEngine::Color4f(c[0], c[1], c[2], c[3]); }
@@ -48,11 +48,11 @@ bool g_punterosCache = true;
 bool g_auditarEscena = false;
 int  g_auditDesyncs  = 0;
 
-// ---- los backends que trae este ejecutable (cada uno llena su tabla: gfx/w3dBackendLlenar.inc) ----
+// ---- los backends que trae este ejecutable (cada uno llena su tabla: graphics/w3dBackendLlenar.inc) ----
 namespace gl  { void W3dBackendLlenar_gl(W3dBackendTabla& t); }
 namespace es2 { void W3dBackendLlenar_es2(W3dBackendTabla& t); void GLES2Init(void* (*getProc)(const char*)); void GLES2Resincronizar(); }
 #ifdef W3D_VULKAN
-// (Vulkan: el backend de ES 2.0 compilado otra vez sobre vk/w3dVkGL.cpp)
+// (Vulkan: el backend de ES 2.0 compilado otra vez sobre graphics/vulkan/w3dVkGL.cpp)
 namespace vk  { void W3dBackendLlenar_vk(W3dBackendTabla& t); void GLES2Init(void* (*getProc)(const char*)); void GLES2Resincronizar(); }
 #endif
 
@@ -94,7 +94,7 @@ bool BackendDisponible(int b) {
     Armar();
     if (b < 0 || b >= Backends_ || !gHay[b]) return false;
 #ifdef W3D_VULKAN
-    // (Vulkan esta compilado siempre, pero hace falta el cargador del driver y el compilador de shaders: vk/w3dVk.h)
+    // (Vulkan esta compilado siempre, pero hace falta el cargador del driver y el compilador de shaders: graphics/vulkan/w3dVk.h)
     if (b == BackendVulkan) { static int hay = -1; if (hay < 0) hay = VkGLCargable() ? 1 : 0; return hay == 1; }
 #endif
     return true;

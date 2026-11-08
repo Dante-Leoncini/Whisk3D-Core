@@ -3,11 +3,11 @@
 // ============================================================================
 //  w3dBackend.h - EL BACKEND GRAFICO SE ELIGE AL ARRANCAR (varios en un mismo ejecutable).
 //
-//  En la PC (Windows / Linux, W3D_MULTIBACKEND) el ejecutable trae OpenGL fijo (gfx/w3dGraphics.cpp) y OpenGL ES 2.0
-//  (gles2/w3dGraphicsGLES2.cpp, los shaders) y Vulkan (ese mismo de shaders compilado sobre vk/w3dVkGL.cpp, que hace
+//  En la PC (Windows / Linux, W3D_MULTIBACKEND) el ejecutable trae OpenGL fijo (graphics/opengl/w3dGraphics.cpp) y OpenGL ES 2.0
+//  (graphics/gles2/w3dGraphicsGLES2.cpp, los shaders) y Vulkan (ese mismo de shaders compilado sobre graphics/vulkan/w3dVkGL.cpp, que hace
 //  de OpenGL ES 2.0 con Vulkan). Cada backend vive en su propio namespace
 //  (w3dEngine::gl, w3dEngine::es2, w3dEngine::vk) y llena una TABLA con sus funciones; w3dEngine::Foo(...) llama a la del backend
-//  activo (gfx/w3dGraphicsDespacho.cpp, generado por tools/generar_despacho.py). En el resto de las plataformas (el
+//  activo (graphics/w3dGraphicsDespacho.cpp, generado por tools/generar_despacho.py). En el resto de las plataformas (el
 //  N95, el N8, Android, la web, las consolas) hay UN backend y nada de esto existe: las llamadas van directo.
 //
 //  Se elige ANTES de crear la ventana (lo pide la opcion "Graphics" de Ajustes, cfg.graphicsAPI; cambiarla vale al
