@@ -200,6 +200,31 @@ void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; Escribir3ds(0, aMsg
 void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; Escribir3ds(1, aMsg); }
 void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; Escribir3ds(2, aMsg); }
 
+#elif defined(W3D_VITA)
+// ---------------------------------------------------------------------------
+//  Backend PS Vita: sceClibPrintf, que sale en el log del emulador (Vita3K) y por la consola de depuracion con la Vita
+//  de verdad, y a un archivo (ux0:data/Whisk3D/whisk3d.log, se pisa en cada sesion), como en la 3DS. Cada linea se
+//  escribe en el momento (si la consola se cuelga, ya esta en el archivo).
+// ---------------------------------------------------------------------------
+#include <psp2/kernel/clib.h>
+#include <sys/stat.h>
+static void EscribirVita(int nivel, const char* aMsg) {
+    RingPush(nivel, aMsg); // espejo en memoria para la UI
+    sceClibPrintf("[%s] %s\n", NivelTag(nivel), aMsg ? aMsg : "");
+    static FILE* f = NULL;
+    static bool probado = false;
+    if (!probado) {
+        probado = true;
+        mkdir("ux0:data/Whisk3D", 0777);
+        f = fopen("ux0:data/Whisk3D/whisk3d.log", "w");
+    }
+    if (f) { fprintf(f, "[%s] %s\n", NivelTag(nivel), aMsg ? aMsg : ""); fflush(f); }
+}
+void w3dLogReset() { EscribirVita(0, "=== Whisk3D DEV LOG ==="); }
+void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirVita(0, aMsg); }
+void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirVita(1, aMsg); }
+void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirVita(2, aMsg); }
+
 #elif defined(__EMSCRIPTEN__)
 // ---------------------------------------------------------------------------
 //  Backend WebGL / Emscripten: a la CONSOLA del browser, RESPETANDO el nivel:

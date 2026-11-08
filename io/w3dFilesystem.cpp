@@ -252,6 +252,8 @@ namespace w3dFileSystem {
         return Normaliza(path);
     #elif defined(W3D_SYMBIAN)
         return std::string(); // Symbian arma el res a mano (no usa esto)
+    #elif defined(W3D_VITA)
+        return "app0:";   // la carpeta de la aplicacion instalada (el .vpk desarmado)
     #else
         char result[PATH_MAX];
         ssize_t count = readlink("/proc/self/exe", result, PATH_MAX);
@@ -272,6 +274,8 @@ namespace w3dFileSystem {
         return "/rd";   // el romdisk que va adentro del ejecutable (res/, ver platform/dreamcast/Makefile)
     #elif defined(W3D_3DS)
         return "romfs:";   // el romfs que va adentro del .3dsx (res/, ver platform/3ds/Makefile; SDL2main lo monta)
+    #elif defined(W3D_VITA)
+        return "app0:res";   // adentro del .vpk (res/, ver platform/vita/Makefile): la carpeta de la aplicacion
     #elif defined(W3D_SYMBIAN)
         return std::string(); // Symbian no usa GetResDir (skinDir va a mano)
     #else
@@ -618,6 +622,8 @@ namespace w3dFileSystem {
         return "/ram";   // la Dreamcast: lo unico escribible es el disco en RAM (se pierde al apagar)
     #elif defined(W3D_3DS)
         return "sdmc:/";   // la tarjeta SD de la 3DS
+    #elif defined(W3D_VITA)
+        return "ux0:";   // la memoria de la Vita (la tarjeta, o la interna en los modelos que la traen)
     #elif defined(__ANDROID__)
         // almacenamiento COMPARTIDO del usuario (Descargas, DCIM, etc.), NO el
         // sandbox de la app. El permiso de lectura lo pide la app; sin permiso

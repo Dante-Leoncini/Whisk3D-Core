@@ -51,6 +51,9 @@
 #ifndef GL_MULTISAMPLE
     #define GL_MULTISAMPLE 0x809D // GL 1.3/ES1: apagar el MSAA durante el color-ID pick
 #endif
+#ifndef GL_ADD
+    #define GL_ADD 0x0104 // el env de textura que suma (MezclaTexturas modo 5): GLdc no lo trae
+#endif
 
 // ---- BUFFER OBJECTS (VBO/IBO): enums GL 1.5/ES1.1 (el GL/gl.h de escritorio 1.1 no los trae) ----
 #ifndef GL_ARRAY_BUFFER
@@ -64,6 +67,7 @@
 #endif
 #include <stddef.h> // ptrdiff_t / size_t (offset de VBO)
 #include <map>        // la memoria de los VBO vivos (VBOMemoria)
+#include <vector>     // (la Vita: las coordenadas de relleno de los sprites de punto, DrawPoints)
 
 // En Symbian/GLES 1.1 los buffer objects son CORE (<GLES/gl.h> los declara). En desktop GL 1.1 (Windows, opengl32)
 // son GL 1.5 -> hay que cargar los punteros por wglGetProcAddress. Se abstrae con macros GLB_* + un flag gVBOok.
@@ -110,7 +114,14 @@
     #define GLB_BIND   glBindBuffer
     #define GLB_DATA   glBufferData
 #else
+#ifdef W3D_VITA
+    // la Vita (vitaGL): sin buffer objects, todo por arreglos en RAM, como en la Dreamcast. Con las mallas en VBO la luz
+    // salia mal (el cubo blanco con un driver y negro con otro: las normales o los colores del VBO no llegaban bien al
+    // shader); por arreglos sale igual que en la PC. Visto en Vita3K: falta probarlo en la consola
+    static bool w3d_vboOk = false;
+#else
     static bool w3d_vboOk = true;         // GLES 1.1 / ES2: core
+#endif
     static void w3d_CargarVBO(){}
     // multitextura: core en GL ES 1.1 (N95) y en GL >= 1.3 (Linux: los prototipos vienen con GL_GLEXT_PROTOTYPES)
     #define GLMT_OK     true
@@ -832,7 +843,7 @@ void BindTexture(unsigned int id) {
 // CHROME: genera las UV con sphere-map del pipeline fijo (PC). En GLES1 (Symbian) no hay glTexGen ->
 // stub (calcular las UV del chrome por software a partir del normal y la camara).
 void TexGenSphere(bool on) {
-#if defined(W3D_SYMBIAN) || defined(__ANDROID__) || defined(W3D_DREAMCAST)
+#if defined(W3D_SYMBIAN) || defined(__ANDROID__) || defined(W3D_DREAMCAST) || defined(W3D_VITA)
     (void)on;
 #else
     if (gTexGenCache == (on ? 1 : 0)) return;   // ya esta (la matriz del texgen es fija)
@@ -907,8 +918,8 @@ void TexMatrixUV(float du, float dv, float su, float sv) {
 // true si el backend tiene glTexGen (sphere-map por HARDWARE). PC = si; GLES1 del N95 = NO -> el matcap se
 // calcula por SOFTWARE (sphere-map por vertice, como el equirect). Lo usa el render del chrome para elegir.
 bool TieneTexGen() {
-#if defined(W3D_SYMBIAN) || defined(W3D_DREAMCAST)
-    return false;   // (Dreamcast: GLdc no tiene glTexGen)
+#if defined(W3D_SYMBIAN) || defined(W3D_DREAMCAST) || defined(W3D_VITA)
+    return false;   // (Dreamcast: GLdc no tiene glTexGen; la Vita: vitaGL tampoco)
 #else
     return true;
 #endif
@@ -1998,6 +2009,21 @@ void DrawPoints(int vertexCount) {
     PostDrawColor();
 #ifdef W3D_DREAMCAST
     DibujarPuntosDC(vertexCount);
+#elif defined(W3D_VITA)
+    // LOS SPRITES DE PUNTO EN LA VITA: vitaGL cuenta la textura de la unidad 0 solo si tambien esta prendido el arreglo
+    // de coordenadas de textura, y un sprite no lo usa (las coordenadas las pone la GPU). Si quedaba apagado por lo que
+    // se dibujo antes, el punto salia como un cuadrado del color, sin la textura (el cursor 3D al arrastrar un objeto).
+    // Se prende para este draw con coordenadas de relleno y se vuelve a apagar
+    if (gCapOn[PointSprite] && gCapOn[Texture2D] && gArrOn[TexCoordArray] != 1) {
+        static std::vector<float> relleno;
+        if ((int)relleno.size() < vertexCount * 2) relleno.assign((size_t)vertexCount * 2, 0.0f);
+        TexCoordPointer2f(0, &relleno[0]);
+        EnableArray(TexCoordArray);
+        W3D_GLC(glDrawArrays(GL_POINTS, 0, vertexCount));
+        DisableArray(TexCoordArray);
+    } else {
+        W3D_GLC(glDrawArrays(GL_POINTS, 0, vertexCount));
+    }
 #else
     W3D_GLC(glDrawArrays(GL_POINTS, 0, vertexCount));
 #endif
@@ -2394,7 +2420,7 @@ bool g_auditarEscena = false;   // la prende el harness ('glaudit')
 int  g_auditDesyncs  = 0;
 #endif
 int AuditarEstado() {
-#if defined(W3D_SYMBIAN) || defined(__ANDROID__) || defined(W3D_DREAMCAST)
+#if defined(W3D_SYMBIAN) || defined(__ANDROID__) || defined(W3D_DREAMCAST) || defined(W3D_VITA)
     return 0;   // en dispositivo no se audita (glGet = flush del tiler)
 #else
     int malos = 0;
