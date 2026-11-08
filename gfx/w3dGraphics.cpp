@@ -202,6 +202,7 @@ static int gUV1Tipo = 0; static const void* gUV1Ptr = 0; static unsigned gUV1Vbo
 // se prenda): -1 = desconocido
 static int gUV1PuestoTipo = -1; static const void* gUV1PuestoPtr = 0; static int gUV1PuestoStride = 0; static unsigned gUV1PuestoVbo = 0;
 static unsigned gUV1PuestoGl = 0;
+static int gUV1MatCache = -1; static float gUV1Mat[4] = { 0, 0, 1, 1 };   // la matriz de textura de la unidad 1 (-1 desconocida / 0 identidad / 1 puesta)
 static int      gMezclaSoportada = -1;          // -1 = sin preguntarle al driver
 static bool     gMezclaAlgunaVez = false;       // se prendio alguna vez en el proceso (si no, la unidad 1 esta como GL la deja: apagada)
 static int gUV0Tipo = 0; static const void* gUV0Ptr = 0; static int gUV0Stride = 0; static unsigned gUV0Vbo = 0;
@@ -1491,11 +1492,27 @@ void MezclaTexturaBorrada(unsigned int id) {
 // el ultimo error de GL (0 = ninguno): vacia la cola de errores. Quien sube buffers grandes (MundoBsp) pregunta despues
 // de cada glBufferData: en el N95 uno que no entra falla en silencio y el VBO queda vacio
 unsigned int ErrorGL() { return (unsigned int)glGetError(); }
+// la matriz de textura de la unidad 1 (desplazamiento y escala de sus UV): la segunda capa de un material animado
+void MezclaTexturasMatrizUV(float du, float dv, float su, float sv) {
+    const bool ident = du == 0.0f && dv == 0.0f && su == 1.0f && sv == 1.0f;
+    if (ident ? gUV1MatCache == 0 : (gUV1MatCache == 1 && du == gUV1Mat[0] && dv == gUV1Mat[1] && su == gUV1Mat[2] && sv == gUV1Mat[3]))
+        return;
+    if (!MezclaTexturasSoportada()) return;
+    gUV1MatCache = ident ? 0 : 1;
+    gUV1Mat[0] = du; gUV1Mat[1] = dv; gUV1Mat[2] = su; gUV1Mat[3] = sv;
+    g_statStateChanges++;
+    const GLfloat M[16] = { su, 0, 0, 0,  0, sv, 0, 0,  0, 0, 1, 0,  du, dv, 0, 1 };
+    W3D_GLC(GLMT_ACTIVE(GL_TEXTURE1));
+    MatrixMode(TextureMatrix);
+    if (ident) W3D_GLC(glLoadIdentity()); else W3D_GLC(glLoadMatrixf(M));
+    MatrixMode(ModelView);
+    W3D_GLC(GLMT_ACTIVE(GL_TEXTURE0));
+}
 void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int modo) {
     if (!idB || !MezclaTexturasSoportada()) { MezclaTexturasOff(); return; }
     if (k < 0.0f) k = 0.0f;
     if (k > 1.0f) k = 1.0f;
-    if (modo < 0 || modo > 4) modo = 0;
+    if (modo < 0 || modo > 5) modo = 0;
     if (gMezclaTexOn < 0) { gMezclaTexId = 0xFFFFFFFFu; gMezclaTexK = -1.0f; gMezclaTexModo = -1; gUV1PuestoTipo = -1; }   // (desconocido)
     const bool prender = gMezclaTexOn != 1;
     const bool bind    = gMezclaTexId != idB;
@@ -1548,6 +1565,10 @@ void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int 
             // MULTIPLY SIMPLE: el GL_MODULATE de siempre (unidad0 * B; el alfa por el de B), sin el combiner: el camino que
             // todo driver GL ES 1.1 tiene (el del MBX del N95 incluido). El toon "multiplicar" (la rampa invertida)
             W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE));
+            g_statStateChanges += 1;
+        } else if (modo == 5) {
+            // SUMA: unidad0 + B (GL_ADD, sin el combiner): lo que brilla solo (el $selfillum de Source) en la misma pasada
+            W3D_GLC(glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_ADD));
             g_statStateChanges += 1;
         } else {
             // MULTIPLY: unidad0 * B (x2 con GL_RGB_SCALE, que solo vale con el env en COMBINE): un lightmap en la misma pasada
@@ -1642,7 +1663,10 @@ void TexCoordPointer3b(const signed char* p, int count) {
 
 // ---- BUFFER OBJECTS (VBO/IBO): subir 1 vez, dibujar desde GPU (ver w3dGraphics.h) ----
 bool VBOSoportado(){ w3d_CargarVBO(); return w3d_vboOk; }
-unsigned int GenBuffer(){ w3d_CargarVBO(); if (!w3d_vboOk) return 0; GLuint b = 0; W3D_GLC(GLB_GEN(1, &b)); return (unsigned int)b; }
+// (los buffers creados menos los borrados: BuffersVivos)
+static int g_buffersVivos = 0;
+unsigned int GenBuffer(){ w3d_CargarVBO(); if (!w3d_vboOk) return 0; GLuint b = 0; W3D_GLC(GLB_GEN(1, &b)); if (b) g_buffersVivos++; return (unsigned int)b; }
+int BuffersVivos(){ return g_buffersVivos; }
 // la MEMORIA de los VBO vivos: id -> bytes del ultimo glBufferData (el N95 la comparte con las texturas y un glBufferData
 // que no entra falla en silencio: el log de las rutinas dice cuanto habia subido hasta ahi)
 static std::map<unsigned int, long> g_vboBytes;
@@ -1657,6 +1681,7 @@ void DeleteBuffer(unsigned int h){
     if (h && w3d_vboOk){
         g_vboBytes.erase(h);
         GLuint b = (GLuint)h; W3D_GLC(GLB_DEL(1, &b));
+        if (g_buffersVivos > 0) g_buffersVivos--;
         if (gArrBuf == h) gArrBuf = 0;
         if (gIdxBuf == h) gIdxBuf = 0;
         for (int a = 0; a < 4; a++) if (gPtrOk[a] && gPtr[a].buf == h) gPtrOk[a] = false;
@@ -2274,7 +2299,7 @@ void Invalidate() {
     gBlendFuncCache = -1; gBlendEqCache = -1;
     gTexEnvCache = -1; gTexGenCache = -1; gMatcapCache = -1;
     gMezclaTexOn = -1; gMezclaTexId = 0xFFFFFFFFu; gMezclaTexK = -1.0f; gMezclaTexFiltro = gMezclaTexRepetir = -1;   // (la unidad 1)
-    gMezclaTexModo = -1; gUV1Tipo = 0; gUV1PuestoTipo = -1;
+    gMezclaTexModo = -1; gUV1Tipo = 0; gUV1PuestoTipo = -1; gUV1MatCache = -1;
     gSmoothCache = -1; gAlphaRefCache = -1e9f;
     for (int i = 0; i < 4; i++) gArrOn[i] = -1;
     // material/color actual: tambien a "desconocido".

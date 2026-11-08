@@ -84,6 +84,12 @@ namespace w3dEngine {
     // que la rehace una sola vez al soltar con RegenerarMips. px1 = un pixel cualquiera de la textura (en GLES1/PC la
     // piramide se rehace re-subiendo ese pixel con GL_GENERATE_MIPMAP).
     bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect, bool regenerarMips = true);
+    // UNA TEXTURA DE 16 BITS QUE SE REESCRIBE ENTERA (los cuadros de un video, objects/W3dVideoTex.h): Reservar565 deja
+    // en 'id' (0 = crea una) una RGB565 de w x h (potencias de dos) con esos pixeles (NULL: sin datos), sin mipmaps,
+    // LINEAR y repitiendo; devuelve su id. Actualizar565 la reescribe entera con glTexSubImage2D (el mismo formato con
+    // que se creo: GLES lo exige). Filas apretadas, la primera es la de v = 0
+    unsigned int Reservar565(unsigned int id, int w, int h, const unsigned short* px);
+    bool Actualizar565(unsigned int id, int w, int h, const unsigned short* px);
     void RegenerarMips(unsigned int id, int x, int y, const unsigned char* px1);
     // dimensiones con que se subio una textura (para el aspect ratio). false si no se conoce.
     bool TextureSize(unsigned int id, int& w, int& h);
@@ -120,6 +126,8 @@ W3D_BACKEND_CERRAR
     // Borra una textura GL (glDeleteTextures). La usan las MINIATURAS del file browser para liberar la RAM/VRAM
     // al cambiar de carpeta o cerrar (clave en el N95 con poca memoria). id 0 = no-op.
     void DeleteTexture(unsigned int id);
+    // las texturas GL creadas y no borradas (ver que cargar y descargar no pierde nada)
+    int TexturasVivas();
 
     // MINIATURA: decodifica una imagen y la reduce (box filter) a <= maxSize px por lado, MANTENIENDO el aspecto.
     // El buffer FULL se decodifica y se libera ADENTRO (transitorio); solo queda la mini en *outRGBA (liberar con

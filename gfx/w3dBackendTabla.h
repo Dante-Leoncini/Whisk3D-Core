@@ -73,6 +73,7 @@ struct W3dBackendTabla {
     void (*MezclaTexturasUV)(const float* p);
     void (*MezclaTexturasUV2s)(const short* p);
     void (*MezclaTexturasUVVBO)(unsigned int h);
+    void (*MezclaTexturasMatrizUV)(float du, float dv, float su, float sv);
     void (*MezclaTexturaBorrada)(unsigned int id);
     unsigned int (*ErrorGL)();
     void (*Color4f)(float r, float g, float b, float a);

@@ -278,7 +278,8 @@ W3D_BACKEND_CERRAR
     // 'modo': 0 = INTERPOLATE (B * k + unidad0 * (1 - k)); 1 = MULTIPLY (unidad0 * B: un lightmap en la misma
     // pasada, k no se usa); 2 = MULTIPLY 2x (unidad0 * B * 2: el lightmap con overbright, GL_RGB_SCALE); 3 = SUBTRACT
     // (unidad0 - B: la rampa del sombreado toon, Material::toon); 4 = MULTIPLY SIMPLE (unidad0 * B con el GL_MODULATE
-    // clasico, sin el combiner: el toon "multiplicar", que anda en cualquier driver GL ES 1.1).
+    // clasico, sin el combiner: el toon "multiplicar", que anda en cualquier driver GL ES 1.1); 5 = SUMA (unidad0 + B
+    // con el GL_ADD clasico: lo autoiluminado de un material, la mascara ya multiplicada en B).
 W3D_BACKEND_ABRIR
     bool MezclaTexturasSoportada();
     void MezclaTexturas(unsigned int idB, float k, bool filtrado, bool repetir, int modo = 0);
@@ -291,6 +292,12 @@ W3D_BACKEND_ABRIR
     void MezclaTexturasUV(const float* p);
     void MezclaTexturasUV2s(const short* p);   // (2 short por vertice: la escala, en la TextureMatrix de la unidad 1)
     void MezclaTexturasUVVBO(unsigned int h);
+W3D_BACKEND_CERRAR
+    // la matriz de textura de la UNIDAD 1 como desplazamiento y escala de sus UV (u' = u*su + du), como TexMatrixUV con
+    // la 0: las dos capas de un material animado corren cada una a su velocidad. (0,0,1,1) = identidad (cacheada: pedir
+    // la identidad cuando ya esta no cuesta nada). Queda puesta hasta que se cambie: quien la mueve la devuelve
+W3D_BACKEND_ABRIR
+    void MezclaTexturasMatrizUV(float du, float dv, float su, float sv);
 W3D_BACKEND_CERRAR
     // (DeleteTexture la llama: GL desbindea lo borrado de todas las unidades y el cache de la 1 lo tiene que saber)
 W3D_BACKEND_ABRIR
@@ -501,6 +508,9 @@ W3D_BACKEND_ABRIR
     bool VBOSoportado();                                          // true si el backend/driver tiene buffer objects
     unsigned int GenBuffer();                                     // crea un buffer object (0 si falla / no soportado)
     void DeleteBuffer(unsigned int h);                            // lo libera
+W3D_BACKEND_CERRAR
+    int BuffersVivos();                                           // los creados y no borrados (fugas)
+W3D_BACKEND_ABRIR
     void ArrayBufferData(unsigned int h, const void* data, int bytes);  // sube atributos a GL_ARRAY_BUFFER (STATIC_DRAW)
     void IndexBufferData(unsigned int h, const void* data, int bytes);  // sube indices a GL_ELEMENT_ARRAY_BUFFER (STATIC_DRAW)
     long VBOMemoria();                                            // bytes de los buffer objects vivos (lo ultimo subido a cada uno)

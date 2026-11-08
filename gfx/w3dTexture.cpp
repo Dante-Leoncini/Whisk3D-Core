@@ -99,6 +99,8 @@ static void w3dAnisotropico() {}
 #endif
 
 namespace w3dEngine {
+// (las texturas GL creadas menos las borradas: TexturasVivas)
+static int g_texturasVivas = 0;
 
 // PIXELADO GLOBAL de la escena 3D (ver w3dGraphics.h). Vive ACA y no en el
 // backend porque los dos backends (pipeline fijo y GLES2) comparten este
@@ -366,6 +368,7 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
 #endif
     GLuint id = 0;
     glGenTextures(1, &id);
+    if (id) g_texturasVivas++;
     // OJO: bind por la ABSTRACCION, no glBindTexture crudo: el backend cachea la textura bindeada
     // y un bind por afuera lo deja mintiendo (la proxima BindTexture(id) se saltea y dibuja otra).
     w3dEngine::BindTexture(id);
@@ -441,7 +444,7 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
 unsigned int ReservarPantalla(unsigned int id, int w, int h) {
     if (w <= 0 || h <= 0) return id;
     GLuint t = id;
-    if (!t) glGenTextures(1, &t);
+    if (!t) { glGenTextures(1, &t); if (t) g_texturasVivas++; }
     w3dEngine::BindTexture(t);
 #ifdef W3D_SYMBIAN
     // (el framebuffer del N95 es de 16 bits: en 565 ocupa la mitad y no se pierde nada)
@@ -495,11 +498,60 @@ void CopiarPantalla(unsigned int id, int x, int y, int w, int h) {
 }
 
 // ----------------------------------------------------------------------------
+// TEXTURAS DE 16 BITS QUE SE REESCRIBEN (los cuadros de un video, w3dTexture.h)
+// ----------------------------------------------------------------------------
+unsigned int Reservar565(unsigned int id, int w, int h, const unsigned short* px) {
+#ifdef W3D_TEX_POT_RGBA
+    (void)w; (void)h; (void)px;
+    return id;
+#else
+    if (w <= 0 || h <= 0) return id;
+    GLuint t = id;
+    if (!t) { glGenTextures(1, &t); if (t) g_texturasVivas++; }
+    if (!t) return 0;
+    w3dEngine::DibujarPendiente();
+    w3dEngine::BindTexture(t);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, px);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    TexMemAnotar(t, w, h, 2, false, false);
+    TexMipsRegistrar(t, false);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    TexParamsRegistrar(t, 1, 1);
+    w3dEngine::BindTexture(0);
+    g_texSizes[t] = std::make_pair(w, h);
+    return t;
+#endif
+}
+
+bool Actualizar565(unsigned int id, int w, int h, const unsigned short* px) {
+#ifdef W3D_TEX_POT_RGBA
+    (void)id; (void)w; (void)h; (void)px;
+    return false;
+#else
+    if (!id || !px || w <= 0 || h <= 0) return false;
+    w3dEngine::DibujarPendiente();
+    w3dEngine::BindTexture(id);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, px);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    w3dEngine::BindTexture(0);
+    return true;
+#endif
+}
+
+// ----------------------------------------------------------------------------
 // FREE: libera un buffer de DecodeImage. Comun (DecodeImage aloca con new[]).
 // ----------------------------------------------------------------------------
 void FreeImage(unsigned char* rgba) {
     delete[] rgba;
 }
+
+// cuantas texturas GL hay creadas y no borradas (para ver que cargar y descargar mapas no pierde nada)
+int TexturasVivas() { return g_texturasVivas; }
 
 // borra una textura GL (las miniaturas del browser la usan para liberar al cambiar carpeta / cerrar).
 void DeleteTexture(unsigned int id) {
@@ -507,6 +559,7 @@ void DeleteTexture(unsigned int id) {
     GLuint g = (GLuint)id;
     w3dEngine::DibujarPendiente();   // (lo juntado que la usa, antes de que deje de existir)
     glDeleteTextures(1, &g);
+    if (g_texturasVivas > 0) g_texturasVivas--;
     w3dEngine::BindTexture(0);   // GL desbindea lo borrado; el cache del motor tiene que saberlo
     w3dEngine::MezclaTexturaBorrada(id);   // (idem la unidad 1)
     TexMipsRegistrar(id, false); // GL recicla ids: que el nuevo no herede "tiene mips"
@@ -627,6 +680,7 @@ bool LoadTextureW3dtMemoria(const unsigned char* datos, size_t largo, unsigned i
     const bool mips = pot && MipmapsGlobal() && c.niveles - primero > 1;
     GLuint id = 0;
     glGenTextures(1, &id);
+    if (id) g_texturasVivas++;
     BindTexture(id);
     glPixelStorei(GL_UNPACK_ALIGNMENT, bpp == 4 ? 4 : (bpp == 2 ? 2 : 1));
     const int hasta = mips ? c.niveles : primero + 1;
@@ -811,6 +865,7 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
 
     GLuint id = 0;
     glGenTextures(1, &id);
+    if (id) g_texturasVivas++;
     w3dEngine::BindTexture(id);   // por la abstraccion: el cache del backend queda al dia
 
     // PIXELADO GLOBAL (pedido del dueno): NEAREST en min y mag. MIPMAPS: piramide

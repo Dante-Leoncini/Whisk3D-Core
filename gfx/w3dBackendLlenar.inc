@@ -68,6 +68,7 @@ void W3D_BACKEND_LLENAR(W3dBackendTabla& t) {
     t.MezclaTexturasUV = &w3dEngine::W3D_BACKEND_NS::MezclaTexturasUV;
     t.MezclaTexturasUV2s = &w3dEngine::W3D_BACKEND_NS::MezclaTexturasUV2s;
     t.MezclaTexturasUVVBO = &w3dEngine::W3D_BACKEND_NS::MezclaTexturasUVVBO;
+    t.MezclaTexturasMatrizUV = &w3dEngine::W3D_BACKEND_NS::MezclaTexturasMatrizUV;
     t.MezclaTexturaBorrada = &w3dEngine::W3D_BACKEND_NS::MezclaTexturaBorrada;
     t.ErrorGL = &w3dEngine::W3D_BACKEND_NS::ErrorGL;
     t.Color4f = &w3dEngine::W3D_BACKEND_NS::Color4f;

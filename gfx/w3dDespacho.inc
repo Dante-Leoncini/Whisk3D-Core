@@ -67,6 +67,7 @@ bool MezclaTexturasActiva() { return W3D_TABLA()->MezclaTexturasActiva(); }
 void MezclaTexturasUV(const float* p) { W3D_TABLA()->MezclaTexturasUV(p); }
 void MezclaTexturasUV2s(const short* p) { W3D_TABLA()->MezclaTexturasUV2s(p); }
 void MezclaTexturasUVVBO(unsigned int h) { W3D_TABLA()->MezclaTexturasUVVBO(h); }
+void MezclaTexturasMatrizUV(float du, float dv, float su, float sv) { W3D_TABLA()->MezclaTexturasMatrizUV(du, dv, su, sv); }
 void MezclaTexturaBorrada(unsigned int id) { W3D_TABLA()->MezclaTexturaBorrada(id); }
 unsigned int ErrorGL() { return W3D_TABLA()->ErrorGL(); }
 void Color4f(float r, float g, float b, float a) { W3D_TABLA()->Color4f(r, g, b, a); }

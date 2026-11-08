@@ -1233,6 +1233,8 @@ void MezclaTexturasUV(const float* p){ mezclaUV=p; if(p) mezclaUVVbo=0; }
 void MezclaTexturasUVVBO(unsigned int h){ mezclaUVVbo=h; if(h) mezclaUV=0; }
 // (sin UV enteras en la unidad 1 de este backend: la unidad 1 sigue a la 0)
 void MezclaTexturasUV2s(const short*){ mezclaUV=0; mezclaUVVbo=0; }
+// (sin matriz de textura en la unidad 1 de este backend: la segunda capa queda quieta)
+void MezclaTexturasMatrizUV(float,float,float,float){}
 void MezclaTexturaBorrada(unsigned int id){ if(id && id==mezclaTex){ mezclaTex=0; mezclaOn=false; } texParamGL.erase(id); }
 unsigned int ErrorGL(){ return (unsigned int)glGetError(); }
 // SPHERE-MAP (GL_SPHERE_MAP): las UV salen del reflejo de la vista en la normal (en el vertex shader). Como el

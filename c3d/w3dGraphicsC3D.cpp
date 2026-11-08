@@ -561,6 +561,7 @@ bool MezclaTexturasActiva() { return mezclaOn; }
 void MezclaTexturasUV(const float* p) { mezclaUV = p; }
 void MezclaTexturasUVVBO(unsigned int) { mezclaUV = 0; }
 void MezclaTexturasUV2s(const short*) { mezclaUV = 0; }
+void MezclaTexturasMatrizUV(float, float, float, float) {}   // (sin matriz propia en la unidad 1: queda quieta)
 void MezclaTexturaBorrada(unsigned int id) { if (id && id == mezclaTex) { mezclaTex = 0; mezclaOn = false; } }
 void TexGenSphere(bool on) {
     if (texGenCache == (on ? 1 : 0)) return;
