@@ -6,8 +6,20 @@
 // ============================================================================
 #include <stddef.h>
 
+// (Android: los headers de ES ya los traen, en 32 bits con otro tipo de base: el de ES 1.1 GLsizeiptr, el de 2.0 los dos)
+#ifndef GL_ES_VERSION_2_0
 typedef char GLchar;
+#if !defined(GL_VERSION_ES_CM_1_0)
 typedef ptrdiff_t GLsizeiptr;
+#endif
+#endif
+// (Android: su GL/gl.h es el de OpenGL ES 1.1, que no trae los enteros de 32 bits de GL 1.1)
+#ifndef GL_INT
+    #define GL_INT                  0x1404
+#endif
+#ifndef GL_UNSIGNED_INT
+    #define GL_UNSIGNED_INT         0x1405
+#endif
 #ifndef GL_FRAGMENT_SHADER
     #define GL_FRAGMENT_SHADER      0x8B30
     #define GL_VERTEX_SHADER        0x8B31

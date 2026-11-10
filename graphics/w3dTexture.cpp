@@ -41,7 +41,8 @@
 // LA PIRAMIDE DE MIPMAPS en ES 2.0 (Android, la web y Symbian^3 con W3D_GLES2) la arma glGenerateMipmap: el
 // GL_GENERATE_MIPMAP de ES 1.1 / GL 1.4 no existe ahi (GL_INVALID_ENUM) y la textura quedaba sin niveles -> incompleta
 // con un filtro de mipmaps -> se muestreaba NEGRA (el N8: la UI salia gris con manchas negras).
-#if defined(__ANDROID__) || defined(__EMSCRIPTEN__) || (defined(W3D_SYMBIAN) && defined(W3D_GLES2))
+// (Android con el pipeline fijo -W3D_GLES1, OpenGL ES 1.1- arma la piramide como el N95: GL_GENERATE_MIPMAP)
+#if (defined(__ANDROID__) && !defined(W3D_GLES1)) || defined(__EMSCRIPTEN__) || (defined(W3D_SYMBIAN) && defined(W3D_GLES2))
     #define W3D_MIPS_ES2
 #endif
 #if defined(W3D_SYMBIAN) && defined(W3D_GLES2)
@@ -881,10 +882,17 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
                           : (pix ? GL_NEAREST_MIPMAP_LINEAR : (MipmapsTrilineal() ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST));
 #ifdef __ANDROID__
     if (tipo != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+#ifdef W3D_GLES1
+    if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_TRUE);   // (ES 1.1: la arma el driver al subir)
+#endif
     glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0,
                  formato, tipo, tipo != GL_UNSIGNED_BYTE ? (const void*)&px16[0] : (const void*)data);
     if (tipo != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+#ifdef W3D_GLES1
+    if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_FALSE);
+#else
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
+#endif
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtroPix);
 #elif defined(__EMSCRIPTEN__)

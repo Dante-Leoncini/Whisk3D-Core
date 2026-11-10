@@ -746,7 +746,8 @@ extern bool w3dRenderWireframe; // dibuja wireframe en vez del relleno
 extern bool w3dRenderWireframeSoloVisible;
 extern bool w3dRenderSolido;    // material por defecto sin texturas (modo Solid)
 extern bool w3dRenderSinLuz;    // sin iluminacion, solo profundidad (modo ZBuffer)
-extern bool w3dRenderLuces;     // aplicar las luces de escena (modo Rendered)
+extern bool w3dRenderLuces;     // aplicar las luces de escena (por defecto si: el render; el editor la apaga en sus
+                                // modos de vista que usan otra luz)
 extern bool w3dRenderNormalColor; // dibuja la malla unlit con color = normal (debug de normales; modo Normal View)
 extern bool w3dRenderAlpha;       // pase ALPHA (matte): blanco unlit + solo el alpha de la textura (sin fog)
 extern bool w3dRenderOverlays;    // el editor quiere overlays (contorno de seleccion / overlay de edit); el Core lo LEE

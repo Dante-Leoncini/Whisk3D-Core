@@ -170,7 +170,7 @@ bool w3dRenderSolido    = false;
 bool w3dRenderSinLuz    = false;
 #endif
 #ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
-bool w3dRenderLuces     = false;
+bool w3dRenderLuces     = true;   // (el render: las luces de la escena. El editor pone su modo de vista)
 #endif
 #ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool w3dRenderNormalColor = false;
@@ -2440,7 +2440,7 @@ void GLES2Init(void* (*getProc)(const char*)){
 W3D_BACKEND_CERRAR   // (el namespace propio de este backend)
 } // namespace w3dEngine
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(W3D_BACKEND_NS)   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 #include "w3dBase.h"
     void w3dSetColor(const ColorType c[4]) {
         w3dEngine::Color4f(c[0], c[1], c[2], c[3]);

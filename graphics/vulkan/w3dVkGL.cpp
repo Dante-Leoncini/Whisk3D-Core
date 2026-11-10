@@ -125,6 +125,39 @@ static void* Simbolo(void* lib, const char* n) {
     return dlsym(lib, n);
 #endif
 }
+#ifdef W3D_SHADERC_ESTATICO
+// W3D_SHADERC_ESTATICO: shaderc va ADENTRO del ejecutable (libshaderc_combined.a: los juegos compilados, que no llevan
+// bibliotecas al lado). Las mismas funciones de su API de C, enlazadas en vez de abiertas
+extern "C" {
+void* shaderc_compiler_initialize(void);
+void shaderc_compiler_release(void*);
+void* shaderc_compile_options_initialize(void);
+void shaderc_compile_options_release(void*);
+void shaderc_compile_options_set_target_env(void*, int, uint32_t);
+void shaderc_compile_options_set_optimization_level(void*, int);
+void* shaderc_compile_into_spv(void*, const char*, size_t, int, const char*, const char*, void*);
+void* shaderc_compile_into_preprocessed_text(void*, const char*, size_t, int, const char*, const char*, void*);
+void shaderc_result_release(void*);
+size_t shaderc_result_get_length(void*);
+const char* shaderc_result_get_bytes(void*);
+int shaderc_result_get_compilation_status(void*);
+const char* shaderc_result_get_error_message(void*);
+}
+static bool AbrirShaderc() {
+    shc_compiler_initialize = shaderc_compiler_initialize; shc_compiler_release = shaderc_compiler_release;
+    shc_compile_options_initialize = shaderc_compile_options_initialize;
+    shc_compile_options_release = shaderc_compile_options_release;
+    shc_compile_options_set_target_env = shaderc_compile_options_set_target_env;
+    shc_compile_options_set_optimization_level = shaderc_compile_options_set_optimization_level;
+    shc_compile_into_spv = shaderc_compile_into_spv;
+    shc_compile_into_preprocessed_text = shaderc_compile_into_preprocessed_text;
+    shc_result_release = shaderc_result_release; shc_result_get_length = shaderc_result_get_length;
+    shc_result_get_bytes = shaderc_result_get_bytes;
+    shc_result_get_compilation_status = shaderc_result_get_compilation_status;
+    shc_result_get_error_message = shaderc_result_get_error_message;
+    return true;
+}
+#else
 // shaderc_shared: al lado del ejecutable (lo copia el build) o en el SDK de Vulkan instalado
 static void* gLibShc = 0;
 static bool AbrirShaderc() {
@@ -133,7 +166,8 @@ static bool AbrirShaderc() {
     const char* nombres[] = { "shaderc_shared.dll" };
     const char* sub = "\\Bin\\shaderc_shared.dll";
 #else
-    const char* nombres[] = { "libshaderc_shared.so.1", "libshaderc_shared.so" };
+    // (el del SDK de Vulkan, y libshaderc.so.1: el paquete libshaderc1 de Debian y Ubuntu, la misma biblioteca)
+    const char* nombres[] = { "libshaderc_shared.so.1", "libshaderc_shared.so", "libshaderc.so.1" };
     const char* sub = "/lib/libshaderc_shared.so";
 #endif
     for (size_t i = 0; i < sizeof(nombres) / sizeof(nombres[0]) && !gLibShc; i++) gLibShc = AbrirLib(nombres[i]);
@@ -147,6 +181,7 @@ static bool AbrirShaderc() {
 #undef W3D_SHC
     return true;
 }
+#endif
 
 // GLSL 4.50 -> SPIR-V para Vulkan, para quien arme su propio dispositivo (el trazado de rayos por GPU). etapa: 0 vertex,
 // 1 fragment, 2 compute. Con su propio compilador (no depende de que el backend Vulkan este andando)
@@ -1894,6 +1929,11 @@ static void Rehacer() {
         CrearPantalla(w, h);
         // (GL: la ventana nueva arranca con el viewport y el scissor que tenia; el motor los vuelve a poner)
     }
+    // la limpieza de la pantalla nueva (CrearPantalla la graba en el buffer "previo" de ESTE cuadro) va YA: el que llama
+    // pasa enseguida al cuadro siguiente (NuevoCuadro). Antes quedaba grabada sin enviar y con gPreGrabando prendido, y
+    // el cuadro siguiente mandaba a la GPU un buffer de comandos que nunca se empezo a grabar: al cambiar el tamanio de
+    // la ventana se caia (lavapipe) o colgaba la GPU (Intel: el escritorio entero congelado)
+    EnviarYEsperar();
     gScRehacer = false;
 }
 static void NuevoCuadro() {

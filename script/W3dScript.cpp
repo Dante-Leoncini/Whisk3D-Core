@@ -2453,6 +2453,89 @@ void W3dScriptDestruirObjeto(Object* o) {
     W3dLiberarSubarbol(o);
     Redibujar();
 }
+void W3dScriptDestruirAhora(Object* o) {
+    if (!o) return;
+    if (gObjetoDestruirFn) gObjetoDestruirFn(o);
+    else W3dScriptDestruirObjeto(o);
+}
+
+// ---- un valor de lua que viaja entre scripts (ver W3dScript.h) ----
+static W3dValorLua LeerValorRec(lua_State* L, int idx, int prof) {
+    W3dValorLua v;
+    if (idx < 0) idx = lua_gettop(L) + idx + 1;   // (absoluto: la tabla se recorre con pushes encima)
+    switch (lua_type(L, idx)) {
+        case LUA_TBOOLEAN: v.tipo = W3dValorLua::Bool; v.num = lua_toboolean(L, idx) ? 1.0 : 0.0; break;
+        case LUA_TNUMBER:
+            v.tipo = W3dValorLua::Num;
+            v.entero = lua_isinteger(L, idx) != 0;
+            v.num = v.entero ? (double)lua_tointeger(L, idx) : (double)lua_tonumber(L, idx);
+            break;
+        case LUA_TSTRING:  { size_t n = 0; const char* s = lua_tolstring(L, idx, &n);
+                             v.tipo = W3dValorLua::Texto; v.texto.assign(s ? s : "", n); break; }
+        case LUA_TLIGHTUSERDATA: v.tipo = W3dValorLua::Obj; v.obj = lua_touserdata(L, idx); break;
+        case LUA_TTABLE:
+            if (prof >= 16) break;
+            v.tipo = W3dValorLua::Tabla;
+            lua_pushnil(L);
+            while (lua_next(L, idx) != 0) {
+                W3dValorLua k = LeerValorRec(L, -2, prof + 1);
+                W3dValorLua x = LeerValorRec(L, -1, prof + 1);
+                if (k.tipo != W3dValorLua::Nil) v.campos.push_back(std::make_pair(k, x));
+                lua_pop(L, 1);
+            }
+            break;
+        default: break;   // (nil, funciones, corrutinas, userdata pesados)
+    }
+    return v;
+}
+W3dValorLua W3dValorLuaLeer(void* L, int idx) { return LeerValorRec((lua_State*)L, idx, 0); }
+static void PonerValor(lua_State* L, const W3dValorLua& v) {
+    switch (v.tipo) {
+        case W3dValorLua::Bool:  lua_pushboolean(L, v.num != 0.0); break;
+        case W3dValorLua::Num:
+            if (v.entero) lua_pushinteger(L, (lua_Integer)v.num); else lua_pushnumber(L, (lua_Number)v.num);
+            break;
+        case W3dValorLua::Texto: lua_pushlstring(L, v.texto.data(), v.texto.size()); break;
+        case W3dValorLua::Obj:   lua_pushlightuserdata(L, v.obj); break;
+        case W3dValorLua::Tabla:
+            lua_createtable(L, 0, (int)v.campos.size());
+            for (size_t i = 0; i < v.campos.size(); i++) {
+                PonerValor(L, v.campos[i].first);
+                PonerValor(L, v.campos[i].second);
+                lua_settable(L, -3);
+            }
+            break;
+        default: lua_pushnil(L); break;
+    }
+}
+bool W3dScriptLlamarConDatos(Object* duenio, const char* fn, const std::string& texto, const W3dValorLua& valor,
+                             const std::string& de) {
+    if (!duenio || !fn) return false;
+    bool ok = false;
+    // (por INDICE y releyendo el mapa: alRecibir puede recargar o destruir scripts)
+    for (size_t i = 0; ; i++) {
+        std::map<Object*, std::vector<W3dScriptInst*> >::iterator it = gInstancias.find(duenio);
+        if (it == gInstancias.end() || i >= it->second.size()) break;
+        W3dScriptInst* inst = it->second[i];
+        if (!inst || !inst->L) continue;
+        lua_State* L = inst->L;
+        lua_getglobal(L, fn);
+        if (!lua_isfunction(L, -1)) { lua_pop(L, 1); continue; }
+        g_w3dScriptLlamadas++;
+        lua_pushlstring(L, texto.data(), texto.size());
+        PonerValor(L, valor);
+        lua_pushlstring(L, de.data(), de.size());
+        if (lua_pcall(L, 3, 0, 0) != LUA_OK) {
+            gUltimoError = lua_tostring(L, -1) ? lua_tostring(L, -1) : "error de lua";
+            w3dLogfE("Script %s(): %s", fn, gUltimoError.c_str());
+            lua_pop(L, 1);
+            continue;
+        }
+        ok = true;
+    }
+    return ok;
+}
+
 void W3dScriptDestruirPendientes() {
     if (gDestruir.empty()) return;
     std::vector<W3dDestruirPedido> lista;

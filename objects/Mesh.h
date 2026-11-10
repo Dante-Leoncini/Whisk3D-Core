@@ -728,6 +728,9 @@ class Mesh : public Object {
         // la rutina apunta los vertices a la pose de RAM y la UV y los indices al recurso, subidos una vez.
         bool soloRutina;
         bool DibujaAlgo() W3D_OVERRIDE { return !soloRutina; }
+        // bloquearNormales: BLOQUEAR NORMALES (Propiedades > Malla 3D > Edicion). En el Modo Edicion, al confirmar un
+        // movimiento NO se recalculan las normales: las importadas o arregladas a mano se conservan. Es de cada malla.
+        bool bloquearNormales;
         // (soloRutina) su vertex anim avanzo pero NO se evaluo: la pose se calcula recien cuando una rutina la apunta
         // (W3dPoseAlDia). Lo que no se dibuja no interpola nada
         bool posePendiente;
@@ -1222,7 +1225,9 @@ class Mesh : public Object {
         //               quedan como lineas sueltas y los verts que quedan aislados como puntos sueltos (queda
         //               el wireframe, no se pierde el resto de la malla)
         // Reconstruye la malla de render (preserva UV/normales) e invalida el edit.
-        void BorrarSeleccionEdit(int mode);
+        // sinRestos = true: lo que SOLO usaban las caras borradas (sus aristas y sus vertices) se va con ellas, no queda
+        // como lineas ni puntos sueltos. Lo usa Separar (P): el pedazo se va entero a la malla nueva.
+        void BorrarSeleccionEdit(int mode, bool sinRestos = false);
 
         bool BorrarEdgeLoopEdit(); // Delete > Edge Loops: disuelve el loop seleccionado (inverso del loop cut)
         // EXTRUDE en Edit Mode segun el modo (Vertex/Edge/Face): vertice->arista,

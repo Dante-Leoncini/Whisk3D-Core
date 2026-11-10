@@ -101,6 +101,29 @@ std::string W3dScriptRutaDeLibreria(void* L, const std::string& ruta);
 typedef void (*W3dScriptObjetoFn)(Object* raiz);
 void W3dScriptSetObjetoNuevo(W3dScriptObjetoFn fn);
 void W3dScriptSetObjetoDestruir(W3dScriptObjetoFn fn);
+// destruir desde C++ (las CAPAS de escenas, W3dEscena.h: al descargar una escena 3D cargada encima), EN EL ACTO:
+// llamarla fuera de los actualizar() (al final del frame). Avisa a quien corre la partida; sin partida registrada
+// usa W3dScriptDestruirObjeto. (Lo nuevo se avisa con W3dScriptAvisarObjetoNuevo, mas abajo)
+void W3dScriptDestruirAhora(Object* o);
+
+// ---- UN VALOR DE LUA QUE VIAJA DE UN SCRIPT A OTRO (los mensajes entre escenas: enviar / alRecibir) ----
+// Los lua_State estan aislados: el valor se COPIA (nil, booleano, numero, texto, un objeto -lightuserdata- y tablas
+// de eso, anidadas hasta 16 niveles; una funcion o una tabla que se nombra a si misma llegan como nil)
+struct W3dValorLua {
+    enum Tipo { Nil = 0, Bool, Num, Texto, Obj, Tabla };
+    int tipo;
+    double num;
+    bool entero;            // un numero entero de lua (5, no 5.0): llega entero
+    std::string texto;
+    void* obj;
+    std::vector<std::pair<W3dValorLua, W3dValorLua> > campos;   // (clave, valor) de una tabla
+    W3dValorLua() : tipo(Nil), num(0.0), entero(false), obj(0) {}
+};
+// lee el valor de la pila de 'L' (lua_State*) en 'idx'
+W3dValorLua W3dValorLuaLeer(void* L, int idx);
+// llama fn(texto, valor, de) en CADA script de 'duenio' que defina esa funcion global. true = alguno corrio
+bool W3dScriptLlamarConDatos(Object* duenio, const char* fn, const std::string& texto, const W3dValorLua& valor,
+                             const std::string& de);
 // LA DESTRUCCION GENERICA de un objeto y su subarbol: descarga sus scripts, olvida su fisica minima, lo
 // saca de las referencias de los scripts vivos (objeto("x")), de las curvas de las animaciones de escena y
 // de la seleccion, lo descuelga y lo libera (~Object olvida sus cuerpos rigidos, hitbox y pares).

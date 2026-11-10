@@ -32,7 +32,7 @@ bool w3dRenderWireframe = false;
 bool w3dRenderWireframeSoloVisible = true;
 bool w3dRenderSolido    = false;
 bool w3dRenderSinLuz    = false;
-bool w3dRenderLuces     = false;
+bool w3dRenderLuces     = true;   // (el render: las luces de la escena. El editor pone su modo de vista)
 bool w3dRenderNormalColor = false;
 bool w3dRenderAlpha       = false;
 bool w3dRenderOverlays    = true;
@@ -173,10 +173,14 @@ bool C3DInit() {
     }
     return true;
 }
+// al salir, ANTES de que SDL apague las pantallas (gfxExit): C3D_Fini espera a que la GPU termine lo pendiente, saca el
+// hook de APT de citro3d y su interrupcion del vblank. Recien despues se libera lo que la GPU podia estar leyendo (el
+// anillo de vertices de los dos cuadros, el shader)
 void C3DFin() {
-    for (int i = 0; i < 2; i++) if (gAnillo[i].base) { linearFree(gAnillo[i].base); gAnillo[i].base = NULL; }
-    if (gDvlb) { shaderProgramFree(&gProg); DVLB_Free(gDvlb); gDvlb = NULL; }
+    gEnCuadro = false;
     C3D_Fini();
+    for (int i = 0; i < 2; i++) if (gAnillo[i].base) { linearFree(gAnillo[i].base); gAnillo[i].base = NULL; gAnillo[i].tam = 0; }
+    if (gDvlb) { shaderProgramFree(&gProg); DVLB_Free(gDvlb); gDvlb = NULL; }
 }
 
 // ============================================================================

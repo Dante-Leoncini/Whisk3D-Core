@@ -10,8 +10,19 @@
 #include "w3dGraphics.h"
 #include "w3dBackend.h"   // el namespace propio del backend (varios en un ejecutable)
 
-#ifdef W3D_SYMBIAN
+#if defined(W3D_SYMBIAN)
     #include <GLES/gl.h>
+#elif defined(__ANDROID__)
+    // Android con el pipeline fijo: OpenGL ES 1.1 (libGLESv1_CM), con sus extensiones OES (las pide a EGL)
+    #include <GLES/gl.h>
+    #include <GLES/glext.h>
+    #include <EGL/egl.h>
+    #ifndef GL_FUNC_ADD
+        #define GL_FUNC_ADD 0x8006               // (OES_blend_subtract: los mismos valores que en GL)
+    #endif
+    #ifndef GL_FUNC_REVERSE_SUBTRACT
+        #define GL_FUNC_REVERSE_SUBTRACT 0x800B
+    #endif
 #else
     #ifdef _WIN32
         #define WIN32_LEAN_AND_MEAN
@@ -383,7 +394,7 @@ void PlanosRecorte(int n, const float* eq4) {
     if (n < 0) n = 0;
     if (n > 0) MatricesSincronizar();   // (la ecuacion se lleva con la modelview vigente: la perezosa tiene que estar en GL)
     for (int i = 0; i < n; i++) {
-#ifdef W3D_SYMBIAN
+#if defined(W3D_SYMBIAN) || defined(__ANDROID__)
         GLfloat p[4] = { eq4[i*4+0], eq4[i*4+1], eq4[i*4+2], eq4[i*4+3] };
         W3D_GLC(glClipPlanef((GLenum)(GL_CLIP_PLANE0 + i), p));
 #else
@@ -1236,6 +1247,11 @@ static void PonerBlendEq(int eq) {   // 0 = FUNC_ADD, 1 = REVERSE_SUBTRACT
     // opengl32 solo exporta GL 1.1: glBlendEquation (1.4) se carga por wglGetProcAddress
     // (contexto ya activo cuando se dibuja). Si el driver no lo tiene, se deja el eq previo.
     static W3D_PFNBLENDEQ pfn = (W3D_PFNBLENDEQ)wglGetProcAddress("glBlendEquation");
+    if (pfn) W3D_GLC(pfn(e));
+#elif defined(__ANDROID__)
+    // ES 1.1: la ecuacion es la extension OES_blend_subtract (casi todos los drivers la tienen; si no, queda la previa)
+    typedef void (*PFNBLENDEQOES)(GLenum);
+    static PFNBLENDEQOES pfn = (PFNBLENDEQOES)eglGetProcAddress("glBlendEquationOES");
     if (pfn) W3D_GLC(pfn(e));
 #else
     W3D_GLC(glBlendEquation(e));
@@ -2529,7 +2545,7 @@ bool w3dRenderSolido    = false;
 bool w3dRenderSinLuz    = false;
 #endif
 #ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
-bool w3dRenderLuces     = false;
+bool w3dRenderLuces     = true;   // (el render: las luces de la escena. El editor pone su modo de vista)
 #endif
 
 #ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)

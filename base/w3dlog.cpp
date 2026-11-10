@@ -21,10 +21,12 @@ static char gRutaLog[128] = "e:\\whisk3d.log";
 static char gRutaLog[128] = "whisk3d.log";
 #endif
 
+static bool gRutaPuesta = false;   // la fijo w3dLogRuta (las consolas: sino, la carpeta del editor)
 void w3dLogRuta(const char* ruta) {
     if (!ruta || !*ruta) return;
     strncpy(gRutaLog, ruta, sizeof(gRutaLog) - 1);
     gRutaLog[sizeof(gRutaLog) - 1] = 0;
+    gRutaPuesta = true;
 }
 
 static const char* NivelTag(int nivel) { return nivel == 2 ? "ERROR" : (nivel == 1 ? "WARN" : "INFO"); }
@@ -174,8 +176,9 @@ void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirDC(2, aMsg)
 #elif defined(W3D_3DS)
 // ---------------------------------------------------------------------------
 //  Backend 3DS: svcOutputDebugString, que sale en el log del emulador (Azahar/Citra) y en un depurador por la red con
-//  la consola real, y a la tarjeta SD (sdmc:/3ds/Whisk3D/whisk3d.log, se pisa en cada sesion): en la consola de verdad
-//  es lo que queda para ver que paso. Cada linea se escribe en el momento (si la consola se cuelga, ya esta en la SD).
+//  la consola real, y a la tarjeta SD (sdmc:/3ds/Whisk3D/whisk3d.log, se pisa en cada sesion; un juego, en la suya con
+//  w3dLogRuta): en la consola de verdad es lo que queda para ver que paso. Cada linea se escribe en el momento (si la
+//  consola se cuelga, ya esta en la SD).
 //  La pantalla no se usa: las dos son del editor.
 // ---------------------------------------------------------------------------
 #include <3ds.h>
@@ -189,9 +192,12 @@ static void Escribir3ds(int nivel, const char* aMsg) {
     static bool probado = false;
     if (!probado) {
         probado = true;
-        mkdir("sdmc:/3ds", 0777);
-        mkdir("sdmc:/3ds/Whisk3D", 0777);
-        f = fopen("sdmc:/3ds/Whisk3D/whisk3d.log", "w");
+        if (gRutaPuesta) f = fopen(gRutaLog, "w");
+        else {
+            mkdir("sdmc:/3ds", 0777);
+            mkdir("sdmc:/3ds/Whisk3D", 0777);
+            f = fopen("sdmc:/3ds/Whisk3D/whisk3d.log", "w");
+        }
     }
     if (f) { fputs(buf, f); fputc('\n', f); fflush(f); }
 }
@@ -203,7 +209,8 @@ void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; Escribir3ds(2, aMsg
 #elif defined(W3D_VITA)
 // ---------------------------------------------------------------------------
 //  Backend PS Vita: sceClibPrintf, que sale en el log del emulador (Vita3K) y por la consola de depuracion con la Vita
-//  de verdad, y a un archivo (ux0:data/Whisk3D/whisk3d.log, se pisa en cada sesion), como en la 3DS. Cada linea se
+//  de verdad, y a un archivo (ux0:data/Whisk3D/whisk3d.log, se pisa en cada sesion; un juego, en la suya con
+//  w3dLogRuta), como en la 3DS. Cada linea se
 //  escribe en el momento (si la consola se cuelga, ya esta en el archivo).
 // ---------------------------------------------------------------------------
 #include <psp2/kernel/clib.h>
@@ -215,8 +222,11 @@ static void EscribirVita(int nivel, const char* aMsg) {
     static bool probado = false;
     if (!probado) {
         probado = true;
-        mkdir("ux0:data/Whisk3D", 0777);
-        f = fopen("ux0:data/Whisk3D/whisk3d.log", "w");
+        if (gRutaPuesta) f = fopen(gRutaLog, "w");
+        else {
+            mkdir("ux0:data/Whisk3D", 0777);
+            f = fopen("ux0:data/Whisk3D/whisk3d.log", "w");
+        }
     }
     if (f) { fprintf(f, "[%s] %s\n", NivelTag(nivel), aMsg ? aMsg : ""); fflush(f); }
 }
@@ -236,7 +246,7 @@ static void EscribirPSP(int nivel, const char* aMsg) {
     printf("[%s] %s\n", NivelTag(nivel), aMsg ? aMsg : "");
     static FILE* f = NULL;
     static bool probado = false;
-    if (!probado) { probado = true; f = fopen("whisk3d.log", "w"); }
+    if (!probado) { probado = true; f = fopen(gRutaLog, "w"); }   // (whisk3d.log, o el de w3dLogRuta)
     if (f) { fprintf(f, "[%s] %s\n", NivelTag(nivel), aMsg ? aMsg : ""); fflush(f); }
 }
 void w3dLogReset() { EscribirPSP(0, "=== Whisk3D DEV LOG ==="); }

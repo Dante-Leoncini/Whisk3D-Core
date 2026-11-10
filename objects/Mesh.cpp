@@ -68,7 +68,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     pvsFaces = NULL; pvsFacesSize = 0; pvsVersion = 0; vboPvsVer = 0; pvsOrdenado = false; // sin override PVS (malla completa; vboPvsVer retirado por P3, ver Mesh.h)
     enLoteEstatico = 0; // (P4) sin sello: la malla se dibuja sola
     uvDesplU = uvDesplV = 0.0f; // desplazarUV: sin base capturada (uvDesplBase vacia)
-    noEditable = false; soloRutina = false; posePendiente = false; paseDibujado = 0; tintaNoEditable = false; // malla editable (el import con noEditable / el boton de la card Mesh lo prenden)
+    noEditable = false; soloRutina = false; bloquearNormales = false; posePendiente = false; paseDibujado = 0; tintaNoEditable = false; // malla editable (el import con noEditable / el boton de la card Mesh lo prenden)
     tinte[0] = tinte[1] = tinte[2] = 1.0f;
     datosRec = NULL; datosComp = 0; // geometria propia hasta que el importador la comparta (MallaDatos.h)
     malla = NULL; vboCompartidas = 0; vboUVEnUso = 0; // sin recurso (MallaRecurso.h) hasta que el lector la vincule
