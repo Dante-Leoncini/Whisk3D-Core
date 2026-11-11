@@ -32,7 +32,7 @@ enum MandoBoton {
     MandoBotones
 };
 enum MandoEje { MandoLX, MandoLY, MandoRX, MandoRY, MandoLT, MandoRT, MandoEjes };
-enum MandoTipo { MandoGenerico = 0, MandoPS3 = 3, MandoPS4 = 4 };
+enum MandoTipo { MandoGenerico = 0, MandoPS3 = 3, MandoPS4 = 4, MandoWii = 5 };
 
 struct MandoEstado {
     int tipo;                      // MandoTipo
@@ -44,6 +44,10 @@ struct MandoEstado {
 bool MandoLeer(int i, MandoEstado& e);
 // prender o apagar la vibracion del mando i
 void MandoVibrar(int i, bool si);
+// el acelerometro del mando i si es un Wiimote: g[0..2] = X Y Z en g, como los da el control (X a lo ancho, Y a lo
+// largo hacia la punta del infrarrojo, Z saliendo de la cara de los botones; quieto y boca arriba: Z = 1). false =
+// no es un Wiimote o no esta conectado
+bool MandoAcelerometro(int i, float g[3]);
 // soltar el driver (al cerrar la app)
 void MandosCerrar();
 

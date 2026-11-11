@@ -15,7 +15,7 @@
 namespace {
 
 // ---- copia de inc/bthidmanager.h (bthid-s60) ----
-enum { EBtHidPadNone = 0, EBtHidPadUnknown = 1, EBtHidPadPs3 = 3, EBtHidPadPs4 = 4 };
+enum { EBtHidPadNone = 0, EBtHidPadUnknown = 1, EBtHidPadPs3 = 3, EBtHidPadPs4 = 4, EBtHidPadWii = 5 };
 enum { EBtHidConnected = 2 };
 enum TBtHidPadButton {
     EBtHidPadUp, EBtHidPadRight, EBtHidPadDown, EBtHidPadLeft,
@@ -35,6 +35,27 @@ struct TBtHidPadState {
     TUint8  iAddr[6];
 };
 typedef TPckgBuf<TBtHidPadState> TBtHidPadStatePckg;
+struct TBtHidWiiState {
+    TInt    iConnected;
+    TUint32 iButtons;
+    TInt    iAccel[3];
+    TReal32 iAccelG[3];     // en g, con la calibracion del control
+    TInt    iMotionPlus;
+    TInt    iGyro[3];
+    TReal32 iGyroDps[3];
+    TInt    iIrCount;
+    TInt    iIrX[4];
+    TInt    iIrY[4];
+    TInt    iIrCorner[4];
+    TInt    iAim;
+    TReal32 iAimX, iAimY;
+    TInt    iShots;
+    TReal32 iShotX, iShotY;
+    TInt    iShotAim;
+    TInt    iBattery;
+    TInt    iReports;
+};
+typedef TPckgBuf<TBtHidWiiState> TBtHidWiiStatePckg;
 
 // RBtHidManager es una RSessionBase sin datos propios: alcanza con una sesion y llamar a sus funciones exportadas
 // pasandole la sesion como 'this' (en ARM EABI el this va primero, como cualquier argumento)
@@ -42,14 +63,16 @@ class RSesionBtHid : public RSessionBase {};
 typedef TInt (*TFnConectar)(RSesionBtHid*);
 typedef TInt (*TFnEstado)(RSesionBtHid*, TInt, TBtHidPadStatePckg&);
 typedef TInt (*TFnVibrar)(RSesionBtHid*, TInt, TBool);
-const TInt KOrdConnect = 2, KOrdPadState = 9, KOrdSetPadRumble = 10;
+typedef TInt (*TFnWii)(RSesionBtHid*, TInt, TBtHidWiiStatePckg&);
+const TInt KOrdConnect = 2, KOrdPadState = 9, KOrdSetPadRumble = 10, KOrdWiiState = 14;
 
 RLibrary     gLib;
 RSesionBtHid gSesion;
 bool         gBuscado = false, gListo = false;
 TFnEstado    gFnEstado = 0;
 TFnVibrar    gFnVibrar = 0;
-bool         gVibrando[w3dEngine::MandosMax] = { false, false, false, false };
+TFnWii       gFnWii = 0;   // (0 con un driver sin Wiimote: anterior a la 0.10)
+bool        gVibrando[w3dEngine::MandosMax] = { false, false, false, false };
 
 bool Driver() {
     if (gBuscado) return gListo;
@@ -62,6 +85,7 @@ bool Driver() {
     TFnConectar conectar = (TFnConectar)gLib.Lookup(KOrdConnect);
     gFnEstado = (TFnEstado)gLib.Lookup(KOrdPadState);
     gFnVibrar = (TFnVibrar)gLib.Lookup(KOrdSetPadRumble);
+    gFnWii = (TFnWii)gLib.Lookup(KOrdWiiState);
     if (!conectar || !gFnEstado || !gFnVibrar) {
         w3dLog("[mandos] bthidhost.dll es de una version sin joysticks: sin joysticks");
         gLib.Close();
@@ -95,7 +119,8 @@ bool MandoLeer(int i, MandoEstado& e) {
     if (gFnEstado(&gSesion, i, pk) != KErrNone) return false;
     const TBtHidPadState& s = pk();
     if (s.iKind == EBtHidPadNone || s.iState != EBtHidConnected) return false;
-    e.tipo = (s.iKind == EBtHidPadPs3) ? MandoPS3 : (s.iKind == EBtHidPadPs4) ? MandoPS4 : MandoGenerico;
+    e.tipo = (s.iKind == EBtHidPadPs3) ? MandoPS3 : (s.iKind == EBtHidPadPs4) ? MandoPS4
+           : (s.iKind == EBtHidPadWii) ? MandoWii : MandoGenerico;
     e.ejes[MandoLX] = Stick(s.iAxis[0]); e.ejes[MandoLY] = Stick(s.iAxis[1]);
     e.ejes[MandoRX] = Stick(s.iAxis[2]); e.ejes[MandoRY] = Stick(s.iAxis[3]);
     // los gatillos: la presion (analogica); si el mando no la manda, el boton entero
@@ -115,6 +140,16 @@ void MandoVibrar(int i, bool si) {
     if (i < 0 || i >= MandosMax || !Driver() || gVibrando[i] == si) return;
     gVibrando[i] = si;
     gFnVibrar(&gSesion, i, si ? ETrue : EFalse);
+}
+
+bool MandoAcelerometro(int i, float g[3]) {
+    if (i < 0 || i >= MandosMax || !Driver() || !gFnWii) return false;
+    TBtHidWiiStatePckg pk;
+    if (gFnWii(&gSesion, i, pk) != KErrNone) return false;
+    const TBtHidWiiState& s = pk();
+    if (!s.iConnected) return false;
+    for (int k = 0; k < 3; k++) g[k] = s.iAccelG[k];
+    return true;
 }
 
 void MandosCerrar() {

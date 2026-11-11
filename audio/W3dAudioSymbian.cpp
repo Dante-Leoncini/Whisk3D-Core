@@ -128,9 +128,28 @@ bool W3dAudioBackendInit(int rate) {
 void W3dAudioBackendShutdown() {
     if (!s_running) return;
     s_stop = 1;
+    // espera a que el hilo termine solo (WriteNext -> ::Stop -> return), pero no para siempre: con la app al fondo
+    // (cerrada desde el administrador de tareas) el sistema puede haberle sacado la salida de audio y el siguiente
+    // MaoscBufferCopied no llega nunca; la app quedaba colgada al cerrar. Al segundo, el hilo se mata
     TRequestStatus st;
     s_thread.Logon(st);
-    User::WaitForRequest(st); // espera a que el hilo termine solo (WriteNext -> ::Stop -> return)
+    RTimer reloj;
+    if (reloj.CreateLocal() == KErrNone) {
+        TRequestStatus vencio;
+        reloj.After(vencio, 1000000);
+        User::WaitForRequest(st, vencio);
+        if (st == KRequestPending) {
+            s_thread.LogonCancel(st);
+            User::WaitForRequest(st);
+            s_thread.Kill(KErrNone);
+        } else {
+            reloj.Cancel();
+            User::WaitForRequest(vencio);
+        }
+        reloj.Close();
+    } else {
+        User::WaitForRequest(st);
+    }
     s_thread.Close();
     s_mutex.Close();
     s_running = EFalse;
