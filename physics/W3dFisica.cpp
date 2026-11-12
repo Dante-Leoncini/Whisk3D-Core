@@ -327,26 +327,36 @@ static bool ReboteEnArea(W3dCuerpo* c, Object* area, const char* lados) {
 // ===========================================================================
 //  BINDS LUA. Todos toleran nil y el tipo equivocado: los getters devuelven
 //  ceros y los setters/rebotes no hacen nada (devuelven false).
+//  EJES: en 3D lua usa Z ARRIBA (los ejes del panel): un (x,y,z) de lua es el
+//  (x,z,y) del motor, y la conversion se hace aca, en la frontera, con
+//  W3dLuaEjes (ver W3dScript.h). Lo de adentro (el paso, CajaDe, los rebotes)
+//  sigue en los ejes del motor. En 2D NO se convierte nada: x derecha, y abajo
+//  y z la profundidad en px, como posPx.
 // ===========================================================================
 
 // velocidad(obj) -> vx, vy, vz   (0,0,0 si el objeto no tiene velocidad)
 // velocidad(obj, vx, vy [, vz])  -> la fija y deja al objeto EN MANOS DEL MOTOR:
 //   desde ese momento el paso de fisica lo mueve solo cada frame (pos += vel*dt).
 //   Unidades: px de lienzo por segundo en 2D (mismo espacio que posPx), unidades
-//   del motor por segundo en 3D. Ejes 2D: +x derecha, +y ABAJO.
+//   del motor por segundo en 3D. Ejes 2D: +x derecha, +y ABAJO. Ejes 3D: los de
+//   lua (Z arriba): vz es la vertical.
 //   velocidad(obj, 0, 0) lo deja quieto (sigue siendo un cuerpo, no cuesta nada).
 static int LVelocidad(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
+    const bool tresD = (o != NULL) && !Es2D(o);
     if (lua_gettop(L) <= 1) {
         float vx = 0, vy = 0, vz = 0;
         W3dFisicaGetVel(o, &vx, &vy, &vz);
+        if (tresD) W3dLuaEjes(vy, vz);
         lua_pushnumber(L, vx); lua_pushnumber(L, vy); lua_pushnumber(L, vz);
         return 3;
     }
     if (!o) return 0;
-    W3dFisicaSetVel(o, (float)luaL_checknumber(L, 2),
-                       (float)luaL_optnumber(L, 3, 0.0),
-                       (float)luaL_optnumber(L, 4, 0.0));
+    float vx = (float)luaL_checknumber(L, 2);
+    float vy = (float)luaL_optnumber(L, 3, 0.0);
+    float vz = (float)luaL_optnumber(L, 4, 0.0);
+    if (tresD) W3dLuaEjes(vy, vz);
+    W3dFisicaSetVel(o, vx, vy, vz);
     return 0;
 }
 
@@ -371,15 +381,18 @@ static int LAcelerar(lua_State* L) {
     return 1;
 }
 
-// caja(obj) -> ancho, alto, profundo: la caja de colision que se esta usando.
-// caja(obj, ancho, alto [, profundo]): la fija a mano (px de lienzo en 2D,
-//   unidades del motor en 3D). Sirve para afinar (una pelota con caja mas chica
-//   que su dibujo) y es la forma de darle caja a un objeto 3D que no es malla.
+// caja(obj) -> x, y, z: el tamanio de la caja de colision que se esta usando.
+// caja(obj, x, y [, z]): la fija a mano. 2D: ancho, alto (y profundidad) en px de
+//   lienzo. 3D: el tamanio por eje de LUA, en unidades del motor (x = ancho,
+//   y = fondo, z = ALTO). Sirve para afinar (una pelota con caja mas chica que su
+//   dibujo) y es la forma de darle caja a un objeto 3D que no es malla.
 static int LCaja(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
+    const bool tresD = (o != NULL) && !Es2D(o);
     if (lua_gettop(L) <= 1) {
         float c[3], h[3];
         if (!CajaDe(o, c, h)) { h[0] = h[1] = h[2] = 0.0f; }
+        if (tresD) W3dLuaEjes(h[1], h[2]);
         lua_pushnumber(L, h[0] * 2.0f); lua_pushnumber(L, h[1] * 2.0f); lua_pushnumber(L, h[2] * 2.0f);
         return 3;
     }
@@ -389,6 +402,7 @@ static int LCaja(lua_State* L) {
     cu->caja[0] = (float)luaL_checknumber(L, 2);
     cu->caja[1] = (float)luaL_optnumber(L, 3, 0.0);
     cu->caja[2] = (float)luaL_optnumber(L, 4, 0.0);
+    if (tresD) W3dLuaEjes(cu->caja[1], cu->caja[2]);
     cu->cajaProp = true;
     return 0;
 }
@@ -431,9 +445,13 @@ static int LRebotar(lua_State* L) {
 //   "lados" dice que paredes EXISTEN; las que no se nombran quedan ABIERTAS (se
 //   puede salir por ahi). Separadores: espacio, coma, +, |, /. Palabras:
 //       x:  "izq" ("izquierda")   "der" ("derecha")
-//       y:  "arriba" ("techo")    "abajo" ("piso")     <- +y va hacia ABAJO
+//       y:  "arriba" ("techo")    "abajo" ("piso")     <- 2D: +y va hacia ABAJO
 //       z:  "frente" ("adelante") "fondo" ("atras")    <- solo en 3D
 //       "todos" = las 4/6 cerradas (lo mismo que no pasar el argumento)
+//   En 3D las palabras nombran DIRECCIONES, no letras de lua: "arriba"/"abajo"
+//   son las paredes de la vertical (la Z de lua, la Y del motor) y "frente"/
+//   "fondo" las de la profundidad (la Y de lua, la Z del motor). Siguen
+//   atadas al extremo menor/mayor de cada eje del MOTOR (kLadoNom), como antes.
 //   El pong es una linea: rebotarEn(pelota, cancha, "arriba abajo") -> rebota en
 //   el techo y en el piso, y por los costados se va (eso es justamente el punto).
 //
@@ -441,6 +459,8 @@ static int LRebotar(lua_State* L) {
 //   Igual pero el rect/caja se da a mano. (x0,y0) es la esquina de valores
 //   MENORES: en 2D eso es izquierda y ARRIBA. Cualquier lado puede ser nil = ese
 //   lado esta ABIERTO. Solo hace falta si el area no es un objeto de la escena.
+//   En 3D los limites van en ejes de LUA (Z arriba): y0/y1 limitan la Z del motor
+//   y z0/z1 (la vertical) la Y del motor.
 static int LRebotarEn(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     W3dCuerpo* c = Buscar(o);
@@ -454,13 +474,16 @@ static int LRebotarEn(lua_State* L) {
     bool hx0 = !lua_isnoneornil(L, 2), hy0 = !lua_isnoneornil(L, 3);
     bool hx1 = !lua_isnoneornil(L, 4), hy1 = !lua_isnoneornil(L, 5);
     bool hz0 = !lua_isnoneornil(L, 6), hz1 = !lua_isnoneornil(L, 7);
+    // el eje del MOTOR de la y y de la z de lua: en 3D se intercambian (W3dLuaEjes), en 2D no
+    int ejeY = 1, ejeZ = 2;
+    if (!Es2D(o)) { ejeY = 2; ejeZ = 1; }
     bool hit = false;
     if (ReboteLimite(c, 0, (float)luaL_optnumber(L, 2, 0.0), hx0,
                            (float)luaL_optnumber(L, 4, 0.0), hx1)) hit = true;
-    if (ReboteLimite(c, 1, (float)luaL_optnumber(L, 3, 0.0), hy0,
-                           (float)luaL_optnumber(L, 5, 0.0), hy1)) hit = true;
-    if (ReboteLimite(c, 2, (float)luaL_optnumber(L, 6, 0.0), hz0,
-                           (float)luaL_optnumber(L, 7, 0.0), hz1)) hit = true;
+    if (ReboteLimite(c, ejeY, (float)luaL_optnumber(L, 3, 0.0), hy0,
+                              (float)luaL_optnumber(L, 5, 0.0), hy1)) hit = true;
+    if (ReboteLimite(c, ejeZ, (float)luaL_optnumber(L, 6, 0.0), hz0,
+                              (float)luaL_optnumber(L, 7, 0.0), hz1)) hit = true;
     lua_pushboolean(L, hit ? 1 : 0);
     return 1;
 }

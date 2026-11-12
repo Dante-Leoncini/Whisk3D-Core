@@ -105,7 +105,10 @@ struct W3dScriptInst {
     // el script DEFINE el evento i? -1 = sin mirar todavia, 0 = no, 1 = si. Se mira una vez
     // (al primer evento) y queda: un hitbox con cien pares por tick no hace cien getglobal.
     signed char eventos[W3D_EVENTOS_SCRIPT];
-    W3dScriptInst() : L(NULL), duenio(NULL) {
+    // apagado (el ojo de la lista de scripts): no se llama a ninguna de sus funciones. inicioHecho: su inicio() ya
+    // corrio (apagado al darle Play no corre; si despues lo prenden, corre ahi)
+    bool apagado, inicioHecho;
+    W3dScriptInst() : L(NULL), duenio(NULL), apagado(false), inicioHecho(false) {
         for (int i = 0; i < W3D_EVENTOS_SCRIPT; i++) eventos[i] = -1;
     }
 };
@@ -394,23 +397,44 @@ void W3dScriptFuentesAsegurarOps() {
     listo = true;
 }
 
-// instanciar("nombre" [, x, y, z]) -> clona un Prefab de la Biblioteca del .w3d
-// como hijo de la escena y devuelve el objeto (light userdata, como objeto()).
-// x/y/z en coords del MOTOR. nil = no existe el prefab (o el recurso todavia
-// no esta LISTO): reintentar el proximo frame.
+// ---- LA FRONTERA DE EJES Lua <-> motor (ver W3dLuaEjes en W3dScript.h) --------------------------------------------
+// Lua ve Z ARRIBA (los ejes del panel de Propiedades); el motor sigue con Y arriba. TODO vector 3D que entra o sale
+// por un bind de este archivo pasa por W3dLuaEjes: el (x, y, z) de Lua es el (x, z, y) del motor. Estas dos ayudas
+// cubren el caso comun (tres numeros seguidos en la pila); los demas binds llaman a W3dLuaEjes a mano.
+// lee los numeros i, i+1, i+2 de la pila (un vector de Lua) y los devuelve en ejes del MOTOR
+static Vector3 LeerVec3Lua(lua_State* L, int i) {
+    float x = (float)luaL_checknumber(L, i);
+    float y = (float)luaL_checknumber(L, i + 1);
+    float z = (float)luaL_checknumber(L, i + 2);
+    W3dLuaEjes(y, z);
+    return Vector3(x, y, z);
+}
+// empuja un vector del MOTOR como lo ve Lua (x, z, y): tres valores en la pila
+static void PushVec3Lua(lua_State* L, float x, float y, float z) {
+    W3dLuaEjes(y, z);
+    lua_pushnumber(L, x); lua_pushnumber(L, y); lua_pushnumber(L, z);
+}
+
+// instanciar("nombre" [, x, y, z [, rotZ [, padre]]]) -> clona un Prefab de la
+// Biblioteca del .w3d como hijo de la escena y devuelve el objeto (light userdata,
+// como objeto()). x/y/z en los ejes de LUA (Z arriba): se pasan al motor con
+// W3dLuaEjes antes del hook (que recibe coords del MOTOR). rotZ = el giro en grados
+// alrededor del eje VERTICAL (la Z de Lua, la Y del motor: el mismo numero, no se
+// convierte). nil = no existe el prefab (o el recurso todavia no esta LISTO):
+// reintentar el proximo frame.
 static int LInstanciar(lua_State* L) {
     const char* n = luaL_checkstring(L, 1);
     float pos[3]; const float* pp = 0;
     if (lua_gettop(L) >= 4) {
-        pos[0] = (float)luaL_checknumber(L, 2);
-        pos[1] = (float)luaL_checknumber(L, 3);
-        pos[2] = (float)luaL_checknumber(L, 4);
+        const Vector3 p = LeerVec3Lua(L, 2);
+        pos[0] = p.x; pos[1] = p.y; pos[2] = p.z;
         pp = pos;
     }
-    // un PREFAB DEL PROYECTO primero (con rotY opcional, el 5to argumento); si no hay, el de la Biblioteca del
-    // formato texto (que no gira ni avisa a la partida: queda como estaba)
+    // un PREFAB DEL PROYECTO primero (con el giro vertical opcional, el 5to argumento); si no hay, el de la
+    // Biblioteca del formato texto (que no gira ni avisa a la partida: queda como estaba)
     Object* o = 0;
     if (W3dPrefabInstanciarHook) {
+        // (el giro alrededor de la vertical: la Z de Lua es la Y del motor, el hook lo espera como rotY)
         const float rotY = (lua_gettop(L) >= 5) ? (float)luaL_checknumber(L, 5) : 0.0f;
         // (quien llama: un script de una libreria externa nombra primero los prefabs de SU libreria)
         lua_getfield(L, LUA_REGISTRYINDEX, "w3d_duenio");
@@ -481,6 +505,18 @@ static Object* BuscarNombreRec(Object* padre, const char* n) {
     }
     return NULL;
 }
+// seleccionados() -> { obj, obj, ... }: los objetos ELEGIDOS en el editor (el activo incluido), en orden de seleccion.
+// Para los botones de las propiedades usados como complementos del editor: "a lo que este elegido, hacele esto".
+static int LSeleccionados(lua_State* L) {
+    lua_newtable(L);
+    int k = 1;
+    for (size_t i = 0; i < ObjSelects.size(); i++) {
+        if (!ObjSelects[i]) continue;
+        lua_pushlightuserdata(L, ObjSelects[i]);
+        lua_rawseti(L, -2, k++);
+    }
+    return 1;
+}
 static int LBuscar(lua_State* L) {
     const char* n = luaL_checkstring(L, 1);
     extern Object* SceneCollection;
@@ -512,16 +548,12 @@ static int LBuscar(lua_State* L) {
 // puntoMundo(obj, lx,ly,lz) -> x,y,z : transforma un punto LOCAL del objeto a
 // MUNDO (cadena completa de padres). Sirve para anclar cosas a un objeto que
 // la fisica mueve y rota (el asiento de un auto, la punta de un canio).
+// Entrada y salida en los ejes de Lua (Z arriba; W3dLuaEjes en la frontera).
 static int LPuntoMundo(lua_State* L) {
     Object* o = W3dScriptParamObjeto((void*)L, 1);
     if (!o) { lua_pushnil(L); return 1; }
-    Vector3 p((float)luaL_checknumber(L, 2),
-              (float)luaL_checknumber(L, 3),
-              (float)luaL_checknumber(L, 4));
-    Vector3 w = o->LocalAMundo(p);
-    lua_pushnumber(L, w.x);
-    lua_pushnumber(L, w.y);
-    lua_pushnumber(L, w.z);
+    Vector3 w = o->LocalAMundo(LeerVec3Lua(L, 2));
+    PushVec3Lua(L, w.x, w.y, w.z);
     return 3;
 }
 
@@ -733,7 +765,10 @@ static int LObjeto(lua_State* L) {
     return 1;
 }
 
-// opcion("dificultad") -> la opcion elegida en el editor ("" si no se asigno)
+// opcion("dificultad") -> la opcion elegida en el editor. Si no se eligio ninguna, la DE FABRICA: la primera de la
+// lista declarada en `propiedades` (dificultad = { "facil", "normal", "dificil" } -> "facil"), la misma que muestra
+// el panel de Propiedades. Antes devolvia "" y el juego no hacia lo que se veia en el editor. "" solo si no hay
+// lista declarada.
 static int LOpcion(lua_State* L) {
     const char* n = luaL_checkstring(L, 1);
     lua_getfield(L, LUA_REGISTRYINDEX, "w3d_inst");
@@ -741,11 +776,27 @@ static int LOpcion(lua_State* L) {
     lua_pop(L, 1);
     if (inst) {
         std::map<std::string, std::string>::iterator it = inst->opciones.find(n);
-        if (it != inst->opciones.end()) {
+        if (it != inst->opciones.end() && !it->second.empty()) {
             lua_pushstring(L, it->second.c_str());
             return 1;
         }
     }
+    // la de fabrica: propiedades[n][1], si es un texto
+    lua_getglobal(L, "propiedades");
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, n);
+        if (lua_istable(L, -1)) {
+            lua_rawgeti(L, -1, 1);
+            if (lua_type(L, -1) == LUA_TSTRING) {
+                lua_replace(L, -3);         // queda el texto donde estaba `propiedades`
+                lua_pop(L, 1);              // saco la lista
+                return 1;
+            }
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
     lua_pushstring(L, "");
     return 1;
 }
@@ -1026,35 +1077,36 @@ static int LLogLinea(lua_State* L) {
     return 2;
 }
 // pos3(o) -> x, y, z: la posicion LOCAL del objeto 3D (relativa a su padre; si no tiene padre es la
-// de mundo). ALIAS historico de posicion(): los scripts viejos lo siguen usando.
+// de mundo). ALIAS historico de posicion(): los scripts viejos lo siguen usando. Ejes de Lua (Z arriba).
 static int LPos3(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     if (!o) { lua_pushnumber(L, 0); lua_pushnumber(L, 0); lua_pushnumber(L, 0); return 3; }
-    lua_pushnumber(L, o->pos.x); lua_pushnumber(L, o->pos.y); lua_pushnumber(L, o->pos.z);
+    PushVec3Lua(L, o->pos.x, o->pos.y, o->pos.z);
     return 3;
 }
-// setPos3(o, x, y, z): ALIAS historico de setPosicion() (ver mas abajo).
+// setPos3(o, x, y, z): ALIAS historico de setPosicion() (ver mas abajo). Ejes de Lua (Z arriba).
 static int LSetPos3(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     if (o) {
-        o->pos.x = (float)luaL_checknumber(L, 2);
-        o->pos.y = (float)luaL_checknumber(L, 3);
-        o->pos.z = (float)luaL_checknumber(L, 4);
+        o->pos = LeerVec3Lua(L, 2);
         Redibujar();
     }
     return 0;
 }
-// girarHacia(o, dx, dz, factor): gira SUAVE al objeto hacia esa direccion del piso
-// (el slerp del quaternion vive aca: en lua seria un dolor)
+// girarHacia(o, dx, dy, factor): gira SUAVE al objeto hacia esa direccion del piso
+// (el slerp del quaternion vive aca: en lua seria un dolor). El piso de Lua es el
+// plano XY (Z arriba): la 'dy' de Lua es la z del motor, cuyo piso es el XZ. Antes
+// el segundo numero se llamaba 'dz' (ejes del motor): es el MISMO numero, solo
+// cambio el nombre con la convencion nueva, asi que los scripts no cambian.
 static int LGirarHacia(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     if (!o) return 0;
     float dx = (float)luaL_checknumber(L, 2);
-    float dz = (float)luaL_checknumber(L, 3);
+    float dz = (float)luaL_checknumber(L, 3);   // la 'dy' de Lua = la z del motor
     float f  = (float)luaL_optnumber(L, 4, 0.2);
     float len = sqrtf(dx * dx + dz * dz);
     if (len < 0.0001f) return 0;
-    Vector3 dir(dx / len, 0.0f, dz / len);
+    Vector3 dir(dx / len, 0.0f, dz / len);      // (motor: el piso es XZ, la Y es arriba)
     Quaternion q = Quaternion::FromDirection(dir, Vector3(0, 1, 0));
     o->SetRot(Quaternion::Slerp(o->Rot(), q, f));   // la puerta deja euler/axis-angle al dia
     Redibujar();
@@ -1101,6 +1153,10 @@ static int LAnimar(lua_State* L) {
 //
 //  INDICES 1-BASED en lua (como dedo()): grupoVertices ya los devuelve asi y
 //  verticePos/setVerticePos/setVerticeColor/setVertices los reciben asi.
+//
+//  EJES: las posiciones de vertices (locales de la malla) van en los ejes de
+//  Lua (Z arriba): verticePos/verticePosAnim/setVerticePos/setVertices pasan
+//  cada (x,y,z) por W3dLuaEjes en la frontera. vertex[] sigue en los del motor.
 //
 //  EFICIENCIA: los setters escriben vertex[]/vertexColor[] EN EL LUGAR (sin
 //  allocs) y suben skinGeomVersion, el MISMO camino por el que la AnimacionUV
@@ -1172,9 +1228,7 @@ static int LVerticePos(lua_State* L) {
         lua_pushnumber(L, 0); lua_pushnumber(L, 0); lua_pushnumber(L, 0);
         return 3;
     }
-    lua_pushnumber(L, m->vertex[i*3]);
-    lua_pushnumber(L, m->vertex[i*3+1]);
-    lua_pushnumber(L, m->vertex[i*3+2]);
+    PushVec3Lua(L, m->vertex[i*3], m->vertex[i*3+1], m->vertex[i*3+2]);
     return 3;
 }
 // verticePosAnim(m, i) -> x, y, z: la posicion ANIMADA del render-vert i (1-based) en coords locales de la malla:
@@ -1188,9 +1242,7 @@ static int LVerticePosAnim(lua_State* L) {
         return 3;
     }
     const GLfloat* src = (m->skinArmature && m->skinVertex && m->skinShapeSerial != 0xFFFFFFFFu) ? m->skinVertex : m->vertex;
-    lua_pushnumber(L, src[i*3]);
-    lua_pushnumber(L, src[i*3+1]);
-    lua_pushnumber(L, src[i*3+2]);
+    PushVec3Lua(L, src[i*3], src[i*3+1], src[i*3+2]);
     return 3;
 }
 // numVertices(m) -> cantidad de render-verts de la malla (el rango valido de verticePos/verticePosAnim/setVerticeUV)
@@ -1198,12 +1250,18 @@ static int LNumVertices(lua_State* L) { Mesh* m = ComoMalla(L, 1); lua_pushinteg
 // setVerticeUV(m, i, u, v [, capa]): la UV del render-vert i (1-based). capa 0 (default) = la UV base; capa >= 1 =
 // una capa UV extra del render (Mesh::uvExtra, la que usa una capa de textura con uvMapa = capa). Las capas se
 // dibujan de client arrays, asi que el cambio se ve en el proximo frame sin rehacer nada.
+// EL DESHACER DE LOS SCRIPTS FUERA DEL JUEGO: antes de que una funcion de lua cambie la malla (vertices, UV, colores),
+// el editor (si esta grabando: un boton de las propiedades usado como complemento) guarda su geometria para Ctrl+Z.
+// Durante el gameplay el gancho no hace nada (no hay historial: al Parar se pierde todo igual).
+void (*W3dScriptAntesDeTocarMallaHook)(Object* o) = NULL;
+static void AntesDeTocarMalla(Mesh* m) { if (W3dScriptAntesDeTocarMallaHook && m) W3dScriptAntesDeTocarMallaHook((Object*)m); }
 static int LSetVerticeUV(lua_State* L) {
     Mesh* m = ComoMalla(L, 1);
     int i = (int)luaL_checkinteger(L, 2) - 1;
     if (!m || i < 0 || i >= m->vertexSize) return 0;
     const GLfloat u = (GLfloat)luaL_checknumber(L, 3), v = (GLfloat)luaL_checknumber(L, 4);
     const int capa = (int)luaL_optinteger(L, 5, 0);
+    AntesDeTocarMalla(m);   // (Ctrl+Z de un script fuera del juego; despues de leer los argumentos)
     if (capa <= 0) {
         if (!m->uv) return 0;
         m->DesinstanciarDatos(W3DMD_UV);   // COW: geometria compartida (MallaDatos.h)
@@ -1227,6 +1285,7 @@ static int LDesplazarUV(lua_State* L) {
     Mesh* m = ComoMalla(L, 1);
     const GLfloat du = (GLfloat)luaL_checknumber(L, 2), dv = (GLfloat)luaL_checknumber(L, 3);
     if (!m || !m->uv || m->vertexSize < 1) { lua_pushinteger(L, 0); return 1; }
+    AntesDeTocarMalla(m);   // (Ctrl+Z de un script fuera del juego)
     const size_t n = (size_t)m->vertexSize * 2;
     bool intacta = (m->uvDesplBase.size() == n);
     for (size_t i = 0; i < n && intacta; i += 2)
@@ -1251,6 +1310,7 @@ static int LCopiarUV(lua_State* L) {
     Mesh* d = ComoMalla(L, 1);
     Mesh* o = ComoMalla(L, 2);
     if (!d || !o || d == o || !d->uv || !o->uv || d->vertexSize != o->vertexSize || d->vertexSize < 1) { lua_pushboolean(L, 0); return 1; }
+    AntesDeTocarMalla(d);   // (Ctrl+Z de un script fuera del juego)
     const size_t n = (size_t)d->vertexSize * 2;
     if (memcmp(d->uv, o->uv, n * sizeof(GLfloat)) != 0) {
         d->DesinstanciarDatos(W3DMD_UV);   // COW: geometria compartida (MallaDatos.h)
@@ -1261,17 +1321,19 @@ static int LCopiarUV(lua_State* L) {
     lua_pushboolean(L, 1);
     return 1;
 }
-// setVerticePos(m, i, x, y, z): mueve UN vertice (coords LOCALES). Para mover
-// muchos por frame usa setVertices() (batch, un solo cruce lua<->C).
+// setVerticePos(m, i, x, y, z): mueve UN vertice (coords LOCALES, ejes de Lua). Para
+// mover muchos por frame usa setVertices() (batch, un solo cruce lua<->C).
 static int LSetVerticePos(lua_State* L) {
     Mesh* m = ComoMalla(L, 1);
     int i = (int)luaL_checkinteger(L, 2) - 1;
     if (!m || !m->vertex || i < 0 || i >= m->vertexSize) return 0;
+    const Vector3 p = LeerVec3Lua(L, 3);   // (antes de tocar la malla: un argumento malo corta aca)
+    AntesDeTocarMalla(m);   // (Ctrl+Z de un script fuera del juego)
     m->DesinstanciarDatos(W3DMD_POS);   // COW: geometria compartida (MallaDatos.h)
     GLfloat* v = m->vertex + (size_t)i * 3;
-    v[0] = (GLfloat)luaL_checknumber(L, 3);
-    v[1] = (GLfloat)luaL_checknumber(L, 4);
-    v[2] = (GLfloat)luaL_checknumber(L, 5);
+    v[0] = (GLfloat)p.x;
+    v[1] = (GLfloat)p.y;
+    v[2] = (GLfloat)p.z;
     m->skinGeomVersion++;   // el VBO se re-sube solo (camino de la AnimacionUV)
     Redibujar();
     return 0;
@@ -1289,6 +1351,7 @@ static int LSetVerticeColor(lua_State* L) {
     Mesh* m = ComoMalla(L, 1);
     int i = (int)luaL_checkinteger(L, 2) - 1;
     if (!m || !m->vertexColor || i < 0 || i >= m->vertexSize) return 0;
+    AntesDeTocarMalla(m);   // (Ctrl+Z de un script fuera del juego)
     m->DesinstanciarDatos(W3DMD_COL);   // COW: geometria compartida (MallaDatos.h)
     GLubyte* c = m->vertexColor + (size_t)i * 4;
     c[0] = CanalColor(luaL_checknumber(L, 3));
@@ -1307,6 +1370,7 @@ static int LSetVerticesColor(lua_State* L) {
     Mesh* m = ComoMalla(L, 1);
     luaL_checktype(L, 2, LUA_TTABLE);
     if (!m || !m->vertexColor) return 0;
+    AntesDeTocarMalla(m);   // (Ctrl+Z de un script fuera del juego)
     m->DesinstanciarDatos(W3DMD_COL);   // COW: geometria compartida (MallaDatos.h)
     lua_Integer n = luaL_optinteger(L, 3, 0);
     if (n <= 0) n = (lua_Integer)lua_rawlen(L, 2);
@@ -1335,7 +1399,8 @@ static int LSetVerticesColor(lua_State* L) {
     return 0;
 }
 // setVertices(m, t[, n]): BATCH — t es una tabla PLANA {i1,x1,y1,z1, i2,x2,y2,z2, ...}
-// con los indices de grupoVertices. UN solo cruce lua<->C por frame y CERO allocs
+// con los indices de grupoVertices (cada x,y,z en los ejes de Lua: Z arriba, se
+// intercambian con W3dLuaEjes al escribir). UN solo cruce lua<->C por frame y CERO allocs
 // en C: es la forma eficiente de animar el agua (mover N vertices en circulos).
 // El 3er argumento opcional acota cuantas ENTRADAS de la tabla se leen (en
 // numeros, multiplo de 4): el script rellena solo el prefijo y evita rearmar
@@ -1345,6 +1410,7 @@ static int LSetVertices(lua_State* L) {
     Mesh* m = ComoMalla(L, 1);
     luaL_checktype(L, 2, LUA_TTABLE);
     if (!m || !m->vertex) return 0;
+    AntesDeTocarMalla(m);   // (Ctrl+Z de un script fuera del juego)
     m->DesinstanciarDatos(W3DMD_POS);   // COW: geometria compartida (MallaDatos.h)
     lua_Integer n = luaL_optinteger(L, 3, 0);
     if (n <= 0) n = (lua_Integer)lua_rawlen(L, 2);
@@ -1357,9 +1423,11 @@ static int LSetVertices(lua_State* L) {
         int i = (int)lua_tointeger(L, -4) - 1;
         if (i >= 0 && i < m->vertexSize) {
             GLfloat* v = m->vertex + (size_t)i * 3;
+            float y = (float)lua_tonumber(L, -2), z = (float)lua_tonumber(L, -1);
+            W3dLuaEjes(y, z);   // Lua (Z arriba) -> motor (Y arriba)
             v[0] = (GLfloat)lua_tonumber(L, -3);
-            v[1] = (GLfloat)lua_tonumber(L, -2);
-            v[2] = (GLfloat)lua_tonumber(L, -1);
+            v[1] = (GLfloat)y;
+            v[2] = (GLfloat)z;
             cambio = true;
         }
         lua_pop(L, 4);
@@ -1383,9 +1451,14 @@ static int LSetVertices(lua_State* L) {
 //      que se usan con dt para velocidad/gravedad/inercia, y son el punto de
 //      enganche de la fisica (ver AplicarMovimiento).
 //
-//  EJES: los del MOTOR (Y arriba), los mismos que ya usan pos3/girarHacia. El
-//  panel del editor muestra Z arriba y hace el swap a mano, asi que el campo
-//  "Z" del panel es la 'y' de estos binds y viceversa.
+//  EJES: los de LUA = los del panel de Propiedades: X a la derecha, Y hacia
+//  adelante y Z ARRIBA (desde el 2026-11-11; antes eran los del motor, Y arriba,
+//  y el campo "Z" del panel era la 'y' de estos binds). El motor sigue con Y
+//  arriba: cada bind convierte en la FRONTERA con W3dLuaEjes (W3dScript.h), o
+//  sea el (x, y, z) de Lua es el (x, z, y) del motor, sin cambios de signo, igual
+//  que el panel. Vale para posicion, rotacion (grados por eje: la rot de Lua
+//  (rx, ry, rz) es el rotEuler del motor (x, z, y)) y escala; un ORDEN de
+//  rotacion ("YXZ") se traduce con W3dLuaOrden.
 //  POSICION/ROTACION/ESCALA son LOCALES (relativas al padre). Sin padre, la
 //  local ES la de mundo (el caso normal de un juego).
 //  Ninguno rompe con nil ni con un objeto del tipo equivocado: los getters
@@ -1396,6 +1469,7 @@ static int LSetVertices(lua_State* L) {
 // (movimiento libre, atraviesa todo). Cuando exista colision, este es el UNICO lugar donde hay que
 // resolver el barrido (mover hasta el choque / deslizar) para que mover() y lo que venga despues lo
 // hereden solos. setPosicion NO pasa por aca a proposito: teletransportar ignora la fisica.
+// (dx, dy, dz) en ejes del MOTOR: el bind ya los convirtio.
 static void AplicarMovimiento(Object* o, float dx, float dy, float dz) {
     o->pos.x += dx; o->pos.y += dy; o->pos.z += dz;
 }
@@ -1416,11 +1490,11 @@ static int LNombre(lua_State* L) {
 }
 
 // ---- POSICION -------------------------------------------------------------
-// posicion(o) -> x, y, z (local)
+// posicion(o) -> x, y, z (local, ejes de Lua: Z arriba)
 static int LPosicion(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     if (!o) { lua_pushnumber(L, 0); lua_pushnumber(L, 0); lua_pushnumber(L, 0); return 3; }
-    lua_pushnumber(L, o->pos.x); lua_pushnumber(L, o->pos.y); lua_pushnumber(L, o->pos.z);
+    PushVec3Lua(L, o->pos.x, o->pos.y, o->pos.z);
     return 3;
 }
 // setPosicion(o, x, y, z): TELETRANSPORTAR. Set ABSOLUTO, salto instantaneo, sin recorrido y sin
@@ -1428,56 +1502,59 @@ static int LPosicion(lua_State* L) {
 static int LSetPosicion(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     if (o) {
-        o->pos.x = (float)luaL_checknumber(L, 2);
-        o->pos.y = (float)luaL_checknumber(L, 3);
-        o->pos.z = (float)luaL_checknumber(L, 4);
+        o->pos = LeerVec3Lua(L, 2);
         Redibujar();
     }
     return 0;
 }
 // mover(o, dx, dy, dz): DESPLAZAMIENTO RELATIVO (suma a la posicion actual), en los ejes del padre.
-// Es la forma buena de mover algo cada frame: mover(pelota, vx*dt, vy*dt, vz*dt). A diferencia de
-// setPosicion, pasa por AplicarMovimiento -> cuando haya colision, el motor va a resolver el
-// recorrido aca (frenar/deslizar) en vez de atravesar la pared.
+// Es la forma buena de mover algo cada frame: mover(pelota, vx*dt, vy*dt, vz*dt) (vz = para arriba).
+// A diferencia de setPosicion, pasa por AplicarMovimiento -> cuando haya colision, el motor va a
+// resolver el recorrido aca (frenar/deslizar) en vez de atravesar la pared.
 static int LMover(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     if (o) {
-        AplicarMovimiento(o, (float)luaL_checknumber(L, 2),
-                             (float)luaL_checknumber(L, 3),
-                             (float)luaL_checknumber(L, 4));
+        const Vector3 d = LeerVec3Lua(L, 2);
+        AplicarMovimiento(o, d.x, d.y, d.z);
         Redibujar();
     }
     return 0;
 }
 
 // ---- ROTACION (grados) ----------------------------------------------------
-// rotacion(o) -> x, y, z en GRADOS (el euler de display: conserva las vueltas enteras)
+// rotacion(o) -> x, y, z en GRADOS (el euler de display: conserva las vueltas enteras). Los mismos tres
+// numeros que muestra el panel: la 'z' de Lua es el giro alrededor de la vertical (la Y del motor).
 static int LRotacion(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     if (!o) { lua_pushnumber(L, 0); lua_pushnumber(L, 0); lua_pushnumber(L, 0); return 3; }
-    lua_pushnumber(L, o->rotEuler.x); lua_pushnumber(L, o->rotEuler.y); lua_pushnumber(L, o->rotEuler.z);
+    PushVec3Lua(L, o->rotEuler.x, o->rotEuler.y, o->rotEuler.z);
     return 3;
 }
-// setRotacion(o, x, y, z): orientacion ABSOLUTA en grados (euler XYZ). Usa SetRotEuler para que el
-// euler mande y el quaternion se derive: asi no se pierden las vueltas ni se desincroniza el panel.
-// setRotacion(o, x, y, z, "YXZ"): los mismos angulos (x sobre el eje X, y sobre Y, z sobre Z) compuestos en
-// ese ORDEN (R = Ry * Rx * Rz: un vehiculo que rola y cabecea en su marco y despues apunta a su rumbo). El
-// motor arma el quaternion directo y deriva el euler XYZ del panel; antes el script armaba la matriz y la
-// descomponia con trigonometria en lua (en el N95, lo caro).
+// setRotacion(o, x, y, z): orientacion ABSOLUTA en grados, el euler del PANEL (lo mismo que devuelve
+// rotacion(): van y vuelven sin perderse). Usa SetRotEuler para que el euler mande y el quaternion se
+// derive: asi no se pierden las vueltas ni se desincroniza el panel. OJO: ese euler es el XYZ del MOTOR
+// (q = Rx * Ry * Rz con la Y del motor arriba); en las letras de Lua es el orden "XZY" (R = Rx * Rz * Ry).
+// setRotacion(o, x, y, z, "ZXY"): los mismos angulos (x sobre el eje X, y sobre Y, z sobre Z, ejes de Lua)
+// compuestos en ese ORDEN (R = Rz * Rx * Ry: un vehiculo que rola y cabecea en su marco y despues apunta a
+// su rumbo; con Y arriba eso era "YXZ"). El orden se pasa a los ejes del motor con W3dLuaOrden; si da el
+// "XYZ" del motor se usa SetRotEuler (conserva las vueltas). El motor arma el quaternion directo y deriva
+// el euler del panel; antes el script armaba la matriz y la descomponia con trigonometria en lua (en el
+// N95, lo caro).
 static int LSetRotacion(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     if (o) {
-        const float x = (float)luaL_checknumber(L, 2), y = (float)luaL_checknumber(L, 3), z = (float)luaL_checknumber(L, 4);
-        const char* orden = lua_type(L, 5) == LUA_TSTRING ? lua_tostring(L, 5) : NULL;
-        if (!orden || strcmp(orden, "XYZ") == 0 || strlen(orden) != 3) {
-            o->SetRotEuler(Vector3(x, y, z));
+        const Vector3 r = LeerVec3Lua(L, 2);   // (grados, ya en ejes del motor)
+        const char* ordenLua = lua_type(L, 5) == LUA_TSTRING ? lua_tostring(L, 5) : NULL;
+        const std::string orden = ordenLua ? W3dLuaOrden(ordenLua) : std::string();
+        if (orden.size() != 3 || orden == "XYZ" || orden == "xyz") {
+            o->SetRotEuler(r);
         } else {
             Quaternion q;   // (identidad)
             for (int k = 0; k < 3; k++) {
-                const char c = orden[k];
-                if (c == 'X' || c == 'x')      q = q * Quaternion::FromAxisAngle(1, 0, 0, x);
-                else if (c == 'Y' || c == 'y') q = q * Quaternion::FromAxisAngle(0, 1, 0, y);
-                else if (c == 'Z' || c == 'z') q = q * Quaternion::FromAxisAngle(0, 0, 1, z);
+                const char c = orden[(size_t)k];
+                if (c == 'X' || c == 'x')      q = q * Quaternion::FromAxisAngle(1, 0, 0, r.x);
+                else if (c == 'Y' || c == 'y') q = q * Quaternion::FromAxisAngle(0, 1, 0, r.y);
+                else if (c == 'Z' || c == 'z') q = q * Quaternion::FromAxisAngle(0, 0, 1, r.z);
             }
             o->SetRot(q);
         }
@@ -1485,14 +1562,43 @@ static int LSetRotacion(lua_State* L) {
     }
     return 0;
 }
+// ---- UN EJE SOLO ------------------------------------------------------------------------------------------------------
+// rotacionX/Y/Z(o) -> grados; setRotacionX/Y/Z(o, grados): lo mismo que rotacion()/setRotacion(), pero de UN eje (los
+// otros dos quedan como estaban). Ejes de Lua: rotacionZ es el giro sobre la VERTICAL, la Z del panel. Para lo de todos
+// los dias, sin armar los tres numeros: setRotacionZ(o, rotacionZ(o) + 90 * dt) (pedido del dueno, 2026-11-11: "mas
+// directo y menos codigo"). En el motor la Y y la Z van cruzadas (W3dLuaEjes): la Z de Lua es rotEuler.y.
+static float* EjeRotMotor(Vector3& r, int ejeLua) { return ejeLua == 0 ? &r.x : (ejeLua == 1 ? &r.z : &r.y); }
+static int RotacionEje(lua_State* L, int ejeLua) {
+    Object* o = W3dScriptParamObjeto(L, 1);
+    if (!o) { lua_pushnumber(L, 0); return 1; }
+    Vector3 r = o->rotEuler;
+    lua_pushnumber(L, *EjeRotMotor(r, ejeLua));
+    return 1;
+}
+static int SetRotacionEje(lua_State* L, int ejeLua) {
+    Object* o = W3dScriptParamObjeto(L, 1);
+    if (o) {
+        Vector3 r = o->rotEuler;                     // (el euler del panel: los otros dos ejes quedan igual)
+        *EjeRotMotor(r, ejeLua) = (float)luaL_checknumber(L, 2);
+        o->SetRotEuler(r);
+        Redibujar();
+    }
+    return 0;
+}
+static int LRotacionX(lua_State* L) { return RotacionEje(L, 0); }
+static int LRotacionY(lua_State* L) { return RotacionEje(L, 1); }
+static int LRotacionZ(lua_State* L) { return RotacionEje(L, 2); }
+static int LSetRotacionX(lua_State* L) { return SetRotacionEje(L, 0); }
+static int LSetRotacionY(lua_State* L) { return SetRotacionEje(L, 1); }
+static int LSetRotacionZ(lua_State* L) { return SetRotacionEje(L, 2); }
 // girar(o, dx, dy, dz): giro RELATIVO en grados sobre los ejes PROPIOS del objeto (suma a la
-// rotacion actual). El de cada frame: girar(moneda, 0, 90*dt, 0).
+// rotacion actual), en los ejes de Lua. El de cada frame: girar(moneda, 0, 0, 90*dt) (la moneda
+// gira sobre la vertical, la Z). Se aplican como RotateLocal del motor: primero el de la vertical.
 static int LGirar(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     if (o) {
-        o->RotateLocal((float)luaL_checknumber(L, 2),
-                       (float)luaL_checknumber(L, 3),
-                       (float)luaL_checknumber(L, 4));
+        const Vector3 d = LeerVec3Lua(L, 2);
+        o->RotateLocal(d.x, d.y, d.z);
         o->ActualizarDisplayRot();   // RotateLocal solo toca 'rot': hay que refrescar el display
         Redibujar();
     }
@@ -1500,23 +1606,25 @@ static int LGirar(lua_State* L) {
 }
 
 // ---- ESCALA ---------------------------------------------------------------
-// escala(o) -> sx, sy, sz del objeto.
+// escala(o) -> sx, sy, sz del objeto (ejes de Lua: sz = la escala vertical).
 // OJO: escala() SIN argumento es OTRA cosa (el factor responsive de pantalla, min(w,h)/480) y vive
 // en main/script/BindsJuego.cpp, que se registra DESPUES y pisa a este. Por eso alla el bind mira si
-// le pasaron un objeto y, si es asi, devuelve esta misma escala: las dos formas conviven.
+// le pasaron un objeto y, si es asi, devuelve esta misma escala: las dos formas conviven (y alla
+// tambien tiene que salir con W3dLuaEjes).
 static int LEscalaObj(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     if (!o) { lua_pushnumber(L, 1); lua_pushnumber(L, 1); lua_pushnumber(L, 1); return 3; }
-    lua_pushnumber(L, o->scale.x); lua_pushnumber(L, o->scale.y); lua_pushnumber(L, o->scale.z);
+    PushVec3Lua(L, o->scale.x, o->scale.y, o->scale.z);
     return 3;
 }
-// setEscala(o, sx, sy, sz): escala ABSOLUTA. Con UN solo numero es uniforme: setEscala(o, 2).
+// setEscala(o, sx, sy, sz): escala ABSOLUTA (ejes de Lua). Con UN solo numero es uniforme: setEscala(o, 2).
 static int LSetEscala(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     if (o) {
         float sx = (float)luaL_checknumber(L, 2);
         float sy = (float)luaL_optnumber(L, 3, sx);
         float sz = (float)luaL_optnumber(L, 4, sx);
+        W3dLuaEjes(sy, sz);   // Lua (Z arriba) -> motor (Y arriba)
         o->scale.x = sx; o->scale.y = sy; o->scale.z = sz;
         Redibujar();
     }
@@ -1818,13 +1926,16 @@ static int LAnimTransicion(lua_State* L) {
     if (a && fps > 0.0f) W3dArmatureTransicion(a, fr / fps);
     return 0;
 }
-// mirarA(o, x, y, z): orienta el objeto para que su -Z (el frente de una camara) apunte al punto de mundo, sin
-// rolido (el "arriba" queda hacia +Y). Pensado para objetos sin padre (camaras de juego).
+// mirarA(o, x, y, z): orienta el objeto para que su frente (el de una camara: el -Z local del motor, que en los
+// ejes de Lua es el -Y local) apunte al punto de mundo (x, y, z en los ejes de Lua, Z arriba), sin rolido (el
+// "arriba" del objeto queda hacia +Z de Lua, la +Y del motor). Pensado para objetos sin padre (camaras de juego).
+// La cuenta de abajo es toda en ejes del MOTOR: solo el punto cruza la frontera.
 static int LMirarA(lua_State* L) {
     Object* o = W3dScriptParamObjeto(L, 1);
     if (!o) return 0;
     Vector3 p = o->GetGlobalPosition();
-    Vector3 f((float)luaL_checknumber(L, 2) - p.x, (float)luaL_checknumber(L, 3) - p.y, (float)luaL_checknumber(L, 4) - p.z);
+    const Vector3 t = LeerVec3Lua(L, 2);
+    Vector3 f(t.x - p.x, t.y - p.y, t.z - p.z);
     float l = sqrtf(f.x*f.x + f.y*f.y + f.z*f.z); if (l < 1e-6f) return 0;
     f = f * (1.0f / l);
     Vector3 z(-f.x, -f.y, -f.z);                       // el eje +Z local mira para ATRAS
@@ -1841,6 +1952,8 @@ static int LMirarA(lua_State* L) {
 
 // huesoPunto(arm, "hueso" [, x, y, z]) -> x, y, z en MUNDO del punto (x,y,z) dado en el espacio del hueso,
 // en la pose de ESTE frame (la boca de un arma, el origen de un laser...). nil si el hueso no esta.
+// El punto y el resultado van en los ejes de Lua (Z arriba; tambien el espacio del hueso se ve con la
+// y y la z intercambiadas, como todo lo local): W3dLuaEjes en la entrada y en la salida.
 static int LHuesoPunto(lua_State* L) {
     Armature* a = ArmArg(L, 1);
     const char* hn = lua_tostring(L, 2);
@@ -1850,9 +1963,10 @@ static int LHuesoPunto(lua_State* L) {
     if (h < 0) { lua_pushnil(L); return 1; }
     EvaluarPoseEsqueleto(a, CurrentFrame);
     Matrix4 W; a->GetWorldMatrix(W);
-    Vector3 p((float)luaL_optnumber(L, 3, 0), (float)luaL_optnumber(L, 4, 0), (float)luaL_optnumber(L, 5, 0));
-    Vector3 w = (W * a->bones[h].poseWorld) * p;
-    lua_pushnumber(L, w.x); lua_pushnumber(L, w.y); lua_pushnumber(L, w.z);
+    float px = (float)luaL_optnumber(L, 3, 0), py = (float)luaL_optnumber(L, 4, 0), pz = (float)luaL_optnumber(L, 5, 0);
+    W3dLuaEjes(py, pz);   // Lua -> motor
+    Vector3 w = (W * a->bones[h].poseWorld) * Vector3(px, py, pz);
+    PushVec3Lua(L, w.x, w.y, w.z);
     return 3;
 }
 
@@ -2051,6 +2165,7 @@ static void RegistrarAPI(lua_State* L) {
     lua_pushcfunction(L, LCargaAuto); lua_setglobal(L, "cargaAuto");
     lua_pushcfunction(L, LCargado);   lua_setglobal(L, "cargado");
     lua_pushcfunction(L, LBuscar); lua_setglobal(L, "buscar");
+    lua_pushcfunction(L, LSeleccionados); lua_setglobal(L, "seleccionados");
     lua_pushcfunction(L, LPuntoMundo); lua_setglobal(L, "puntoMundo");
     lua_pushcfunction(L, LAnimEscena); lua_setglobal(L, "animEscena");
     lua_pushcfunction(L, LPararEscena); lua_setglobal(L, "pararEscena");
@@ -2087,6 +2202,12 @@ static void RegistrarAPI(lua_State* L) {
     // rotacion en grados: setRotacion = absoluta / girar = relativa por frame
     lua_pushcfunction(L, LRotacion);    lua_setglobal(L, "rotacion");
     lua_pushcfunction(L, LSetRotacion); lua_setglobal(L, "setRotacion");
+    lua_pushcfunction(L, LRotacionX);    lua_setglobal(L, "rotacionX");     // (un eje solo; ver RotacionEje)
+    lua_pushcfunction(L, LRotacionY);    lua_setglobal(L, "rotacionY");
+    lua_pushcfunction(L, LRotacionZ);    lua_setglobal(L, "rotacionZ");
+    lua_pushcfunction(L, LSetRotacionX); lua_setglobal(L, "setRotacionX");
+    lua_pushcfunction(L, LSetRotacionY); lua_setglobal(L, "setRotacionY");
+    lua_pushcfunction(L, LSetRotacionZ); lua_setglobal(L, "setRotacionZ");
     lua_pushcfunction(L, LGirar);       lua_setglobal(L, "girar");
     // escala: setEscala = absoluta / escalar = relativa. OJO: 'escala' lo vuelve a registrar
     // BindsJuego (main/) con la version que ademas atiende escala() sin argumentos.
@@ -2211,6 +2332,7 @@ bool W3dScriptCargar(Object* duenio) {
         if (!ent.ruta.empty()) {
             inst = new W3dScriptInst();
             inst->duenio = duenio;
+            inst->apagado = ent.apagado;
             inst->L = luaL_newstate();
             AbrirLibs(inst->L);
             lua_pushlightuserdata(inst->L, inst);
@@ -2275,6 +2397,7 @@ void W3dScriptResolverValor(Object* duenio, int idx, const std::string& prop, co
 // primera muestra de cada una, que trae el tiempo de afuera de lua (el render del cuadro anterior)
 unsigned g_w3dScriptLlamadas = 0;
 static bool Llamar(W3dScriptInst* inst, const char* fn, bool conDt, float dt) {
+    if (inst->apagado) return false;   // apagado con el ojo: el motor no lo llama
     lua_State* L = inst->L;
     g_w3dScriptLlamadas++;
     lua_getglobal(L, fn);
@@ -2294,8 +2417,64 @@ bool W3dScriptInicio(Object* duenio) {
     if (it == gInstancias.end()) return false;
     bool ok = false;
     for (size_t i = 0; i < it->second.size(); i++)
-        if (it->second[i] && Llamar(it->second[i], "inicio", false, 0.0f)) ok = true;
+        if (it->second[i] && !it->second[i]->apagado) {
+            it->second[i]->inicioHecho = true;
+            if (Llamar(it->second[i], "inicio", false, 0.0f)) ok = true;
+        }
     return ok;
+}
+
+bool W3dScriptLlamarBoton(Object* duenio, int idx, const std::string& prop) {
+    if (!duenio) return false;
+    // sin el juego andando no hay instancias: se carga el script para esta llamada (y despues se descarga)
+    bool temporal = false;
+    std::map<Object*, std::vector<W3dScriptInst*> >::iterator it = gInstancias.find(duenio);
+    if (it == gInstancias.end()) {
+        if (!W3dScriptCargar(duenio)) return false;
+        temporal = true;
+        it = gInstancias.find(duenio);
+        if (it == gInstancias.end()) return false;
+    }
+    bool ok = false;
+    if (idx >= 0 && idx < (int)it->second.size() && it->second[(size_t)idx] && it->second[(size_t)idx]->L) {
+        lua_State* L = it->second[(size_t)idx]->L;
+        lua_getglobal(L, "propiedades");
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, prop.c_str());
+            if (lua_istable(L, -1)) {   // { "Etiqueta", funcion }: la primera funcion de la tabla
+                const int n = (int)lua_rawlen(L, -1);
+                bool hay = false;
+                for (int i = 1; i <= n && !hay; i++) {
+                    lua_rawgeti(L, -1, i);
+                    if (lua_isfunction(L, -1)) { lua_replace(L, -2); hay = true; } else lua_pop(L, 1);
+                }
+                if (!hay) { lua_pop(L, 1); lua_pushnil(L); }
+            }
+            if (lua_isfunction(L, -1)) {
+                g_w3dScriptLlamadas++;
+                if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+                    gUltimoError = lua_tostring(L, -1) ? lua_tostring(L, -1) : "error de lua";
+                    w3dLogfE("Script (boton %s): %s", prop.c_str(), gUltimoError.c_str());
+                    lua_pop(L, 1);
+                } else ok = true;
+            } else lua_pop(L, 1);
+        }
+        lua_pop(L, 1);   // propiedades
+    }
+    if (temporal) W3dScriptDescargarDe(duenio);
+    Redibujar();
+    return ok;
+}
+
+void W3dScriptSetApagado(Object* duenio, int idx, bool apagado) {
+    std::map<Object*, std::vector<W3dScriptInst*> >::iterator it = gInstancias.find(duenio);
+    if (it == gInstancias.end() || idx < 0 || idx >= (int)it->second.size() || !it->second[idx]) return;
+    W3dScriptInst* inst = it->second[idx];
+    inst->apagado = apagado;
+    if (!apagado && !inst->inicioHecho) {   // apagado desde el Play: su inicio() corre ahora, la primera vez
+        inst->inicioHecho = true;
+        Llamar(inst, "inicio", false, 0.0f);
+    }
 }
 
 bool W3dScriptActualizar(Object* duenio, float dt) {
@@ -2325,6 +2504,7 @@ static int IndiceEvento(const char* fn) {
 
 static bool LlamarEvento(W3dScriptInst* inst, const char* fn, int idx, Object* const* objs, int nObjs,
                          const float* nums, int nNums) {
+    if (inst->apagado) return false;                          // apagado con el ojo: no recibe eventos
     if (idx >= 0 && inst->eventos[idx] == 0) return false;   // ya se sabe que no lo define
     lua_State* L = inst->L;
     g_w3dScriptLlamadas++;
@@ -2517,7 +2697,7 @@ bool W3dScriptLlamarConDatos(Object* duenio, const char* fn, const std::string& 
         std::map<Object*, std::vector<W3dScriptInst*> >::iterator it = gInstancias.find(duenio);
         if (it == gInstancias.end() || i >= it->second.size()) break;
         W3dScriptInst* inst = it->second[i];
-        if (!inst || !inst->L) continue;
+        if (!inst || !inst->L || inst->apagado) continue;   // (apagado con el ojo: tampoco recibe mensajes)
         lua_State* L = inst->L;
         lua_getglobal(L, fn);
         if (!lua_isfunction(L, -1)) { lua_pop(L, 1); continue; }
@@ -2548,6 +2728,14 @@ void W3dScriptDestruirPendientes() {
     }
 }
 int W3dScriptDestruirPedidos() { return (int)gDestruir.size(); }
+// los destruir() pedidos, SIN aplicarlos: los vivos van a 'out' y la cola queda vacia. Lo usa el editor con el juego
+// parado (un boton de las propiedades): los borra el con su Ctrl+Z, en vez de liberarlos aca
+void W3dScriptTomarDestruirPedidos(std::vector<Object*>& out) {
+    std::vector<W3dDestruirPedido> lista;
+    lista.swap(gDestruir);
+    for (size_t i = 0; i < lista.size(); i++)
+        if (W3dObjetoVivoSerial(lista[i].o, lista[i].serial)) out.push_back(lista[i].o);
+}
 
 // cierra el lua_State y libera cada instancia de una lista (lo comparten DescargarDe/DescargarTodo)
 static void CerrarInstancias(std::vector<W3dScriptInst*>& lista) {
@@ -2613,14 +2801,25 @@ bool W3dScriptLeerPropiedades(const std::string& ruta, std::vector<W3dScriptProp
                     p.nombre = lua_tostring(L, -2);
                     p.tipo = 0;
                     int tv = lua_type(L, -1);
-                    if (tv == LUA_TTABLE) {
-                        // tabla de strings = DESPLEGABLE de opciones
+                    if (tv == LUA_TFUNCTION) {
+                        // una FUNCION = un BOTON en la tarjeta del script (su texto, el nombre)
+                        p.tipo = 3; p.etiqueta = p.nombre;
+                    } else if (tv == LUA_TTABLE) {
+                        // tabla de strings = DESPLEGABLE de opciones; con una FUNCION adentro = un BOTON, y el primer
+                        // texto es lo que dice: { "Volver a cero", function() ... end }
                         p.tipo = 1;
                         int n = (int)lua_rawlen(L, -1);
+                        bool conFuncion = false;
                         for (int i = 1; i <= n; i++) {
                             lua_rawgeti(L, -1, i);
-                            if (lua_isstring(L, -1)) p.opciones.push_back(lua_tostring(L, -1));
+                            if (lua_isfunction(L, -1)) conFuncion = true;
+                            else if (lua_type(L, -1) == LUA_TSTRING) p.opciones.push_back(lua_tostring(L, -1));
                             lua_pop(L, 1);
+                        }
+                        if (conFuncion) {
+                            p.tipo = 3;
+                            p.etiqueta = p.opciones.empty() ? p.nombre : p.opciones[0];
+                            p.opciones.clear();
                         }
                     } else if (tv == LUA_TNUMBER) {
                         // default numerico = propiedad de VALOR editable (frame, id...)

@@ -1011,85 +1011,84 @@ static Object* ObjArg(lua_State* L, int idx) {
     return W3dScriptParamObjeto((void*)L, idx);
 }
 
-// fisicaVel(obj) -> vx,vy,vz | fisicaVel(obj, vx,vy,vz)
+// (los vectores 3D de estos binds van en los ejes de LUA, Z arriba: un (x,y,z) de lua es el (x,z,y) del motor y se
+//  convierte en la frontera con W3dLuaEjes, al leer y al devolver; ver W3dScript.h)
+// un vector 3D de lua (3 numeros desde 'idx') -> en los ejes del motor
+static Vector3 LuaVec3(lua_State* L, int idx) {
+    Vector3 v((float)luaL_checknumber(L, idx),
+              (float)luaL_checknumber(L, idx + 1),
+              (float)luaL_checknumber(L, idx + 2));
+    W3dLuaEjes(v.y, v.z);
+    return v;
+}
+// un vector 3D del motor -> 3 numeros a lua, en sus ejes
+static void PushVec3(lua_State* L, Vector3 v) {
+    W3dLuaEjes(v.y, v.z);
+    lua_pushnumber(L, v.x);
+    lua_pushnumber(L, v.y);
+    lua_pushnumber(L, v.z);
+}
+
+// fisicaVel(obj) -> vx,vy,vz | fisicaVel(obj, vx,vy,vz)   (ejes de lua: vz es la vertical)
 static int LFisicaVel(lua_State* L) {
     Object* o = ObjArg(L, 1);
     if (!o) return 0;
     if (lua_gettop(L) >= 4) {
-        W3dRigidoSetVel(o, Vector3((float)luaL_checknumber(L, 2),
-                                   (float)luaL_checknumber(L, 3),
-                                   (float)luaL_checknumber(L, 4)));
+        W3dRigidoSetVel(o, LuaVec3(L, 2));
         return 0;
     }
     Vector3 v;
     if (!W3dRigidoVel(o, &v)) return 0;
-    lua_pushnumber(L, v.x);
-    lua_pushnumber(L, v.y);
-    lua_pushnumber(L, v.z);
+    PushVec3(L, v);
     return 3;
 }
 
+// fisicaVelAng(obj) -> wx,wy,wz | fisicaVelAng(obj, wx,wy,wz): rad/s alrededor de cada eje de lua (wz = alrededor de
+// la vertical). El sentido de giro de cada componente es el mismo que el del motor (como los grados del panel)
 static int LFisicaVelAng(lua_State* L) {
     Object* o = ObjArg(L, 1);
     if (!o) return 0;
     if (lua_gettop(L) >= 4) {
-        W3dRigidoSetVelAng(o, Vector3((float)luaL_checknumber(L, 2),
-                                      (float)luaL_checknumber(L, 3),
-                                      (float)luaL_checknumber(L, 4)));
+        W3dRigidoSetVelAng(o, LuaVec3(L, 2));
         return 0;
     }
     Vector3 v;
     if (!W3dRigidoVelAng(o, &v)) return 0;
-    lua_pushnumber(L, v.x);
-    lua_pushnumber(L, v.y);
-    lua_pushnumber(L, v.z);
+    PushVec3(L, v);
     return 3;
 }
 
-// fisicaImpulso(obj, ix,iy,iz [,px,py,pz])
+// fisicaImpulso(obj, ix,iy,iz [,px,py,pz])   (el impulso y el punto en ejes de lua; sin punto = el centro del cuerpo)
 static int LFisicaImpulso(lua_State* L) {
     Object* o = ObjArg(L, 1);
     if (!o) return 0;
-    Vector3 imp((float)luaL_checknumber(L, 2),
-                (float)luaL_checknumber(L, 3),
-                (float)luaL_checknumber(L, 4));
+    Vector3 imp = LuaVec3(L, 2);
     Vector3 p = o->pos;
     Rigido* c = Buscar(o);
     if (c) p = c->pos;
-    if (lua_gettop(L) >= 7)
-        p = Vector3((float)luaL_checknumber(L, 5),
-                    (float)luaL_checknumber(L, 6),
-                    (float)luaL_checknumber(L, 7));
+    if (lua_gettop(L) >= 7) p = LuaVec3(L, 5);
     W3dRigidoImpulso(o, imp, p);
     return 0;
 }
 
-// fisicaFuerza(obj, fx,fy,fz [,px,py,pz]) : fuerza de ESTE frame
+// fisicaFuerza(obj, fx,fy,fz [,px,py,pz]) : fuerza de ESTE frame   (la fuerza y el punto en ejes de lua)
 static int LFisicaFuerza(lua_State* L) {
     Object* o = ObjArg(L, 1);
     if (!o) return 0;
-    Vector3 f((float)luaL_checknumber(L, 2),
-              (float)luaL_checknumber(L, 3),
-              (float)luaL_checknumber(L, 4));
+    Vector3 f = LuaVec3(L, 2);
     Vector3 p = o->pos;
     Rigido* c = Buscar(o);
     if (c) p = c->pos;
-    if (lua_gettop(L) >= 7)
-        p = Vector3((float)luaL_checknumber(L, 5),
-                    (float)luaL_checknumber(L, 6),
-                    (float)luaL_checknumber(L, 7));
+    if (lua_gettop(L) >= 7) p = LuaVec3(L, 5);
     W3dRigidoFuerza(o, f, p);
     return 0;
 }
 
 // fisicaRayo(ox,oy,oz, dx,dy,dz, max [,ignorar]) -> dist,nx,ny,nz,obj | nil
+// (origen, direccion y normal en ejes de lua)
 static int LFisicaRayo(lua_State* L) {
-    Vector3 o((float)luaL_checknumber(L, 1),
-              (float)luaL_checknumber(L, 2),
-              (float)luaL_checknumber(L, 3));
-    Vector3 d((float)luaL_checknumber(L, 4),
-              (float)luaL_checknumber(L, 5),
-              (float)luaL_checknumber(L, 6));
+    Vector3 o = LuaVec3(L, 1);
+    Vector3 d = LuaVec3(L, 4);
     float mx = (float)luaL_checknumber(L, 7);
     Object* ig = (lua_gettop(L) >= 8) ? ObjArg(L, 8) : NULL;
     d = d.Normalized();
@@ -1098,28 +1097,30 @@ static int LFisicaRayo(lua_State* L) {
     float t = W3dRigidosRayo(o, d, mx, ig, &n, &tocado);
     if (t < 0.0f) { lua_pushnil(L); return 1; }
     lua_pushnumber(L, t);
-    lua_pushnumber(L, n.x);
-    lua_pushnumber(L, n.y);
-    lua_pushnumber(L, n.z);
+    PushVec3(L, n);
     if (tocado) lua_pushlightuserdata(L, tocado); else lua_pushnil(L);
     return 5;
 }
 
-// contactos() -> lista de golpes del ultimo paso
+// contactos() -> lista de golpes del ultimo paso: {a, b, x,y,z (punto), nx,ny,nz (normal), impulso}, en ejes de lua
 static int LContactos(lua_State* L) {
     const std::vector<W3dRigidoContacto>& evs = W3dRigidosContactos();
     lua_createtable(L, (int)evs.size(), 0);
     for (size_t i = 0; i < evs.size(); i++) {
         const W3dRigidoContacto& e = evs[i];
+        float px = e.punto[0], py = e.punto[1], pz = e.punto[2];
+        float nx = e.normal[0], ny = e.normal[1], nz = e.normal[2];
+        W3dLuaEjes(py, pz);
+        W3dLuaEjes(ny, nz);
         lua_createtable(L, 0, 9);
         lua_pushlightuserdata(L, e.a);   lua_setfield(L, -2, "a");
         lua_pushlightuserdata(L, e.b);   lua_setfield(L, -2, "b");
-        lua_pushnumber(L, e.punto[0]);   lua_setfield(L, -2, "x");
-        lua_pushnumber(L, e.punto[1]);   lua_setfield(L, -2, "y");
-        lua_pushnumber(L, e.punto[2]);   lua_setfield(L, -2, "z");
-        lua_pushnumber(L, e.normal[0]);  lua_setfield(L, -2, "nx");
-        lua_pushnumber(L, e.normal[1]);  lua_setfield(L, -2, "ny");
-        lua_pushnumber(L, e.normal[2]);  lua_setfield(L, -2, "nz");
+        lua_pushnumber(L, px);           lua_setfield(L, -2, "x");
+        lua_pushnumber(L, py);           lua_setfield(L, -2, "y");
+        lua_pushnumber(L, pz);           lua_setfield(L, -2, "z");
+        lua_pushnumber(L, nx);           lua_setfield(L, -2, "nx");
+        lua_pushnumber(L, ny);           lua_setfield(L, -2, "ny");
+        lua_pushnumber(L, nz);           lua_setfield(L, -2, "nz");
         lua_pushnumber(L, e.impulso);    lua_setfield(L, -2, "impulso");
         lua_rawseti(L, -2, (int)i + 1);
     }
@@ -1144,7 +1145,8 @@ static int LFisicaActiva(lua_State* L) {
     return 0;
 }
 
-// fisicaGravedad([g])
+// fisicaGravedad([g]): la gravedad es un ESCALAR (m/s^2, positivo = cae), siempre sobre la vertical (la Z de lua,
+// la Y del motor): no hay vector que convertir
 static int LFisicaGravedad(lua_State* L) {
     if (lua_gettop(L) >= 1) {
         W3dRigidosGravedad((float)luaL_checknumber(L, 1));

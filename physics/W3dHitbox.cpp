@@ -686,12 +686,16 @@ static void DespacharContactos(float dt) {
     std::sort(gTocar.begin(), gTocar.end());
     for (size_t i = 0; i < gTocar.size(); i++) {
         const W3dRigidoContacto& e = ev[gTocar[i].ev];
+        // alTocar(otro, impulso, x,y,z, nx,ny,nz): el punto y la normal van a LUA, en sus ejes (Z arriba): la y y la z
+        // del motor se intercambian con W3dLuaEjes (ver W3dScript.h)
         float nums[7];
         nums[0] = e.impulso;
         nums[1] = e.punto[0]; nums[2] = e.punto[1]; nums[3] = e.punto[2];
         nums[4] = e.normal[0]; nums[5] = e.normal[1]; nums[6] = e.normal[2];   // de a hacia b
+        W3dLuaEjes(nums[2], nums[3]);
+        W3dLuaEjes(nums[5], nums[6]);
         W3dScriptEvento(e.a, "alTocar", e.b, nums, 7);
-        nums[4] = -e.normal[0]; nums[5] = -e.normal[1]; nums[6] = -e.normal[2];
+        nums[4] = -nums[4]; nums[5] = -nums[5]; nums[6] = -nums[6];         // para b: de b hacia a
         W3dScriptEvento(e.b, "alTocar", e.a, nums, 7);
     }
     std::sort(gContactosNuevos.begin(), gContactosNuevos.end());
@@ -890,12 +894,13 @@ static int LSetHitboxActivo(lua_State* L) {
     if (o) W3dHitboxSetActivo(o, lua_toboolean(L, 2) != 0);
     return 0;
 }
-// setHitboxTam(o, x, y, z)
+// setHitboxTam(o, x, y, z): el tamanio en los ejes de LUA (z = el alto); al motor va con la y y la z intercambiadas
 static int LSetHitboxTam(lua_State* L) {
     Object* o = ObjArg(L, 1);
     if (!o) return 0;
-    W3dHitboxSetTam(o, (float)luaL_checknumber(L, 2), (float)luaL_checknumber(L, 3),
-                    (float)luaL_checknumber(L, 4));
+    float x = (float)luaL_checknumber(L, 2), y = (float)luaL_checknumber(L, 3), z = (float)luaL_checknumber(L, 4);
+    W3dLuaEjes(y, z);
+    W3dHitboxSetTam(o, x, y, z);
     return 0;
 }
 // hitboxDentro(o) -> { otro, ... }

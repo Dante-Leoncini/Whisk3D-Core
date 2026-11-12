@@ -4,6 +4,25 @@
 #include <vector>
 #include <utility>
 
+// ---- LOS EJES DE LUA: Z ARRIBA (desde el 2026-11-11) -------------------------------------------------------------------
+// Lua usa los mismos ejes que ve la persona en el panel de Propiedades: X a la derecha, Y hacia adelante y Z ARRIBA. El
+// motor (y el C++ de Whisk3D-Core) sigue con Y arriba. Un vector de Lua (x, y, z) es el (x, z, y) del motor: se
+// intercambian la y y la z, y el cambio es su propio inverso (el mismo sirve para entrar y para salir).
+// TODA funcion de Lua que recibe o devuelve un vector 3D pasa por aca: posiciones, rotaciones (grados por eje), escalas,
+// velocidades, fuerzas, impulsos, la gravedad, direcciones, normales, rayos, tamanios de cajas... Los COLORES y lo 2D
+// (pixeles de pantalla, UV) NO son vectores 3D y no se tocan. Antes Lua era Y arriba y el panel Z arriba: el campo "Z"
+// del panel era la 'y' del script, y los tutoriales tenian que explicarlo.
+inline void W3dLuaEjes(float& y, float& z) { const float t = y; y = z; z = t; }
+inline void W3dLuaEjes(double& y, double& z) { const double t = y; y = z; z = t; }
+// un orden de rotacion de Lua ("XYZ", "YXZ"...) en los ejes del motor: la Y y la Z se intercambian tambien en el nombre
+inline std::string W3dLuaOrden(std::string o) {
+    for (size_t i = 0; i < o.size(); i++) {
+        if (o[i] == 'Y') o[i] = 'Z'; else if (o[i] == 'Z') o[i] = 'Y';
+        else if (o[i] == 'y') o[i] = 'z'; else if (o[i] == 'z') o[i] = 'y';
+    }
+    return o;
+}
+
 class Object;
 
 // ============================================================================
@@ -47,10 +66,11 @@ class Object;
 extern Object* (*W3dInstanciarPrefabHook)(const char* nombre, const float* posMotor);
 
 // ---- PREFABS DEL PROYECTO (instanciar / destruir de lua; ver main/io/Prefabs.h) ----------------
-//   instanciar("Enemigo", x, y, z [, rotY [, padre]])  -> la INSTANCIA nueva (sus hijos ya generados) o nil.
+//   instanciar("Enemigo", x, y, z [, rotZ [, padre]])  -> la INSTANCIA nueva (sus hijos ya generados) o nil. En Lua x, y,
+//       z son ejes de Lua (Z arriba) y rotZ, el giro alrededor de la vertical; el bind los pasa al hook en ejes del motor.
 //       Primero se busca un prefab del proyecto (este hook, lo instala io/Prefabs en el editor y en
 //       el juego compilado); si no hay, el de la Biblioteca del formato texto (el hook de arriba).
-//       pos = {x,y,z} del motor (NULL = el origen); rotY en grados. Con 'padre' la instancia cuelga de ese objeto
+//       pos = {x,y,z} del MOTOR (Y arriba; NULL = el origen); rotY: el giro en grados alrededor de la vertical. Con 'padre' la instancia cuelga de ese objeto
 //       (pos y rotY relativos a el): una rutina con el paso "Dibujar hijos" la dibuja con su estado.
 //   destruir(obj)  -> DIFERIDO al final del frame (W3dScriptFinFrame): nada se libera en medio de
 //       un actualizar() (el objeto puede ser el mismo que esta corriendo). Devuelve true si quedo pedido.
@@ -151,22 +171,36 @@ void W3dScriptLiberarYa(Object* o);
 void W3dScriptDestruirPendientes();
 // cuantos destruir() hay pedidos (el harness)
 int  W3dScriptDestruirPedidos();
+void W3dScriptTomarDestruirPedidos(std::vector<Object*>& out);   // (los saca de la cola sin aplicarlos)
 
 // una propiedad expuesta por el .lua (lo que la tarjeta del editor muestra)
 struct W3dScriptProp {
     std::string nombre;
-    int tipo;                          // 0 = objeto, 1 = opciones (desplegable), 2 = valor
+    int tipo;                          // 0 = objeto, 1 = opciones (desplegable), 2 = valor, 3 = BOTON (una funcion)
     std::vector<std::string> opciones; // solo tipo 1 (la primera es el default)
     int subtipo;                       // solo tipo 2: 0 = numero, 1 = bool, 2 = texto
     std::string defecto;               // solo tipo 2: el default declarado (como texto)
+    std::string etiqueta;              // solo tipo 3: el texto del boton (sin uno, el nombre)
     W3dScriptProp() : tipo(0), subtipo(0) {}
 };
+// EL BOTON de una propiedad (tipo 3: en `propiedades`, una funcion, o { "Etiqueta", funcion }): lo toca la persona en
+// la tarjeta del script y llama a esa funcion. Con el juego andando, en la instancia viva; sin el juego, el script se
+// carga SOLO para esta llamada y se descarga (un complemento del editor: lo que la funcion le haga a la escena queda).
+// false si no hay script, no es una funcion o dio error (el error queda en el log, como cualquier error de lua).
+bool W3dScriptLlamarBoton(Object* duenio, int idx, const std::string& prop);
+// el editor lo engancha mientras GRABA el deshacer de un script fuera del juego: antes de que lua toque la malla de 'o'
+// (vertices, UV, colores) guarda su geometria. NULL = no se graba (el juego, el runtime).
+extern void (*W3dScriptAntesDeTocarMallaHook)(Object* o);
 
 // UN script asignado: su .lua + lo elegido en el editor para sus propiedades
 // (el NOMBRE del objeto referenciado, o la opcion del desplegable)
 struct W3dScriptEntrada {
     std::string ruta;
     std::vector<std::pair<std::string, std::string> > refs;
+    // APAGADO (el ojo de la lista de scripts, en la tarjeta Control): el script sigue en el objeto y se carga, pero el
+    // motor no llama a ninguna de sus funciones (inicio, actualizar, los eventos). Se guarda en el .w3d ("apagado").
+    bool apagado;
+    W3dScriptEntrada() : apagado(false) {}
 };
 
 // datos de script GUARDADOS en el objeto (puntero opcional: casi nadie lo usa).
@@ -183,6 +217,9 @@ struct W3dScriptDatos {
 // ---- runtime (instancias vivas durante el PLAY) ----------------------------
 // crea UNA instancia por script del objeto (lee propiedades; false si fallo todo)
 bool W3dScriptCargar(Object* duenio);
+// prende/apaga el script 'idx' con el juego andando (el ojo de la lista). Prenderlo por primera vez llama a su
+// inicio(), si todavia no corrio (como en Unity: Start corre la primera vez que el componente esta activo)
+void W3dScriptSetApagado(Object* duenio, int idx, bool apagado);
 // resuelve una referencia expuesta del script 'idx' (el editor busca por nombre)
 void W3dScriptResolverRef(Object* duenio, int idx, const std::string& prop, Object* obj);
 // asigna una OPCION elegida (los desplegables); el .lua la lee con opcion("x")

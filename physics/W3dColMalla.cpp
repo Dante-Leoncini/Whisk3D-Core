@@ -323,41 +323,57 @@ void W3dColLimpiar(void) {
 
 // ---------------------------------------------------------------------------
 //  binds lua
+//  Lua usa Z ARRIBA (los ejes del panel): un (x,y,z) de lua es el (x,z,y) del motor. Aca adentro todo sigue en los
+//  ejes del motor (Y arriba, grilla XZ); la conversion se hace en la frontera con W3dLuaEjes (ver W3dScript.h).
 // ---------------------------------------------------------------------------
+// un vector 3D de lua (3 numeros desde 'idx') -> en los ejes del motor
+static Vector3 LuaVec3(lua_State* L, int idx) {
+    float x = (float)luaL_checknumber(L, idx), y = (float)luaL_checknumber(L, idx + 1), z = (float)luaL_checknumber(L, idx + 2);
+    W3dLuaEjes(y, z);
+    return Vector3(x, y, z);
+}
+// un vector 3D del motor -> 3 numeros a lua, en sus ejes
+static void PushVec3(lua_State* L, Vector3 v) {
+    W3dLuaEjes(v.y, v.z);
+    lua_pushnumber(L, v.x); lua_pushnumber(L, v.y); lua_pushnumber(L, v.z);
+}
+
+// colSuelo(malla, x, y, z [, subida]) -> la ALTURA del piso (la z de lua) debajo del punto, o nil
 static int LColSuelo(lua_State* L) {
     Object* o = W3dScriptParamObjeto((void*)L, 1);
-    const float x = (float)luaL_checknumber(L, 2), y = (float)luaL_checknumber(L, 3), z = (float)luaL_checknumber(L, 4);
+    const Vector3 p = LuaVec3(L, 2);
     const float sub = (float)luaL_optnumber(L, 5, 0.5);
     float s = 0.0f;
-    if (!W3dColSuelo(o, x, y, z, sub, &s)) { lua_pushnil(L); return 1; }
-    lua_pushnumber(L, s);
+    if (!W3dColSuelo(o, p.x, p.y, p.z, sub, &s)) { lua_pushnil(L); return 1; }
+    lua_pushnumber(L, s);   // una altura: la y del motor es la z de lua, el numero es el mismo
     return 1;
 }
 
+// colPared(malla, x, y, z, radio [, alto]) -> x, y: el punto empujado afuera de las paredes, en el plano HORIZONTAL de
+// lua (XY; en el motor es el XZ). La z (la altura, los pies) no cambia y no se devuelve
 static int LColPared(lua_State* L) {
     Object* o = W3dScriptParamObjeto((void*)L, 1);
-    float x = (float)luaL_checknumber(L, 2);
-    const float y = (float)luaL_checknumber(L, 3);
-    float z = (float)luaL_checknumber(L, 4);
+    Vector3 p = LuaVec3(L, 2);
     const float r = (float)luaL_checknumber(L, 5);
     const float alto = (float)luaL_optnumber(L, 6, 1.7);
-    W3dColPared(o, &x, y, &z, r, alto);
-    lua_pushnumber(L, x);
-    lua_pushnumber(L, z);
+    W3dColPared(o, &p.x, p.y, &p.z, r, alto);
+    lua_pushnumber(L, p.x);
+    lua_pushnumber(L, p.z);   // la z del motor es la y de lua
     return 2;
 }
 
+// colRayo(malla, ox,oy,oz, dx,dy,dz, max) -> t, nx,ny,nz | nil   (origen, direccion y normal en ejes de lua)
 static int LColRayo(lua_State* L) {
     Object* o = W3dScriptParamObjeto((void*)L, 1);
-    Vector3 org((float)luaL_checknumber(L, 2), (float)luaL_checknumber(L, 3), (float)luaL_checknumber(L, 4));
-    Vector3 d((float)luaL_checknumber(L, 5), (float)luaL_checknumber(L, 6), (float)luaL_checknumber(L, 7));
+    Vector3 org = LuaVec3(L, 2);
+    Vector3 d = LuaVec3(L, 5);
     const float mx = (float)luaL_checknumber(L, 8);
     if (d.Length() < 1e-9f) { lua_pushnil(L); return 1; }
     d = d.Normalized();
     Vector3 n;
     const float t = W3dColRayo(o, org, d, mx, &n);
     if (t < 0.0f) { lua_pushnil(L); return 1; }
-    lua_pushnumber(L, t); lua_pushnumber(L, n.x); lua_pushnumber(L, n.y); lua_pushnumber(L, n.z);
+    lua_pushnumber(L, t); PushVec3(L, n);
     return 4;
 }
 
@@ -424,10 +440,11 @@ static void RayoObjeto(Object* o, const Vector3& org, const Vector3& dir, float*
 }
 
 // rayoMalla(obj, ox, oy, oz, dx, dy, dz [, max]) -> t, objeto, nx, ny, nz  (o nil si no toca nada a menos de max)
+// (origen, direccion y normal en ejes de lua, Z arriba)
 static int LRayoMalla(lua_State* L) {
     Object* o = W3dScriptParamObjeto((void*)L, 1);
-    Vector3 org((float)luaL_checknumber(L, 2), (float)luaL_checknumber(L, 3), (float)luaL_checknumber(L, 4));
-    Vector3 d((float)luaL_checknumber(L, 5), (float)luaL_checknumber(L, 6), (float)luaL_checknumber(L, 7));
+    Vector3 org = LuaVec3(L, 2);
+    Vector3 d = LuaVec3(L, 5);
     float mejor = (float)luaL_optnumber(L, 8, 1e30);
     if (!o || d.Length() < 1e-9f) { lua_pushnil(L); return 1; }
     d = d.Normalized();
@@ -436,7 +453,7 @@ static int LRayoMalla(lua_State* L) {
     if (!quien) { lua_pushnil(L); return 1; }
     lua_pushnumber(L, mejor);
     lua_pushlightuserdata(L, quien);
-    lua_pushnumber(L, n.x); lua_pushnumber(L, n.y); lua_pushnumber(L, n.z);
+    PushVec3(L, n);
     return 5;
 }
 
