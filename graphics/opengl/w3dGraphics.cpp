@@ -278,6 +278,7 @@ static GLenum CapGL(Cap c) {
         case Dither:            return GL_DITHER;
         case Light0:            return GL_LIGHT0;
         case Multisample:       return GL_MULTISAMPLE;
+        case CapCount_:          return 0;
     }
     return 0;
 }

@@ -276,7 +276,7 @@ bool Ubicar(const unsigned char* d, size_t n, std::vector<BloqueA>& out, std::st
     if (n < 20) { motivo = "cabecera cortada"; return false; }
     const unsigned version = LeeU32(d + 4);
     if (version > (unsigned)W3DA_VERSION) {
-        char b[96]; sprintf(b, "es de una version mas nueva del formato (%u; esta lee hasta %d)", version, (int)W3DA_VERSION);
+        char b[96]; snprintf(b, sizeof(b), "es de una version mas nueva del formato (%u; esta lee hasta %d)", version, (int)W3DA_VERSION);
         motivo = b; return false;
     }
     if (version == 0) { motivo = "version 0 invalida"; return false; }
@@ -535,13 +535,13 @@ bool W3dAnimSetListar(const unsigned char* d, size_t n, std::vector<std::string>
             Cursor c(bl[i].datos, bl[i].bytes);
             std::string nom = c.Str();
             if (nom.size() > 60) nom.resize(60);
-            sprintf(b, "CLIP '%s' %u pistas %u B", nom.c_str(), bl[i].cantidad, bl[i].bytes);
+            snprintf(b, sizeof(b), "CLIP '%s' %u pistas %u B", nom.c_str(), bl[i].cantidad, bl[i].bytes);
         } else if (bl[i].id == "JCLP") {
             Cursor c(bl[i].datos, bl[i].bytes);
             std::string nom = c.Str();
             if (nom.size() > 60) nom.resize(60);
-            sprintf(b, "JCLP '%s' %u pistas %u B", nom.c_str(), bl[i].cantidad, bl[i].bytes);
-        } else sprintf(b, "%s %u %u B", bl[i].id.c_str(), bl[i].cantidad, bl[i].bytes);
+            snprintf(b, sizeof(b), "JCLP '%s' %u pistas %u B", nom.c_str(), bl[i].cantidad, bl[i].bytes);
+        } else snprintf(b, sizeof(b), "%s %u %u B", bl[i].id.c_str(), bl[i].cantidad, bl[i].bytes);
         lineas.push_back(b);
     }
     return true;
@@ -693,7 +693,7 @@ bool W3dAnimSetDesenganchar(W3dRecurso* r, const char* motivo, int n) {
     if (r->refTotal <= 0 && r->estado != W3DREC_LISTO) return W3dRecursoOlvidar(W3DREC_ANIMSET, r->id);
     // con usuarios: a una clave que no es una entrada, armada sobre la ENTRADA (sin los prefijos
     // de un desenganche anterior). Cuando el ultimo usuario lo suelte, el almacen lo libera.
-    char b[64]; sprintf(b, "#%s%d:", motivo ? motivo : "", n);
+    char b[64]; snprintf(b, sizeof(b), "#%s%d:", motivo ? motivo : "", n);
     W3dRecursoRenombrar(W3DREC_ANIMSET, r->id, std::string(b) + W3dAnimSetIdEntrada(r->id));
     return false;
 }
@@ -802,7 +802,7 @@ bool W3dArmatureAsignarAnimSet(Armature* a, const std::string& nombre, const std
         for (size_t i = 0; i < indices->size(); i++)
             if ((*indices)[i] < 0 || (*indices)[i] >= (int)nClips) {
                 char b[160];
-                sprintf(b, "el clip %d no existe en el animset (tiene %d)", (*indices)[i], (int)nClips);
+                snprintf(b, sizeof(b), "el clip %d no existe en el animset (tiene %d)", (*indices)[i], (int)nClips);
                 if (motivo) *motivo = b;
                 W3dRecursoSoltar(r, W3DREC_PERMANENTE);
                 return false;
@@ -953,7 +953,7 @@ static bool AnimSetEnMemoria(Armature* a) {
     W3dAnimSetHuella((const unsigned char*)bytes.data(), bytes.size(), set->huella1, set->huella2);
     set->tamArchivo = bytes.size();
     set->datos.clips = a->animations;
-    char b[48]; sprintf(b, "#memoria%d:", ++gEnMemoria);
+    char b[48]; snprintf(b, sizeof(b), "#memoria%d:", ++gEnMemoria);
     W3dRecurso* r = W3dRecursoRegistrarExterno(W3DREC_ANIMSET, std::string(b) + set->nombre, set, MemoriaDe(set));
     if (!r) { set->datos.clips.clear(); delete set; return false; }   // (los clips siguen siendo de 'a')
     a->animsRec = r;   // RegistrarExterno deja refTotal = 1: la de 'a'
@@ -1200,7 +1200,7 @@ bool W3dJerBibliotecaNueva(Object* o, const std::string& nombre) {
     W3dAnimSetsAsegurarOps();
     W3dAnimSet* set = new W3dAnimSet();
     set->nombre = W3dJerNombreBibliotecaLibre(nombre);
-    char b[48]; sprintf(b, "#memoria%d:", ++gEnMemoria);
+    char b[48]; snprintf(b, sizeof(b), "#memoria%d:", ++gEnMemoria);
     W3dRecurso* r = W3dRecursoRegistrarExterno(W3DREC_ANIMSET, std::string(b) + set->nombre, set, MemoriaDe(set));
     if (!r) { delete set; return false; }
     W3dJerRaiz* j = JerDe(o);
@@ -1380,7 +1380,7 @@ static std::string Tramo(const Object* p, const Object* x) {
         n++;
     }
     if (n <= 1) return base;
-    char b[24]; sprintf(b, "#%d", k);
+    char b[24]; snprintf(b, sizeof(b), "#%d", k);
     return base + b;
 }
 std::string W3dJerRuta(const Object* raiz, const Object* n) {
