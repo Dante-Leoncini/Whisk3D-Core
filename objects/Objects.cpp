@@ -1312,9 +1312,9 @@ void Object::Render(){
     if ((soloPaso || !DibujaAlgo()) && !HijosDibujan(this)) return;
     // sin transformacion propia (la Rutina): ni push, ni mult, ni pop (3 llamadas GL menos por objeto)
     if (sinTransformacion) {
-        // (el CONSTRUCTOR ya corrido en modo solo-juego: su estado se repuso; lo que cuelga de el -la rutina que limpia
-        //  la pantalla, por ejemplo- corre en cada cuadro igual, como en el editor)
-        if (SaltarEsteCuadro()) { RenderHijos(); return; }
+        // (el CONSTRUCTOR ya corrido en modo solo-juego: su estado se repuso. Lo que cuelga de el tambien es de UNA vez
+        //  -su estado ya esta en la foto-: no se recorre. Lo de cada cuadro, como limpiar la pantalla, va afuera)
+        if (SaltarEsteCuadro()) return;
         RenderObject();
         if (!DibujaSusHijos()) RenderHijos();
         DespuesDeRender();
