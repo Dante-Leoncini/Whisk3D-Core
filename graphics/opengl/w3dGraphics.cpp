@@ -278,6 +278,7 @@ static GLenum CapGL(Cap c) {
         case Dither:            return GL_DITHER;
         case Light0:            return GL_LIGHT0;
         case Multisample:       return GL_MULTISAMPLE;
+        case CapCount_:          return 0;
     }
     return 0;
 }
@@ -2504,7 +2505,26 @@ int AuditarEstado() {
         W3D_GLC(glGetIntegerv(kTipo[a], &tipo));
         W3D_GLC(glGetIntegerv(kPaso[a], &paso));
         W3D_GLC(glGetPointerv(kPtr[a], &p));
-        if ((w3d_vboOk && (unsigned)buf != q.buf) || p != q.ptr || tam != q.tam || (unsigned)tipo != q.tipo || paso != q.paso) {
+        // stride=0 significa atributos compactos. Apple GL puede devolver con glGet el stride efectivo en vez del
+        // cero que se paso; ambos describen el mismo layout.
+        int bytesTipo = 0;
+        switch (q.tipo) {
+            case GL_BYTE:
+            case GL_UNSIGNED_BYTE:  bytesTipo = 1; break;
+            case GL_SHORT:
+            case GL_UNSIGNED_SHORT: bytesTipo = 2; break;
+            case GL_FLOAT:          bytesTipo = (int)sizeof(float); break;
+#ifdef GL_DOUBLE
+            case GL_DOUBLE:         bytesTipo = (int)sizeof(double); break;
+#endif
+            default: break;
+        }
+        bool pasoIgual = (paso == q.paso);
+        if (!pasoIgual && bytesTipo > 0) {
+            const int compacto = q.tam * bytesTipo;
+            pasoIgual = (q.paso == 0 && paso == compacto) || (paso == 0 && q.paso == compacto);
+        }
+        if ((w3d_vboOk && (unsigned)buf != q.buf) || p != q.ptr || tam != q.tam || (unsigned)tipo != q.tipo || !pasoIgual) {
             printf("      [glaudit] DESYNC puntero del array %d: motor=(vbo %u, %p, %d, 0x%x, %d) GL=(vbo %d, %p, %d, 0x%x, %d)\n",
                    a, q.buf, q.ptr, q.tam, q.tipo, q.paso, (int)buf, p, (int)tam, (unsigned)tipo, (int)paso);
             malos++;

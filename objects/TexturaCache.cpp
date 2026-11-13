@@ -210,17 +210,16 @@ static bool gConservarHuerfanas = false;
 void TexturasConservarHuerfanas(bool on) { gConservarHuerfanas = on; }
 bool TexturasConservanHuerfanas() { return gConservarHuerfanas; }
 
-void TexturaSoltar(Texture* t) {
+static void TexturaSoltarImpl(Texture* t, bool conservarHuerfana) {
     if (!t) return;
     // una PURGADA en caliente es del CEMENTERIO (sus referencias se cerraron al purgarla y el objeto lo libera el
     // cierre del proyecto): soltarla aca -un paso de undo que la tenia y se cae del historial- la borraba dos veces
     if (EnCementerio(t)) return;
     W3dRecurso* r = W3dRecursoBuscar(W3DREC_TEXTURA, t->path);
     if (r && r->dato == t) {
-        // espejo ANTES de soltar: si el refcount llega a 0 el almacen libera
-        // de verdad (y `t` deja de existir; si esta FIJADA queda con refs 0).
+        // espejo ANTES de soltar: si el refcount llega a 0 el almacen libera de verdad.
         t->refs = (r->refTotal > 0) ? (r->refTotal - 1) : 0;
-        if (gConservarHuerfanas && r->refTotal <= 1) {   // la ultima: queda cargada, huerfana (ver el .h)
+        if (conservarHuerfana && gConservarHuerfanas && r->refTotal <= 1) {
             r->refTotal = 0; r->refTransitoria = 0;
             return;
         }
@@ -229,8 +228,16 @@ void TexturaSoltar(Texture* t) {
     }
     // sin descriptor (una copia vieja del camino A/B off): refcount local
     if (t->refs > 0) t->refs--;
-    if (t->refs > 0 || gConservarHuerfanas) return;
+    if (t->refs > 0 || (conservarHuerfana && gConservarHuerfanas)) return;
     LiberarDeVerdad(t);
+}
+
+void TexturaSoltar(Texture* t) {
+    TexturaSoltarImpl(t, true);
+}
+
+void TexturaSoltarSinHuerfana(Texture* t) {
+    TexturaSoltarImpl(t, false);
 }
 
 // la RANURA de un material es duena de una referencia (ver Textures.h): la nueva se retiene ANTES de soltar la vieja

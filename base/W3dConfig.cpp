@@ -87,10 +87,10 @@ void ConfigSetStr(const char* clave, const char* valor) {
     copiar(gTab[i].v, W3D_CFG_VAL, valor);
 }
 void ConfigSetFloat(const char* clave, float valor) {
-    char b[32]; sprintf(b, "%.6g", (double)valor); ConfigSetStr(clave, b);
+    char b[32]; snprintf(b, sizeof(b), "%.6g", (double)valor); ConfigSetStr(clave, b);
 }
 void ConfigSetInt(const char* clave, int valor) {
-    char b[24]; sprintf(b, "%d", valor); ConfigSetStr(clave, b);
+    char b[24]; snprintf(b, sizeof(b), "%d", valor); ConfigSetStr(clave, b);
 }
 
 const char* ConfigGetStr(const char* clave, const char* porDefecto) {
