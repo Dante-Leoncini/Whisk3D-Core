@@ -1400,6 +1400,8 @@ const char* W3dNombreTipo(ObjectType t){
         case ObjectType::rutina:     return "rutina";
         case ObjectType::sonido:     return "sonido";
         case ObjectType::postproceso: return "postproceso";
+        case ObjectType::viszona:     return "viszona";
+        case ObjectType::gridcull:    return "gridcull";
     }
     return "objeto";
 }

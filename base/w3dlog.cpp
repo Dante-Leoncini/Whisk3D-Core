@@ -302,7 +302,8 @@ void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirStdio(2, aM
 // versiones printf-style, comunes a todos los backends (el sink ya es por-nivel)
 static void w3dLogfImpl(void (*sink)(const char*), const char* aFmt, va_list ap) {
     char buf[256];
-    vsnprintf(buf, sizeof(buf), aFmt ? aFmt : "", ap);
+    if (aFmt) vsnprintf(buf, sizeof(buf), aFmt, ap);
+    else buf[0] = 0;
     sink(buf);
 }
 void w3dLogf(const char* aFmt, ...)  { if (!LogNivelOk(0)) return; va_list ap; va_start(ap, aFmt); w3dLogfImpl(w3dLog,  aFmt, ap); va_end(ap); }

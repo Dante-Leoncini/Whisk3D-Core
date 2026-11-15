@@ -181,7 +181,7 @@ void W3dEscribirFloat(std::string& s, float v) {
     if (v < -3.4028235e38f) { s += "-3.4e38"; return; }
     char b[40];
     for (int d = 6; d <= 9; d++) {
-        sprintf(b, "%.*g", d, (double)v);
+        snprintf(b, sizeof(b), "%.*g", d, (double)v);
         if (W3dTextoAFloat(b, strlen(b)) == v) break;   // relee IGUAL con NUESTRO lector
     }
     // el "-0" que emite %g NO se normaliza: los bytes de -0.0f no son los de +0.0f

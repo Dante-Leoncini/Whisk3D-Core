@@ -86,8 +86,13 @@ Texture* TexturaRegistrar(const std::string& path, Texture* t);
 void     TexturaRenombrar(Texture* t, const std::string& nuevo);
 // +1 ref sobre un puntero que ya se tiene (copiar un material, por ejemplo)
 void     TexturaRetener(Texture* t);
-// -1 ref. Al llegar a 0 la libera de verdad (GL + objeto + vector global).
+// -1 ref. Al llegar a 0 la libera de verdad (GL + objeto + vector global), salvo que
+// el editor tenga activa la politica de conservar huerfanas.
 void     TexturaSoltar(Texture* t);
+// Igual que TexturaSoltar, pero la ultima referencia NO se conserva como huerfana.
+// Uso previsto: recursos temporales/streaming que ya guardaron la ruta y necesitan
+// devolver memoria GPU inmediatamente sin cambiar la politica global del editor.
+void     TexturaSoltarSinHuerfana(Texture* t);
 // HUERFANAS: con esto prendido (el EDITOR), una textura que se queda sin usuarios NO se libera: sigue cargada en la
 // biblioteca como huerfana hasta que algo la purgue a proposito (Purge Orphans, cerrar el proyecto). Sacarle la
 // textura a un material la borraba de la biblioteca y ya no se podia volver a elegir. El juego compilado lo deja

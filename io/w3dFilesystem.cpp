@@ -18,8 +18,11 @@
     #include <dirent.h>     // opendir / readdir / closedir
     #include <sys/stat.h>   // stat
     #if !defined(W3D_SYMBIAN)
-        #include <unistd.h> // readlink (Linux/Android)
+        #include <unistd.h> // readlink (Linux/Android), realpath/getcwd (macOS/POSIX)
         #include <limits.h>
+        #if defined(__APPLE__)
+            #include <mach-o/dyld.h> // _NSGetExecutablePath
+        #endif
     #endif
 #endif
 
@@ -259,7 +262,27 @@ namespace w3dFileSystem {
         char cwd[PATH_MAX];
         if (getcwd(cwd, sizeof(cwd))) return std::string(cwd);
         return "ms0:/PSP/GAME/Whisk3D";
+    #elif defined(__APPLE__)
+        // macOS non espone /proc/self/exe. Quando un bundle .app parte da Finder/LaunchServices,
+        // la cwd e' normalmente "/" e quindi NON puo essere usata per trovare res/. Chiediamo
+        // al loader il Mach-O reale (Whisk3D.app/Contents/MacOS/Whisk3D) e prendiamo la sua cartella.
+        uint32_t size = PATH_MAX;
+        char fixed[PATH_MAX];
+        std::string path;
+        if (_NSGetExecutablePath(fixed, &size) == 0) {
+            path = fixed;
+        } else if (size > 0) {
+            std::vector<char> dynamicPath(size);
+            if (_NSGetExecutablePath(&dynamicPath[0], &size) == 0) path = &dynamicPath[0];
+        }
+        if (path.empty()) return std::string();
+        char resolved[PATH_MAX];
+        if (realpath(path.c_str(), resolved)) path = resolved;
+        size_t pos = path.find_last_of('/');
+        if (pos != std::string::npos) path = path.substr(0, pos);
+        return Normaliza(path);
     #else
+        // Linux/Android desktop-like POSIX: /proc/self/exe punta al binario reale.
         char result[PATH_MAX];
         ssize_t count = readlink("/proc/self/exe", result, PATH_MAX);
         std::string path;

@@ -162,7 +162,7 @@ struct Direccion {
 std::string Texto(const Direccion& d) {
     const unsigned char* b = (const unsigned char*)&d.ip;
     char s[32];
-    sprintf(s, "%u.%u.%u.%u:%u", b[0], b[1], b[2], b[3], (unsigned)ntohs(d.puerto));
+    snprintf(s, sizeof(s), "%u.%u.%u.%u:%u", b[0], b[1], b[2], b[3], (unsigned)ntohs(d.puerto));
     return s;
 }
 
@@ -228,7 +228,7 @@ SocketRed AbrirSocket(unsigned short puerto, std::string& error) {
     a.sin_port = htons(puerto);
     if (bind(s, (struct sockaddr*)&a, sizeof(a)) != 0) {
         char m[96];
-        sprintf(m, "el puerto %u esta ocupado (otra partida en este equipo?)", (unsigned)puerto);
+        snprintf(m, sizeof(m), "el puerto %u esta ocupado (otra partida en este equipo?)", (unsigned)puerto);
         error = puerto ? m : "no se pudo abrir un puerto";
 #if defined(W3D_RED_WINSOCK)
         closesocket(s);
@@ -762,7 +762,7 @@ std::string NombrePorDefecto() {
 #endif
     if (defecto.empty() || defecto == "localhost") {
         char s[32];
-        sprintf(s, "Whisk3D-%04u", Azar32() % 10000);
+        snprintf(s, sizeof(s), "Whisk3D-%04u", Azar32() % 10000);
         defecto = s;
     }
     return defecto;
@@ -788,7 +788,7 @@ std::string DireccionLocal() {
     const netif_t* n = net_default_dev;
     if (!n || !n->ip_addr[0]) return std::string();
     char s[20];
-    sprintf(s, "%d.%d.%d.%d", n->ip_addr[0], n->ip_addr[1], n->ip_addr[2], n->ip_addr[3]);
+    snprintf(s, sizeof(s), "%d.%d.%d.%d", n->ip_addr[0], n->ip_addr[1], n->ip_addr[2], n->ip_addr[3]);
     return s;
 #elif !defined(W3D_RED_NINGUNA)
     // (sin la lista de interfaces: la que usaria para salir; conectar un socket UDP no manda nada)
