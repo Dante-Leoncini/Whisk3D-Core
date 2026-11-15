@@ -121,7 +121,19 @@ struct Cursor {
 // el modificador REPETIR va en los bits 2-5 del byte de modo de los frames (antes: 2-3, despues: 4-5). Sin
 // modificador son 0: una curva sin el da los MISMOS bytes que antes.
 static unsigned CicloBits(const AnimProperty& ap) {
-    return ((unsigned)(ap.cicloAntes & 3) << 2) | ((unsigned)(ap.cicloDespues & 3) << 4);
+    return ((unsigned)(ap.cicloAntes & 3) << 2) | ((unsigned)(ap.cicloDespues & 3) << 4) | (ap.mods.empty() ? 0u : 0x40u);
+}
+// la PILA DE MODIFICADORES (Animation.h, KfModificador): el bit 6 del modo de los frames dice que viene, justo despues
+// de los 4 bytes de modos: u32 cantidad + por cada uno u32 cuantos numeros + esos f32 (el orden de AFloats). Sin
+// modificadores el bit es 0 y no se escribe nada: los mismos bytes de siempre.
+void PonModsCurva(std::string& s, const AnimProperty& ap) {
+    if (ap.mods.empty()) return;
+    PonU32(s, (unsigned)ap.mods.size());
+    for (size_t i = 0; i < ap.mods.size(); i++) {
+        float f[KfModificador::NFloats]; ap.mods[i].AFloats(f);
+        PonU32(s, (unsigned)KfModificador::NFloats);
+        for (int q = 0; q < KfModificador::NFloats; q++) PonF32(s, f[q]);
+    }
 }
 void PonCurvaCompacta(std::string& s, const AnimProperty& ap, const W3dClavesCompactas& c) {
     PonI32(s, ap.Property);
@@ -140,6 +152,7 @@ void PonCurvaCompacta(std::string& s, const AnimProperty& ap, const W3dClavesCom
     modos[2] = (char)KF_INT_UNO;
     modos[3] = (char)KF_HANDLES_CERO;
     s.append(modos, 4);
+    PonModsCurva(s, ap);
     if (!c.Irregular()) { PonI32(s, c.primero); PonI32(s, c.paso); }
     else if (regulares) { PonI32(s, c.Frame(0)); PonI32(s, c.Frame(1) - c.Frame(0)); }
     else for (unsigned i = 0; i < c.n; i++) PonI32(s, c.Frame(i));
@@ -180,6 +193,7 @@ void PonCurva(std::string& s, const AnimProperty& ap) {
     modos[2] = (char)(tipoUno ? KF_INT_UNO : KF_INT_TODOS);
     modos[3] = (char)(handles ? KF_HANDLES_TODOS : KF_HANDLES_CERO);
     s.append(modos, 4);
+    PonModsCurva(s, ap);
     if (n == 0) return;
     if (regulares) { PonI32(s, k[0].frame); PonI32(s, paso); }
     else for (size_t i = 0; i < n; i++) PonI32(s, k[i].frame);
@@ -202,9 +216,25 @@ bool LeerCurva(Cursor& c, AnimProperty& ap, std::string& motivo) {
     const unsigned mI = c.U8(), mT = c.U8(), mH = c.U8();
     if (!c.ok) { motivo = "curva cortada"; return false; }
     // el modificador REPETIR (bits 2-5 del modo de los frames, ver CicloBits)
+    const bool hayMods = ((mF >> 6) & 1) != 0;
     { const unsigned ca = (mF >> 2) & 3, cd = (mF >> 4) & 3;
-      if (ca > KfCicloOffset || cd > KfCicloOffset || (mF >> 6)) { motivo = "curva con un modo desconocido"; return false; }
+      if (ca > KfCicloOffset || cd > KfCicloOffset || (mF >> 7)) { motivo = "curva con un modo desconocido"; return false; }
       ap.cicloAntes = (int)ca; ap.cicloDespues = (int)cd; mF &= 3; }
+    ap.mods.clear();
+    if (hayMods) {   // la pila de modificadores (ver PonModsCurva)
+        const unsigned nm = c.U32();
+        if (!c.ok || nm > 64) { motivo = "curva con demasiados modificadores"; c.ok = false; return false; }
+        for (unsigned i = 0; i < nm; i++) {
+            const unsigned nf = c.U32();
+            if (!c.ok || nf > 256 || !c.Hay((size_t)nf * 4)) { motivo = "modificador de curva cortado"; c.ok = false; return false; }
+            float f[KfModificador::NFloats];
+            for (int q = 0; q < KfModificador::NFloats; q++) f[q] = 0.0f;
+            for (unsigned q = 0; q < nf; q++) { const float v = c.F32(); if (q < (unsigned)KfModificador::NFloats) f[q] = v; }
+            KfModificador m; m.DeFloats(f, nf < (unsigned)KfModificador::NFloats ? (int)nf : (int)KfModificador::NFloats);
+            ap.mods.push_back(m);
+        }
+    }
+    ap.RepetirAModificador();   // (un animset de antes con el Repetir viejo: queda como modificador Ciclos)
     if (mF > 1 || mI > 1 || mT > 1 || mH > 1) { motivo = "curva con un modo desconocido"; return false; }
     if (n == 0) return true;
     // cota ANTES de reservar: cada keyframe ocupa por lo menos 4 bytes (su valor)

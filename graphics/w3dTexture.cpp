@@ -37,6 +37,14 @@
     #include "stb/stb_image.h"
 #endif
 #include "graphics/vulkan/w3dGLDesvio.h"   // (con el backend Vulkan no hay contexto de GL: las texturas van por el suyo, ver ahi)
+#include <vector>
+#ifndef W3D_SYMBIAN
+    // el JPG del render a archivo (SaveJPG): solo el codificador, sin su stdio (W3dJpgEscribir escribe el archivo)
+    #define STB_IMAGE_WRITE_IMPLEMENTATION
+    #define STB_IMAGE_WRITE_STATIC
+    #define STBI_WRITE_NO_STDIO
+    #include "stb/stb_image_write.h"
+#endif
 
 // LA PIRAMIDE DE MIPMAPS en ES 2.0 (Android, la web y Symbian^3 con W3D_GLES2) la arma glGenerateMipmap: el
 // GL_GENERATE_MIPMAP de ES 1.1 / GL 1.4 no existe ahi (GL_INVALID_ENUM) y la textura quedaba sin niveles -> incompleta
@@ -1047,6 +1055,76 @@ static unsigned char* w3dEncodePNGImpl(const unsigned char* rgba, int w, int h, 
     if (outLen) *outLen = p; // = total
     return png;
 }
+// ---- PNG POR FRANJAS (ver w3dTexture.h) ----
+static bool w3dPngChunkArchivo(FILE* f, const char* tipo, const unsigned char* data, unsigned int len){
+    unsigned char c[8] = { (unsigned char)(len >> 24), (unsigned char)(len >> 16), (unsigned char)(len >> 8), (unsigned char)len,
+                           (unsigned char)tipo[0], (unsigned char)tipo[1], (unsigned char)tipo[2], (unsigned char)tipo[3] };
+    unsigned int crc = w3dCrcUpdate(0xFFFFFFFFu, (const unsigned char*)tipo, 4);
+    if (len) crc = w3dCrcUpdate(crc, data, (int)len);
+    crc ^= 0xFFFFFFFFu;
+    const unsigned char k[4] = { (unsigned char)(crc >> 24), (unsigned char)(crc >> 16), (unsigned char)(crc >> 8), (unsigned char)crc };
+    return fwrite(c, 1, 8, f) == 8 && (len == 0 || fwrite(data, 1, len, f) == len) && fwrite(k, 1, 4, f) == 4;
+}
+bool PNGFranjasAbrir(PNGFranjas& p, const char* path, int w, int h, bool alfa){
+    p.f = 0; p.w = w; p.h = h; p.filas = 0; p.alfa = alfa; p.ok = false; p.adler = 1;
+    if (!path || w <= 0 || h <= 0) return false;
+    FILE* f = fopen(path, "wb");
+    if (!f) { w3dLogfE("PNGFranjas: fopen FALLO path='%s' errno=%d (%s)", path, errno, strerror(errno)); return false; }
+    p.f = f;
+    static const unsigned char firma[8] = {137,80,78,71,13,10,26,10};
+    unsigned char ihdr[13];
+    ihdr[0]=(w>>24)&255; ihdr[1]=(w>>16)&255; ihdr[2]=(w>>8)&255; ihdr[3]=w&255;
+    ihdr[4]=(h>>24)&255; ihdr[5]=(h>>16)&255; ihdr[6]=(h>>8)&255; ihdr[7]=h&255;
+    ihdr[8]=8; ihdr[9]=(unsigned char)(alfa ? 6 : 2); ihdr[10]=0; ihdr[11]=0; ihdr[12]=0;
+    p.ok = fwrite(firma, 1, 8, f) == 8 && w3dPngChunkArchivo(f, "IHDR", ihdr, 13);
+    return p.ok;
+}
+bool PNGFranjasFilas(PNGFranjas& p, const unsigned char* rgba, int n){
+    if (!p.f || !p.ok || !rgba || n <= 0) return p.ok;
+    if (p.filas + n > p.h) n = p.h - p.filas;
+    if (n <= 0) return p.ok;
+    const int bpp = p.alfa ? 4 : 3;
+    const size_t fila = (size_t)1 + (size_t)p.w * bpp;
+    const size_t crudo = fila * n;
+    const bool primero = (p.filas == 0), ultimo = (p.filas + n == p.h);
+    // el zlib de esta franja: (el encabezado, si es la primera) + bloques "stored" de hasta 65535 + (el adler, al final)
+    const size_t bloques = (crudo + 65534) / 65535;
+    std::vector<unsigned char> d;
+    d.reserve((primero ? 2 : 0) + crudo + bloques * 5 + (ultimo ? 4 : 0));
+    if (primero) { d.push_back(0x78); d.push_back(0x01); }
+    std::vector<unsigned char> raw(crudo);
+    for (int y = 0; y < n; y++) {
+        unsigned char* o = &raw[(size_t)y * fila];
+        const unsigned char* s = rgba + (size_t)y * p.w * 4;
+        *o++ = 0;   // (filtro None)
+        for (int x = 0; x < p.w; x++, s += 4) { *o++ = s[0]; *o++ = s[1]; *o++ = s[2]; if (p.alfa) *o++ = s[3]; }
+    }
+    unsigned int a = p.adler & 0xFFFFu, b = p.adler >> 16;
+    for (size_t i = 0; i < crudo; i++) { a = (a + raw[i]) % 65521u; b = (b + a) % 65521u; }
+    p.adler = (b << 16) | a;
+    for (size_t off = 0; off < crudo; ) {
+        size_t k = crudo - off; if (k > 65535) k = 65535;
+        const bool fin = ultimo && off + k >= crudo;
+        d.push_back((unsigned char)(fin ? 1 : 0));
+        d.push_back((unsigned char)(k & 255)); d.push_back((unsigned char)(k >> 8));
+        const unsigned int nk = (~(unsigned int)k) & 0xFFFFu;
+        d.push_back((unsigned char)(nk & 255)); d.push_back((unsigned char)(nk >> 8));
+        d.insert(d.end(), raw.begin() + (long)off, raw.begin() + (long)(off + k));
+        off += k;
+    }
+    if (ultimo) { d.push_back((unsigned char)(p.adler >> 24)); d.push_back((unsigned char)(p.adler >> 16)); d.push_back((unsigned char)(p.adler >> 8)); d.push_back((unsigned char)p.adler); }
+    if (!w3dPngChunkArchivo((FILE*)p.f, "IDAT", &d[0], (unsigned int)d.size())) { p.ok = false; w3dLogfE("PNGFranjas: escritura corta (disco lleno?)"); }
+    p.filas += n;
+    return p.ok;
+}
+bool PNGFranjasCerrar(PNGFranjas& p){
+    if (!p.f) return false;
+    bool ok = p.ok && p.filas == p.h && w3dPngChunkArchivo((FILE*)p.f, "IEND", 0, 0);
+    if (fclose((FILE*)p.f) != 0) ok = false;
+    p.f = 0;
+    return ok;
+}
+
 // actualiza un RECTANGULO de una textura ya subida (pintura en vivo): 'rgbaRect' = w*h pixeles del rect
 bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect, bool regenerarMips) {
     if (!id || !rgbaRect || w <= 0 || h <= 0) return false;
@@ -1084,10 +1162,10 @@ unsigned char* EncodePNGRGBA(const unsigned char* rgba, int w, int h, bool flipY
 #ifndef W3D_SYMBIAN
 // PC/Web: encode + escritura con stdio. En Symbian SavePNG lo implementa
 // platform/symbian/w3dtexload.cpp (mismo EncodePNG + RFile).
-bool SavePNG(const char* path, const unsigned char* rgba, int w, int h, bool flipY){
+static bool SavePNGImpl(const char* path, const unsigned char* rgba, int w, int h, bool flipY, bool conAlpha){
     if (!path) return false;
     int len = 0;
-    unsigned char* png = EncodePNG(rgba, w, h, flipY, &len);
+    unsigned char* png = conAlpha ? EncodePNGRGBA(rgba, w, h, flipY, &len) : EncodePNG(rgba, w, h, flipY, &len);
     if (!png) return false;
     FILE* f = fopen(path, "wb");
     if (!f) { w3dLogfE("SavePNG: fopen FALLO path='%s' errno=%d (%s)", path, errno, strerror(errno)); delete[] png; return false; }
@@ -1095,6 +1173,33 @@ bool SavePNG(const char* path, const unsigned char* rgba, int w, int h, bool fli
     bool cerro = (fclose(f) == 0);   // el flush pasa ACA: sin chequearlo, un PNG chico "guardaba bien"
     delete[] png;
     if (!cerro || wr != (size_t)len) { w3dLogfE("SavePNG: escritura corta en '%s' (disco lleno?)", path); return false; }
+    return true;
+}
+bool SavePNG(const char* path, const unsigned char* rgba, int w, int h, bool flipY){ return SavePNGImpl(path, rgba, w, h, flipY, false); }
+bool SavePNGRGBA(const char* path, const unsigned char* rgba, int w, int h, bool flipY){ return SavePNGImpl(path, rgba, w, h, flipY, true); }
+
+// JPG con el codificador de stb_image_write (dominio publico): sin stdio propio (lo escribe W3dJpgEscribir)
+struct W3dJpgSalida { FILE* f; bool ok; };
+static void W3dJpgEscribir(void* ctx, void* data, int n) {
+    W3dJpgSalida* s = (W3dJpgSalida*)ctx;
+    if (s->ok && n > 0 && fwrite(data, 1, (size_t)n, s->f) != (size_t)n) s->ok = false;
+}
+bool SaveJPG(const char* path, const unsigned char* rgba, int w, int h, int calidad, bool flipY){
+    if (!path || !rgba || w <= 0 || h <= 0) return false;
+    if (calidad < 1) calidad = 1; if (calidad > 100) calidad = 100;
+    std::vector<unsigned char> dado;   // (el JPG va de arriba hacia abajo; glReadPixels, de abajo hacia arriba)
+    const unsigned char* px = rgba;
+    if (flipY) {
+        dado.resize((size_t)w * h * 4);
+        for (int y = 0; y < h; y++) memcpy(&dado[(size_t)y * w * 4], rgba + (size_t)(h - 1 - y) * w * 4, (size_t)w * 4);
+        px = &dado[0];
+    }
+    FILE* f = fopen(path, "wb");
+    if (!f) { w3dLogfE("SaveJPG: fopen FALLO path='%s' errno=%d (%s)", path, errno, strerror(errno)); return false; }
+    W3dJpgSalida s; s.f = f; s.ok = true;
+    const int r = stbi_write_jpg_to_func(W3dJpgEscribir, &s, w, h, 4, px, calidad);
+    const bool cerro = (fclose(f) == 0);
+    if (!r || !s.ok || !cerro) { w3dLogfE("SaveJPG: no se pudo escribir '%s' (disco lleno?)", path); return false; }
     return true;
 }
 #endif

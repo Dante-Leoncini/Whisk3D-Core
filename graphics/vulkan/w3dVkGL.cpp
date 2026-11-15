@@ -731,6 +731,10 @@ static VkSampler SamplerDe(const TexGL* t) {
                  : (mn == GL_NEAREST_MIPMAP_LINEAR) ? 4 : 5;
     int an = (int)(t->aniso + 0.5f); if (an < 1) an = 1; if (an > 16) an = 16;
     if (!gFeat.samplerAnisotropy) an = 1;
+    // SIN FILTRADO (GL_NEAREST de reduccion: la UI pixel perfect) no hay anisotropico: en Vulkan un sampler con la
+    // anisotropia prendida filtra LINEAL aunque diga NEAREST, y el atlas de la interfaz (subido con filtro y mipmaps, y
+    // por eso con anisotropia) salia BORROSO al agrandarlo (escala 2 o 3). GL la ignora con NEAREST
+    if (mn == GL_NEAREST || mn == GL_NEAREST_MIPMAP_NEAREST || mn == GL_NEAREST_MIPMAP_LINEAR) an = 1;
     const int ws = t->wrapS == GL_REPEAT ? 0 : t->wrapS == GL_MIRRORED_REPEAT ? 1 : 2, wt = t->wrapT == GL_REPEAT ? 0 : t->wrapT == GL_MIRRORED_REPEAT ? 1 : 2;
     const uint32_t clave = (uint32_t)fm | ((mg == GL_NEAREST ? 0u : 1u) << 3) | ((uint32_t)ws << 4) | ((uint32_t)wt << 6) | ((uint32_t)an << 8);
     std::map<uint32_t, VkSampler>::iterator it = gSamplers.find(clave);

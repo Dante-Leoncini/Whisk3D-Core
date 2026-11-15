@@ -305,12 +305,51 @@ void W3dClavesEstadisticas(W3dClavesStats& st);
 //                   rueda que sigue girando)
 enum { KfCicloNo = 0, KfCicloRepite = 1, KfCicloOffset = 2 };
 
+// ============================================================================
+// MODIFICADORES DE CURVA (la pila de cada curva, como los de Blender): cambian lo que la curva DEVUELVE sin tocar
+// sus keyframes. Se evaluan igual en el editor y en el juego (AnimProperty::EvalF).
+//   KfModCiclos   repite la curva antes y/o despues de sus keyframes: Repeat Motion / with Offset / Mirrored, con
+//                 cuantas veces (0 = para siempre). Es el Repetir de siempre pero con mas modos y en la pila.
+//   KfModRuido    le suma ruido (turbulencia): Replace / Add / Subtract / Multiply; escala, fuerza, offset, fase,
+//                 profundidad (octavas), lacunaridad y rugosidad. "Legacy" = el de Blender viejo (2 y 0.5 fijos)
+//   KfModEscalon  la curva salta de a 'paso' frames (animacion "a dos", stop motion), desde 'offset'
+//   KfModSuave    la suaviza con un filtro gaussiano de 'ancho' frames (sigma relativa al ancho)
+// Cada uno tiene: prendido, influencia (opcional) y un rango de frames donde actua (opcional, con rampas).
+// Los TIEMPOS (Ciclos, Escalon) se aplican del ultimo al primero y los VALORES (Ruido, Suave, el offset de los
+// ciclos) del primero al ultimo, como en Blender. POD + floats: se guarda como una lista fija de numeros.
+// ============================================================================
+enum { KfModCiclos = 0, KfModRuido = 1, KfModEscalon = 2, KfModSuave = 3, KfModTipos = 4 };
+enum { KfCiclosNo = 0, KfCiclosRepite = 1, KfCiclosOffset = 2, KfCiclosEspejo = 3 };
+enum { KfRuidoReemplaza = 0, KfRuidoSuma = 1, KfRuidoResta = 2, KfRuidoMultiplica = 3 };
+struct KfModificador {
+    int   tipo;
+    bool  activo;
+    bool  usarInfluencia; float influencia;
+    bool  usarRango; float rangoIni, rangoFin, mezclaIn, mezclaOut;
+    // Ciclos
+    int   antesModo, despuesModo; float antesCant, despuesCant;
+    // Ruido
+    int   mezcla; float escala, fuerza, offset, fase, profundidad; bool ruidoViejo; float lacunaridad, rugosidad;
+    // Escalon
+    float paso, pasoOffset; bool usarIni, usarFin; float ini, fin;
+    // Suave
+    float sigma, ancho;
+    KfModificador(int t = KfModCiclos);
+    enum { NFloats = 32 };              // los numeros que se guardan (el orden es el formato: solo se agrega al final)
+    void AFloats(float* f) const;
+    void DeFloats(const float* f, int n);
+    bool operator==(const KfModificador& o) const;
+    bool operator!=(const KfModificador& o) const { return !(*this == o); }
+};
+const char* KfModNombre(int tipo);   // "Cycles" / "Noise" / "Stepped" / "Smooth" (en ingles: T() al mostrarlo)
+
 class AnimProperty {
 public:
     int Property;   // AnimPosition / AnimRotation / AnimScale
     int component;  // AnimX / AnimY / AnimZ
     W3dClaves keyframes;   // por fuera, un std::vector<keyFrame>; por dentro puede estar compacta (W3dClaves)
     int cicloAntes, cicloDespues;   // KfCicloNo / KfCicloRepite / KfCicloOffset (el modificador Repetir)
+    std::vector<KfModificador> mods; // la pila de modificadores de la curva (vacia = la curva tal cual)
 
     AnimProperty() : Property(AnimPosition), component(AnimX), cicloAntes(KfCicloNo), cicloDespues(KfCicloNo) {}
     void SortKeyFrames();
@@ -321,6 +360,13 @@ public:
     float EvalF(float frame, float def) const;
     // EvalF sin el modificador Repetir (fuera del rango de los keyframes: el valor de la punta)
     float EvalRango(float frame, float def) const;
+    // la curva con el Repetir pero SIN la pila de modificadores
+    float EvalSinMods(float frame, float def) const;
+    // la curva con los primeros 'hasta' modificadores de la pila (el Suave mira la curva de antes de el)
+    float EvalMods(float frame, float def, int hasta) const;
+    // el REPETIR viejo (cicloAntes / cicloDespues, de los archivos de antes) pasa a ser un modificador CICLOS al
+    // principio de la pila: es la misma cosa, y el editor solo muestra la pila. Lo llaman los lectores.
+    void RepetirAModificador();
     // Handle EFECTIVO del keyframe i, como offset (dF, dV) desde el. 'salida' = el de la derecha. Segun handleType
     // devuelve el guardado (HFree/HAligned) o lo calcula desde los vecinos (HVector/HAuto/HAutoClamped). Es el
     // UNICO lugar donde se decide donde cae un handle: lo usan la evaluacion y el editor, asi que lo que ves es

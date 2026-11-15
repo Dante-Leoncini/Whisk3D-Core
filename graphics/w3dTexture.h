@@ -147,4 +147,16 @@ W3D_BACKEND_CERRAR
     // Guarda pixeles RGBA 8888 como PNG RGB en 'path' (= EncodePNG + escribir a disco; el alpha se
     // descarta). Devuelve true si escribio. En PC/Web usa stdio; en Symbian usa RFile (w3dtexload.cpp).
     bool SavePNG(const char* path, const unsigned char* rgba, int w, int h, bool flipY = true);
+    // PNG POR FRANJAS: el render a archivo grande sin la imagen entera en memoria (el N95 y el N8 hasta 4K, escribiendo en
+    // la tarjeta). Como EncodePNG, sin comprimir (deflate "stored"), RGB o RGBA. Abrir escribe la cabecera; Filas agrega
+    // 'n' filas RGBA de ARRIBA hacia abajo (un IDAT por llamada); Cerrar escribe el final y cierra. false = no se pudo
+    // escribir (disco lleno) o faltaron filas. Portable (stdio): tambien en Symbian
+    struct PNGFranjas { void* f; int w, h, filas; bool alfa, ok; unsigned int adler; };
+    bool PNGFranjasAbrir(PNGFranjas& p, const char* path, int w, int h, bool alfa);
+    bool PNGFranjasFilas(PNGFranjas& p, const unsigned char* rgba, int n);
+    bool PNGFranjasCerrar(PNGFranjas& p);
+    // el RENDER A ARCHIVO (tarjeta Render): PNG que CONSERVA el alfa (RGBA) y JPG (calidad 1..100, stb_image_write).
+    // Solo PC/Web/Android/consolas (stdio): en Symbian no existen
+    bool SavePNGRGBA(const char* path, const unsigned char* rgba, int w, int h, bool flipY = true);
+    bool SaveJPG(const char* path, const unsigned char* rgba, int w, int h, int calidad, bool flipY = true);
 }

@@ -618,6 +618,195 @@ static size_t TramoDe(const W3dClaves& K, float frame) {
 // REPETIR: fuera del rango de los keyframes el frame se lleva ADENTRO (una vuelta = del primero al ultimo) y, con
 // offset, se le suma lo que avanza la curva por vuelta. Adentro del rango no cambia nada.
 float AnimProperty::EvalF(float frame, float def) const {
+    if (!mods.empty()) return EvalMods(frame, def, (int)mods.size());
+    return EvalSinMods(frame, def);
+}
+
+// ============================================================================
+// MODIFICADORES DE CURVA (Animation.h)
+// ============================================================================
+KfModificador::KfModificador(int t)
+    : tipo(t), activo(true), usarInfluencia(false), influencia(1.0f),
+      usarRango(false), rangoIni(1.0f), rangoFin(100.0f), mezclaIn(0.0f), mezclaOut(0.0f),
+      antesModo(KfCiclosRepite), despuesModo(KfCiclosRepite), antesCant(0.0f), despuesCant(0.0f),
+      mezcla(KfRuidoReemplaza), escala(1.0f), fuerza(1.0f), offset(0.0f), fase(1.0f), profundidad(0.0f),
+      ruidoViejo(false), lacunaridad(2.0f), rugosidad(0.5f),
+      paso(2.0f), pasoOffset(0.0f), usarIni(false), usarFin(false), ini(0.0f), fin(0.0f),
+      sigma(0.33f), ancho(6.0f) {}
+void KfModificador::AFloats(float* f) const {
+    float v[NFloats] = { (float)tipo, activo ? 1.0f : 0.0f, usarInfluencia ? 1.0f : 0.0f, influencia,
+        usarRango ? 1.0f : 0.0f, rangoIni, rangoFin, mezclaIn, mezclaOut,
+        (float)antesModo, (float)despuesModo, antesCant, despuesCant,
+        (float)mezcla, escala, fuerza, offset, fase, profundidad, ruidoViejo ? 1.0f : 0.0f, lacunaridad, rugosidad,
+        paso, pasoOffset, usarIni ? 1.0f : 0.0f, usarFin ? 1.0f : 0.0f, ini, fin,
+        sigma, ancho, 0.0f, 0.0f };
+    for (int i = 0; i < NFloats; i++) f[i] = v[i];
+}
+void KfModificador::DeFloats(const float* f, int n) {
+    *this = KfModificador((n > 0) ? (int)f[0] : KfModCiclos);
+    float v[NFloats]; AFloats(v);                      // los que no vienen quedan en su default
+    for (int i = 0; i < n && i < NFloats; i++) v[i] = f[i];
+    tipo = (int)v[0]; if (tipo < 0 || tipo >= KfModTipos) tipo = KfModCiclos;
+    activo = v[1] != 0.0f; usarInfluencia = v[2] != 0.0f; influencia = v[3];
+    usarRango = v[4] != 0.0f; rangoIni = v[5]; rangoFin = v[6]; mezclaIn = v[7]; mezclaOut = v[8];
+    antesModo = (int)v[9]; despuesModo = (int)v[10]; antesCant = v[11]; despuesCant = v[12];
+    if (antesModo < 0 || antesModo > KfCiclosEspejo) antesModo = KfCiclosNo;
+    if (despuesModo < 0 || despuesModo > KfCiclosEspejo) despuesModo = KfCiclosNo;
+    mezcla = (int)v[13]; if (mezcla < 0 || mezcla > KfRuidoMultiplica) mezcla = KfRuidoReemplaza;
+    escala = v[14]; fuerza = v[15]; offset = v[16]; fase = v[17]; profundidad = v[18]; ruidoViejo = v[19] != 0.0f;
+    lacunaridad = v[20]; rugosidad = v[21];
+    paso = v[22]; pasoOffset = v[23]; usarIni = v[24] != 0.0f; usarFin = v[25] != 0.0f; ini = v[26]; fin = v[27];
+    sigma = v[28]; ancho = v[29];
+}
+bool KfModificador::operator==(const KfModificador& o) const {
+    float a[NFloats], b[NFloats]; AFloats(a); o.AFloats(b);
+    return memcmp(a, b, sizeof(a)) == 0;
+}
+void AnimProperty::RepetirAModificador() {
+    if (cicloAntes == KfCicloNo && cicloDespues == KfCicloNo) return;
+    KfModificador m(KfModCiclos);
+    // KfCicloNo/Repite/Offset = KfCiclosNo/Repite/Offset (mismos numeros, a proposito)
+    m.antesModo = cicloAntes; m.despuesModo = cicloDespues;
+    mods.insert(mods.begin(), m);
+    cicloAntes = cicloDespues = KfCicloNo;
+}
+const char* KfModNombre(int tipo) {
+    switch (tipo) { case KfModRuido: return "Noise"; case KfModEscalon: return "Stepped"; case KfModSuave: return "Smooth"; default: return "Cycles"; }
+}
+
+// cuanto actua el modificador en este frame: el rango (con sus rampas) y la influencia
+static float KfModInfluencia(const KfModificador& m, float t) {
+    float inf = 1.0f;
+    if (m.usarRango) {
+        if (t < m.rangoIni || t > m.rangoFin) return 0.0f;
+        if (m.mezclaIn > 0.0f && t < m.rangoIni + m.mezclaIn) inf = (t - m.rangoIni) / m.mezclaIn;
+        if (m.mezclaOut > 0.0f && t > m.rangoFin - m.mezclaOut) { const float o = (m.rangoFin - t) / m.mezclaOut; if (o < inf) inf = o; }
+        if (inf < 0.0f) inf = 0.0f;
+    }
+    if (m.usarInfluencia) inf *= m.influencia;
+    return inf;
+}
+// RUIDO: ruido de gradiente 2D propio (determinista: el mismo en todas las plataformas), en [0..1]
+static float KfRuidoHash(int x, int y) {
+    unsigned h = (unsigned)x * 374761393u + (unsigned)y * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u; h ^= h >> 16;
+    return (float)(h & 0xFFFFu) / 65535.0f;
+}
+static float KfRuidoGrad(int x, int y, float dx, float dy) {
+    const float a = KfRuidoHash(x, y) * 6.2831853f;
+    return cosf(a) * dx + sinf(a) * dy;
+}
+static float KfRuido2(float x, float y) {
+    const float fx = floorf(x), fy = floorf(y);
+    const int ix = (int)fx, iy = (int)fy;
+    const float dx = x - fx, dy = y - fy;
+    const float ux = dx * dx * (3.0f - 2.0f * dx), uy = dy * dy * (3.0f - 2.0f * dy);
+    const float a = KfRuidoGrad(ix, iy, dx, dy),         b = KfRuidoGrad(ix + 1, iy, dx - 1.0f, dy);
+    const float c = KfRuidoGrad(ix, iy + 1, dx, dy - 1.0f), d = KfRuidoGrad(ix + 1, iy + 1, dx - 1.0f, dy - 1.0f);
+    const float v = (a + (b - a) * ux) + ((c + (d - c) * ux) - (a + (b - a) * ux)) * uy;   // ~[-0.7, 0.7]
+    float r = 0.5f + v * 0.7f;
+    if (r < 0.0f) r = 0.0f; if (r > 1.0f) r = 1.0f;
+    return r;
+}
+// turbulencia: la octava base + 'profundidad' octavas (cada una lacunaridad veces mas fina y rugosidad veces mas suave)
+static float KfTurbulencia(const KfModificador& m, float t) {
+    const float esc = (fabsf(m.escala) > 1e-6f) ? m.escala : 1e-6f;
+    const float lac = m.ruidoViejo ? 2.0f : m.lacunaridad, rug = m.ruidoViejo ? 0.5f : m.rugosidad;
+    float x = (t - m.offset) / esc, y = m.fase;
+    float s = KfRuido2(x, y), amp = 1.0f, div = 1.0f;
+    int oct = (int)(m.profundidad + 0.5f); if (oct > 16) oct = 16;
+    for (int i = 0; i < oct; i++) { amp *= rug; x *= lac; y = y * lac + 3.7f; s += amp * KfRuido2(x, y); div += amp; }
+    return (div > 0.0f) ? s / div : s;
+}
+// CICLOS sobre el TIEMPO (fcm_cycles_time de Blender): el frame equivalente adentro de los keyframes. ofsV = cuanto
+// hay que correr el valor (Repeat with Offset). false = este frame no lo toca (adentro del rango, o pasaron las vueltas)
+static bool KfCiclosTiempo(const KfModificador& m, const W3dClaves& K, float& t, float& ofsV) {
+    ofsV = 0.0f;
+    const size_t n = K.size();
+    if (n < 2) return false;
+    const float f0 = (float)K.Frame(0), f1 = (float)K.Frame(n - 1);
+    const float v0 = K.Valor(0), v1 = K.Valor(n - 1);
+    int lado = 0, modo = KfCiclosNo; float cant = 0.0f, ofs = 0.0f;
+    if (t < f0 && m.antesModo != KfCiclosNo) { lado = -1; modo = m.antesModo; cant = m.antesCant; ofs = f0; }
+    else if (t > f1 && m.despuesModo != KfCiclosNo) { lado = 1; modo = m.despuesModo; cant = m.despuesCant; ofs = f1; }
+    if (lado == 0) return false;
+    const float dx = f1 - f0, dy = v1 - v0;
+    if (dx <= 0.0f) return false;
+    const float ciclo = (float)lado * (t - ofs) / dx;
+    const float ct = fmodf(t - ofs, dx);
+    if (cant >= 1.0f && ciclo > cant) return false;      // pasaron las vueltas pedidas: queda la punta
+    if (modo == KfCiclosOffset) ofsV = ((lado < 0) ? floorf((t - ofs) / dx) : ceilf((t - ofs) / dx)) * dy;
+    float nt;
+    if (ct == 0.0f) {
+        nt = (lado == 1) ? f1 : f0;
+        if (modo == KfCiclosEspejo && ((int)ciclo % 2)) nt = (lado == 1) ? f0 : f1;
+    } else if (modo == KfCiclosEspejo && ((int)(ciclo + 1.0f) % 2)) {
+        nt = (lado < 0) ? f0 - ct : f1 - ct;               // vuelta impar: al reves
+    } else nt = f0 + ct;
+    if (nt < f0) nt += dx;
+    t = nt;
+    return true;
+}
+float AnimProperty::EvalMods(float frame, float def, int hasta) const {
+    if (hasta > (int)mods.size()) hasta = (int)mods.size();
+    if (hasta <= 0) return EvalSinMods(frame, def);
+    // 1) los TIEMPOS, del ultimo al primero
+    float t = frame;
+    float ofsCiclos[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    for (int i = hasta - 1; i >= 0; i--) {
+        const KfModificador& m = mods[(size_t)i];
+        if (!m.activo) continue;
+        const float inf = KfModInfluencia(m, frame);
+        if (inf <= 0.0f) continue;
+        float nt = t;
+        if (m.tipo == KfModCiclos) {
+            float ofs = 0.0f;
+            if (!KfCiclosTiempo(m, keyframes, nt, ofs)) continue;
+            if (i < 8) ofsCiclos[i] = ofs;
+        } else if (m.tipo == KfModEscalon) {
+            if (m.usarIni && t < m.ini) continue;
+            if (m.usarFin && t > m.fin) continue;
+            if (fabsf(m.paso) < 1e-4f) continue;
+            nt = floorf((t - m.pasoOffset) / m.paso) * m.paso + m.pasoOffset;
+        } else continue;
+        t = t + (nt - t) * inf;
+    }
+    float v = EvalSinMods(t, def);
+    // 2) los VALORES, del primero al ultimo
+    for (int i = 0; i < hasta; i++) {
+        const KfModificador& m = mods[(size_t)i];
+        if (!m.activo) continue;
+        const float inf = KfModInfluencia(m, frame);
+        if (inf <= 0.0f) continue;
+        float nv = v;
+        if (m.tipo == KfModCiclos) { if (i < 8) nv = v + ofsCiclos[i]; }
+        else if (m.tipo == KfModRuido) {
+            const float r = KfTurbulencia(m, frame);
+            switch (m.mezcla) {
+                case KfRuidoSuma:       nv = v + r * m.fuerza; break;
+                case KfRuidoResta:      nv = v - r * m.fuerza; break;
+                case KfRuidoMultiplica: nv = v * r * m.fuerza; break;
+                default:                nv = v + (r - 0.5f) * m.fuerza; break;
+            }
+        } else if (m.tipo == KfModSuave) {
+            // gaussiano de 'ancho' frames a cada lado, sobre la curva de ANTES de este modificador
+            int w = (int)(m.ancho + 0.5f); if (w < 1) continue; if (w > 64) w = 64;
+            const float sg = (m.sigma > 1e-3f) ? m.sigma : 1e-3f;
+            float suma = 0.0f, pesos = 0.0f;
+            for (int k = -w; k <= w; k++) {
+                const float u = (float)k / (float)w;
+                const float p = expf(-(u * u) / (2.0f * sg * sg));
+                suma += p * ((k == 0) ? v : EvalMods(frame + (float)k, def, i));
+                pesos += p;
+            }
+            if (pesos > 0.0f) nv = suma / pesos;
+        }
+        v = v + (nv - v) * inf;
+    }
+    return v;
+}
+
+float AnimProperty::EvalSinMods(float frame, float def) const {
     if (cicloAntes == KfCicloNo && cicloDespues == KfCicloNo) return EvalRango(frame, def);
     const W3dClaves& K = keyframes;
     const size_t n = K.size();
