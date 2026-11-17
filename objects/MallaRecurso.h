@@ -77,6 +77,10 @@ struct MallaRecurso : public MallaDatos {
     // "texto"): el recurso vive en binario, asi que el texto se convierte UNA vez y queda como
     // cache (no es una edicion: 'modificado' sigue en false). Se tira al descargar los arrays.
     bool        bytesDeTexto;
+    // EN QUE FORMATO SE GUARDA (la opcion "Malla en texto" de su tarjeta Recurso): -1 = el de su entrada (.w3dm
+    // texto, .w3db binario; una malla nueva, el default del proyecto); 0 = binario, 1 = texto, elegido y todavia sin
+    // guardar (el guardado lo escribe asi y lo vuelve a -1). Ver W3dMallaRecursoEnTexto (io/MallasProyecto.h)
+    int         formato;
     int         serial;      // identidad en la sesion (id del almacen mientras no tenga entrada;
                              // la del undo de un rename: el registro se purga, el serial no cambia)
     int         refsUndo;    // pasos de undo que lo nombran: mientras haya, no se purga

@@ -324,6 +324,27 @@ W3D_BACKEND_CERRAR
 W3D_BACKEND_ABRIR
     void Material(MatParam p, const float* rgba); // 4 floats
     void MaterialShininess(float s);
+    // LOS VALORES PBR del material para la luz POR PIXEL de los shaders (GLES2 / WebGL / Vulkan): metalico, rugosidad,
+    // F0 (del IOR: cuanto refleja de frente) y transmision, como los usa el trazado de rayos. rug < 0 = apagado (la luz
+    // de siempre, la del pipeline fijo con Material/MaterialShininess). En los backends fijos no hace nada
+    void MaterialPBR(float metal, float rug, float f0, float trans, bool ssr = false);   // ssr: reflejos en pantalla
+    // EL ENTORNO (el fondo como textura 360) para la luz PBR por pixel: 'tex' la imagen, 'texBorrosa' una copia chica y
+    // borrosa (la luz difusa y los reflejos rugosos; 0 = la misma) y 'ojoAImagen' la matriz 3x3 (filas) que pasa una
+    // direccion del OJO a la de la imagen (la vista invertida y la rotacion del fondo). tex = 0: sin entorno. Los
+    // backends fijos no hacen nada (el cielo se ve igual: es una esfera texturada)
+    void Entorno(unsigned int tex, unsigned int texBorrosa, const float* ojoAImagen);
+    // LO DE ATRAS para el VIDRIO de la luz por pixel (transmision): on = copia lo que ya esta dibujado en el viewport a
+    // una textura que el shader lee refractado por el IOR y desenfocado por la rugosidad (antes del vidrio se dibujo
+    // todo lo opaco); off = deja de usarla. Los backends fijos no hacen nada (ahi el vidrio es mezcla)
+    void EscenaCopiar(bool on);
+    // una GPU CHICA (la VideoCore IV de Android 2.3: un programa por draw): el editor dibuja con menos detalle lo que no
+    // se nota (el cielo con menos triangulos, el 360 de los reflejos desde una copia chica)
+    bool GpuLimitada();
+    // EL ENTORNO COMO CUBEMAP (las GPU chicas): las 6 caras (RGBA, lado x lado, en el orden de GL: +X -X +Y -Y +Z -Z) y
+    // el entorno con dos cubos (el nitido y el borroso) en vez de las dos imagenes 360. El shader lee el cubo con la
+    // direccion: sin las cuentas de la imagen 360 (atan y acos en cada pixel). SubirCubo da 0 donde no hay cubemaps
+    unsigned int SubirCubo(const unsigned char* const caras[6], int lado);
+    void EntornoCubo(unsigned int cubo, unsigned int cuboBorroso, const float* ojoAImagen);
 W3D_BACKEND_CERRAR
 
     // --- niebla (fog) del pipeline fijo ---
@@ -675,6 +696,10 @@ W3D_BACKEND_CERRAR
     // ordenada de mas a menos y la vacia. Solo el backend de pipeline fijo
     extern bool g_trazaGL;
     extern bool g_trazaGLSec;
+    // EL ALFA DE TODO LO QUE SE PINTA: Color4f / Color4fv / Color4ub multiplican su alfa por este (1 = normal). La UI lo
+    // baja para dibujar algo entero translucido (la tarjeta de la ultima operacion mientras se arrastra un valor: se ve
+    // detras como queda el cambio) y lo vuelve a 1. Lo que ya estaba pintado no cambia: cuenta desde el proximo color.
+    extern float g_alfaColor;
 W3D_BACKEND_ABRIR
     void TrazaGL(const char* llamada);
     void TrazaGLVer();

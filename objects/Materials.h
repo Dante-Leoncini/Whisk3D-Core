@@ -23,6 +23,11 @@ class Material;
 // Vector global de materiales
 extern std::vector<Material*> Materials;
 extern Material* MaterialDefecto;
+// un material que CREA el editor (uno nuevo, el material por defecto) nace con el sombreado POR PIXEL si el backend tiene
+// shaders (Vulkan, OpenGL ES 2.0, la web: w3dEngine::SombreadoPorPixelSoportado); sin shaders (el OpenGL fijo, el
+// N95), por vertice. Devuelve el mismo material. (El constructor sigue en "por vertice": es lo que significa un
+// material de un .w3d sin "luzPorPixel", y abrir un proyecto viejo no tiene que cambiarle el aspecto)
+Material* MaterialDeFabrica(Material* m);
 
 // ===================================================
 //  CIERRE DE PROYECTO: podar los materiales del proyecto
@@ -198,6 +203,9 @@ class Material {
         // El alfa es otra cosa: lo transparente por el alfa (o por su mapa) no esta, y se ve lo de atras derecho. Con
         // alfa 50% y transmision 1: la mitad pasa derecho y la otra mitad refractada. 0 = el IOR no hace nada
         float    transmision;
+        // REFLEJOS EN PANTALLA (luz por pixel con shaders): lo dibujado se refleja en el material (el piso mojado, el
+        // metal pulido), segun la rugosidad, el metalico y el angulo (Fresnel). Una aproximacion sin profundidad
+        bool     ssr;
         // SHADER ESCRITO (objects/ShaderEscrito.h): con shaderOn, en los backends con shaders el material se dibuja con
         // el archivo de texto 'shaderArchivo' ("shaders/vidrio.glsl" adentro del proyecto o una ruta del disco)
         bool        shaderOn;

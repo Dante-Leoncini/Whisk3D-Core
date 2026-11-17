@@ -161,6 +161,9 @@ static int gStatCat = StatCatEditor;   // categoria del que esta dibujando (el c
 bool g_trazaGL = false;
 #endif
 #ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
+float g_alfaColor = 1.0f;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool g_trazaGLSec = false;           // ademas, cada llamada EN ORDEN (con su categoria): de donde sale cada una
 #endif
 static const char* gTrazaTxt[512];   // (un lugar del codigo = un texto: se compara el puntero)
@@ -1064,6 +1067,7 @@ void PointSpriteCoordReplace(bool on) { W3D_GLC(glTexEnvi(GL_POINT_SPRITE, GL_CO
 #endif
 
 void Color4f(float r, float g, float b, float a) {
+    a *= g_alfaColor;   // (la UI translucida: ver w3dGraphics.h)
     if (gColKnown && gColCache[0] == r && gColCache[1] == g &&
         gColCache[2] == b && gColCache[3] == a) return;   // mismo color -> nada
     gColCache[0] = r; gColCache[1] = g; gColCache[2] = b; gColCache[3] = a;
@@ -1166,7 +1170,7 @@ int CopiaPantallaFila(int y, int) { return y; }
 void Color4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a) {
     gColKnown = false;   // otra precision: el cache de Color4f deja de valer
     if (gCapOn[ColorMaterial]) { gMatKnown[MatAmbient] = false; gMatKnown[MatDiffuse] = false; }
-    W3D_GLC(glColor4ub(r, g, b, a));
+    W3D_GLC(glColor4ub(r, g, b, (unsigned char)(a * g_alfaColor)));
 }
 
 // ---- material: float en escritorio / GL ES 1.1 (Symbian); punto fijo en
@@ -1196,6 +1200,13 @@ void Material(MatParam p, const float* rgba) {
     W3D_GLC(glMaterialfv(GL_FRONT_AND_BACK, MatParamGL(p), rgba));
 #endif
 }
+// (pipeline fijo: sin shaders no hay luz PBR; el brillo ya sale de la rugosidad y el metalico en Material/Shininess)
+void MaterialPBR(float, float, float, float, bool) {}
+void Entorno(unsigned int, unsigned int, const float*) {}   // (sin shaders: el cielo es la esfera texturada)
+void EscenaCopiar(bool) {}   // (sin shaders: el vidrio es mezcla)
+bool GpuLimitada() { return false; }
+unsigned int SubirCubo(const unsigned char* const*, int) { return 0; }   // (sin shaders: el entorno no se usa)
+void EntornoCubo(unsigned int, unsigned int, const float*) {}
 void MaterialShininess(float s) {
     if (gShinCache == s) return;
     gShinCache = s;

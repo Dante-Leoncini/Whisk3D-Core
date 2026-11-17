@@ -615,6 +615,14 @@ namespace w3dFileSystem {
     // ========================================================
     //  GetHomeDir
     // ========================================================
+#if defined(__ANDROID__)
+    static bool CarpetaLegible(const char* ruta) {
+        DIR* d = opendir(ruta);
+        if (!d) return false;
+        closedir(d);
+        return true;
+    }
+#endif
     std::string GetHomeDir() {
     #if defined(_WIN32)
         const char* up = std::getenv("USERPROFILE");
@@ -639,8 +647,12 @@ namespace w3dFileSystem {
         // almacenamiento COMPARTIDO del usuario (Descargas, DCIM, etc.), NO el
         // sandbox de la app. El permiso de lectura lo pide la app; sin permiso
         // el listado sale vacio.
-        if (EsCarpeta("/storage/emulated/0")) return "/storage/emulated/0";
-        if (EsCarpeta("/sdcard")) return "/sdcard";
+        // Se mira que se pueda LEER (no solo que exista): sin tarjeta SD (el Galaxy Ace) /sdcard existe pero no se
+        // puede listar, y el explorador quedaba en "/" sin nada a donde ir. Ahi, la carpeta de Whisk3D (la de la app:
+        // siempre se lee y se escribe)
+        if (CarpetaLegible("/storage/emulated/0")) return "/storage/emulated/0";
+        if (CarpetaLegible("/sdcard")) return "/sdcard";
+        if (!gUserDataDir.empty()) return gUserDataDir;
         return "/";
     #else
         const char* h = std::getenv("HOME");

@@ -699,8 +699,16 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     // TINTE del objeto (setTinte de lua): escala el ambiente y el difuso (y abajo el color plano); el material
     // compartido no se toca, asi otra malla con el mismo material se sigue viendo normal
     const float* tn = tinte;
+    // LA TRANSMISION (lo que es vidrio) y su F0 de Fresnel (del IOR: cuanto refleja de frente; 0.04 sin refraccion, como
+    // el trazado de rayos). Con la luz PBR por pixel de los shaders, el shader hace transparente lo que no refleja segun
+    // el angulo; sin ella (pipeline fijo, luz por vertice) la opacidad baja pareja. En los dos casos se dibuja con mezcla
+    const float iorM = (mat->ior > 0.0f) ? mat->ior : 1.0f;
+    const float f0M = (iorM == 1.0f) ? 0.04f : ((iorM - 1.0f) / (iorM + 1.0f)) * ((iorM - 1.0f) / (iorM + 1.0f));
+    const float transM = (mat->transmision < 0.0f) ? 0.0f : (mat->transmision > 1.0f ? 1.0f : mat->transmision);
+    const bool pbrShader = !solido && conLuz && mat->lighting && mat->porPixel && gfx::SombreadoPorPixelSoportado();
+    const float alfaTrans = (transM > 0.0f && !pbrShader && mat->lighting) ? (1.0f - transM * (1.0f - f0M)) : 1.0f;
     const float amb[4] = { mat->ambient[0] * tn[0],  mat->ambient[1] * tn[1],  mat->ambient[2] * tn[2],  mat->ambient[3]  * xrayA };
-    const float dif[4] = { mat->diffuse[0] * tn[0],  mat->diffuse[1] * tn[1],  mat->diffuse[2] * tn[2],  mat->diffuse[3]  * xrayA };
+    const float dif[4] = { mat->diffuse[0] * tn[0],  mat->diffuse[1] * tn[1],  mat->diffuse[2] * tn[2],  mat->diffuse[3]  * xrayA * alfaTrans };
     const float emi[4] = { mat->emission[0], mat->emission[1], mat->emission[2], mat->emission[3] * xrayA };
     gfx::SmoothShading(true); // el look suave/plano lo dan las NORMALES de la malla, no el material
     // SOMBREADO TOON (Material::toon): la rampa (texturaB) en la unidad 1 con la coordenada por vertice que dejo
@@ -732,6 +740,9 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         gfx::Material(gfx::MatSpecular, spec);
         gfx::Material(gfx::MatEmission, emi);
         gfx::MaterialShininess(2.0f + liso * liso * 126.0f);
+        // la LUZ PBR por pixel de los shaders (GLES2 / WebGL / Vulkan): los mismos valores que el trazado de rayos
+        if (pbrShader) gfx::MaterialPBR(met, rug, f0M, transM, mat->ssr);
+        else           gfx::MaterialPBR(0.0f, -1.0f, 0.04f, 0.0f, false);
     }
 
     // color por vertice (via ColorMaterial) o el difuso plano del material
@@ -913,7 +924,7 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     // otro valor es un codigo de gfx::Mezcla — el que importa aca es 2 = MezclaAdd (ADITIVO,
     // GL_ONE/GL_ONE): aclara y el negro queda invisible, que es como el PSX dibuja el
     // torbellino del giro, los rayos y las chispas. Anda en GL ES 1.1 (N95), sin extensiones.
-    if (mat->transparent) {
+    if (mat->transparent || (transM > 0.0f && mat->lighting)) {
         gfx::Enable(gfx::Blend);
         if (mat->mezcla) gfx::SetMezcla(mat->mezcla); else gfx::BlendAlpha();
     }
@@ -1462,7 +1473,21 @@ void W3dDecalesLimpiarPendientes() { gDecalPend.clear(); }
 void W3dLucesLimpiarPendientes()   { gLuzPend.clear(); gPantallaPend.clear(); }
 
 // true si TODOS los grupos de material tienen un shader escrito (compilado) que lee la pantalla
+// un VIDRIO de la luz por pixel (transmision con shaders): va al final, sobre la copia de lo que ya se dibujo
+static bool EsVidrioPantalla(const std::vector<MaterialGroup>& grupos) {
+    namespace gfx = w3dEngine;
+    // (en el render y en la VISTA PREVIA DE MATERIAL: la que es para ver los materiales. En los modos de analisis -solido,
+    //  alambre, normales, profundidad, alfa- no hay luz PBR)
+    if (grupos.empty() || w3dRenderSolido || w3dRenderWireframe || w3dRenderNormalColor || w3dRenderSinLuz || w3dRenderAlpha ||
+        !gfx::SombreadoPorPixelSoportado()) return false;
+    for (size_t g = 0; g < grupos.size(); g++) {
+        const Material* mt = grupos[g].material;
+        if (mt && (mt->transmision > 0.0f || mt->ssr) && mt->lighting && mt->porPixel && !mt->shaderOn) return true;
+    }
+    return false;
+}
 bool Mesh::EsSoloPantalla() const {
+    if (EsVidrioPantalla(materialsGroup)) return true;
     if (materialsGroup.empty() || w3dRenderSolido) return false;
     for (size_t g = 0; g < materialsGroup.size(); g++) {
         Material* mt = materialsGroup[g].material;
@@ -1503,7 +1528,10 @@ void W3dLucesDibujarPendientes() {
         m->RenderObject();
         gfx::PopMatrix();
     }
-    // (y al final las que leen la pantalla: ya esta todo lo de atras)
+    // (y al final las que leen la pantalla: ya esta todo lo de atras). Los VIDRIOS leen UNA copia (EscenaCopiar)
+    bool hayVidrio = false;
+    for (size_t i = 0; i < gPantallaPend.size() && !hayVidrio; i++) if (gPantallaPend[i]) hayVidrio = EsVidrioPantalla(gPantallaPend[i]->materialsGroup);
+    if (hayVidrio) gfx::EscenaCopiar(true);
     for (size_t i = 0; i < gPantallaPend.size(); i++) {
         Mesh* m = gPantallaPend[i];
         if (!m) continue;
@@ -1514,6 +1542,7 @@ void W3dLucesDibujarPendientes() {
         m->RenderObject();
         gfx::PopMatrix();
     }
+    if (hayVidrio) gfx::EscenaCopiar(false);
     w3dDecalesInline = inlineAntes;
     gLuzPend.clear(); gPantallaPend.clear();
     // el estado que toca AplicarMaterial queda como lo dejo la ultima luz:
@@ -1827,6 +1856,19 @@ void Mesh::RenderObject() {
         if (g_mallaAutocull && g_mallaVisibleHook && !editActiva && !weightPaintOn && !vertexPaintOn && !hayGen) {
             bool probar = false; Vector3 mnL(0,0,0), mxL(0,0,0);
             if (skinArmature) {
+                // UN SALTO DE CUADRO (arrastrar la linea de tiempo, ir al principio, la vuelta del loop) deja la caja
+                // de la pose de ANTES, que puede estar fuera de cuadro aunque el personaje ya volvio: se culleaba y no
+                // se volvia a skinnear hasta 30 cuadros despues (se veia el esqueleto y la malla aparecia tarde). En
+                // pausa cualquier cambio de cuadro o de pose re-skinnea antes de probar (se dibuja a demanda: barato);
+                // reproduciendo, solo un salto de mas de 2 cuadros (avanzar de a uno mantiene el ahorro del N95)
+                if (skinAabbOk) {
+                    extern bool PlayAnimation; extern int CurrentFrame;
+                    const int salto = CurrentFrame - lastSkinFrame;
+                    const bool poseNueva = skinPoseSerial != skinArmature->poseSerial;
+                    if ((!PlayAnimation && (salto != 0 || poseNueva)) || salto > 2 || salto < -2) {
+                        extern void SkinearMesh(Mesh*); SkinearMesh(this);   // refresca pose + AABB
+                    }
+                }
                 if (skinAabbOk) {
                     const float dx = (skinAabbMax.x-skinAabbMin.x)*0.15f + 0.05f;
                     const float dy = (skinAabbMax.y-skinAabbMin.y)*0.15f + 0.05f;
@@ -1858,7 +1900,7 @@ void Mesh::RenderObject() {
     extern bool g_cullGrabar; extern void W3dCullVistaRegistrar(const char*);
     if (g_cullGrabar) W3dCullVistaRegistrar(this->name.c_str());
     // el material por defecto SIEMPRE tiene que existir (en Symbian arranca NULL)
-    if (!MaterialDefecto) MaterialDefecto = new Material("Default", true);
+    if (!MaterialDefecto) MaterialDefecto = MaterialDeFabrica(new Material("Default", true));
     namespace gfx = w3dEngine;
     // (P1) ACA vivia un gfx::Invalidate() POR MALLA: anulaba el cache ~200 veces
     // por frame y cada Enable/Disable/DepthMask/TexEnv del material volvia a ir
@@ -2565,6 +2607,7 @@ void Mesh::RenderObject() {
         gfx::Disable(gfx::PolygonOffsetFill);
         gfx::AlphaTest(0.0f);   // el recorte por alfa de un material (rejas) no leakea a la UI ni a la proxima malla
         gfx::ShaderEscritoUsar(0, NULL);   // (idem el shader escrito de un material)
+        gfx::MaterialPBR(0.0f, -1.0f, 0.04f, 0.0f);   // (idem la luz PBR: lo que se dibuje despues con luz no la hereda)
         gfx::MezclaTexturasOff();   // (idem la unidad 1 de un material con mezcla de texturas)
         // el estado que puede haber dejado un material DECAL / ADITIVO: si no se restaura,
         // la proxima malla (o la UI) hereda "no escribas z" o "sumale al fondo".

@@ -52,7 +52,7 @@ static std::string EnteroTexto(int v) {
 }
 
 MallaRecurso::MallaRecurso()
-    : modificado(false), bytesDeTexto(false), serial(gSerialProx++), refsUndo(0), conservar(false), borrado(false),
+    : modificado(false), bytesDeTexto(false), formato(-1), serial(gSerialProx++), refsUndo(0), conservar(false), borrado(false),
       version(1), rec(0),
       suave(false), primTipo(-1), primTam(2.0f), primTam2(0.0f), primAlto(0.0f), primVerts(8), primVerts2(8),
       extrasEnRecurso(false), firmaFormas(0), firmaUVRest(0),

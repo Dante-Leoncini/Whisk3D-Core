@@ -81,6 +81,12 @@ struct W3dBackendTabla {
     void (*Color4ub)(unsigned char r, unsigned char g, unsigned char b, unsigned char a);
     void (*Material)(MatParam p, const float* rgba);
     void (*MaterialShininess)(float s);
+    void (*MaterialPBR)(float metal, float rug, float f0, float trans, bool ssr);
+    void (*Entorno)(unsigned int tex, unsigned int texBorrosa, const float* ojoAImagen);
+    void (*EscenaCopiar)(bool on);
+    bool (*GpuLimitada)();
+    unsigned int (*SubirCubo)(const unsigned char* const caras[6], int lado);
+    void (*EntornoCubo)(unsigned int cubo, unsigned int cuboBorroso, const float* ojoAImagen);
     void (*FogMode)(bool linear);
     void (*FogStart)(float z);
     void (*FogEnd)(float z);

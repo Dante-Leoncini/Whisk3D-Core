@@ -206,6 +206,9 @@ static int gUltimoIdx = 0, gUltimoVerts = 0, gUltimoVBO = 0;   // (los del draw 
 bool g_trazaGL = false;
 #endif
 #ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
+float g_alfaColor = 1.0f;
+#endif
+#ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool g_trazaGLSec = false;
 #endif
 static const char* gTrazaTxt[512];   // (un lugar del codigo = un texto: se compara el puntero)
@@ -264,6 +267,15 @@ static float matAmb[4]    = {0.2f,0.2f,0.2f,1};
 static float matSpec[4]   = {0,0,0,1};
 static float matEmis[4]   = {0,0,0,1};
 static float matShine     = 0.0f;
+// los valores PBR del material (MaterialPBR): metalico, rugosidad, F0 (del IOR) y transmision. rug < 0 = la luz de siempre
+static float matPbr[4]    = {0.0f,-1.0f,0.04f,0.0f};
+static float matExtra[4]  = {0.0f,0.0f,0.0f,0.0f};   // x = reflejos en pantalla (SSR)
+// EL ENTORNO (Entorno): la textura 360, su copia borrosa y las 3 filas de la matriz ojo -> imagen (w de la 1ra: prendido)
+static unsigned int envTex = 0, envTexB = 0;
+static bool envCubo = false;   // envTex / envTexB son CUBEMAPS (EntornoCubo: las GPU chicas)
+// LO DE ATRAS del vidrio (EscenaCopiar): la copia del viewport en la unidad 4 y el rectangulo de donde salio (w = 0: apagado)
+static GLuint texEscena = 0; static int texEscW = 0, texEscH = 0; static float escVp[4] = {0,0,0,0};
+static float envF[12] = {1,0,0,0, 0,1,0,0, 0,0,1,0};
 static float curColor[4]  = {1,1,1,1};   // color uniforme (Color4*) cuando NO hay array de color
 static float fogColor[4]  = {0,0,0,1};
 static float fogStart=0, fogEnd=1;
@@ -299,7 +311,7 @@ static GLint uClipN,uClip[5];   // planos de recorte (ver PlanosRecorte): equiva
 static float blurY = 0.0f;
 static float alphaRef = 0.0f;
 static int   alfaAbajo = 0;
-static GLint uMDiff,uMAmb,uMSpec,uMEmis,uShine,uAmbGlobal,uNLuces,uLPos,uLAmb,uLDif,uLSpec,uLAtt,uLCono;
+static GLint uMDiff,uMAmb,uMSpec,uMEmis,uShine,uAmbGlobal,uNLuces,uLPos,uLAmb,uLDif,uLSpec,uLAtt,uLCono,uMPbr,uEnvTex,uEnvTexB,uEnvF0,uEnvF1,uEnvF2,uEscena,uEscenaVp,uMExtra;
 static GLint uFogColor,uFogStart,uFogEnd,uFogModo,uFogDens;
 // los atributos, en lugares fijos (los mismos en todos los programas, ver linkear)
 static const GLint aLpos=0, aLnrm=1, aLuv=2, aLcol=3, aLuv1=4;
@@ -419,6 +431,10 @@ static const char* FS =
 "#else\n"
 "#define W3D_ALTA\n"
 "#endif\n"
+// LOS PEDAZOS DE LA LUZ PBR POR PIXEL: el programa ENTERO los tiene todos (se prenden con uniforms); con un programa por
+// draw (W3D_ESPECIAL: la VideoCore IV de Android 2.3) solo los que usa ese draw (ver ElegirPrograma). Con todos juntos
+// el driver del Galaxy Ace no podia dibujar la malla (GL_OUT_OF_MEMORY en el glDrawElements y la pantalla en negro)
+"#ifndef W3D_ESPECIAL\n#define W3D_PBR\n#define W3D_ENTORNO\n#define W3D_PANTALLA\n#endif\n"
 "uniform int uUseTex; uniform int uEnv; uniform int uFogOn;\n"
 "uniform float uBlurY;\n"   // blur vertical (0 = apagado)
 "uniform float uAlphaRef;\n" // descarte por alpha (0 = apagado)
@@ -436,6 +452,38 @@ static const char* FS =
 "uniform W3D_ALTA vec4 uLPos[W3D_NLUZ]; uniform W3D_ALTA vec4 uLAmb[W3D_NLUZ]; uniform W3D_ALTA vec4 uLDif[W3D_NLUZ];\n"
 "uniform W3D_ALTA vec4 uLSpec[W3D_NLUZ]; uniform W3D_ALTA vec4 uLAtt[W3D_NLUZ]; uniform W3D_ALTA vec4 uLCono[W3D_NLUZ];\n"
 "varying W3D_ALTA vec3 vNe; varying W3D_ALTA vec3 vPe;\n"
+"#ifdef W3D_PBR\n"
+"uniform vec4 uMPbr;\n"   // los valores PBR (MaterialPBR): x metalico, y rugosidad (<0 = apagado), z F0 del IOR, w transmision
+"#endif\n"
+"#ifdef W3D_ENTORNO\n"
+// EL ENTORNO COMO CUBEMAP (las GPU chicas, ver EntornoCubo): el cubo se lee con la direccion, sin cuentas
+"#ifdef W3D_ENTORNO_CUBO\n"
+"uniform samplerCube uEnvTex; uniform samplerCube uEnvTexB; uniform vec4 uEnvF0; uniform vec4 uEnvF1; uniform vec4 uEnvF2;\n"
+"vec3 EnvDir(vec3 d){ return vec3(dot(uEnvF0.xyz,d),dot(uEnvF1.xyz,d),dot(uEnvF2.xyz,d)); }\n"
+"#define ENV_TIPO vec3\n#define ENV_COORD(d) EnvDir(d)\n#define ENV_TEX(t,c) textureCube(t,c)\n"
+"#else\n"
+"uniform sampler2D uEnvTex; uniform sampler2D uEnvTexB; uniform vec4 uEnvF0; uniform vec4 uEnvF1; uniform vec4 uEnvF2;\n"
+"#define ENV_TIPO vec2\n#define ENV_COORD(d) EnvUV(d)\n#define ENV_TEX(t,c) texture2D(t,c)\n"
+// la direccion del OJO -> el punto de la imagen 360 (la misma cuenta que W3dFondoDireccionUV: el cielo y el trazado)
+"#ifdef W3D_ESPECIAL\n"
+// (un programa por draw, la VideoCore IV: atan y acos no estan en la GPU y el compilador los arma con muchas cuentas.
+//  Aproximados con polinomios: el error, menos de un pixel de la copia borrosa)
+"float W3dAtan2(float y,float x){ float ax=abs(x),ay=abs(y); float a=min(ax,ay)/max(max(ax,ay),1e-6); float s=a*a;"
+" float r=((-0.0464964749*s+0.15931422)*s-0.327622764)*s*a+a; if(ay>ax) r=1.57079637-r; if(x<0.0) r=3.14159274-r;"
+" return (y<0.0)?-r:r; }\n"
+"float W3dAcos(float x){ float ax=abs(x); float r=sqrt(1.0-ax)*(1.5707288+ax*(-0.2121144+ax*(0.0742610-0.0187293*ax)));"
+" return (x<0.0)?3.14159274-r:r; }\n"
+"vec2 EnvUV(vec3 d){ vec3 q=vec3(dot(uEnvF0.xyz,d),dot(uEnvF1.xyz,d),dot(uEnvF2.xyz,d));"
+" return vec2(0.5+W3dAtan2(q.y,q.x)*0.15915494,W3dAcos(clamp(q.z,-1.0,1.0))*0.31830989); }\n"
+"#else\n"
+"vec2 EnvUV(vec3 d){ vec3 q=vec3(dot(uEnvF0.xyz,d),dot(uEnvF1.xyz,d),dot(uEnvF2.xyz,d));"
+" return vec2(0.5+atan(q.y,q.x)*0.15915494,acos(clamp(q.z,-1.0,1.0))*0.31830989); }\n"
+"#endif\n"
+"#endif\n"   // (W3D_ENTORNO_CUBO)
+"#endif\n"
+"#ifdef W3D_PANTALLA\n"
+"uniform sampler2D uEscena; uniform vec4 uEscenaVp; uniform vec4 uMExtra;\n"
+"#endif\n"
 "#endif\n"
 "void main(){\n"
 "#ifdef W3D_CLIP\n"
@@ -456,6 +504,9 @@ static const char* FS =
 "#endif\n"
 "#endif\n"
 "  vec4 cPrim = vC;\n"  // el color primario: la luz por vertice (interpolada), o el color del vertice
+"#if defined(W3D_LUZ_PIXEL) && defined(W3D_PBR)\n"
+"  vec3 brilloPbr=vec3(0.0);\n"   // el brillo PBR va DESPUES de la textura (no lo apaga una textura oscura)
+"#endif\n"
 // LUZ POR PIXEL: la MISMA cuenta que la del vertex shader (ver el comentario de arriba), con la normal y la posicion
 // interpoladas en cada pixel (el brillo especular y las luces cercanas salen redondos en vez de facetados)
 "#ifdef W3D_LUZ_PIXEL\n"
@@ -463,18 +514,101 @@ static const char* FS =
 "    W3D_ALTA vec3 N=normalize(vNe); W3D_ALTA vec3 eye=vPe;\n"
 "    vec4 md=(uColorMat==1)?vC:uMDiff; vec4 ma=(uColorMat==1)?vC:uMAmb;\n"
 "    vec3 acc=uMEmis.rgb+ma.rgb*uAmbGlobal.rgb;\n"
+// PBR (los valores del material que usa el trazado de rayos): el METALICO apaga el difuso y tine el brillo con el
+// color; la RUGOSIDAD abre el brillo (exponente 2/r^2-1, Blinn-Phong normalizado); el IOR da el F0 de Fresnel (mas
+// reflejo de costado); la TRANSMISION hace transparente lo que no refleja. Sin PBR (rug < 0): la luz de siempre
+"#ifdef W3D_PBR\n"
+"    bool pbr=uMPbr.y>=0.0;\n"
+"    W3D_ALTA vec3 V=normalize(-eye);\n"
+// (PBR de las dos caras, como el trazado de rayos: la normal mira hacia la camara. Un plano visto de atras
+//  reflejaba lo de abajo en vez del cielo)
+"    if(pbr && dot(N,V)<0.0) N=-N;\n"
+"    float rugP=max(uMPbr.y,0.05); float expo=min(2.0/(rugP*rugP)-1.0,512.0);\n"
+"    float fres=uMPbr.z+(1.0-uMPbr.z)*pow(1.0-max(dot(N,V),0.0),5.0);\n"
+"    float pesoB=uMPbr.x+(1.0-uMPbr.x)*fres;\n"
+"    vec3 colB=mix(vec3(1.0),md.rgb,uMPbr.x);\n"
+"    float kd=pbr?(1.0-uMPbr.x):1.0;\n"
+"#define LUZ_BRILLO(i) if(pbr){ float nh=max(dot(N,normalize(L+V)),0.0); brilloPbr+=at*colB*uLSpec[i].rgb*(pesoB*pow(nh,expo)*(expo+2.0)*0.125*ndl); }"
+" else { float nh=max(dot(N,normalize(L+vec3(0.0,0.0,1.0))),0.0); col1+=uMSpec.rgb*uLSpec[i].rgb*((uShine>0.0)?pow(nh,uShine):1.0); }\n"
+"#else\n"   // (sin PBR: la luz de siempre)
+"    const float kd=1.0;\n"
+"#define LUZ_BRILLO(i) { float nh=max(dot(N,normalize(L+vec3(0.0,0.0,1.0))),0.0); col1+=uMSpec.rgb*uLSpec[i].rgb*((uShine>0.0)?pow(nh,uShine):1.0); }\n"
+"#endif\n"
 "#define LUZ(i) if(i<uNLuces){ W3D_ALTA vec3 L; float at=1.0;"
 "      if(uLPos[i].w!=0.0){ W3D_ALTA vec3 d=uLPos[i].xyz/uLPos[i].w-eye; float dist=length(d); L=d/max(dist,1e-6);"
 "        at=1.0/max(uLAtt[i].x+uLAtt[i].y*dist+uLAtt[i].z*dist*dist,1e-6); }"
 "      else L=normalize(uLPos[i].xyz);"
 "      if(uLCono[i].w>-0.5){ float sd=dot(-L,normalize(uLCono[i].xyz)); at*=(sd>=uLCono[i].w)?pow(max(sd,0.0),uLAtt[i].w):0.0; }"
 "      float ndl=max(dot(N,L),0.0);"
-"      vec3 col1=ma.rgb*uLAmb[i].rgb+md.rgb*uLDif[i].rgb*ndl;"
-"      if(ndl>0.0){ float nh=max(dot(N,normalize(L+vec3(0.0,0.0,1.0))),0.0);"
-"        col1+=uMSpec.rgb*uLSpec[i].rgb*((uShine>0.0)?pow(nh,uShine):1.0); }"
+"      vec3 col1=ma.rgb*uLAmb[i].rgb+md.rgb*uLDif[i].rgb*ndl*kd;"
+"      if(ndl>0.0){ LUZ_BRILLO(i) }"
 "      acc+=at*col1; }\n"
 "    LUCES\n"
-"    cPrim=clamp(vec4(acc,md.a),0.0,1.0);\n"
+// EL ENTORNO 360: la luz difusa (la imagen borrosa en la direccion de la normal) y el reflejo (en la direccion
+// reflejada; mas rugoso, mas borroso), con el mismo Fresnel y el mismo tinte del metal que el brillo de las luces
+"#if defined(W3D_ENTORNO) || defined(W3D_PANTALLA)\n"
+"    vec3 reflejo=vec3(0.0);\n"
+"#endif\n"
+"#ifdef W3D_ENTORNO\n"
+"    if(pbr && uEnvF0.w>0.5){\n"
+"      acc+=md.rgb*kd*ENV_TEX(uEnvTexB,ENV_COORD(N)).rgb;\n"
+"      W3D_ALTA vec3 R=reflect(-V,N); ENV_TIPO cR=ENV_COORD(R);\n"
+"      reflejo=mix(ENV_TEX(uEnvTex,cR).rgb,ENV_TEX(uEnvTexB,cR).rgb,clamp(uMPbr.y*1.6,0.0,1.0));\n"
+"    }\n"
+"#endif\n"
+// REFLEJOS EN PANTALLA (la casilla del material): lo que el reflejo encuentra en la copia de la pantalla, en la
+// direccion reflejada (sin profundidad: una aproximacion), menos cuanto mas rugoso y apagandose en los bordes de la
+// pantalla y hacia la camara (eso no esta en la pantalla); afuera queda el fondo 360
+"#ifdef W3D_PANTALLA\n"
+"    if(pbr && uMExtra.x>0.5 && uEscenaVp.z>0.0){\n"
+"      W3D_ALTA vec3 R=reflect(-V,N);\n"
+"      vec2 sp=(gl_FragCoord.xy-uEscenaVp.xy)/abs(uEscenaVp.zw)+R.xy*0.35;\n"
+"      if(uEscenaVp.w<0.0) sp.y=1.0-sp.y;\n"   // (la copia dada vuelta: ver EscenaCopiar)
+"      vec2 bd=min(sp,1.0-sp);\n"
+"      float msk=clamp(min(bd.x,bd.y)*8.0,0.0,1.0)*(1.0-uMPbr.y)*clamp(1.0-R.z*2.0,0.0,1.0);\n"
+"#ifdef W3D_ESPECIAL\n"
+"      vec3 ss=texture2D(uEscena,sp).rgb;\n"   // (la VideoCore IV: una muestra)
+"#else\n"
+"      float rr=uMPbr.y*uMPbr.y*0.04;\n"
+"      vec3 ss=texture2D(uEscena,sp).rgb*0.4+(texture2D(uEscena,sp+vec2(rr,0.0)).rgb+texture2D(uEscena,sp-vec2(rr,0.0)).rgb"
+"+texture2D(uEscena,sp+vec2(0.0,rr)).rgb+texture2D(uEscena,sp-vec2(0.0,rr)).rgb)*0.15;\n"
+"#endif\n"
+"      reflejo=mix(reflejo,ss,msk);\n"
+"    }\n"
+"#endif\n"
+"#if defined(W3D_ENTORNO) || defined(W3D_PANTALLA)\n"
+"    if(pbr) brilloPbr+=colB*pesoB*reflejo;\n"
+"#endif\n"
+// la TRANSMISION: lo que no refleja (1 - Fresnel) deja pasar lo de atras (el material se dibuja con mezcla)
+"#ifdef W3D_PBR\n"
+"    float alfa=md.a*(1.0-uMPbr.w*(1.0-fres));\n"
+"#else\n"
+"    float alfa=md.a;\n"
+"#endif\n"
+"    cPrim=clamp(vec4(acc,alfa),0.0,1.0);\n"
+// EL VIDRIO CON LO DE ATRAS (EscenaCopiar): lo que esta detras se lee de la copia de la pantalla corrido por la
+// REFRACCION (el IOR: cuanto se dobla el rayo al entrar) y desenfocado por la RUGOSIDAD, tenido por el color; se mezcla
+// con la parte que refleja (Fresnel). Sale opaco: la mezcla con lo de atras ya la hizo el shader
+"#ifdef W3D_PANTALLA\n"
+"    if(pbr && uMPbr.w>0.0 && uEscenaVp.z>0.0){\n"
+"      float sf=sqrt(clamp(uMPbr.z,0.0,0.9)); float ior=(1.0+sf)/(1.0-sf);\n"
+"      W3D_ALTA vec3 Rf=refract(-V,N,1.0/ior);\n"
+"      vec2 sp=(gl_FragCoord.xy-uEscenaVp.xy)/abs(uEscenaVp.zw)+(Rf.xy+V.xy)*0.25;\n"
+"      if(uEscenaVp.w<0.0) sp.y=1.0-sp.y;\n"
+"      float r=uMPbr.y*0.045;\n"   // (el ESMERILADO, el radio con la rugosidad)
+"#ifdef W3D_ESPECIAL\n"   // (la VideoCore IV: 5 muestras, la cruz)
+"      vec3 at=texture2D(uEscena,sp).rgb*0.2+(texture2D(uEscena,sp+vec2(r,0.0)).rgb+texture2D(uEscena,sp-vec2(r,0.0)).rgb"
+"+texture2D(uEscena,sp+vec2(0.0,r)).rgb+texture2D(uEscena,sp-vec2(0.0,r)).rgb)*0.2;\n"
+"#else\n"   // (9 muestras en dos anillos)
+"      float r2=r*0.7071;\n"
+"      vec3 at=texture2D(uEscena,sp).rgb*0.2+(texture2D(uEscena,sp+vec2(r,0.0)).rgb+texture2D(uEscena,sp-vec2(r,0.0)).rgb"
+"+texture2D(uEscena,sp+vec2(0.0,r)).rgb+texture2D(uEscena,sp-vec2(0.0,r)).rgb+texture2D(uEscena,sp+vec2(r2,r2)).rgb"
+"+texture2D(uEscena,sp-vec2(r2,r2)).rgb+texture2D(uEscena,sp+vec2(r2,-r2)).rgb+texture2D(uEscena,sp-vec2(r2,-r2)).rgb)*0.1;\n"
+"#endif\n"
+"      float tw=uMPbr.w*(1.0-fres);\n"
+"      cPrim=vec4(mix(clamp(acc,0.0,1.0),at*md.rgb,tw),md.a);\n"
+"    }\n"
+"#endif\n"
 "  }\n"
 "#endif\n"
 "  vec4 col = cPrim;\n"   // sin textura: el color primario
@@ -517,6 +651,9 @@ static const char* FS =
 "    else col=cPrim*tex;\n"                                                            // GL_MODULATE
 "#endif\n"
 "  }\n"
+"#endif\n"
+"#if defined(W3D_LUZ_PIXEL) && defined(W3D_PBR)\n"
+"  col.rgb=min(col.rgb+brilloPbr,1.0);\n"
 "#endif\n"
 "#ifdef W3D_MEZCLA\n"
 "#ifdef W3D_MEZCLA_MODO\n"
@@ -636,13 +773,16 @@ static const int kLucesPorDraw = 4;
 #define W3D_UNIFORMS(X) X(uMVP) X(uMV) X(uNMat) X(uTexM) X(uTexGen) X(uUseTex) X(uTex) X(uTex1) X(uEnv) X(uLightOn) \
     X(uFogOn) X(uPointSize) X(uPointSprite) X(uColorMat) X(uBlurY) X(uAlphaRef) X(uAlfaAbajo) X(uMezcla) X(uMezclaK) \
     X(uViewport) X(uClipN) X(uMDiff) X(uMAmb) X(uMSpec) X(uMEmis) X(uShine) X(uAmbGlobal) X(uNLuces) X(uLPos) X(uLAmb) \
-    X(uLDif) X(uLSpec) X(uLAtt) X(uLCono) X(uFogColor) X(uFogStart) X(uFogEnd) X(uFogModo) X(uFogDens)
+    X(uLDif) X(uLSpec) X(uLAtt) X(uLCono) X(uFogColor) X(uFogStart) X(uFogEnd) X(uFogModo) X(uFogDens) X(uMPbr) \
+    X(uEnvTex) X(uEnvTexB) X(uEnvF0) X(uEnvF1) X(uEnvF2) X(uEscena) X(uEscenaVp) X(uMExtra)
 // lo ultimo que se subio a un uniform (n = 0: nada todavia). Una llamada a GL que no cambia nada no se hace: en la
 // VideoCore IV de Android 2.3 cada una es un mensaje al chip, y un draw subia ~40 uniforms
 struct UCache { unsigned char b[64]; int n; };
 struct Programa {
     GLuint id;
-    Clave clave;
+    Clave clave;         // la PEDIDA (con la que el cache lo encuentra)
+    Clave armada;        // con la que se armo: la pedida, o menos si no entraba en la GPU (ver AchicarPrograma)
+    int probar;          // 1 = su primer draw se mira (un programa por draw: ver ProgramaNoEntro)
     unsigned verLuces;   // las luces que tiene subidas (ver SubirLuces)
 #define W3D_U(n) GLint n; UCache c_##n;
     W3D_UNIFORMS(W3D_U)
@@ -683,6 +823,10 @@ static void DefsPrograma(Clave clave, char* d, int tam){
                           if((e >> 33) & 1) n += snprintf(d+n, tam-n, "#define W3D_TEXM\n"); }
         if(clave & PNiebla) n += snprintf(d+n, tam-n, "#define W3D_NIEBLA_MODO %d\n", (int)((e >> 34) & 3));
         if(clave & PMezcla) n += snprintf(d+n, tam-n, "#define W3D_MEZCLA_MODO %d\n", (int)((e >> 36) & 3));
+        if((e >> 38) & 1) n += snprintf(d+n, tam-n, "#define W3D_PBR\n");       // (los pedazos de la luz PBR: ver el FS)
+        if((e >> 39) & 1) n += snprintf(d+n, tam-n, "#define W3D_ENTORNO\n");
+        if((e >> 40) & 1) n += snprintf(d+n, tam-n, "#define W3D_PANTALLA\n");
+        if((e >> 41) & 1) n += snprintf(d+n, tam-n, "#define W3D_ENTORNO_CUBO\n");
     }
     { const int nl = (int)((clave>>PLuces)&15);   // (el tamanio de los arreglos de luces del fragment shader)
       n += snprintf(d+n, tam-n, "#define W3D_NLUZ %d\n", nl > 0 ? nl : 1); }
@@ -708,7 +852,7 @@ static bool Linkeo(GLuint p){ GLint ok=0; W3D_GLC(glGetProgramiv(p,GL_LINK_STATU
 static void ArmarPrograma(Programa& p, Clave clave){
     char defs[512]; DefsPrograma(clave, defs, (int)sizeof(defs));
     memset(&p, 0, sizeof(p));   // (los caches vacios)
-    p.id = linkear(defs); p.clave = clave; p.verLuces = 0;
+    p.id = linkear(defs); p.clave = clave; p.armada = clave; p.probar = porDraw ? 1 : 0; p.verLuces = 0;
     // LA GPU NO TIENE REGISTROS PARA TANTO (la VideoCore III del N8: "Out of temporaries" al linkear): en el modo de un
     // programa por draw se reintenta con la mitad de las luces. Se ven menos luces en ese draw, pero se dibuja; sin
     // esto el draw fallaba (GL_INVALID_OPERATION) y la pantalla quedaba en el color de fondo. (La clave sigue siendo
@@ -1118,7 +1262,15 @@ static void AjustarProyeccion(float sesgo, float n, float f) {
     gAjSesgo = sesgo; gAjN = n; gAjF = f;
 }
 void SesgoMetros(float m){ AjustarProyeccion(m, gAjN, gAjF); }
-void EstadoBase(){ luzPixel = false; AjustarProyeccion(0.0f, 0.0f, 1.0f); AlphaTest(0.0f); Disable(PolygonOffsetFill); Disable(Lighting); Disable(ColorMaterial); }
+// (lo MISMO que el backend fijo: antes faltaban el modo de textura, su matriz y la unidad 1. Un CONSTRUCTOR de una rutina
+//  con "Modo de textura: reemplazar" -los juegos 2D, que fijan el estado una vez- dejaba el texenv en REPLACE y toda la
+//  interfaz que se dibujaba despues de la escena salia BLANCA: las barras, las tarjetas, el boton verde del cuadro)
+void EstadoBase(){
+    luzPixel = false; AjustarProyeccion(0.0f, 0.0f, 1.0f);
+    SesgoMetros(0.0f); AlphaTest(0.0f); Disable(PolygonOffsetFill);
+    TexMatrixMatcap(false); TexGenSphere(false); TexEnvReplace(false); MezclaTexturasOff();
+    SmoothShading(true); Disable(Lighting); Disable(ColorMaterial);
+}
 bool EstadoFotoSoportada(){ return false; }   // sin cache: el constructor de las rutinas corre en cada cuadro
 void EstadoFotoTomar(){}
 void EstadoFotoReponer(){}
@@ -1179,6 +1331,67 @@ void Material(MatParam p,const float* rgba){
     else if(p==MatEmission) for(int i=0;i<4;i++) matEmis[i]=rgba[i];
 }
 void MaterialShininess(float s){ matShine=s; } // exponente specular (0..128)
+void MaterialPBR(float metal,float rug,float f0,float trans,bool ssr){ matPbr[0]=metal; matPbr[1]=rug; matPbr[2]=f0; matPbr[3]=trans; matExtra[0]=ssr?1.0f:0.0f; }
+// LAS COPIAS DE LA PANTALLA (el vidrio, los shaders escritos) en el FORMATO DE LA PANTALLA: con una de 16 bits (565: el
+// Galaxy Ace y muchos Android) copiarla a una textura de 8 bits por canal obligaba al driver a convertir cada pixel (en el
+// Ace, 60 ms de 180 por cuadro). Igual de nitida: la pantalla ya es 565
+static GLenum TipoCopiaPantalla(){
+    static GLenum tipo = 0;
+    if(!tipo){
+        GLint r = 8, g = 8, b = 8;
+        glGetIntegerv(GL_RED_BITS, &r); glGetIntegerv(GL_GREEN_BITS, &g); glGetIntegerv(GL_BLUE_BITS, &b);
+        while(glGetError() != GL_NO_ERROR){}   // (un GL de escritorio moderno no las tiene: queda el de 8 bits)
+        tipo = (r == 5 && g == 6 && b == 5) ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE;
+    }
+    return tipo;
+}
+void EscenaCopiar(bool on){
+    escVp[2] = 0.0f;
+    if(!on) return;
+    const int x = (int)vpActual[0], y = (int)vpActual[1], w = (int)vpActual[2], h = (int)vpActual[3];
+    if(w <= 0 || h <= 0) return;
+    W3D_GLC(glActiveTexture(GL_TEXTURE4));
+    if(!texEscena){ W3D_GLC(glGenTextures(1, &texEscena)); texEscW = texEscH = 0; }
+    W3D_GLC(glBindTexture(GL_TEXTURE_2D, texEscena));
+    if(w != texEscW || h != texEscH){
+        W3D_GLC(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, TipoCopiaPantalla(), 0));
+        W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
+        W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
+        W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE));
+        W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE));
+        texEscW = w; texEscH = h;
+    }
+    // (la fila que entiende el driver: el del Galaxy Ace cuenta desde ARRIBA y la deja dada vuelta. Sin esto el vidrio
+    //  mostraba otra parte de la pantalla: la interfaz de abajo. Dada vuelta, el alto va negativo y el shader da vuelta la V)
+    W3D_GLC(glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, CopiaPantallaFila(y, h), w, h));
+    W3D_GLC(glActiveTexture(GL_TEXTURE0)); W3D_GLC(glBindTexture(GL_TEXTURE_2D, boundTex));
+    escVp[0] = (float)x; escVp[1] = (float)y; escVp[2] = (float)w; escVp[3] = copiaDadaVuelta ? -(float)h : (float)h;
+}
+// el entorno como CUBEMAP (ver w3dGraphics.h): las 6 caras en el orden de GL, sin piramide (lineal)
+unsigned int SubirCubo(const unsigned char* const caras[6], int lado){
+    if(!ready || lado <= 0) return 0;
+    GLuint t = 0;
+    W3D_GLC(glGenTextures(1, &t));
+    W3D_GLC(glBindTexture(GL_TEXTURE_CUBE_MAP, t));
+    for(int i=0;i<6;i++)
+        W3D_GLC(glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGBA, lado, lado, 0, GL_RGBA, GL_UNSIGNED_BYTE, caras[i]));
+    W3D_GLC(glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
+    W3D_GLC(glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
+    W3D_GLC(glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE));
+    W3D_GLC(glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE));
+    W3D_GLC(glBindTexture(GL_TEXTURE_CUBE_MAP, 0));
+    return t;
+}
+void EntornoCubo(unsigned int cubo,unsigned int cuboB,const float* m){
+    Entorno(cubo, cuboB, m);
+    envCubo = cubo != 0;
+}
+void Entorno(unsigned int tex,unsigned int texB,const float* m){
+    envCubo = false;
+    envTex=tex; envTexB=texB?texB:tex;
+    if(tex && m){ for(int f=0;f<3;f++){ envF[f*4]=m[f*3]; envF[f*4+1]=m[f*3+1]; envF[f*4+2]=m[f*3+2]; envF[f*4+3]=0.0f; } envF[3]=1.0f; }
+    else envF[3]=0.0f;
+}
 
 // ============================================================================
 //  Textura / texenv
@@ -1276,9 +1489,10 @@ bool TieneTexGen(){ return true; }   // el sphere-map y el matcap van por el sha
 // ============================================================================
 //  Color uniforme (cuando NO hay array de color)
 // ============================================================================
-void Color4f(float r,float g,float b,float a){ curColor[0]=r; curColor[1]=g; curColor[2]=b; curColor[3]=a; }
-void Color4fv(const float* c){ for(int i=0;i<4;i++) curColor[i]=c[i]; }
-void Color4ub(unsigned char r,unsigned char g,unsigned char b,unsigned char a){ curColor[0]=r/255.0f; curColor[1]=g/255.0f; curColor[2]=b/255.0f; curColor[3]=a/255.0f; }
+// (el alfa por g_alfaColor: la UI translucida, ver w3dGraphics.h)
+void Color4f(float r,float g,float b,float a){ curColor[0]=r; curColor[1]=g; curColor[2]=b; curColor[3]=a*g_alfaColor; }
+void Color4fv(const float* c){ for(int i=0;i<4;i++) curColor[i]=c[i]; curColor[3]*=g_alfaColor; }
+void Color4ub(unsigned char r,unsigned char g,unsigned char b,unsigned char a){ curColor[0]=r/255.0f; curColor[1]=g/255.0f; curColor[2]=b/255.0f; curColor[3]=a/255.0f*g_alfaColor; }
 
 // ============================================================================
 //  Fog
@@ -1408,6 +1622,15 @@ static void ElegirPrograma(int nV){
                   if(memcmp(curTex.m, kIdent, sizeof(kIdent)) != 0) e |= (Clave)1 << 33; }
     if(f & PNiebla)        e |= (Clave)(fogModo & 3) << 34;
     if(f & PMezcla)        e |= (Clave)(mezclaModo & 3) << 36;
+    // la LUZ PBR por pixel, solo con lo que usa este draw: el PBR (rugosidad >= 0), el entorno 360 y la copia de la
+    // pantalla (el vidrio y los reflejos en pantalla). Cada pedazo es mucho shader para la VideoCore IV
+    if(f & PLuzPixel){
+        const bool pbr = matPbr[1] >= 0.0f;
+        if(pbr) e |= (Clave)1 << 38;
+        if(pbr && envTex && envF[3] > 0.5f) e |= (Clave)1 << 39;
+        if(pbr && envTex && envF[3] > 0.5f && envCubo) e |= (Clave)1 << 41;   // (el entorno es un cubemap)
+        if(pbr && escVp[2] > 0.0f && texEscena && (matPbr[3] > 0.0f || matExtra[0] > 0.5f)) e |= (Clave)1 << 40;
+    }
     const Clave clave = (Clave)f | (e << PEstado);
     if(progUso && progUso->clave == clave) return;
     for(int i=0;i<nProgramas;i++) if(programas[i].clave == clave){ UsarPrograma(programas[i]); return; }
@@ -1722,7 +1945,7 @@ static void CopiarPantallaEscrito(){
     if(!texPantalla){ W3D_GLC(glGenTextures(1, &texPantalla)); texPantW = texPantH = 0; }
     W3D_GLC(glBindTexture(GL_TEXTURE_2D, texPantalla));
     if(w != texPantW || h != texPantH){
-        W3D_GLC(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, 0));
+        W3D_GLC(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, TipoCopiaPantalla(), 0));   // (el formato de la pantalla)
         W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
         W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
         W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE));
@@ -1922,8 +2145,10 @@ bool PostEfecto(int efecto, unsigned int texImg, unsigned int texDat, int texW, 
     return true;
 }
 
+static int gSetupNV = 0; static bool gProbarDraw = false;   // (ver ProgramaNoEntro)
 static void setupState(int nV){
     LoteVaciar();
+    gSetupNV = nV; gProbarDraw = false;
     gUltimoVerts = nV;   // (lo juntado sale ANTES de elegir nada para este draw: vaciarlo a mitad de camino pisaria el programa)
     if(paseEsp && primDraw == 2 && setupEspecial(nV)) return;   // (un pase especial: los triangulos con su programa)
     if(escritoActivo && primDraw == 2 && setupEscrito(nV)) return;   // (el shader escrito de un material)
@@ -1956,6 +2181,29 @@ static void setupState(int nV){
     U_4F(uViewport, vpActual);
     U_4F(uMDiff, matDiff); U_4F(uMAmb, matAmb);
     U_4F(uMSpec, matSpec); U_4F(uMEmis, matEmis); U_1F(uShine, matShine);
+    U_4F(uMPbr, matPbr); U_4F(uMExtra, matExtra);
+    // EL ENTORNO 360 en las unidades 2 y 3 (apagado, los samplers miran la 0: sin textura en una unidad el navegador avisa)
+    {
+        const bool env = envTex != 0 && envF[3] > 0.5f && luzPixel;
+        U_1I(uEnvTex, env ? 2 : 0); U_1I(uEnvTexB, env ? 3 : 0);
+        static const float apagado[4] = {1,0,0,0};
+        U_4F(uEnvF0, env ? &envF[0] : apagado); U_4F(uEnvF1, &envF[4]); U_4F(uEnvF2, &envF[8]);
+        // lo de atras del vidrio (unidad 4)
+        const bool esc = escVp[2] > 0.0f && luzPixel && texEscena;
+        U_1I(uEscena, esc ? 4 : 0);
+        static const float sinEsc[4] = {0,0,0,0};
+        U_4F(uEscenaVp, esc ? escVp : sinEsc);
+        if(esc && uEscena >= 0){
+            W3D_GLC(glActiveTexture(GL_TEXTURE4)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,texEscena));
+            W3D_GLC(glActiveTexture(GL_TEXTURE0)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,boundTex));
+        }
+        if(env && (uEnvTex >= 0 || uEnvTexB >= 0)){
+            const GLenum destino = envCubo ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D;   // (el cubo de las GPU chicas)
+            W3D_GLC(glActiveTexture(GL_TEXTURE2)); W3D_GLC(glBindTexture(destino,envTex));
+            W3D_GLC(glActiveTexture(GL_TEXTURE3)); W3D_GLC(glBindTexture(destino,envTexB));
+            W3D_GLC(glActiveTexture(GL_TEXTURE0)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,boundTex));
+        }
+    }
     U_4F(uAmbGlobal, ambGlobal);
     SubirLuces();
     U_4F(uFogColor, fogColor); U_1F(uFogStart, fogStart); U_1F(uFogEnd, fogEnd);
@@ -1999,7 +2247,49 @@ static void setupState(int nV){
             bindAttr(aLuv1,nada,0,0,defUV,false);
         }
     }
+    // el PRIMER draw de un programa armado por draw se mira (ProgramaNoEntro): sin errores de antes que lo confundan
+    if(porDraw && progUso && progUso->probar){
+        gProbarDraw = true;
+        for(int i=0;i<8 && glGetError()!=GL_NO_ERROR;i++){}
+    }
 }
+// UN PROGRAMA QUE NO ENTRA EN LA GPU: el driver de la VideoCore IV (Android 2.3) linkea un shader que no le entra y
+// recien falla al dibujar (GL_OUT_OF_MEMORY: la malla no aparecia; con el error pendiente, ni el cuadro). El primer
+// draw de cada programa se mira y, si fallo, el programa se vuelve a armar con MENOS: sin la copia de la pantalla (el
+// vidrio y los reflejos en pantalla), sin el entorno 360, sin el PBR y por ultimo con la luz por vertice. Se ve con
+// menos detalle, pero se ve. El cache lo sigue encontrando con la clave pedida: se prueba una sola vez
+static bool AchicarPrograma(Programa& p){
+    const Clave pedida = p.clave;
+    Clave c = p.armada;
+    const Clave e = c >> PEstado;
+    const char* sin;
+    // (primero el 360: en una esfera de vidrio importa mas lo de atras doblado por el IOR que el reflejo del cielo)
+    if((e >> 39) & 1)      { c &= ~(((Clave)1 << (39 + PEstado)) | ((Clave)1 << (41 + PEstado))); sin = "el entorno 360"; }
+    else if((e >> 40) & 1) { c &= ~((Clave)1 << (40 + PEstado)); sin = "la copia de la pantalla (vidrio / reflejos)"; }
+    else if((e >> 38) & 1) { c &= ~((Clave)1 << (38 + PEstado)); sin = "el PBR"; }
+    else if(c & PLuzPixel) { c &= ~(Clave)PLuzPixel;             sin = "la luz por pixel"; }
+    else return false;
+    BorrarPrograma(p);
+    ArmarPrograma(p, c);
+    p.clave = pedida;
+    if(progUso == &p) progUso = 0;   // (el proximo setupState lo vuelve a poner en uso: su id y sus uniforms)
+    w3dLogfW("[w3dGLES2] un programa no entraba en esta GPU al dibujar: se arma sin %s (clave %08x%08x)", sin,
+             (unsigned)(pedida >> 32), (unsigned)pedida);
+    return true;
+}
+// despues del draw: true = no entro y se achico (quien dibujo vuelve a llamar a setupState y repite el draw)
+static bool ProgramaNoEntro(){
+    if(!gProbarDraw) return false;
+    gProbarDraw = false;
+    Programa* p = progUso;
+    if(!p) return false;
+    p->probar = 0;
+    const GLenum err = glGetError();
+    if(err != GL_OUT_OF_MEMORY && err != GL_INVALID_OPERATION) return false;
+    return AchicarPrograma(*p);
+}
+// un draw con la prueba de arriba: si el programa no entro, se achica y se repite
+#define W3D_DRAW_PROBADO(llamada) do{ W3D_GLC(llamada); while(ProgramaNoEntro()){ setupState(gSetupNV); W3D_GLC(llamada); } }while(0)
 // dibujo INDEXADO (indices ushort; convierte desde MeshIndex/ubyte)
 static void drawIndexed(GLenum mode,int count,const unsigned short* idx16){
     gUltimoIdx = count; gUltimoVBO = 0;
@@ -2007,7 +2297,7 @@ static void drawIndexed(GLenum mode,int count,const unsigned short* idx16){
     if(bufIndicesGL != b){ W3D_GLC(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,(GLuint)b)); bufIndicesGL = b; }
     if(!sinVBO) W3D_GLC(glBufferData(GL_ELEMENT_ARRAY_BUFFER,(GLsizeiptr)(count*2),idx16,GL_DYNAMIC_DRAW));
     g_statDrawTris++; g_statIndices += count; g_statDcCat[gStatCat]++;   // (un draw: lineas y puntos tambien)
-    W3D_GLC(glDrawElements(mode,count,GL_UNSIGNED_SHORT,sinVBO ? (const void*)idx16 : (const void*)0));
+    W3D_DRAW_PROBADO(glDrawElements(mode,count,GL_UNSIGNED_SHORT,sinVBO ? (const void*)idx16 : (const void*)0));
 }
 static int maxIndex(const MeshIndex* ind,int count){ int n=0; for(int i=0;i<count;i++) if((int)ind[i]+1>n) n=(int)ind[i]+1; return n; }
 static int maxIndexU16(const unsigned short* ind,int count){ int n=0; for(int i=0;i<count;i++) if((int)ind[i]+1>n) n=(int)ind[i]+1; return n; }
@@ -2237,7 +2527,7 @@ static void DrawDesdeIBO(GLenum modo, int count, int first){
     Prim(modo); setupState(nV);
     if(bufIndicesGL != (GLint)iboVBO){ W3D_GLC(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,iboVBO)); bufIndicesGL = (GLint)iboVBO; }
     g_statDrawTris++; g_statDrawVBO++; g_statIndices += count; g_statDcCat[gStatCat]++;
-    W3D_GLC(glDrawElements(modo,count,u32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT,(const void*)(size_t)(first * (u32 ? 4 : 2))));
+    W3D_DRAW_PROBADO(glDrawElements(modo,count,u32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT,(const void*)(size_t)(first * (u32 ? 4 : 2))));
 }
 void DrawTrianglesVBO(int count, int firstIndex){ DrawDesdeIBO(GL_TRIANGLES,count,firstIndex); }
 void UnbindVBOs(){ aPos.vbo=aNrm.vbo=aUV.vbo=aCol.vbo=0; iboVBO=0; }
@@ -2285,9 +2575,28 @@ static void LoteVaciar(){
     curProj=proj0; curMV=mv0; curTex=texm0;
     aPos=pos0; aNrm=nrm0; aUV=uv0; aCol=col0;
 }
-void DibujarPendiente(){ LoteVaciar(); }
+// (y en la VideoCore IV de Android 2.3, antes del swap, los ERRORES DE GL PENDIENTES se vacian: con uno pendiente el
+//  eglSwapBuffers de ese driver NO muestra el cuadro -"eglSwapBuffers Error 0x505" en el log- y la pantalla quedaba
+//  NEGRA aunque todo lo demas se hubiera dibujado. El log dice cada error distinto la primera vez)
+void DibujarPendiente(){
+    LoteVaciar();
+    if(!porDraw) return;
+    for(int k = 0; k < 8; k++){
+        const GLenum e = glGetError();
+        if(e == GL_NO_ERROR) break;
+        static unsigned vistos[4] = {0,0,0,0};
+        bool visto = false;
+        for(int i = 0; i < 4; i++) if(vistos[i] == (unsigned)e){ visto = true; break; }
+        if(!visto){
+            for(int i = 0; i < 4; i++) if(!vistos[i]){ vistos[i] = (unsigned)e; break; }
+            w3dLogfW("[w3dGLES2] error de GL 0x%x en el cuadro (se vacia antes del swap: con uno pendiente el driver no muestra el cuadro)", (unsigned)e);
+        }
+    }
+}
 // el clear con scissor DIBUJADO (ver Clear): un rectangulo en el recorte, con el color de borrado y la profundidad al
 // fondo, sin nada de lo que haya puesto (textura, luz, niebla, blending, matrices); despues todo vuelve como estaba
+// una GPU CHICA (ver w3dGraphics.h): la que no se banca el programa entero
+bool GpuLimitada(){ return porDraw; }
 static void ClearConQuad(bool color, bool prof){
     LoteVaciar();
     if(!color && !prof) return;
@@ -2374,8 +2683,8 @@ static bool AlLote(int first, int n){
     return true;
 }
 
-void DrawTrianglesArray(int vertexCount){ if(!ready||vertexCount<=0) return; MedirDraw medir; gUltimoIdx = vertexCount; gUltimoVBO = 0; if(AlLote(0,vertexCount)) return; Prim(GL_TRIANGLES); setupState(vertexCount); g_statDrawTris++; g_statIndices += vertexCount; g_statDcCat[gStatCat]++; W3D_GLC(glDrawArrays(GL_TRIANGLES,0,vertexCount)); }
-void DrawTrianglesArrayFrom(int first,int count){ if(!ready||count<=0) return; MedirDraw medir; gUltimoIdx = count; gUltimoVBO = 0; if(AlLote(first,count)) return; Prim(GL_TRIANGLES); setupState(first+count); g_statDrawTris++; g_statIndices += count; g_statDcCat[gStatCat]++; W3D_GLC(glDrawArrays(GL_TRIANGLES,first,count)); }
+void DrawTrianglesArray(int vertexCount){ if(!ready||vertexCount<=0) return; MedirDraw medir; gUltimoIdx = vertexCount; gUltimoVBO = 0; if(AlLote(0,vertexCount)) return; Prim(GL_TRIANGLES); setupState(vertexCount); g_statDrawTris++; g_statIndices += vertexCount; g_statDcCat[gStatCat]++; W3D_DRAW_PROBADO(glDrawArrays(GL_TRIANGLES,0,vertexCount)); }
+void DrawTrianglesArrayFrom(int first,int count){ if(!ready||count<=0) return; MedirDraw medir; gUltimoIdx = count; gUltimoVBO = 0; if(AlLote(first,count)) return; Prim(GL_TRIANGLES); setupState(first+count); g_statDrawTris++; g_statIndices += count; g_statDcCat[gStatCat]++; W3D_DRAW_PROBADO(glDrawArrays(GL_TRIANGLES,first,count)); }
 void DrawLines(int vertexCount){ if(!ready||vertexCount<=0) return; Prim(GL_LINES); setupState(vertexCount); W3D_GLC(glDrawArrays(GL_LINES,0,vertexCount)); }
 void DrawLineStrip(int vertexCount){ if(!ready||vertexCount<=0) return; Prim(GL_LINE_STRIP); setupState(vertexCount); W3D_GLC(glDrawArrays(GL_LINE_STRIP,0,vertexCount)); }
 void DrawPoints(int vertexCount){ if(!ready||vertexCount<=0) return; Prim(GL_POINTS); setupState(vertexCount); W3D_GLC(glDrawArrays(GL_POINTS,0,vertexCount)); }

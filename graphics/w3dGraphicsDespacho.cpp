@@ -34,6 +34,7 @@ namespace w3dEngine {
 int g_statLlamadas[StatCatCount_] = { 0 };
 bool g_trazaGL = false;
 bool g_trazaGLSec = false;
+float g_alfaColor = 1.0f;
 int g_statOtras = 0;
 bool g_matrizAuditar = false;
 bool g_invalidarPorMalla = false;

@@ -1166,8 +1166,16 @@ void W3dAnimEscenaFijar(float frame) {
 // ---- SHAPE KEYS animadas: canal AnimShape, componente = indice de la forma ----
 void (*g_animPasoHook)(Object* rutina, int componente, float valor) = 0;
 void (*g_animSonidoHook)(Object* sonido, int componente, float valor) = 0;
+void (*g_animFondoHook)(int propiedad, int componente, float valor) = 0;
 void W3dAplicarFormas(Object* o, std::vector<AnimProperty>& props, int frame) {
     if (!o) return;
+    // el FONDO del render (color, rotacion de la textura 360, que fondo): sus curvas viven en la coleccion de la escena
+    if (g_animFondoHook)
+        for (size_t p = 0; p < props.size(); p++) {
+            const int P = props[p].Property;
+            if ((P == AnimFondo || P == AnimFondoRot || P == AnimFondoTex) && !props[p].keyframes.empty())
+                g_animFondoHook(P, props[p].component, props[p].Eval(frame, 0.0f));
+        }
     if (o->getType() == ObjectType::sonido) {   // el VOLUMEN / el tono / la reverb de un sonido (AnimSonido)
         if (g_animSonidoHook)
             for (size_t p = 0; p < props.size(); p++)

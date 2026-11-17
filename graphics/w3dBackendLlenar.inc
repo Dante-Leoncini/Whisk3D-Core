@@ -76,6 +76,12 @@ void W3D_BACKEND_LLENAR(W3dBackendTabla& t) {
     t.Color4ub = &w3dEngine::W3D_BACKEND_NS::Color4ub;
     t.Material = &w3dEngine::W3D_BACKEND_NS::Material;
     t.MaterialShininess = &w3dEngine::W3D_BACKEND_NS::MaterialShininess;
+    t.MaterialPBR = &w3dEngine::W3D_BACKEND_NS::MaterialPBR;
+    t.Entorno = &w3dEngine::W3D_BACKEND_NS::Entorno;
+    t.EscenaCopiar = &w3dEngine::W3D_BACKEND_NS::EscenaCopiar;
+    t.GpuLimitada = &w3dEngine::W3D_BACKEND_NS::GpuLimitada;
+    t.SubirCubo = &w3dEngine::W3D_BACKEND_NS::SubirCubo;
+    t.EntornoCubo = &w3dEngine::W3D_BACKEND_NS::EntornoCubo;
     t.FogMode = &w3dEngine::W3D_BACKEND_NS::FogMode;
     t.FogStart = &w3dEngine::W3D_BACKEND_NS::FogStart;
     t.FogEnd = &w3dEngine::W3D_BACKEND_NS::FogEnd;

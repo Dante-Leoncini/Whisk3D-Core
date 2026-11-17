@@ -2,6 +2,11 @@
 #include "W3dNombres.h"   // nombres unicos (misma regla que objetos/huesos/grupos)
 #include "w3dGraphics.h"  // w3dEngine::Mezcla*: los codigos de mezcla (W3dMaterialEsLuz)
 
+Material* MaterialDeFabrica(Material* m) {
+    if (m) m->porPixel = w3dEngine::SombreadoPorPixelSoportado();
+    return m;
+}
+
 // Variables globales
 std::vector<Material*> Materials;
 Material* MaterialDefecto = NULL;
@@ -85,6 +90,7 @@ Material::Material(const std::string& nombre, bool MaterialDefectoFlag, bool Tie
     for (int k = 0; k < W3D_MAPAS; k++) { mapaTex[k] = NULL; mapaConTextura[k] = false; uvMapa[k] = 0; }
     ior = 1.0f;   // (1 = sin refraccion: lo transparente deja ver lo de atras derecho; 1.33 agua, 1.5 vidrio)
     transmision = 0.0f;
+    ssr = false;   // (los reflejos en pantalla: apagados)
     shaderOn = false; shaderId = 0; shaderEstado = 0; shaderPantalla = false; shaderTiempo = false; shaderCPU = NULL;
     if (!MaterialDefectoFlag){
         // los materiales del proyecto son GLOBALES y unicos: el ctor es el unico

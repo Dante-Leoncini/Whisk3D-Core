@@ -65,7 +65,11 @@ extern unsigned int lastRenderTime;
 //                  cada keyframe es un INDICE en SceneAnimation::camNombres; interpolacion CONSTANTE (un corte).
 enum { AnimPosition, AnimRotation, AnimScale, AnimVisible, AnimRender, AnimVertex, AnimFov, AnimColor,
        AnimClip, AnimAmbient, AnimSpecular, AnimAtten, AnimSpot, AnimLightMisc, AnimCamActiva, AnimShape, AnimPaso,
-       AnimSonido, AnimLuzIntens, AnimCamFoco };
+       AnimSonido, AnimLuzIntens, AnimCamFoco, AnimFondo, AnimFondoRot, AnimFondoTex };
+//   AnimFondo:    el COLOR del FONDO del render (X/Y/Z = R/G/B). Las curvas del fondo viven en la COLECCION de la escena
+//   AnimFondoRot: la ROTACION de la textura 360 del fondo, en grados (X/Y/Z)
+//   AnimFondoTex: QUE fondo (AnimX, interpolacion CONSTANTE): 0 = el color; k = la textura k de la lista del fondo
+//   Los tres los aplica el gancho g_animFondoHook (el fondo es del render: el Core no lo conoce)
 //   AnimLuzIntens: LUZ, la intensidad (AnimX)
 //   AnimCamFoco: CAMARA, la distancia de foco de la profundidad de campo (AnimX, m)
 //   AnimSonido: un SONIDO (main/objects/Sonido.h): volumen=AnimX, tono (pitch)=AnimY, envio a la reverb=AnimZ. Lo
@@ -495,6 +499,7 @@ extern void (*g_animFovHook)(Object* camara, float fov);   // curva AnimFov en e
 void W3dAplicarFormas(Object* o, std::vector<AnimProperty>& props, int frame);
 extern void (*g_animPasoHook)(Object* rutina, int componente, float valor);
 extern void (*g_animSonidoHook)(Object* sonido, int componente, float valor);
+extern void (*g_animFondoHook)(int propiedad, int componente, float valor);   // el FONDO del render (AnimFondo*)
 extern std::vector<SceneAnimation*> SceneAnimations; // lista global de animaciones de escena
 extern int SceneAnimActiva;                          // indice de la escena activa (sus curvas estan en AnimationObjects)
 

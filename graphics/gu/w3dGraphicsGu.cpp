@@ -60,6 +60,7 @@ int g_statLlamadas[StatCatCount_] = { 0 };
 static int gStatCat = StatCatEditor;
 bool g_trazaGL = false;
 bool g_trazaGLSec = false;
+float g_alfaColor = 1.0f;
 void TrazaGL(const char*) {}
 void TrazaGLVer() {}
 
@@ -406,7 +407,11 @@ void BlendMode(int modo) {
                 : (modo == 5) ? MezclaScreen : MezclaAlpha;
 }
 void Invalidate() { texGenCache = -1; matcapCache = -1; }
-void EstadoBase() { SesgoMetros(0.0f); AlphaTest(0.0f); Disable(PolygonOffsetFill); Disable(Lighting); Disable(ColorMaterial); }
+void EstadoBase() {   // (lo mismo que el backend fijo: el texenv de un constructor no le llega a la interfaz)
+    SesgoMetros(0.0f); AlphaTest(0.0f); Disable(PolygonOffsetFill);
+    TexMatrixMatcap(false); TexGenSphere(false); TexEnvReplace(false); MezclaTexturasOff();
+    SmoothShading(true); Disable(Lighting); Disable(ColorMaterial);
+}
 bool EstadoFotoSoportada() { return false; }
 void EstadoFotoTomar() {}
 void EstadoFotoReponer() {}
@@ -464,6 +469,12 @@ void Material(MatParam p, const float* rgba) {
     lucesSucias = true;
 }
 void MaterialShininess(float s) { if (s != matShine) { matShine = s; lucesSucias = true; } }
+void MaterialPBR(float, float, float, float, bool) {}   // (pipeline fijo de la PSP: sin luz PBR)
+void Entorno(unsigned int, unsigned int, const float*) {}
+void EscenaCopiar(bool) {}
+bool GpuLimitada() { return false; }
+unsigned int SubirCubo(const unsigned char* const*, int) { return 0; }   // (sin shaders: el entorno no se usa)
+void EntornoCubo(unsigned int, unsigned int, const float*) {}
 
 // ============================================================================
 //  Textura / texenv / matriz de textura (la matriz se aplica en la CPU, al leer la UV de cada vertice)
@@ -526,9 +537,10 @@ bool TieneTexGen() { return false; }   // (el sphere map va por software, como e
 // ============================================================================
 //  Color / niebla / arreglos
 // ============================================================================
-void Color4f(float r, float g, float b, float a) { curColor[0] = r; curColor[1] = g; curColor[2] = b; curColor[3] = a; }
-void Color4fv(const float* c) { for (int i = 0; i < 4; i++) curColor[i] = c[i]; }
-void Color4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a) { curColor[0] = r / 255.0f; curColor[1] = g / 255.0f; curColor[2] = b / 255.0f; curColor[3] = a / 255.0f; }
+// (el alfa por g_alfaColor: la UI translucida, ver w3dGraphics.h)
+void Color4f(float r, float g, float b, float a) { curColor[0] = r; curColor[1] = g; curColor[2] = b; curColor[3] = a * g_alfaColor; }
+void Color4fv(const float* c) { for (int i = 0; i < 4; i++) curColor[i] = c[i]; curColor[3] *= g_alfaColor; }
+void Color4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a) { curColor[0] = r / 255.0f; curColor[1] = g / 255.0f; curColor[2] = b / 255.0f; curColor[3] = a / 255.0f * g_alfaColor; }
 void FogMode(bool lineal) { fogModo = lineal ? 0 : 1; }
 void FogModo(int m) { fogModo = (m < 0 || m > 2) ? 0 : m; }
 void FogDensidad(float d) { fogDens = d; }

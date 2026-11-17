@@ -75,6 +75,12 @@ void Color4fv(const float* rgba) { W3D_TABLA()->Color4fv(rgba); }
 void Color4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a) { W3D_TABLA()->Color4ub(r, g, b, a); }
 void Material(MatParam p, const float* rgba) { W3D_TABLA()->Material(p, rgba); }
 void MaterialShininess(float s) { W3D_TABLA()->MaterialShininess(s); }
+void MaterialPBR(float metal, float rug, float f0, float trans, bool ssr) { W3D_TABLA()->MaterialPBR(metal, rug, f0, trans, ssr); }
+void Entorno(unsigned int tex, unsigned int texBorrosa, const float* m) { W3D_TABLA()->Entorno(tex, texBorrosa, m); }
+void EscenaCopiar(bool on) { W3D_TABLA()->EscenaCopiar(on); }
+bool GpuLimitada() { return W3D_TABLA()->GpuLimitada(); }
+unsigned int SubirCubo(const unsigned char* const caras[6], int lado) { return W3D_TABLA()->SubirCubo(caras, lado); }
+void EntornoCubo(unsigned int cubo, unsigned int cuboBorroso, const float* m) { W3D_TABLA()->EntornoCubo(cubo, cuboBorroso, m); }
 void FogMode(bool linear) { W3D_TABLA()->FogMode(linear); }
 void FogStart(float z) { W3D_TABLA()->FogStart(z); }
 void FogEnd(float z) { W3D_TABLA()->FogEnd(z); }
