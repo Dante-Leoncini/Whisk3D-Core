@@ -328,6 +328,13 @@ W3D_BACKEND_ABRIR
     // F0 (del IOR: cuanto refleja de frente) y transmision, como los usa el trazado de rayos. rug < 0 = apagado (la luz
     // de siempre, la del pipeline fijo con Material/MaterialShininess). En los backends fijos no hace nada
     void MaterialPBR(float metal, float rug, float f0, float trans, bool ssr = false);   // ssr: reflejos en pantalla
+    // LOS MAPAS DEL MATERIAL con textura (ids de GL; 0 = el numero): normal, rugosidad, metalico, alfa y emision. true = este
+    // backend los aplica en el shader (si no, el que llama usa lo suyo: el normal map por la pasada DOT3)
+    bool MaterialMapas(unsigned normal, unsigned rugosidad, unsigned metalico, unsigned alfa, unsigned emision);
+    // LA LUZ INDIRECTA de una SONDA DE LUZ para el objeto que se dibuja: 9 coeficientes RGB (27 floats, armonicos
+    // esfericos en el espacio del MUNDO, ya con la convolucion del coseno) y la matriz 3x3 (por columnas) que pasa una
+    // direccion del OJO al mundo. La luz por pixel PBR la usa de ambiente. NULL = apagada. Los backends fijos: nada
+    void AmbienteSH(const float* sh27, const float* ojoAMundo9);
     // EL ENTORNO (el fondo como textura 360) para la luz PBR por pixel: 'tex' la imagen, 'texBorrosa' una copia chica y
     // borrosa (la luz difusa y los reflejos rugosos; 0 = la misma) y 'ojoAImagen' la matriz 3x3 (filas) que pasa una
     // direccion del OJO a la de la imagen (la vista invertida y la rotacion del fondo). tex = 0: sin entorno. Los
@@ -407,6 +414,8 @@ W3D_BACKEND_ABRIR
     void BlendMode(int modo); // capa multi-pass (W3dCapaMezcla): 0=Mix(alpha encima), 1=Multiply, 2=Add,
 W3D_BACKEND_CERRAR
                               // 3=Multiply 2x (dst*src*2, lightmaps con overbright), 4=Subtract, 5=Screen
+                              // 6=Multiply con FACTOR (DST_COLOR, SRC_ALPHA: dst * (color*tex + alfa)); lo usa la capa
+                              //   de textura con su factor de mezcla (Mesh.cpp)
 
     // --- MODOS DE MEZCLA (blend) ---
     // Todos con glBlendFunc estandar -> andan en GL ES 1.1 (N95), PC y WebGL. El unico que

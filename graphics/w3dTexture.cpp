@@ -88,6 +88,18 @@ static void w3dAnisotropico() {
 #else
 static void w3dAnisotropico() {}
 #endif
+#ifdef W3D_MULTIBACKEND
+#include "w3dBackend.h"
+// la GPU de escritorio arma MIPMAPS de una textura NPOT? La capa de Vulkan si (la piramide sale de cualquier tamano);
+// GL desde el 2.0, o el 1.x con ARB_texture_non_power_of_two (si no, NPOT va sin piramide, como siempre)
+static bool NpotConMipmaps() {
+    if (w3dEngine::BackendActivo() == w3dEngine::BackendVulkan) return true;
+    const char* v = (const char*)glGetString(GL_VERSION);
+    if (v && v[0] >= '2' && v[0] <= '9') return true;
+    const char* ext = (const char*)glGetString(GL_EXTENSIONS);
+    return ext && strstr(ext, "GL_ARB_texture_non_power_of_two");
+}
+#endif
 #include "w3dFilesystem.h" // lectura de archivos UNIFICADA del Core (asset del APK o archivo real)
 #include <vector>
 #include <set>
@@ -884,7 +896,13 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
     // cerca, niveles chicos de lejos (TexFilter respeta esto en cada material).
     const bool pix = w3dEngine::PixeladoGlobal();
     const bool pot = ((w & (w - 1)) == 0) && ((h & (h - 1)) == 0);
+#ifdef W3D_MULTIBACKEND
+    // PC: la piramide tambien en las NPOT (una de 800x800 sin mipmaps CENTELLEA de lejos: cada pixel de la pantalla
+    // toma un texel suelto del normal map o de la rugosidad, y al orbitar cambia cual)
+    const bool mips = w3dEngine::MipmapsGlobal() && (pot || NpotConMipmaps());
+#else
     const bool mips = pot && w3dEngine::MipmapsGlobal();
+#endif
     const GLint filtroPix = pix ? GL_NEAREST : GL_LINEAR;
     const GLint filtroMin = !mips ? filtroPix
                           : (pix ? GL_NEAREST_MIPMAP_LINEAR : (MipmapsTrilineal() ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST));

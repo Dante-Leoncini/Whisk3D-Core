@@ -52,6 +52,10 @@ enum { INFO_SUAVE = 1, INFO_AABBOK = 2, INFO_STATS_NOEDIT = 4, INFO_PRIM = 8 };
 // banderas de cada capa de COLY
 enum { COLY_POR_VERTICE = 1 };
 
+// (W3dMalla.cpp) une por posicion los puntos de una malla sin pesos: la costura y los polos de los archivos de antes
+class Mesh;
+void W3dMallaUnirPorPosicion(Mesh* m);
+
 namespace {
 
 // ===========================================================================
@@ -690,6 +694,7 @@ void AplicarEdicion(const Vista& v, Mesh* m, bool noEditable) {
         m->bordesBuf.clear();
     } else {
         m->posRep = m->vertCtrlPoint;
+        W3dMallaUnirPorPosicion(m);   // (la costura y los polos de antes: W3dMalla.cpp)
         if (v.hayEdge) {
             m->edges.resize((size_t)v.nEdge * 2);
             if (v.nEdge) CopiarI32(v.edge, &m->edges[0], (size_t)v.nEdge * 2);

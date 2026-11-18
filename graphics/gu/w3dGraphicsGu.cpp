@@ -404,7 +404,7 @@ void BlendAlpha() { mezclaFirma = MezclaAlpha; }
 void SetMezcla(int m) { mezclaFirma = m; }
 void BlendMode(int modo) {
     mezclaFirma = (modo == 1) ? MezclaMultiply : (modo == 2) ? MezclaAdd : (modo == 3) ? 100 : (modo == 4) ? MezclaSubtract
-                : (modo == 5) ? MezclaScreen : MezclaAlpha;
+                : (modo == 5) ? MezclaScreen : (modo == 6) ? 101 : MezclaAlpha;   // (101: Multiply con su factor)
 }
 void Invalidate() { texGenCache = -1; matcapCache = -1; }
 void EstadoBase() {   // (lo mismo que el backend fijo: el texenv de un constructor no le llega a la interfaz)
@@ -470,6 +470,8 @@ void Material(MatParam p, const float* rgba) {
 }
 void MaterialShininess(float s) { if (s != matShine) { matShine = s; lucesSucias = true; } }
 void MaterialPBR(float, float, float, float, bool) {}   // (pipeline fijo de la PSP: sin luz PBR)
+bool MaterialMapas(unsigned, unsigned, unsigned, unsigned, unsigned) { return false; }   // (sin shaders)
+void AmbienteSH(const float*, const float*) {}
 void Entorno(unsigned int, unsigned int, const float*) {}
 void EscenaCopiar(bool) {}
 bool GpuLimitada() { return false; }
@@ -665,6 +667,7 @@ static void PonerMezcla(int m) {
         case MezclaPremult:  sceGuBlendFunc(GU_ADD, GU_FIX, GU_ONE_MINUS_SRC_ALPHA, 0xFFFFFF, 0); break;
         case MezclaSubtract: sceGuBlendFunc(GU_REVERSE_SUBTRACT, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF); break;
         case 100:            sceGuBlendFunc(GU_ADD, GU_OTHER_COLOR, GU_OTHER_COLOR, 0, 0); break;     // (DST_COLOR, SRC_COLOR)
+        case 101:            sceGuBlendFunc(GU_ADD, GU_OTHER_COLOR, GU_SRC_ALPHA, 0, 0); break;       // (DST_COLOR, SRC_ALPHA)
         default:             sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0); break;
     }
 }

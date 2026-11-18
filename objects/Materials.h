@@ -83,13 +83,18 @@ enum W3dCapaMezcla {
     W3D_CAPA_MEZCLAS = 6     // (cantidad; dejalo ultimo)
 };
 const char* W3dCapaMezclaNombre(int m);   // "Mix", "Multiply", ... (panel, harness, logs)
+
 class TexLayer {
     public:
         Texture* tex;
         int blend;   // W3dCapaMezcla
         int uvMapa;  // capa UV de la malla (0 = la base)
         bool on;
-        TexLayer() : tex(NULL), blend(0), uvMapa(0), on(true) {}
+        float fuerza;   // el FACTOR de la mezcla: 0 = no se ve, 1 = la capa entera (el % de la tarjeta)
+        bool horneada;  // LUZ HORNEADA (la tarjeta "Bake Lighting"): la textura ya tiene la luz. Mientras esta capa este
+                        // prendida el material se dibuja SIN la luz de tiempo real (se sumaria dos veces); sacarla o
+                        // apagarla devuelve la luz sola (Material::LuzTiempoReal)
+        TexLayer() : tex(NULL), blend(0), uvMapa(0), on(true), fuerza(1.0f), horneada(false) {}
 };
 
 // LOS MAPAS del material (la tarjeta Material de Properties, de arriba a abajo): el color base, el normal map y los del
@@ -138,9 +143,10 @@ class Material {
         // +0.05 pierde los empates de 5 cm contra los autos y sombras que se apoyan en el (como un arcade sin z-buffer
         // que dibuja el auto despues de la pista). 0 = nada.
         float sesgo_metros;
-        int  orden_pasada; // 0 = opaco, 1 = decal, 2 = transparente. Dentro de una MALLA los grupos de
-                           // material se dibujan en este orden (opaco -> decal -> transparente). Entre
-                           // objetos distintos el orden lo sigue decidiendo el arbol / la Collection.
+        int  orden_pasada; // EL PASE: 0 = opacos, 1 = calcomanias, 2 = transparentes. La escena se dibuja en
+                           // tres pases (primero todo lo opaco, despues las calcomanias, al final lo transparente);
+                           // adentro de cada pase manda el orden del arbol y el de las partes de malla (Mesh.cpp,
+                           // g_w3dPaseDibujo). El de calcomanias compara z con "menor o igual" (pegado a lo de abajo)
         int  mezcla;       // modo de mezcla cuando transparent = true. 0 = alpha (default, compatible
                            // con todo lo guardado hasta hoy); el resto son los codigos de gfx::Mezcla
                            // (2 = MezclaAdd = ADITIVO: GL_ONE/GL_ONE, aclara y el negro es invisible).
@@ -181,6 +187,19 @@ class Material {
         // SOMBREADO POR PIXEL (solo con shaders, gfx::SombreadoPorPixelSoportado): la luz se calcula en cada pixel en vez
         // de en cada vertice. Mas lindo (brillos redondos, luces cercanas) y mas caro. Clave del .w3d: "luzPorPixel"
         bool     porPixel;
+        // el FACTOR de la capa de LUZ HORNEADA prendida (TexLayer::horneada), de 0 a 1 (0 = no hay)
+        float FactorLuzHorneada() const {
+            for (size_t c = 0; c < capas.size(); c++)
+                if (capas[c].horneada && capas[c].on && capas[c].tex)
+                    return capas[c].fuerza < 0.0f ? 0.0f : (capas[c].fuerza > 1.0f ? 1.0f : capas[c].fuerza);
+            return 0.0f;
+        }
+        // la LUZ DE TIEMPO REAL: Lighting tildado y la luz horneada que no esta entera. Con la capa de luz horneada al
+        // 100% solo esta la horneada; al 0% es como si no estuviera; en el medio, las dos mezcladas (Mesh.cpp)
+        bool LuzTiempoReal() const { return lighting && FactorLuzHorneada() < 0.999f; }
+        bool     luzIndirecta;   // LUZ INDIRECTA POR VERTICE en el pipeline fijo (el N95): con una sonda de luz horneada, la CPU
+                                 // calcula la luz de cada vertice (las lamparas + la indirecta de la sonda con su normal).
+                                 // Con shaders no hace falta: la luz por pixel ya la usa (main/objects/SondaLuz.h)
         // ---- LINEAS (aristas de la malla dibujadas encima del relleno) ----
         // Con lineas = true, cada grupo que use este material dibuja ADEMAS sus
         // ARISTAS (los 3 lados de cada triangulo, deduplicados) con glLineWidth

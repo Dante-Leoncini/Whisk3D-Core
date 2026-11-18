@@ -81,8 +81,9 @@ struct ObjectType {
                         // dibujar una malla...) sin transformacion propia (main/objects/Rutina.h)
         sonido,         // SONIDO puesto en la escena: suena con el timeline (en SEGUNDOS, no en frames) o en el juego;
                         // posicional (3D, desde donde esta) o como musica (main/objects/Sonido.h)
-        postproceso     // POSTPROCESADO puesto en el arbol: sus efectos se aplican a lo ya dibujado en ese punto
+        postproceso,    // POSTPROCESADO puesto en el arbol: sus efectos se aplican a lo ya dibujado en ese punto
                         // (main/objects/PostprocesoObj.h)
+        sondaluz        // SONDA DE LUZ: una grilla de puntos con la luz indirecta horneada (main/objects/SondaLuz.h)
     };
     Enum v;
     ObjectType(Enum e) : v(e) {}

@@ -237,7 +237,11 @@ class MaterialGroup {
         int count;              // cantidad de triángulos reales
         int startDrawn;         // índice del primer triángulo a dibujar
         int indicesDrawnCount;  // cantidad de vertices a dibujar
-        Material* material;
+        Material* material;     // la CAPA 1 del mesh part (siempre esta: arranca en el material por defecto)
+        // LAS CAPAS DE MATERIAL de encima (2, 3...): cada una se dibuja OTRA VEZ sobre la misma superficie, en orden, con
+        // su material y su mezcla (lo de abajo se ve donde la capa es transparente). Funciona en todos los backends,
+        // tambien en OpenGL ES 1.1: es una pasada mas por capa. Se guardan con el objeto ("capasMaterial" del .w3d)
+        std::vector<Material*> capasMat;
 
         MaterialGroup()
             : name("Mesh"), drawMode(GL_TRIANGLES), start(0), count(0),
@@ -1347,7 +1351,6 @@ class Mesh : public Object {
         // una sombra SUELTA, declarada aparte del cuerpo. Esas mallas no se dibujan durante
         // el recorrido del arbol: se anotan y se dibujan al final del frame (ver
         // W3dDecalesDibujarPendientes en Mesh.cpp).
-        bool EsSoloDecal() const;
         // true si TODOS sus grupos de material son LUZ (mezcla aditiva/sustractiva/
         // multiplicativa/screen; ver W3dMaterialEsLuz): una chispa, un halo, un rayo.
         // Igual que las calcomanias, esas mallas no se dibujan en el recorrido del

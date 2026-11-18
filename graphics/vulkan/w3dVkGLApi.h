@@ -164,6 +164,7 @@ void vkglTexParameteri(GLenum target, GLenum p, GLint v);
 void vkglTexParameterf(GLenum target, GLenum p, GLfloat v);
 void vkglGenerateMipmap(GLenum target);
 void vkglCopyTexSubImage2D(GLenum target, GLint nivel, GLint xoff, GLint yoff, GLint x, GLint y, GLsizei w, GLsizei h);
+bool vkglCopiarProfundidad(GLint x, GLint y, GLsizei w, GLsizei h);   // (la profundidad de la pantalla a la textura activa)
 void vkglReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLenum formato, GLenum tipo, void* px);
 // ---- framebuffers (render a una textura) ----
 void vkglGenFramebuffers(GLsizei n, GLuint* f);

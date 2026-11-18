@@ -436,7 +436,9 @@ static void BarreraMemoria(VkCommandBuffer cb) {
 // ============================================================================
 //  Estado de GL
 // ============================================================================
-static const int kAttrs = 8, kUnidades = 8, kMuestras = 8;
+// (16 unidades y 16 samplers por programa: el minimo que garantiza Vulkan. Los mapas del material -normal, rugosidad,
+//  metalico, alfa, emision- van en las unidades 6..10)
+static const int kAttrs = 8, kUnidades = 16, kMuestras = 16;
 struct EstadoGL {
     bool blend, depth, cull, scissor, stencil, offset;
     GLenum bSrc, bDst, bEq, dFunc; bool dMask; bool cMask[4];
@@ -461,6 +463,7 @@ static void EstadoDeFabrica(int w, int h) {
 struct TexGL {
     VkImage img; Asig a; VkImageView vista, vista0; VkFramebuffer fb;
     int w, h, niveles, nivelesDef; bool hay, iniciada;
+    bool prof;   // una imagen de PROFUNDIDAD (vkglCopiarProfundidad), no de color
     GLint minF, magF, wrapS, wrapT; float aniso; bool genMip;
     unsigned usoCmd;
 };
@@ -1295,7 +1298,7 @@ static VkDescriptorSet SetDelDraw(ProgGL* p, const Anillo& u) {
     VkDescriptorSet set = VK_NULL_HANDLE;
     for (;;) {
         if (c.pool >= c.pools.size()) {
-            VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1024 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024 * 4 } };
+            VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1024 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024 * 8 } };
             VkDescriptorPoolCreateInfo pi = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pi.maxSets = 1024; pi.poolSizeCount = 2; pi.pPoolSizes = ps;
             VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -1773,6 +1776,50 @@ void vkglCopyTexSubImage2D(GLenum, GLint nivel, GLint xoff, GLint yoff, GLint x,
     Barrera(cb, d.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vuelta, 0, 1);
     t->usoCmd = gSerialCmd;
 }
+// LA PROFUNDIDAD DE LA PANTALLA a la textura de la unidad activa (los reflejos en pantalla del backend de shaders: el rayo
+// reflejado se compara con ella). La textura pasa a ser una imagen de profundidad del tamanio del rectangulo (x, y en
+// coordenadas de GL). Se copia tal cual (sin dar vuelta: una copia de profundidad no puede): su fila 0 es la de ARRIBA
+// del rectangulo, y el shader la lee dada vuelta. false = no se pudo (el que llama sigue sin profundidad)
+static bool CrearImagen(VkFormat f, int w, int h, VkImageUsageFlags uso, VkImageAspectFlags asp, VkImage& img, Asig& a, VkImageView& v);
+bool vkglCopiarProfundidad(GLint x, GLint y, GLsizei w, GLsizei h) {
+    TexGL* t = TexActual();
+    if (!t || !gListo || w <= 0 || h <= 0) return false;
+    const Destino d = DestinoActual();
+    if (d.tex || !d.conProf) return false;   // (solo de la pantalla)
+    // (el rectangulo, recortado a la pantalla: lo que cae afuera queda con lo que tenia la textura)
+    const int tw = w, th = h;          // (la textura, del tamanio pedido)
+    int cx = x, cy = y, cw = w, ch = h;   // (lo que se copia: recortado a la pantalla)
+    if (cx < 0) { cw += cx; cx = 0; } if (cy < 0) { ch += cy; cy = 0; }
+    if (cx + cw > d.w) cw = d.w - cx; if (cy + ch > d.h) ch = d.h - cy;
+    if (cw <= 0 || ch <= 0) return false;
+    const VkImageAspectFlags ad = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    if (!t->hay || t->w != tw || t->h != th || !t->prof) {
+        TirarImagenTex(t);
+        VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(gFis, gFmtProf, &fp);
+        if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) return false;
+        if (!CrearImagen(gFmtProf, w, h, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
+                         t->img, t->a, t->vista)) { t->img = VK_NULL_HANDLE; t->vista = VK_NULL_HANDLE; return false; }
+        t->w = w; t->h = h; t->niveles = 1; t->nivelesDef = 1; t->hay = true; t->iniciada = false; t->prof = true; t->usoCmd = 0;
+    }
+    TerminarPase();
+    VkCommandBuffer cb = Cmd();
+    Barrera(cb, gPan.prof, ad, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, 1);
+    Barrera(cb, t->img, ad, t->iniciada ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 1);
+    VkImageCopy c; memset(&c, 0, sizeof(c));
+    c.srcSubresource.aspectMask = c.dstSubresource.aspectMask = ad;
+    c.srcSubresource.layerCount = c.dstSubresource.layerCount = 1;
+    c.srcOffset.x = cx; c.srcOffset.y = d.volteado ? d.h - cy - ch : cy;
+    // (en la textura, la fila 0 es la de ARRIBA del rectangulo pedido)
+    c.dstOffset.x = cx - x; c.dstOffset.y = d.volteado ? (y + h) - (cy + ch) : cy - y;
+    c.extent.width = (uint32_t)cw; c.extent.height = (uint32_t)ch; c.extent.depth = 1;
+    vkCmdCopyImage(cb, gPan.prof, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    Barrera(cb, t->img, ad, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+    Barrera(cb, gPan.prof, ad, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
+    t->iniciada = true;
+    t->usoCmd = gSerialCmd;
+    return true;
+}
 void vkglReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLenum formato, GLenum tipo, void* px) {
     if (!gListo || w <= 0 || h <= 0 || !px) return;
     if (formato != GL_RGBA || tipo != GL_UNSIGNED_BYTE) { ErrorGL(GL_INVALID_ENUM); return; }
@@ -1850,7 +1897,8 @@ static bool CrearPantalla(int w, int h) {
     if (w <= 0 || h <= 0) return false;
     if (!CrearImagen(kFmtColor, w, h, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                      VK_IMAGE_ASPECT_COLOR_BIT, gPan.color, gPan.ac, gPan.vc)) return false;
-    if (!CrearImagen(gFmtProf, w, h, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+    // (TRANSFER_SRC: la profundidad se copia a una textura para los reflejos en pantalla, vkglCopiarProfundidad)
+    if (!CrearImagen(gFmtProf, w, h, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, gPan.prof, gPan.ap, gPan.vp)) return false;
     VkImageView vs[2] = { gPan.vc, gPan.vp };
     VkFramebufferCreateInfo fi = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
@@ -2153,7 +2201,7 @@ bool VkGLIniciar(const W3dVkVentana& v, std::string* err) {
         sp.pDepthStencilAttachment = 0; ri.attachmentCount = 1;
         if (vkCreateRenderPass(gDev, &ri, 0, &gRpColor) != VK_SUCCESS) return Falla(err, "vkCreateRenderPass");
     }
-    // ---- el layout de todos los programas: binding 0 los uniforms, 1..8 las texturas ----
+    // ---- el layout de todos los programas: binding 0 los uniforms, 1..16 las texturas ----
     {
         VkDescriptorSetLayoutBinding b[1 + kMuestras]; memset(b, 0, sizeof(b));
         b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; b[0].descriptorCount = 1;

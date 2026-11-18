@@ -78,6 +78,8 @@ extern unsigned g_w3dTexturasGen;
 // la GPU); si no, la carga y la registra. NULL si la ruta esta vacia o falla la
 // carga (los fallos se recuerdan para no reintentar 300 veces por frame).
 Texture* TexturaTomar(const std::string& path);
+// ACTUALIZAR: vuelve a leer la imagen de su ruta y la sube de nuevo en la misma Texture (false = queda la de antes)
+bool TexturaReleer(Texture* t);
 // la que ya este cargada con esa ruta, SIN cargar ni contar (NULL si no hay)
 Texture* TexturaBuscar(const std::string& path);
 // registra una textura YA SUBIDA (creada en memoria) bajo 'path' (vector global + registro, 1 ref)

@@ -74,6 +74,45 @@ static const int   kPrimN = 8;
 static std::string W3dmPosKey(const float* p) {
     char b[12]; memcpy(b, p, 12); return std::string(b, 12);
 }
+// LA POSICION CUANTIZADA (a 1e-4, la misma regla que el agrupamiento del editor, Mesh::CalcularBordes): dos render-verts
+// "en el mismo lugar" con floats apenas distintos -la costura de una esfera UV (sin(2 pi) no es 0), un polo con -0.0-
+// son el mismo punto. Con los bits exactos quedaban como puntos distintos y la costura se abria (la subdivision la
+// tomaba como un borde y las normales no se promediaban)
+static std::string W3dmPosCuant(const float* p) {
+    int q[3];
+    for (int k = 0; k < 3; k++) q[k] = (int)floorf(p[k] * 10000.0f + 0.5f);
+    char b[12]; memcpy(b, q, 12); return std::string(b, 12);
+}
+// LOS ARCHIVOS GUARDADOS ANTES traen como puntos DISTINTOS los lados de una costura y los polos de una esfera UV. Sin
+// datos de punto (pesos, shape keys) no hay nada que los distinga: se unen por la posicion cuantizada, y el
+// representante sigue siendo el MENOR indice. Con pesos no: dos vertices distintos en el mismo lugar pueden ser de
+// huesos distintos. La usan los dos cargadores (el de texto, aca abajo, y el binario: W3dMallaBin.cpp)
+struct W3dmUF {
+    static int Raiz(std::vector<int>& u, int x) { while (u[(size_t)x] != x) { u[(size_t)x] = u[(size_t)u[(size_t)x]]; x = u[(size_t)x]; } return x; }
+    static void Unir(std::vector<int>& u, int a, int b) { a = Raiz(u, a); b = Raiz(u, b); if (a == b) return;
+                                                         if (a < b) u[(size_t)b] = a; else u[(size_t)a] = b; }
+};
+void W3dMallaUnirPorPosicion(Mesh* m) {
+    if (!m || !m->vertex || m->vertexSize <= 0 || !m->vertexGroups.empty() || !m->shapeKeys.empty()) return;
+    const int nRV = m->vertexSize;
+    if ((int)m->posRep.size() != nRV) return;
+    std::vector<int> uf((size_t)nRV);
+    for (int gi = 0; gi < nRV; gi++) uf[(size_t)gi] = gi;
+    std::map<std::string, int> primero;
+    for (int gi = 0; gi < nRV; gi++) {
+        const int r = m->posRep[(size_t)gi];
+        if (r >= 0 && r < nRV) W3dmUF::Unir(uf, gi, r);
+        const std::string kq = W3dmPosCuant(&m->vertex[(size_t)gi * 3]);
+        std::map<std::string, int>::iterator it = primero.find(kq);
+        if (it == primero.end()) primero[kq] = gi; else W3dmUF::Unir(uf, gi, it->second);
+    }
+    const bool conCp = ((int)m->vertCtrlPoint.size() == nRV);
+    for (int gi = 0; gi < nRV; gi++) {
+        const int r = W3dmUF::Raiz(uf, gi);
+        m->posRep[(size_t)gi] = r;
+        if (conCp) m->vertCtrlPoint[(size_t)gi] = r;
+    }
+}
 static std::string W3dmAristaKey(const float* a, const float* b) {
     std::string ka = W3dmPosKey(a), kb = W3dmPosKey(b);
     return (ka < kb) ? (ka + kb) : (kb + ka); // el borde no tiene direccion
@@ -297,10 +336,17 @@ void W3dMallaCalcularPuntos(const Mesh* m, W3dMallaPuntos& out) {
     pts.reserve((size_t)nV * 3);
     for (int i = 0; i < nV; i++) {
         std::string k = W3dmPosKey(&m->vertex[i * 3]);
-        std::string kd = k + firmaRv[(size_t)i];
+        std::string kd = W3dmPosCuant(&m->vertex[i * 3]) + firmaRv[(size_t)i];
         if (!rvSuelto[(size_t)i]) {
             std::map<std::string, int>::iterator it = mapaPD.find(kd);
-            if (it != mapaPD.end()) { rvAPunto[(size_t)i] = it->second; continue; }
+            if (it != mapaPD.end()) {
+                rvAPunto[(size_t)i] = it->second;
+                // (su posicion EXACTA tambien resuelve al punto: sharp/seam se indexan por los bits de cada lado)
+                std::vector<int>& ps = mapaP[k];
+                bool ya = false; for (size_t q = 0; q < ps.size() && !ya; q++) ya = (ps[q] == it->second);
+                if (!ya) ps.push_back(it->second);
+                continue;
+            }
         }
         int pi = (int)(pts.size() / 3);
         pts.push_back(m->vertex[i * 3]);
@@ -1948,6 +1994,7 @@ bool W3dMallaLeer(const char* datos, size_t n, Mesh* m, W3dMallaInfo* info) {
         m->vertCtrlPoint[(size_t)gi] = r;
         m->posRep[(size_t)gi] = r;
     }
+    W3dMallaUnirPorPosicion(m);   // (los archivos de antes: la costura y los polos, ver W3dmPosCuant)
     m->uvSelVert.clear();
     // el techo de avisos no puede esconder que hay mas (ver W3dMallaInfo::avisos)
     if (info && info->avisosDeMas > 0) {

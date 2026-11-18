@@ -468,7 +468,7 @@ void BlendAlpha() { mezclaFirma = MezclaAlpha; }
 void SetMezcla(int m) { mezclaFirma = m; }
 void BlendMode(int modo) {
     mezclaFirma = (modo == 1) ? MezclaMultiply : (modo == 2) ? MezclaAdd : (modo == 3) ? 100 : (modo == 4) ? MezclaSubtract
-                : (modo == 5) ? MezclaScreen : MezclaAlpha;
+                : (modo == 5) ? MezclaScreen : (modo == 6) ? 101 : MezclaAlpha;   // (101: Multiply con su factor)
 }
 void Invalidate() { texGenCache = -1; matcapCache = -1; }
 void EstadoBase() {   // (lo mismo que el backend fijo: el texenv de un constructor no le llega a la interfaz)
@@ -534,6 +534,8 @@ void Material(MatParam p, const float* rgba) {
 }
 void MaterialShininess(float s) { if (s != matShine) { matShine = s; materialSucio = true; } }
 void MaterialPBR(float, float, float, float, bool) {}   // (la luz fija de la 3DS: sin luz PBR)
+bool MaterialMapas(unsigned, unsigned, unsigned, unsigned, unsigned) { return false; }   // (sin shaders)
+void AmbienteSH(const float*, const float*) {}
 void Entorno(unsigned int, unsigned int, const float*) {}
 void EscenaCopiar(bool) {}
 bool GpuLimitada() { return false; }
@@ -660,6 +662,7 @@ static void PonerMezcla() {
         case MezclaPremult:  C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ONE_MINUS_SRC_ALPHA, GPU_ONE, GPU_ONE_MINUS_SRC_ALPHA); break;
         case MezclaSubtract: C3D_AlphaBlend(GPU_BLEND_REVERSE_SUBTRACT, GPU_BLEND_ADD, GPU_ONE, GPU_ONE, GPU_ONE, GPU_ONE); break;
         case 100:            C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_DST_COLOR, GPU_SRC_COLOR, GPU_DST_ALPHA, GPU_SRC_ALPHA); break;
+        case 101:            C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_DST_COLOR, GPU_SRC_ALPHA, GPU_DST_ALPHA, GPU_SRC_ALPHA); break;
         default:             C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA); break;
     }
 }

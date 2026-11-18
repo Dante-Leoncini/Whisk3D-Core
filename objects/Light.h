@@ -70,6 +70,10 @@ extern void (*g_lightOverlayHook)(Light*);
 
 // Contenedor global de luces
 extern std::vector<Light*> Lights;
+// los CANALES de GL (bit i = GL_LIGHT0 + i) que prendieron las luces de la ESCENA al dibujarse. El pase de Render con
+// Constructor los apaga al empezar (W3dEscena3DLuces) y las que siguen en la escena los vuelven a prender: una luz
+// BORRADA (viva para el Ctrl+Z) u oculta no deja su canal prendido iluminando
+extern unsigned g_w3dLucesEscenaPrendidas;
 
 // Máximo de luces
 const int MAX_LIGHTS = 8;     // las de GL (GL_LIGHT0..7): las que el pipeline fijo / los shaders prenden a la vez

@@ -275,6 +275,16 @@ static unsigned int envTex = 0, envTexB = 0;
 static bool envCubo = false;   // envTex / envTexB son CUBEMAPS (EntornoCubo: las GPU chicas)
 // LO DE ATRAS del vidrio (EscenaCopiar): la copia del viewport en la unidad 4 y el rectangulo de donde salio (w = 0: apagado)
 static GLuint texEscena = 0; static int texEscW = 0, texEscH = 0; static float escVp[4] = {0,0,0,0};
+// ...y su PROFUNDIDAD (unidad 5), para los reflejos en pantalla: con ella el reflejo recorre el rayo y encuentra lo que
+// toca (un espejo de verdad). Solo en GL de escritorio: ES 2.0 no copia la profundidad a una textura (sin ella, el reflejo
+// aproximado de siempre). escZEstado: 0 sin probar, 1 anda, -1 este driver no la copia
+// LOS MAPAS DEL MATERIAL (MaterialMapas): normal, rugosidad, metalico, alfa, emision, en las unidades 6..10. Solo con el
+// programa entero de GL de escritorio o Vulkan (con un programa por draw -las GPU chicas- o un ES 2.0 de 8 unidades, no)
+static GLuint mapTex[5] = {0,0,0,0,0};
+static int mapasOk = -1;   // -1 sin saber; 0 este GL no tiene unidades para ellos; 1 si
+static bool MapasHay();
+static GLuint texEscZ = 0; static int texEscZW = 0, texEscZH = 0; static bool escZ = false; static int escZEstado = 0;
+static bool escZVuelta = false;   // (Vulkan) la copia de la profundidad tiene la fila de arriba primero
 static float envF[12] = {1,0,0,0, 0,1,0,0, 0,0,1,0};
 static float curColor[4]  = {1,1,1,1};   // color uniforme (Color4*) cuando NO hay array de color
 static float fogColor[4]  = {0,0,0,1};
@@ -311,7 +321,7 @@ static GLint uClipN,uClip[5];   // planos de recorte (ver PlanosRecorte): equiva
 static float blurY = 0.0f;
 static float alphaRef = 0.0f;
 static int   alfaAbajo = 0;
-static GLint uMDiff,uMAmb,uMSpec,uMEmis,uShine,uAmbGlobal,uNLuces,uLPos,uLAmb,uLDif,uLSpec,uLAtt,uLCono,uMPbr,uEnvTex,uEnvTexB,uEnvF0,uEnvF1,uEnvF2,uEscena,uEscenaVp,uMExtra;
+static GLint uMDiff,uMAmb,uMSpec,uMEmis,uShine,uAmbGlobal,uNLuces,uLPos,uLAmb,uLDif,uLSpec,uLAtt,uLCono,uMPbr,uEnvTex,uEnvTexB,uEnvF0,uEnvF1,uEnvF2,uEscena,uEscenaVp,uMExtra,uEscenaZ,uProj,uEscenaZOn,uMapN,uMapR,uMapM,uMapA,uMapE,uMapOn,uMapEOn,uSHa,uSHb,uSHc,uSHOn,uOjoMundo;
 static GLint uFogColor,uFogStart,uFogEnd,uFogModo,uFogDens;
 // los atributos, en lugares fijos (los mismos en todos los programas, ver linkear)
 static const GLint aLpos=0, aLnrm=1, aLuv=2, aLcol=3, aLuv1=4;
@@ -391,6 +401,9 @@ static const char* VS =
 "  vec4 t=uTexM*uv; vT=t.xy/t.w;\n"
 "#endif\n"
 "#endif\n"
+"#if defined(W3D_MAPAS) && !defined(W3D_TEX)\n"
+"  vT=aUV.xy;\n"   // (los mapas del material leen la UV aunque no haya textura base)
+"#endif\n"
 "  vec4 c=aCol;\n"
 "#ifdef W3D_LUZ_PIXEL\n"
 "  vNe=N; vPe=eye.xyz;\n"
@@ -443,6 +456,10 @@ static const char* FS =
 "uniform sampler2D uTex; uniform sampler2D uTex1; uniform int uMezcla; uniform float uMezclaK;\n"
 "uniform vec4 uFogColor; uniform float uFogStart; uniform float uFogEnd; uniform int uFogModo; uniform float uFogDens;\n"
 "uniform int uClipN; uniform vec4 uClip0,uClip1,uClip2,uClip3,uClip4;\n"   // planos de recorte, en OJO
+"#ifdef W3D_MAPAS\n"   // los mapas del material (x normal, y rugosidad, z metalico, w alfa; uMapEOn emision): 1 = con textura
+"uniform sampler2D uMapN; uniform sampler2D uMapR; uniform sampler2D uMapM; uniform sampler2D uMapA; uniform sampler2D uMapE;\n"
+"uniform vec4 uMapOn; uniform float uMapEOn;\n"
+"#endif\n"
 "varying vec3 vP; varying vec2 vT; varying vec2 vT1; varying vec4 vC; varying float vFogZ;\n"
 "varying W3D_ALTA vec2 vCentro; varying W3D_ALTA float vTam;\n"
 "#ifdef W3D_LUZ_PIXEL\n"
@@ -454,16 +471,22 @@ static const char* FS =
 "varying W3D_ALTA vec3 vNe; varying W3D_ALTA vec3 vPe;\n"
 "#ifdef W3D_PBR\n"
 "uniform vec4 uMPbr;\n"   // los valores PBR (MaterialPBR): x metalico, y rugosidad (<0 = apagado), z F0 del IOR, w transmision
+// LA SONDA DE LUZ del objeto (AmbienteSH): 9 coeficientes RGB de armonicos esfericos (en el MUNDO, con la convolucion del
+// coseno) y la matriz ojo -> mundo. La luz difusa que llega a una normal n del mundo es sum c_i * Y_i(n)
+"uniform vec4 uSHa[3]; uniform vec4 uSHb[3]; uniform vec4 uSHc[3]; uniform float uSHOn; uniform mat3 uOjoMundo;\n"
+"vec3 SHEval(vec3 n){ return uSHa[0].xyz*0.282095+uSHa[1].xyz*(0.488603*n.y)+uSHa[2].xyz*(0.488603*n.z)"
+"+uSHb[0].xyz*(0.488603*n.x)+uSHb[1].xyz*(1.092548*n.x*n.y)+uSHb[2].xyz*(1.092548*n.y*n.z)"
+"+uSHc[0].xyz*(0.315392*(3.0*n.z*n.z-1.0))+uSHc[1].xyz*(1.092548*n.x*n.z)+uSHc[2].xyz*(0.546274*(n.x*n.x-n.y*n.y)); }\n"
 "#endif\n"
 "#ifdef W3D_ENTORNO\n"
 // EL ENTORNO COMO CUBEMAP (las GPU chicas, ver EntornoCubo): el cubo se lee con la direccion, sin cuentas
 "#ifdef W3D_ENTORNO_CUBO\n"
 "uniform samplerCube uEnvTex; uniform samplerCube uEnvTexB; uniform vec4 uEnvF0; uniform vec4 uEnvF1; uniform vec4 uEnvF2;\n"
 "vec3 EnvDir(vec3 d){ return vec3(dot(uEnvF0.xyz,d),dot(uEnvF1.xyz,d),dot(uEnvF2.xyz,d)); }\n"
-"#define ENV_TIPO vec3\n#define ENV_COORD(d) EnvDir(d)\n#define ENV_TEX(t,c) textureCube(t,c)\n"
+"#define ENV_TIPO vec3\n#define ENV_COORD(d) EnvDir(d)\n#define ENV_TEX(t,c) textureCube(t,c)\n#define ENV_TEX_LOD(t,c,b) textureCube(t,c,b)\n"
 "#else\n"
 "uniform sampler2D uEnvTex; uniform sampler2D uEnvTexB; uniform vec4 uEnvF0; uniform vec4 uEnvF1; uniform vec4 uEnvF2;\n"
-"#define ENV_TIPO vec2\n#define ENV_COORD(d) EnvUV(d)\n#define ENV_TEX(t,c) texture2D(t,c)\n"
+"#define ENV_TIPO vec2\n#define ENV_COORD(d) EnvUV(d)\n#define ENV_TEX(t,c) texture2D(t,c)\n#define ENV_TEX_LOD(t,c,b) texture2D(t,c,b)\n"
 // la direccion del OJO -> el punto de la imagen 360 (la misma cuenta que W3dFondoDireccionUV: el cielo y el trazado)
 "#ifdef W3D_ESPECIAL\n"
 // (un programa por draw, la VideoCore IV: atan y acos no estan en la GPU y el compilador los arma con muchas cuentas.
@@ -483,6 +506,15 @@ static const char* FS =
 "#endif\n"
 "#ifdef W3D_PANTALLA\n"
 "uniform sampler2D uEscena; uniform vec4 uEscenaVp; uniform vec4 uMExtra;\n"
+// LA PROFUNDIDAD de la copia (GL de escritorio): el punto de la copia -> su z en OJO (negativa delante de la camara), y
+// un punto en OJO -> su lugar en la copia (la proyeccion del pase)
+"#ifdef W3D_SSR_Z\n"
+"uniform sampler2D uEscenaZ; uniform mat4 uProj; uniform float uEscenaZOn;\n"
+"vec2 EscSp(vec2 s){ return (uEscenaVp.w<0.0)?vec2(s.x,1.0-s.y):s; }\n"   // (la copia dada vuelta)
+"float EscZ(vec2 s){ vec2 q=EscSp(s); if(uEscenaZOn>1.5) q.y=1.0-q.y; float d=texture2D(uEscenaZ,q).r*2.0-1.0;"
+" return (uProj[2][3]!=0.0)?-uProj[3][2]/(d+uProj[2][2]):(d-uProj[3][2])/uProj[2][2]; }\n"
+"vec2 EscProy(vec3 p){ vec4 c=uProj*vec4(p,1.0); return c.xy/c.w*0.5+0.5; }\n"
+"#endif\n"
 "#endif\n"
 "#endif\n"
 "void main(){\n"
@@ -512,23 +544,53 @@ static const char* FS =
 "#ifdef W3D_LUZ_PIXEL\n"
 "  if(uLightOn==1){\n"
 "    W3D_ALTA vec3 N=normalize(vNe); W3D_ALTA vec3 eye=vPe;\n"
+// EL NORMAL MAP: la normal de la textura (tangente) llevada al espacio del ojo con la base que sale de las derivadas de la
+// posicion y de la UV en la pantalla (sin tangentes por vertice). Como en Blender: verde para arriba (OpenGL)
+"#ifdef W3D_MAPAS\n"
+"    if(uMapOn.x>0.5){ vec3 tn=texture2D(uMapN,vT).xyz*2.0-1.0;\n"
+"      W3D_ALTA vec3 dp1=dFdx(eye); W3D_ALTA vec3 dp2=dFdy(eye); vec2 du1=dFdx(vT); vec2 du2=dFdy(vT);\n"
+"      W3D_ALTA vec3 d2p=cross(dp2,N); W3D_ALTA vec3 d1p=cross(N,dp1);\n"
+"      W3D_ALTA vec3 T=d2p*du1.x+d1p*du2.x; W3D_ALTA vec3 B=d2p*du1.y+d1p*du2.y;\n"
+"      float im=inversesqrt(max(max(dot(T,T),dot(B,B)),1e-20));\n"
+"      N=normalize(T*im*tn.x+B*im*tn.y+N*tn.z); }\n"
+"#endif\n"
 "    vec4 md=(uColorMat==1)?vC:uMDiff; vec4 ma=(uColorMat==1)?vC:uMAmb;\n"
+"#ifdef W3D_MAPAS\n"
+"    vec3 acc=((uMapEOn>0.5)?texture2D(uMapE,vT).rgb:uMEmis.rgb)+ma.rgb*uAmbGlobal.rgb;\n"   // (la emision de su textura)
+"#else\n"
 "    vec3 acc=uMEmis.rgb+ma.rgb*uAmbGlobal.rgb;\n"
+"#endif\n"
 // PBR (los valores del material que usa el trazado de rayos): el METALICO apaga el difuso y tine el brillo con el
 // color; la RUGOSIDAD abre el brillo (exponente 2/r^2-1, Blinn-Phong normalizado); el IOR da el F0 de Fresnel (mas
 // reflejo de costado); la TRANSMISION hace transparente lo que no refleja. Sin PBR (rug < 0): la luz de siempre
 "#ifdef W3D_PBR\n"
 "    bool pbr=uMPbr.y>=0.0;\n"
+"    vec4 mp=uMPbr;\n"   // (los valores PBR: el metalico y la rugosidad pueden venir de su textura)
+"#ifdef W3D_MAPAS\n"
+"    if(uMapOn.y>0.5) mp.y=texture2D(uMapR,vT).r;\n"
+"    if(uMapOn.z>0.5) mp.x=texture2D(uMapM,vT).r;\n"
+"#endif\n"
 "    W3D_ALTA vec3 V=normalize(-eye);\n"
 // (PBR de las dos caras, como el trazado de rayos: la normal mira hacia la camara. Un plano visto de atras
 //  reflejaba lo de abajo en vez del cielo)
 "    if(pbr && dot(N,V)<0.0) N=-N;\n"
-"    float rugP=max(uMPbr.y,0.05); float expo=min(2.0/(rugP*rugP)-1.0,512.0);\n"
-"    float fres=uMPbr.z+(1.0-uMPbr.z)*pow(1.0-max(dot(N,V),0.0),5.0);\n"
-"    float pesoB=uMPbr.x+(1.0-uMPbr.x)*fres;\n"
-"    vec3 colB=mix(vec3(1.0),md.rgb,uMPbr.x);\n"
-"    float kd=pbr?(1.0-uMPbr.x):1.0;\n"
-"#define LUZ_BRILLO(i) if(pbr){ float nh=max(dot(N,normalize(L+V)),0.0); brilloPbr+=at*colB*uLSpec[i].rgb*(pesoB*pow(nh,expo)*(expo+2.0)*0.125*ndl); }"
+"    float rugP=max(mp.y,0.05); float expo=min(2.0/(rugP*rugP)-1.0,512.0);\n"
+// (IOR 1 con transmision llega con F0 = 0: no refleja nada, ni de costado: transparente perfecto)
+"    float bordeF=(mp.z>0.0 || mp.x>0.0)?pow(1.0-max(dot(N,V),0.0),5.0):0.0;\n"
+"    float fres=mp.z+(1.0-mp.z)*bordeF;\n"
+// FRESNEL (Schlick), el de PBR: de frente refleja F0 (el del IOR en lo que no es metal; el color en el metal) y hacia
+// los bordes -mirando de costado- sube hasta reflejar todo, en blanco. El agua: de frente se ve a traves, de costado refleja
+"    float pesoB=1.0;\n"
+"    vec3 f0B=mix(vec3(mp.z),md.rgb,mp.x);\n"
+"    vec3 colB=f0B+(vec3(1.0)-f0B)*bordeF;\n"
+"    float kd=pbr?(1.0-mp.x):1.0;\n"
+// EL AMBIENTE PBR es la LUZ DEL FONDO (EscenaRender: AmbienteDelFondo) sobre el color difuso, como en Blender: el color
+// del fondo, o la irradiancia del 360 en la direccion de la normal por su factor (el alfa del ambiente). Sin PBR sigue el
+// ambiente del material por el global (el pipeline fijo)
+"    vec3 ambPbr=uAmbGlobal.rgb;\n"
+"#define LUZ_BRILLO(i) if(pbr){ W3D_ALTA vec3 Hh=normalize(L+V); float nh=max(dot(N,Hh),0.0); float vh=max(dot(V,Hh),0.0);"
+" vec3 fl=f0B+(vec3(1.0)-f0B)*((mp.z>0.0 || mp.x>0.0)?pow(1.0-vh,5.0):0.0);"
+" brilloPbr+=at*fl*uLSpec[i].rgb*(pesoB*pow(nh,expo)*(expo+2.0)*0.125*ndl); }"
 " else { float nh=max(dot(N,normalize(L+vec3(0.0,0.0,1.0))),0.0); col1+=uMSpec.rgb*uLSpec[i].rgb*((uShine>0.0)?pow(nh,uShine):1.0); }\n"
 "#else\n"   // (sin PBR: la luz de siempre)
 "    const float kd=1.0;\n"
@@ -551,10 +613,14 @@ static const char* FS =
 "#endif\n"
 "#ifdef W3D_ENTORNO\n"
 "    if(pbr && uEnvF0.w>0.5){\n"
-"      acc+=md.rgb*kd*ENV_TEX(uEnvTexB,ENV_COORD(N)).rgb;\n"
+"      ambPbr=ENV_TEX(uEnvTexB,ENV_COORD(N)).rgb*uAmbGlobal.a;\n"
 "      W3D_ALTA vec3 R=reflect(-V,N); ENV_TIPO cR=ENV_COORD(R);\n"
-"      reflejo=mix(ENV_TEX(uEnvTex,cR).rgb,ENV_TEX(uEnvTexB,cR).rgb,clamp(uMPbr.y*1.6,0.0,1.0));\n"
+"      reflejo=mix(ENV_TEX_LOD(uEnvTex,cR,mp.y*8.0).rgb,ENV_TEX(uEnvTexB,cR).rgb,clamp(mp.y*1.6-0.6,0.0,1.0));\n"
 "    }\n"
+"#endif\n"
+"#ifdef W3D_PBR\n"
+"    if(uSHOn>0.5) ambPbr=max(SHEval(normalize(uOjoMundo*N)),vec3(0.0));\n"   // (una sonda de luz manda sobre el fondo)
+"    if(pbr) acc+=md.rgb*kd*ambPbr-ma.rgb*uAmbGlobal.rgb;\n"   // (el ambiente del material de arriba deja su lugar)
 "#endif\n"
 // REFLEJOS EN PANTALLA (la casilla del material): lo que el reflejo encuentra en la copia de la pantalla, en la
 // direccion reflejada (sin profundidad: una aproximacion), menos cuanto mas rugoso y apagandose en los bordes de la
@@ -562,14 +628,53 @@ static const char* FS =
 "#ifdef W3D_PANTALLA\n"
 "    if(pbr && uMExtra.x>0.5 && uEscenaVp.z>0.0){\n"
 "      W3D_ALTA vec3 R=reflect(-V,N);\n"
-"      vec2 sp=(gl_FragCoord.xy-uEscenaVp.xy)/abs(uEscenaVp.zw)+R.xy*0.35;\n"
+"      vec2 sp; float msk;\n"
+// CON LA PROFUNDIDAD (GL de escritorio): EL RAYO REFLEJADO, recorrido en OJO desde el punto. Cada paso se proyecta a la
+// copia y se mira si el rayo esta ADELANTE o ATRAS de lo que se ve ahi. Cada vez que CAMBIA (entra atras de algo o sale
+// de atras) el cruce se afina partiendo el paso al medio, y vale como toque solo si ahi el rayo esta SOBRE la superficie
+// de los dos lados (la diferencia es chica): entro por una cara que se ve, o -lo mas comun con algo apoyado en el piso-
+// entro por abajo, por donde la camara no ve, y SALE por una cara que si se ve. Eso da la imagen espejada de lo que
+// esta en pantalla (el objeto dado vuelta, pegado a donde se apoya). Si la diferencia es grande es el borde de una
+// silueta (paso por atras de algo): no es un toque, sigue. Lo que no esta en la pantalla no se encuentra: queda el
+// fondo 360. Los pasos crecen con la distancia (cerca, finos; lejos, largos)
+"#ifdef W3D_SSR_Z\n"
+"      if(uEscenaZOn>0.5){\n"
+"        float hit=0.0; vec2 hs=vec2(0.5); float hayR=0.0; vec2 hsR=vec2(0.5);\n"
+"        float paso=max(-vPe.z,0.5)*0.012;\n"
+"        vec3 pa=vPe; vec3 p=vPe+R*paso; bool atras=false;\n"
+"        for(int i=0;i<80;i++){\n"
+"          vec2 s=EscProy(p);\n"
+"          if(p.z>-0.001 || s.x<0.0 || s.x>1.0 || s.y<0.0 || s.y>1.0) break;\n"
+"          bool det=(EscZ(s)-p.z)>0.0;\n"   // (el rayo esta detras de lo que se ve en ese lugar)
+"          if(i>0 && det!=atras){\n"
+"            vec3 a=pa; vec3 b=p;\n"   // (a: del lado de antes; b: del lado de ahora)
+"            for(int k=0;k<7;k++){ vec3 m=(a+b)*0.5; if(((EscZ(EscProy(m))-m.z)>0.0)==atras) a=m; else b=m; }\n"
+"            vec2 sa=EscProy(a); vec2 sb=EscProy(b);\n"
+"            float tol=0.02*(-b.z)+0.01;\n"
+"            if(abs(EscZ(sa)-a.z)<tol && abs(EscZ(sb)-b.z)<tol){ hs=det?sb:sa; hit=1.0; break; }\n"
+// (de RESPALDO: la primera vez que entra atras de algo cercano -la parte de abajo de un objeto apoyado, que la camara no
+//  ve-. Si despues no hay un toque de verdad, se usa ese borde: sin esto quedaba un hueco entre el objeto y su reflejo)
+"            if(det && hayR<0.5 && (EscZ(sb)-b.z)<0.06*(-b.z)){ hsR=EscProy(b+R*(0.012*(-b.z))); hayR=1.0; }\n"
+"          }\n"
+"          atras=det; pa=p; paso*=1.045; p+=R*paso;\n"
+"        }\n"
+"        if(hit<0.5 && hayR>0.5){ hs=hsR; hit=1.0; }\n"
+"        sp=EscSp(hs);\n"
+"        vec2 bd=min(hs,1.0-hs);\n"
+"        msk=hit*clamp(min(bd.x,bd.y)*12.0,0.0,1.0)*(1.0-mp.y);\n"
+"      } else\n"
+"#endif\n"
+"      {\n"
+// SIN LA PROFUNDIDAD (ES 2.0): una aproximacion, lo de la copia corrido en la direccion reflejada
+"      sp=(gl_FragCoord.xy-uEscenaVp.xy)/abs(uEscenaVp.zw)+R.xy*0.35;\n"
 "      if(uEscenaVp.w<0.0) sp.y=1.0-sp.y;\n"   // (la copia dada vuelta: ver EscenaCopiar)
 "      vec2 bd=min(sp,1.0-sp);\n"
-"      float msk=clamp(min(bd.x,bd.y)*8.0,0.0,1.0)*(1.0-uMPbr.y)*clamp(1.0-R.z*2.0,0.0,1.0);\n"
+"      msk=clamp(min(bd.x,bd.y)*8.0,0.0,1.0)*(1.0-mp.y)*clamp(1.0-R.z*2.0,0.0,1.0);\n"
+"      }\n"
 "#ifdef W3D_ESPECIAL\n"
 "      vec3 ss=texture2D(uEscena,sp).rgb;\n"   // (la VideoCore IV: una muestra)
 "#else\n"
-"      float rr=uMPbr.y*uMPbr.y*0.04;\n"
+"      float rr=mp.y*mp.y*0.04;\n"
 "      vec3 ss=texture2D(uEscena,sp).rgb*0.4+(texture2D(uEscena,sp+vec2(rr,0.0)).rgb+texture2D(uEscena,sp-vec2(rr,0.0)).rgb"
 "+texture2D(uEscena,sp+vec2(0.0,rr)).rgb+texture2D(uEscena,sp-vec2(0.0,rr)).rgb)*0.15;\n"
 "#endif\n"
@@ -581,7 +686,7 @@ static const char* FS =
 "#endif\n"
 // la TRANSMISION: lo que no refleja (1 - Fresnel) deja pasar lo de atras (el material se dibuja con mezcla)
 "#ifdef W3D_PBR\n"
-"    float alfa=md.a*(1.0-uMPbr.w*(1.0-fres));\n"
+"    float alfa=md.a*(1.0-mp.w*(1.0-fres));\n"
 "#else\n"
 "    float alfa=md.a;\n"
 "#endif\n"
@@ -590,12 +695,12 @@ static const char* FS =
 // REFRACCION (el IOR: cuanto se dobla el rayo al entrar) y desenfocado por la RUGOSIDAD, tenido por el color; se mezcla
 // con la parte que refleja (Fresnel). Sale opaco: la mezcla con lo de atras ya la hizo el shader
 "#ifdef W3D_PANTALLA\n"
-"    if(pbr && uMPbr.w>0.0 && uEscenaVp.z>0.0){\n"
-"      float sf=sqrt(clamp(uMPbr.z,0.0,0.9)); float ior=(1.0+sf)/(1.0-sf);\n"
+"    if(pbr && mp.w>0.0 && uEscenaVp.z>0.0){\n"
+"      float sf=sqrt(clamp(mp.z,0.0,0.9)); float ior=(1.0+sf)/(1.0-sf);\n"
 "      W3D_ALTA vec3 Rf=refract(-V,N,1.0/ior);\n"
 "      vec2 sp=(gl_FragCoord.xy-uEscenaVp.xy)/abs(uEscenaVp.zw)+(Rf.xy+V.xy)*0.25;\n"
 "      if(uEscenaVp.w<0.0) sp.y=1.0-sp.y;\n"
-"      float r=uMPbr.y*0.045;\n"   // (el ESMERILADO, el radio con la rugosidad)
+"      float r=mp.y*0.045;\n"   // (el ESMERILADO, el radio con la rugosidad)
 "#ifdef W3D_ESPECIAL\n"   // (la VideoCore IV: 5 muestras, la cruz)
 "      vec3 at=texture2D(uEscena,sp).rgb*0.2+(texture2D(uEscena,sp+vec2(r,0.0)).rgb+texture2D(uEscena,sp-vec2(r,0.0)).rgb"
 "+texture2D(uEscena,sp+vec2(0.0,r)).rgb+texture2D(uEscena,sp-vec2(0.0,r)).rgb)*0.2;\n"
@@ -605,7 +710,7 @@ static const char* FS =
 "+texture2D(uEscena,sp+vec2(0.0,r)).rgb+texture2D(uEscena,sp-vec2(0.0,r)).rgb+texture2D(uEscena,sp+vec2(r2,r2)).rgb"
 "+texture2D(uEscena,sp-vec2(r2,r2)).rgb+texture2D(uEscena,sp+vec2(r2,-r2)).rgb+texture2D(uEscena,sp-vec2(r2,-r2)).rgb)*0.1;\n"
 "#endif\n"
-"      float tw=uMPbr.w*(1.0-fres);\n"
+"      float tw=mp.w*(1.0-fres);\n"
 "      cPrim=vec4(mix(clamp(acc,0.0,1.0),at*md.rgb,tw),md.a);\n"
 "    }\n"
 "#endif\n"
@@ -654,6 +759,9 @@ static const char* FS =
 "#endif\n"
 "#if defined(W3D_LUZ_PIXEL) && defined(W3D_PBR)\n"
 "  col.rgb=min(col.rgb+brilloPbr,1.0);\n"
+"#endif\n"
+"#ifdef W3D_MAPAS\n"
+"  if(uMapOn.w>0.5){ vec4 ta=texture2D(uMapA,vT); col.a*=(ta.a<0.999)?ta.a:ta.r; }\n"   // (como el trazado de rayos)
 "#endif\n"
 "#ifdef W3D_MEZCLA\n"
 "#ifdef W3D_MEZCLA_MODO\n"
@@ -774,7 +882,8 @@ static const int kLucesPorDraw = 4;
     X(uFogOn) X(uPointSize) X(uPointSprite) X(uColorMat) X(uBlurY) X(uAlphaRef) X(uAlfaAbajo) X(uMezcla) X(uMezclaK) \
     X(uViewport) X(uClipN) X(uMDiff) X(uMAmb) X(uMSpec) X(uMEmis) X(uShine) X(uAmbGlobal) X(uNLuces) X(uLPos) X(uLAmb) \
     X(uLDif) X(uLSpec) X(uLAtt) X(uLCono) X(uFogColor) X(uFogStart) X(uFogEnd) X(uFogModo) X(uFogDens) X(uMPbr) \
-    X(uEnvTex) X(uEnvTexB) X(uEnvF0) X(uEnvF1) X(uEnvF2) X(uEscena) X(uEscenaVp) X(uMExtra)
+    X(uEnvTex) X(uEnvTexB) X(uEnvF0) X(uEnvF1) X(uEnvF2) X(uEscena) X(uEscenaVp) X(uMExtra) X(uEscenaZ) X(uProj) X(uEscenaZOn) \
+    X(uMapN) X(uMapR) X(uMapM) X(uMapA) X(uMapE) X(uMapOn) X(uMapEOn) X(uSHa) X(uSHb) X(uSHc) X(uSHOn) X(uOjoMundo)
 // lo ultimo que se subio a un uniform (n = 0: nada todavia). Una llamada a GL que no cambia nada no se hace: en la
 // VideoCore IV de Android 2.3 cada una es un mensaje al chip, y un draw subia ~40 uniforms
 struct UCache { unsigned char b[64]; int n; };
@@ -828,6 +937,10 @@ static void DefsPrograma(Clave clave, char* d, int tam){
         if((e >> 40) & 1) n += snprintf(d+n, tam-n, "#define W3D_PANTALLA\n");
         if((e >> 41) & 1) n += snprintf(d+n, tam-n, "#define W3D_ENTORNO_CUBO\n");
     }
+    if(!porDraw && MapasHay()) n += snprintf(d+n, tam-n, "#define W3D_MAPAS\n");   // (los mapas del material)
+#if !defined(W3D_ES2_NATIVO) || defined(W3D_VKGL)
+    n += snprintf(d+n, tam-n, "#define W3D_SSR_Z\n");   // (GL de escritorio: los reflejos en pantalla con la profundidad)
+#endif
     { const int nl = (int)((clave>>PLuces)&15);   // (el tamanio de los arreglos de luces del fragment shader)
       n += snprintf(d+n, tam-n, "#define W3D_NLUZ %d\n", nl > 0 ? nl : 1); }
     n += snprintf(d+n, tam-n, "#define LUCES");
@@ -1205,18 +1318,25 @@ void AlfaEmpaquetado(bool si){ alfaAbajo = si ? 1 : 0; }   // alpha en la mitad 
 // RESTANDO del framebuffer: silueta negra con el alpha bien).
 // el modo de blending puesto, como numero chico (para la clave del programa, ver ElegirPrograma)
 static unsigned modoBlend = 0;
-enum { BAlpha, BOff, BAdd, BAddAlpha, BMultiplicar, BScreen, BPremult, BRestar };
+enum { BAlpha, BOff, BAdd, BAddAlpha, BMultiplicar, BScreen, BPremult, BRestar, BMult2x, BMultParcial };
 // (con un programa por draw: el modo que GL ya tiene no se vuelve a poner)
 static bool BlendYaPuesto(unsigned m){
     if(porDraw && blendGL==(int)m){ modoBlend = m; return true; }
     LoteVaciar();   // (lo juntado, con el modo que tenia)
     modoBlend = m; blendGL = (int)m; return false; }
 void BlendAlpha(){ if(BlendYaPuesto(BAlpha)) return; W3D_GLC(glBlendEquation(GL_FUNC_ADD)); W3D_GLC(glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)); }
+// (los MISMOS modos que el backend fijo: antes aca solo estaban Multiply y Add, y Multiply 2x, Subtract y Screen salian
+//  como Mix)
 void BlendMode(int modo){
-    if(BlendYaPuesto(modo==1 ? BMultiplicar : modo==2 ? BAdd : BAlpha)) return;
-    W3D_GLC(glBlendEquation(GL_FUNC_ADD));                                // capas multi-pass: siempre ADD
+    if(BlendYaPuesto(modo==1 ? BMultiplicar : modo==2 ? BAdd : modo==3 ? BMult2x : modo==4 ? BRestar : modo==5 ? BScreen :
+                     modo==6 ? BMultParcial : BAlpha)) return;
+    W3D_GLC(glBlendEquation(modo==4 ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD));   // (Subtract: la resta de verdad)
     if(modo==1)      W3D_GLC(glBlendFunc(GL_DST_COLOR, GL_ZERO));         // Multiply
     else if(modo==2) W3D_GLC(glBlendFunc(GL_ONE, GL_ONE));               // Add
+    else if(modo==3) W3D_GLC(glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR));   // Multiply 2x
+    else if(modo==4) W3D_GLC(glBlendFunc(GL_ONE, GL_ONE));               // Subtract (REVERSE_SUBTRACT)
+    else if(modo==5) W3D_GLC(glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR)); // Screen
+    else if(modo==6) W3D_GLC(glBlendFunc(GL_DST_COLOR, GL_SRC_ALPHA));   // Multiply con su factor
     else             W3D_GLC(glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)); // Mix
 }
 // modos de mezcla nombrados (ver enum Mezcla). GLES2/WebGL: glBlendEquation es nativo.
@@ -1331,6 +1451,31 @@ void Material(MatParam p,const float* rgba){
     else if(p==MatEmission) for(int i=0;i<4;i++) matEmis[i]=rgba[i];
 }
 void MaterialShininess(float s){ matShine=s; } // exponente specular (0..128)
+static bool MapasHay(){
+    if(mapasOk < 0){
+#if defined(W3D_VKGL)
+        mapasOk = 1;   // (la capa de Vulkan: 16 unidades)
+#elif defined(W3D_ES2_NATIVO)
+        mapasOk = 0;   // (ES 2.0 de verdad: sin las derivadas de la normal y con pocas unidades)
+#else
+        GLint u = 0; glGetIntegerv(0x8872 /*GL_MAX_TEXTURE_IMAGE_UNITS*/, &u); while(glGetError() != GL_NO_ERROR){}
+        mapasOk = (u >= 11) ? 1 : 0;
+#endif
+    }
+    return mapasOk == 1;
+}
+// LA SONDA DE LUZ del objeto que se dibuja (AmbienteSH): los 9 coeficientes como vec4 (w sin usar) y ojo -> mundo
+static float shU[36]; static float ojoMundo[9] = {1,0,0, 0,1,0, 0,0,1}; static bool shOn = false;
+void AmbienteSH(const float* sh, const float* m){
+    if(!sh){ shOn = false; return; }
+    for(int k=0;k<9;k++){ shU[k*4]=sh[k*3]; shU[k*4+1]=sh[k*3+1]; shU[k*4+2]=sh[k*3+2]; shU[k*4+3]=0.0f; }
+    if(m) for(int i=0;i<9;i++) ojoMundo[i]=m[i];
+    shOn = true;
+}
+bool MaterialMapas(unsigned normal, unsigned rug, unsigned met, unsigned alfa, unsigned emis){
+    mapTex[0] = normal; mapTex[1] = rug; mapTex[2] = met; mapTex[3] = alfa; mapTex[4] = emis;
+    return !porDraw && MapasHay();
+}
 void MaterialPBR(float metal,float rug,float f0,float trans,bool ssr){ matPbr[0]=metal; matPbr[1]=rug; matPbr[2]=f0; matPbr[3]=trans; matExtra[0]=ssr?1.0f:0.0f; }
 // LAS COPIAS DE LA PANTALLA (el vidrio, los shaders escritos) en el FORMATO DE LA PANTALLA: con una de 16 bits (565: el
 // Galaxy Ace y muchos Android) copiarla a una textura de 8 bits por canal obligaba al driver a convertir cada pixel (en el
@@ -1346,7 +1491,7 @@ static GLenum TipoCopiaPantalla(){
     return tipo;
 }
 void EscenaCopiar(bool on){
-    escVp[2] = 0.0f;
+    escVp[2] = 0.0f; escZ = false;
     if(!on) return;
     const int x = (int)vpActual[0], y = (int)vpActual[1], w = (int)vpActual[2], h = (int)vpActual[3];
     if(w <= 0 || h <= 0) return;
@@ -1364,6 +1509,50 @@ void EscenaCopiar(bool on){
     // (la fila que entiende el driver: el del Galaxy Ace cuenta desde ARRIBA y la deja dada vuelta. Sin esto el vidrio
     //  mostraba otra parte de la pantalla: la interfaz de abajo. Dada vuelta, el alto va negativo y el shader da vuelta la V)
     W3D_GLC(glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, CopiaPantallaFila(y, h), w, h));
+#if defined(W3D_VKGL)
+    // (Vulkan: la profundidad de la pantalla se copia tal cual, con la fila de arriba primero: el shader la lee dada vuelta)
+    if(escZEstado >= 0){
+        W3D_GLC(glActiveTexture(GL_TEXTURE0 + 5));
+        if(!texEscZ){ W3D_GLC(glGenTextures(1, &texEscZ)); }
+        W3D_GLC(glBindTexture(GL_TEXTURE_2D, texEscZ));
+        W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));
+        W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST));
+        W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE));
+        W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE));
+        // (si ESTA copia no se pudo -se dibujaba a una textura, el rectangulo se salia de la pantalla- solo este pase
+        //  queda sin profundidad. Antes un fallo la apagaba para siempre: una miniatura o un render a textura dejaba
+        //  los reflejos de toda la sesion en la aproximacion vieja, sin espejar)
+        if(vkglCopiarProfundidad(x, y, w, h)){ escZ = true; escZEstado = 1; escZVuelta = true; }
+        else escZ = false;
+    }
+#elif !defined(W3D_ES2_NATIVO)
+    // LA PROFUNDIDAD del mismo rectangulo (los reflejos en pantalla: ver texEscZ). Si el driver no la copia (un error),
+    // no se vuelve a intentar: quedan los reflejos aproximados
+    if(escZEstado >= 0){
+#ifndef GL_DEPTH_COMPONENT24
+#define GL_DEPTH_COMPONENT24 0x81A6
+#endif
+        while(glGetError() != GL_NO_ERROR){}
+        W3D_GLC(glActiveTexture(GL_TEXTURE0 + 5));
+        if(!texEscZ){ W3D_GLC(glGenTextures(1, &texEscZ)); texEscZW = texEscZH = 0; }
+        W3D_GLC(glBindTexture(GL_TEXTURE_2D, texEscZ));
+        if(w != texEscZW || h != texEscZH){
+            W3D_GLC(glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, 0));
+            W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));
+            W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST));
+            W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE));
+            W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE));
+            texEscZW = w; texEscZH = h;
+        }
+        W3D_GLC(glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, CopiaPantallaFila(y, h), w, h));
+        const GLenum e = glGetError();
+        static int fallos = 0;
+        if(e == GL_NO_ERROR){ escZ = true; escZEstado = 1; fallos = 0; }
+        else if(++fallos < 30){ escZ = false; texEscZW = texEscZH = 0; }   // (un fallo suelto: se reintenta en el proximo pase)
+        else { escZ = false; escZEstado = -1;
+               w3dLogfW("[w3dGLES2] este driver no copia la profundidad (0x%x): los reflejos en pantalla quedan aproximados", (unsigned)e); }
+    }
+#endif
     W3D_GLC(glActiveTexture(GL_TEXTURE0)); W3D_GLC(glBindTexture(GL_TEXTURE_2D, boundTex));
     escVp[0] = (float)x; escVp[1] = (float)y; escVp[2] = (float)w; escVp[3] = copiaDadaVuelta ? -(float)h : (float)h;
 }
@@ -1851,7 +2040,11 @@ static const char* FS_ESC_PRE =
 "vec3 w3d_HaciaCamara(){ return normalize(-w3d_posVista); }\n"
 "vec3 w3d_HaciaLuz(){ return w3d_luzPos.w!=0.0 ? normalize(w3d_luzPos.xyz/w3d_luzPos.w-w3d_posVista) : normalize(w3d_luzPos.xyz); }\n"
 "vec3 w3d_Luz(vec3 n){ return w3d_ambiente.rgb+w3d_luzColor.rgb*max(dot(n,w3d_HaciaLuz()),0.0); }\n"
-"vec3 w3d_AMundo(vec3 v){ return w3d_vistaAMundo*v; }\n";
+"vec3 w3d_AMundo(vec3 v){ return w3d_vistaAMundo*v; }\n"
+// FRESNEL (Schlick): cuanto refleja el punto segun el angulo. De frente, f0; hacia los bordes sube hasta 1.
+// w3d_Fresnel() usa el IOR del material (f0 = ((ior-1)/(ior+1))^2); w3d_FresnelF0(f0), el que se le pase
+"float w3d_FresnelF0(float f0){ return f0+(1.0-f0)*pow(1.0-max(dot(w3d_Normal(),w3d_HaciaCamara()),0.0),5.0); }\n"
+"float w3d_Fresnel(){ float r=(w3d_ior-1.0)/(w3d_ior+1.0); return w3d_FresnelF0(r*r); }\n";
 static const char* FS_ESC_MAIN = "\nvoid main(){ gl_FragColor=Fragmento(); }\n";
 struct ProgEscrito {
     std::string vs, fs; bool conVertice, pantalla;
@@ -2182,6 +2375,17 @@ static void setupState(int nV){
     U_4F(uMDiff, matDiff); U_4F(uMAmb, matAmb);
     U_4F(uMSpec, matSpec); U_4F(uMEmis, matEmis); U_1F(uShine, matShine);
     U_4F(uMPbr, matPbr); U_4F(uMExtra, matExtra);
+    // LA SONDA DE LUZ (solo la luz por pixel la lee)
+    {
+        const bool sh = shOn && luzPixel;
+        U_1F(uSHOn, sh ? 1.0f : 0.0f);
+        if(sh){
+            if(uSHa>=0 && UNuevo(progUso->c_uSHa, &shU[0], 48))  W3D_GLC(glUniform4fv(uSHa, 3, &shU[0]));
+            if(uSHb>=0 && UNuevo(progUso->c_uSHb, &shU[12], 48)) W3D_GLC(glUniform4fv(uSHb, 3, &shU[12]));
+            if(uSHc>=0 && UNuevo(progUso->c_uSHc, &shU[24], 48)) W3D_GLC(glUniform4fv(uSHc, 3, &shU[24]));
+            U_M3(uOjoMundo, ojoMundo);
+        }
+    }
     // EL ENTORNO 360 en las unidades 2 y 3 (apagado, los samplers miran la 0: sin textura en una unidad el navegador avisa)
     {
         const bool env = envTex != 0 && envF[3] > 0.5f && luzPixel;
@@ -2196,6 +2400,26 @@ static void setupState(int nV){
         if(esc && uEscena >= 0){
             W3D_GLC(glActiveTexture(GL_TEXTURE4)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,texEscena));
             W3D_GLC(glActiveTexture(GL_TEXTURE0)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,boundTex));
+        }
+        // LOS MAPAS DEL MATERIAL en las unidades 6..10 (sin textura: el sampler mira la 0 y el interruptor queda en 0)
+        if(uMapOn >= 0){
+            const float on[4] = { mapTex[0] ? 1.0f : 0.0f, mapTex[1] ? 1.0f : 0.0f, mapTex[2] ? 1.0f : 0.0f, mapTex[3] ? 1.0f : 0.0f };
+            U_4F(uMapOn, on); U_1F(uMapEOn, mapTex[4] ? 1.0f : 0.0f);
+            U_1I(uMapN, mapTex[0] ? 6 : 0); U_1I(uMapR, mapTex[1] ? 7 : 0); U_1I(uMapM, mapTex[2] ? 8 : 0);
+            U_1I(uMapA, mapTex[3] ? 9 : 0); U_1I(uMapE, mapTex[4] ? 10 : 0);
+            bool alguno = false;
+            for(int k=0;k<5;k++) if(mapTex[k]){ W3D_GLC(glActiveTexture(GL_TEXTURE0 + 6 + k)); W3D_GLC(glBindTexture(GL_TEXTURE_2D, mapTex[k])); alguno = true; }
+            if(alguno){ W3D_GLC(glActiveTexture(GL_TEXTURE0)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,boundTex)); }
+        }
+        // su profundidad (unidad 5) y la proyeccion: el reflejo recorre el rayo en OJO y lo proyecta a la copia
+        const bool escZOk = esc && escZ && texEscZ;
+        U_1I(uEscenaZ, escZOk ? 5 : 0); U_1F(uEscenaZOn, escZOk ? (escZVuelta ? 2.0f : 1.0f) : 0.0f);   // (2: dada vuelta)
+        if(escZOk){
+            U_M4(uProj, curProj.m);
+            if(uEscenaZ >= 0){
+                W3D_GLC(glActiveTexture(GL_TEXTURE0 + 5)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,texEscZ));
+                W3D_GLC(glActiveTexture(GL_TEXTURE0)); W3D_GLC(glBindTexture(GL_TEXTURE_2D,boundTex));
+            }
         }
         if(env && (uEnvTex >= 0 || uEnvTexB >= 0)){
             const GLenum destino = envCubo ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D;   // (el cubo de las GPU chicas)

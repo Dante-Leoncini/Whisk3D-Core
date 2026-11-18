@@ -59,6 +59,12 @@ Light* Light::Create(Object* parent, float x, float y, float z) {
     return l;
 }
 
+unsigned g_w3dLucesEscenaPrendidas = 0;
+static void AnotarCanal(GLenum id) {
+    const int n = (int)id - (int)GL_LIGHT0;
+    if (n >= 0 && n < 32) g_w3dLucesEscenaPrendidas |= (1u << n);
+}
+
 // Destructor
 Light::~Light() {
     // CRITICO: sacarse del vector global. Si no, queda un puntero COLGADO y
@@ -137,6 +143,7 @@ void Light::RenderObject() {
     // origen del objeto). El icono lo dibuja render.cpp (RenderIcons3D).
     if (aplicar) {
         w3dEngine::SetLightEnabled(LightID, true);   // (por el motor: lleva el cache de las luces)
+        AnotarCanal(LightID);
         float pos[4];
         if (direccional) {                                  // DIRECCIONAL: la direccion la da la ROTACION de la
             // lampara (no su posicion). Local (0,1,0)="arriba" -> la matriz del objeto (su rotacion) lo orienta:
@@ -168,6 +175,7 @@ void Light::RenderObject() {
     if (aplicar) {
         const int n = (int)LightID - (int)GL_LIGHT0;
         w3dEngine::LightN(n, true);
+        AnotarCanal(LightID);
         float pos[4];
         if (direccional) {                                  // DIRECCIONAL (sol): direccion = rotacion de la lampara
             pos[0] = 0.0f; pos[1] = 1.0f; pos[2] = 0.0f; pos[3] = 0.0f;
@@ -191,6 +199,7 @@ void Light::RenderObject() {
 
     if (aplicar){
         w3dEngine::SetLightEnabled(LightID, true);   // (por el motor: lleva el cache de las luces)
+        AnotarCanal(LightID);
         float pos[4];
         if (direccional) {
             // DIRECCIONAL (sol): la direccion la da la ROTACION de la

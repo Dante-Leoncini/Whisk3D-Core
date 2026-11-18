@@ -1202,6 +1202,8 @@ void Material(MatParam p, const float* rgba) {
 }
 // (pipeline fijo: sin shaders no hay luz PBR; el brillo ya sale de la rugosidad y el metalico en Material/Shininess)
 void MaterialPBR(float, float, float, float, bool) {}
+bool MaterialMapas(unsigned, unsigned, unsigned, unsigned, unsigned) { return false; }   // (pipeline fijo: sin shaders)
+void AmbienteSH(const float*, const float*) {}   // (pipeline fijo: la sonda va por el ambiente de GL o por CPU)
 void Entorno(unsigned int, unsigned int, const float*) {}   // (sin shaders: el cielo es la esfera texturada)
 void EscenaCopiar(bool) {}   // (sin shaders: el vidrio es mezcla)
 bool GpuLimitada() { return false; }
@@ -1230,7 +1232,8 @@ enum {
     FzPremult,        // ONE, ONE_MINUS_SRC_ALPHA
     FzAlpha,          // SRC_ALPHA, ONE_MINUS_SRC_ALPHA
     FzSubAprox,       // ZERO, ONE_MINUS_SRC_COLOR (aprox Symbian)
-    FzMultiply2x      // DST_COLOR, SRC_COLOR (= 2 * dst * src: el "x2" de un lightmap con overbright)
+    FzMultiply2x,     // DST_COLOR, SRC_COLOR (= 2 * dst * src: el "x2" de un lightmap con overbright)
+    FzMultParcial     // DST_COLOR, SRC_ALPHA (= dst * (src + alfa): Multiply con su FACTOR, ver BlendMode 6)
 };
 static void PonerBlendFunc(int firma) {
     if (gBlendFuncCache == firma) return;
@@ -1245,6 +1248,7 @@ static void PonerBlendFunc(int firma) {
         case FzPremult:  W3D_GLC(glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)); break;
         case FzSubAprox: W3D_GLC(glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_COLOR)); break;
         case FzMultiply2x: W3D_GLC(glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR)); break;
+        case FzMultParcial: W3D_GLC(glBlendFunc(GL_DST_COLOR, GL_SRC_ALPHA)); break;
         case FzAlpha: default: W3D_GLC(glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)); break;
     }
 }
@@ -1335,6 +1339,7 @@ void BlendMode(int modo) { // capa multi-pass sobre lo de abajo (W3dCapaMezcla, 
 #endif
     }
     else if (modo == 5) PonerBlendFunc(FzScreen);      // Screen (aclara suave)
+    else if (modo == 6) PonerBlendFunc(FzMultParcial); // Multiply con factor: dst * (color * tex + alfa)
     else                PonerBlendFunc(FzAlpha);       // Mix (alpha encima)
 }
 

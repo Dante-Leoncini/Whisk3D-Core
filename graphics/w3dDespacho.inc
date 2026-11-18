@@ -76,6 +76,8 @@ void Color4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a
 void Material(MatParam p, const float* rgba) { W3D_TABLA()->Material(p, rgba); }
 void MaterialShininess(float s) { W3D_TABLA()->MaterialShininess(s); }
 void MaterialPBR(float metal, float rug, float f0, float trans, bool ssr) { W3D_TABLA()->MaterialPBR(metal, rug, f0, trans, ssr); }
+bool MaterialMapas(unsigned n, unsigned r, unsigned m, unsigned a, unsigned e) { return W3D_TABLA()->MaterialMapas(n, r, m, a, e); }
+void AmbienteSH(const float* sh, const float* m) { W3D_TABLA()->AmbienteSH(sh, m); }
 void Entorno(unsigned int tex, unsigned int texBorrosa, const float* m) { W3D_TABLA()->Entorno(tex, texBorrosa, m); }
 void EscenaCopiar(bool on) { W3D_TABLA()->EscenaCopiar(on); }
 bool GpuLimitada() { return W3D_TABLA()->GpuLimitada(); }

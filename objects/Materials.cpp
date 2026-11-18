@@ -80,7 +80,7 @@ Material::Material(const std::string& nombre, bool MaterialDefectoFlag, bool Tie
       rtRugosidad(0.5f), rtMetalico(0.0f),
       chrome(false), reflectMode(0),
       normalMap(false), normalTexture(NULL), texturaB(NULL), mezclaB(0.0f), toon(0), contorno(0.0f),
-      porPixel(false), lineas(false), grosorLinea(1.0f),
+      porPixel(false), luzIndirecta(false), lineas(false), grosorLinea(1.0f),
       interpolacion(0), texture(NULL), shininess(12.0f) { // interpolacion 0 = lineal (suave), 1 = closest (pixel); igual en TODOS los sistemas
     // defaults que eran inicializadores de clase (C++11)
     diffuse[0] = diffuse[1] = diffuse[2] = diffuse[3] = 1.0f;

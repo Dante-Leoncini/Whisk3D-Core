@@ -77,6 +77,8 @@ void W3D_BACKEND_LLENAR(W3dBackendTabla& t) {
     t.Material = &w3dEngine::W3D_BACKEND_NS::Material;
     t.MaterialShininess = &w3dEngine::W3D_BACKEND_NS::MaterialShininess;
     t.MaterialPBR = &w3dEngine::W3D_BACKEND_NS::MaterialPBR;
+    t.MaterialMapas = &w3dEngine::W3D_BACKEND_NS::MaterialMapas;
+    t.AmbienteSH = &w3dEngine::W3D_BACKEND_NS::AmbienteSH;
     t.Entorno = &w3dEngine::W3D_BACKEND_NS::Entorno;
     t.EscenaCopiar = &w3dEngine::W3D_BACKEND_NS::EscenaCopiar;
     t.GpuLimitada = &w3dEngine::W3D_BACKEND_NS::GpuLimitada;

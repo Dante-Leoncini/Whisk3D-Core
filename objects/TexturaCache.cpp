@@ -168,6 +168,23 @@ Texture* TexturaTomar(const std::string& pathCrudo) {
     return t;
 }
 
+// ACTUALIZAR: vuelve a leer la imagen de SU ruta y la sube de nuevo en la MISMA Texture (los materiales que la usan la
+// ven cambiada sin tocarlos). false = no se pudo leer o decodificar: queda la de antes
+bool TexturaReleer(Texture* t) {
+    if (!t || t->path.empty()) return false;
+    unsigned int id = 0;
+    if (!LoadTexture(t->path.c_str(), id) || !id) return false;
+    if (t->iID) w3dEngine::DeleteTexture((unsigned int)t->iID);
+    t->iID = id;
+    int w = 0, h = 0;
+    if (w3dEngine::TextureSize(id, w, h)) { t->ancho = w; t->alto = h; }
+#if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__) && !defined(W3D_SYMBIAN)
+    t->conMipmaps = !w3dEngine::PixeladoGlobal();
+#endif
+    g_w3dTexturasGen++;   // (lo que cachea por textura -vistas previas, el trazado de rayos- la vuelve a leer)
+    return true;
+}
+
 // registra una textura YA SUBIDA (creada en memoria por el editor: "Nueva textura") bajo 'pathCrudo',
 // como si se hubiera cargado de ahi. Entra al vector global y al registro con 1 ref.
 Texture* TexturaRegistrar(const std::string& pathCrudo, Texture* t) {
