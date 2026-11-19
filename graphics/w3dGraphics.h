@@ -335,6 +335,32 @@ W3D_BACKEND_ABRIR
     // esfericos en el espacio del MUNDO, ya con la convolucion del coseno) y la matriz 3x3 (por columnas) que pasa una
     // direccion del OJO al mundo. La luz por pixel PBR la usa de ambiente. NULL = apagada. Los backends fijos: nada
     void AmbienteSH(const float* sh27, const float* ojoAMundo9);
+W3D_BACKEND_CERRAR
+    // LAS SOMBRAS EN TIEMPO REAL (main/render/SombrasTiempoReal.h). EL MAPA DE SOMBRAS es la profundidad de los objetos vista
+    // desde la luz, en una textura del backend: SombraMapaEmpezar la prepara (w x h texeles, todo lejos) y desde ahi cada draw
+    // de triangulos escribe su profundidad (sin color ni luz) hasta SombraMapaTerminar, que vuelve a la pantalla como estaba
+    // (viewport y scissor). SombraMapaCaja: el rectangulo del mapa de cada CASCADA (como un viewport). Despues,
+    // SombraReceptores (SombraDatosN floats; NULL = sin sombras en este pase) y SombraRecibir(modo) por material: 0 no las
+    // recibe; 1 con la luz de tiempo real (la luz que da sombra no llega donde algo la tapa); 2 sobre la luz HORNEADA (el
+    // color se oscurece solo donde lo tapa algo que SE MUEVE: la sombra de lo estatico ya esta en la textura horneada, como
+    // el "Subtractive" de Unity). Al dibujar el mapa, el ALFA del color (Color4f) dice si lo que se dibuja se mueve (1). false / nada en los backends sin shaders (el GL fijo y GL ES 1.1, la PSP, la
+    // 3DS): ahi las sombras las arma SombrasTiempoReal.cpp con la CPU. Los datos:
+    //   [0..63]  4 matrices (por columnas) OJO -> (u, v, profundidad) del mapa, una por cascada
+    //   [64..79] el rectangulo de cada cascada en el mapa (u0, v0, u1, v1)
+    //   [80..83] hasta donde llega cada cascada (distancia a la camara, en el eje de la vista)
+    //   [84..87] el desenfoque de cada cascada (texeles; 0 = el filtro de 2x2)
+    //   [88..91] el corrimiento por la normal de cada cascada (unidades del ojo: contra el "acne")
+    //   [92..95] ancho y alto del mapa, donde empieza a desvanecerse y la distancia maxima
+    //   [96..99] intensidad (0..1), cantidad de cascadas, sesgo de la profundidad, suaves (1) o duras (0)
+    //   [100]    la luz que da sombra (su numero de GL: 0..7)
+    enum { SombraDatosN = 104 };
+W3D_BACKEND_ABRIR
+    bool SombrasSoportadas();
+    bool SombraMapaEmpezar(int w, int h);
+    void SombraMapaCaja(int x, int y, int w, int h);
+    void SombraMapaTerminar();
+    void SombraReceptores(const float* datos);
+    void SombraRecibir(int modo);
     // EL ENTORNO (el fondo como textura 360) para la luz PBR por pixel: 'tex' la imagen, 'texBorrosa' una copia chica y
     // borrosa (la luz difusa y los reflejos rugosos; 0 = la misma) y 'ojoAImagen' la matriz 3x3 (filas) que pasa una
     // direccion del OJO a la de la imagen (la vista invertida y la rotacion del fondo). tex = 0: sin entorno. Los

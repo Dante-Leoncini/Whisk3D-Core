@@ -78,6 +78,12 @@ void MaterialShininess(float s) { W3D_TABLA()->MaterialShininess(s); }
 void MaterialPBR(float metal, float rug, float f0, float trans, bool ssr) { W3D_TABLA()->MaterialPBR(metal, rug, f0, trans, ssr); }
 bool MaterialMapas(unsigned n, unsigned r, unsigned m, unsigned a, unsigned e) { return W3D_TABLA()->MaterialMapas(n, r, m, a, e); }
 void AmbienteSH(const float* sh, const float* m) { W3D_TABLA()->AmbienteSH(sh, m); }
+bool SombrasSoportadas() { return W3D_TABLA()->SombrasSoportadas(); }
+bool SombraMapaEmpezar(int w, int h) { return W3D_TABLA()->SombraMapaEmpezar(w, h); }
+void SombraMapaCaja(int x, int y, int w, int h) { W3D_TABLA()->SombraMapaCaja(x, y, w, h); }
+void SombraMapaTerminar() { W3D_TABLA()->SombraMapaTerminar(); }
+void SombraReceptores(const float* d) { W3D_TABLA()->SombraReceptores(d); }
+void SombraRecibir(int modo) { W3D_TABLA()->SombraRecibir(modo); }
 void Entorno(unsigned int tex, unsigned int texBorrosa, const float* m) { W3D_TABLA()->Entorno(tex, texBorrosa, m); }
 void EscenaCopiar(bool on) { W3D_TABLA()->EscenaCopiar(on); }
 bool GpuLimitada() { return W3D_TABLA()->GpuLimitada(); }

@@ -190,6 +190,8 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
       renderizable(true),
       listadoRiel(255),
       estatico(true),   // por defecto NO se mueve en runtime (convencion RenderWare); el juego marca dinamicos a Crash/enemigos
+      proyectaSombra(true), recibeSombra(true),   // (las sombras en tiempo real: como Unity, las dos prendidas)
+      rebotaLuz(true), captaSombras(false),       // (la luz precalculada: rebota y no es captador de sombras)
       sinTransformacion(false),
       desplegado(true),
       showRelantionshipsLines(true),

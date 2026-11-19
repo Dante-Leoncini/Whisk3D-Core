@@ -89,4 +89,9 @@
 #define glBindFramebuffer vkglBindFramebuffer
 #define glFramebufferTexture2D vkglFramebufferTexture2D
 #define glCheckFramebufferStatus vkglCheckFramebufferStatus
+#define glGenRenderbuffers vkglGenRenderbuffers
+#define glDeleteRenderbuffers vkglDeleteRenderbuffers
+#define glBindRenderbuffer vkglBindRenderbuffer
+#define glRenderbufferStorage vkglRenderbufferStorage
+#define glFramebufferRenderbuffer vkglFramebufferRenderbuffer
 #endif

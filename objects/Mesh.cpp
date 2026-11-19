@@ -696,6 +696,7 @@ static unsigned TexMapa(const Material* m, int k) {
 }
 // LA LUZ POR PIXEL del material: la que eligio, o forzada si tiene un mapa que cambia algo en cada pixel (normal,
 // rugosidad, metalico, emision con textura): con la luz por vertice esos mapas no tienen donde aplicarse
+static bool gSombraObjeto = false;   // LAS SOMBRAS EN TIEMPO REAL: la malla que se dibuja las recibe (SombraGuardia, mas abajo)
 static bool PorPixelEf(const Material* m) {
     if (!m) return false;
     if (m->porPixel) return true;
@@ -884,6 +885,17 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     if (conLuz && mat->LuzTiempoReal() && !nmPasada && !toonOn) gfx::Enable(gfx::Lighting);
     else gfx::Disable(gfx::Lighting);
     gfx::SombreadoPorPixel(PorPixelEf(mat));   // (solo vale con shaders y con la luz prendida)
+    // LAS SOMBRAS EN TIEMPO REAL, si la malla las recibe: con la luz de tiempo real, la del sol no llega donde algo la
+    // tapa (1); con la luz HORNEADA entera, la sombra de lo que SE MUEVE oscurece el color (2: la de lo estatico ya esta
+    // en la textura horneada, como el "Subtractive" de Unity). Sin luz (un material "sin luz"), nada
+    if (gSombraObjeto) {
+        int modo = 0;
+        if (!solido && conLuz) {
+            if (mat->LuzTiempoReal() && !nmPasada && !toonOn) modo = 1;
+            else if (mat->lighting && mat->FactorLuzHorneada() >= 0.999f) modo = 2;
+        }
+        gfx::SombraRecibir(modo);
+    }
 
     if (mat->culling)     gfx::Enable(gfx::CullFace);  else gfx::Disable(gfx::CullFace);
     // LAS DOS CARAS CON LUZ: un material sin culling (pelo, hojas, telas) se ve tambien por atras, y esa cara se
@@ -1870,6 +1882,28 @@ struct SondaGuardia {   // (la saca por cualquiera de los return de RenderObject
     ~SondaGuardia() { if (puesta && g_w3dSondaObjetoHook) g_w3dSondaObjetoHook(o, false); }
 };
 }
+// ---- LAS SOMBRAS EN TIEMPO REAL (main/render/SombrasTiempoReal.h) ----
+// g_w3dSombrasPase: el pase de Render tiene sombras. Con shaders el backend se las aplica a lo que las RECIBE: cada
+// material dice como (SombraRecibir en AplicarMaterial: con la luz de tiempo real o sobre la horneada); sin shaders (el GL
+// fijo, GL ES 1.1 del N95) el gancho, al terminar el dibujo de la malla, la vuelve a dibujar encima con la sombra
+// proyectada (una pasada que multiplica)
+bool g_w3dSombrasPase = false;
+void (*g_w3dSombraMallaHook)(Mesh* m) = NULL;
+// (gSombraObjeto: la malla que se dibuja las recibe; declarado arriba, lo lee AplicarMaterial)
+namespace {
+struct SombraGuardia {   // (como la de la sonda: por cualquiera de los return de RenderObject)
+    Mesh* m; bool puesta;
+    explicit SombraGuardia(Mesh* x) : m(x), puesta(false) {
+        if (g_w3dSombrasPase && w3dRenderLuces && !w3dRenderSolido && m->recibeSombra) { gSombraObjeto = true; puesta = true; }
+    }
+    ~SombraGuardia() {
+        if (!puesta) return;
+        gSombraObjeto = false;
+        w3dEngine::SombraRecibir(0);
+        if (g_w3dSombraMallaHook) g_w3dSombraMallaHook(m);
+    }
+};
+}
 // LA LUZ INDIRECTA POR VERTICE (Material::luzIndirecta, el pipeline fijo: el N95): la CPU calcula la luz de cada vertice
 // -las lamparas que prendieron su canal en este pase (Light.h) + la luz de la sonda con la normal del vertice en el
 // mundo- por el color del material. Se dibuja SIN la luz de GL, con el resultado como color de vertice (la textura lo
@@ -1997,6 +2031,7 @@ void Mesh::RenderObject() {
     const bool hayGen = (genValido && genVertex && genFaces);
     if ((!faces || facesSize < 3) && !editActiva && !hayGen && looseEdges.empty()) return;
     SondaGuardia sondaGuardia(this);   // (la luz indirecta de una sonda de luz, si hay una que alcance a la malla)
+    SombraGuardia sombraGuardia(this); // (las sombras en tiempo real, si las recibe)
     // ---- AUTOCULL por FRUSTUM (clave N95): una malla ENTERA fuera de la camara que esta dibujando no se
     //      skinnea ni se dibuja (en un primer plano, un cuerpo skinneado de 10k verts se deformaba y subia
     //      al GL para nada). El test lo pone el EDITOR via g_mallaVisibleHook (Culling.cpp/W3dAabbVisible,
@@ -2688,6 +2723,7 @@ void Mesh::RenderObject() {
             // se dibuja PURA: sin luz ni color de vertice (eso ya lo aplico la base). GL 1.1 -> PC y N95 igual.
             // Con capas la malla dibuja de client arrays (anyFancy): el TexCoordPointer se puede re-apuntar.
             if (!solido && !mat->capas.empty() && uv && !(capaUnidad1 == 0 && mat->capas.size() == 1)) {   // (la unica capa ya fue en la unidad 1)
+                gfx::SombraRecibir(0);   // (la sombra ya fue en la base: las capas no la repiten)
                 gfx::Enable(gfx::Blend);
                 gfx::DepthFunc(gfx::DepthEqual); gfx::DepthMask(false); // misma superficie, NO re-escribe z
                 gfx::Disable(gfx::Lighting); gfx::DisableArray(gfx::NormalArray);

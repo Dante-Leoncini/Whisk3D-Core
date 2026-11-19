@@ -63,6 +63,12 @@ typedef ptrdiff_t GLsizeiptr;
     #define GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT 0x8CD6
     #define GL_FRAMEBUFFER_UNSUPPORTED 0x8CDD
 #endif
+#ifndef GL_RENDERBUFFER
+    #define GL_RENDERBUFFER         0x8D41
+#endif
+#ifndef GL_DEPTH_COMPONENT16
+    #define GL_DEPTH_COMPONENT16    0x81A5
+#endif
 #ifndef GL_UNSIGNED_SHORT_5_6_5
     #define GL_UNSIGNED_SHORT_5_6_5   0x8363
 #endif
@@ -172,4 +178,10 @@ void vkglDeleteFramebuffers(GLsizei n, const GLuint* f);
 void vkglBindFramebuffer(GLenum target, GLuint f);
 void vkglFramebufferTexture2D(GLenum target, GLenum adjunto, GLenum textarget, GLuint t, GLint nivel);
 GLenum vkglCheckFramebufferStatus(GLenum target);
+// ---- renderbuffers (solo de PROFUNDIDAD: el z-buffer de un render a una textura) ----
+void vkglGenRenderbuffers(GLsizei n, GLuint* r);
+void vkglDeleteRenderbuffers(GLsizei n, const GLuint* r);
+void vkglBindRenderbuffer(GLenum target, GLuint r);
+void vkglRenderbufferStorage(GLenum target, GLenum formato, GLsizei w, GLsizei h);
+void vkglFramebufferRenderbuffer(GLenum target, GLenum adjunto, GLenum rbtarget, GLuint r);
 #endif

@@ -1204,6 +1204,12 @@ void Material(MatParam p, const float* rgba) {
 void MaterialPBR(float, float, float, float, bool) {}
 bool MaterialMapas(unsigned, unsigned, unsigned, unsigned, unsigned) { return false; }   // (pipeline fijo: sin shaders)
 void AmbienteSH(const float*, const float*) {}   // (pipeline fijo: la sonda va por el ambiente de GL o por CPU)
+bool SombrasSoportadas() { return false; }   // (sin shaders: las sombras van por la CPU, SombrasTiempoReal.cpp)
+bool SombraMapaEmpezar(int, int) { return false; }
+void SombraMapaCaja(int, int, int, int) {}
+void SombraMapaTerminar() {}
+void SombraReceptores(const float*) {}
+void SombraRecibir(int) {}
 void Entorno(unsigned int, unsigned int, const float*) {}   // (sin shaders: el cielo es la esfera texturada)
 void EscenaCopiar(bool) {}   // (sin shaders: el vidrio es mezcla)
 bool GpuLimitada() { return false; }

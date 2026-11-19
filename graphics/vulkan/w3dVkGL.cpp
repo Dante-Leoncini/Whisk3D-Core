@@ -491,6 +491,16 @@ static AttrGL gAttr[kAttrs];
 // ---- framebuffers ----
 static std::map<GLuint, GLuint> gFbos;   // fbo -> textura
 static GLuint gSigFbo = 1, gFboActual = 0;
+// ---- renderbuffers de PROFUNDIDAD (glRenderbufferStorage): un fbo con uno usa el render pass de la pantalla (color +
+// profundidad), asi los pipelines son los mismos. Las sombras en tiempo real dibujan los objetos desde la luz con z-buffer
+struct RbGL { VkImage img; Asig a; VkImageView v; int w, h; };
+static std::map<GLuint, RbGL*> gRbs;
+static GLuint gSigRb = 1, gRbActual = 0;
+static std::map<GLuint, GLuint> gFboProf;   // fbo -> renderbuffer de profundidad
+// el framebuffer de Vulkan de un fbo con profundidad (la vista de su textura + la del renderbuffer)
+struct FbProf { VkFramebuffer fb; VkImageView vc, vp; };
+static std::map<GLuint, FbProf> gFbProfVk;
+static VkFramebuffer FbConProf(GLuint fbo, TexGL* t, RbGL* rb);
 
 // ---- la pantalla (la imagen propia) y la ventana ----
 struct Pantalla { VkImage color, prof; Asig ac, ap; VkImageView vc, vp; VkFramebuffer fb; int w, h; };
@@ -528,6 +538,13 @@ static Destino DestinoActual() {
         TexGL* t = it != gFbos.end() ? TexDe(it->second) : 0;
         if (t && FboDeTextura(t)) {
             d.fb = t->fb; d.rp = gRpColor; d.w = t->w; d.h = t->h; d.volteado = false; d.conProf = false; d.tex = t; d.img = t->img;
+            // con un renderbuffer de profundidad del mismo tamanio: el render pass de la pantalla (color + profundidad)
+            std::map<GLuint, GLuint>::iterator ip = gFboProf.find(gFboActual);
+            std::map<GLuint, RbGL*>::iterator ir = ip != gFboProf.end() ? gRbs.find(ip->second) : gRbs.end();
+            if (ir != gRbs.end() && ir->second->img && ir->second->w == t->w && ir->second->h == t->h) {
+                VkFramebuffer fb = FbConProf(gFboActual, t, ir->second);
+                if (fb) { d.fb = fb; d.rp = gRpDef; d.conProf = true; }
+            }
             return d;
         }
     }
@@ -1087,7 +1104,7 @@ static void ClaveDeEstado(GLenum modo, ClavePipe& k) {
         | (((prof && g.depth && g.dMask) ? 1u : 0u) << 7) | (((uint32_t)(g.dFunc - GL_NEVER) & 7u) << 8) | ((g.blend ? 1u : 0u) << 11)
         | ((g.blend ? (uint32_t)FactorVk(g.bSrc) : 0u) << 12) | ((g.blend ? (uint32_t)FactorVk(g.bDst) : 0u) << 16)
         | ((g.blend ? EqVk(g.bEq) : 0u) << 20) | (cm << 23) | (((prof && g.stencil) ? 1u : 0u) << 27)
-        | (((g.offset && tri) ? 1u : 0u) << 28) | ((gPase.tex ? 1u : 0u) << 29);
+        | (((g.offset && tri) ? 1u : 0u) << 28) | ((gPase.rp == gRpColor ? 1u : 0u) << 29);
     k.b = (prof && g.stencil) ? (((uint32_t)(g.sFunc - GL_NEVER) & 7u) | (OpEstencil(g.sFail) << 3) | (OpEstencil(g.sZFail) << 6) | (OpEstencil(g.sZPass) << 9)) : 0u;
 }
 static VkPipeline CrearPipe(ProgGL* p, const ClavePipe& k) {
@@ -1854,12 +1871,83 @@ void vkglReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLenum formato, GLen
 //  Framebuffers
 // ============================================================================
 void vkglGenFramebuffers(GLsizei n, GLuint* f) { for (int i = 0; i < n; i++) { f[i] = gSigFbo++; gFbos[f[i]] = 0; } }
-void vkglDeleteFramebuffers(GLsizei n, const GLuint* f) { for (int i = 0; i < n; i++) { if (gFboActual == f[i]) vkglBindFramebuffer(GL_FRAMEBUFFER, 0); gFbos.erase(f[i]); } }
+void vkglDeleteFramebuffers(GLsizei n, const GLuint* f) {
+    for (int i = 0; i < n; i++) {
+        if (gFboActual == f[i]) vkglBindFramebuffer(GL_FRAMEBUFFER, 0);
+        gFbos.erase(f[i]); gFboProf.erase(f[i]);
+        if (gListo) { std::map<GLuint, FbProf>::iterator it = gFbProfVk.find(f[i]);
+                      if (it != gFbProfVk.end()) { if (it->second.fb) { Basura b = BasuraVacia(); b.fb = it->second.fb; Tirar(b); } gFbProfVk.erase(it); } }
+    }
+}
 void vkglBindFramebuffer(GLenum, GLuint f) { if (f == gFboActual) return; TerminarPase(); gFboActual = f; }
 void vkglFramebufferTexture2D(GLenum, GLenum adjunto, GLenum, GLuint t, GLint) {
     if (!gFboActual || adjunto != GL_COLOR_ATTACHMENT0) return;
     TerminarPase();
     gFbos[gFboActual] = t;
+}
+// ---- renderbuffers: solo de PROFUNDIDAD (con estencil: el formato de la pantalla, gFmtProf) ----
+static void TirarFbProf(GLuint fbo) {
+    std::map<GLuint, FbProf>::iterator it = gFbProfVk.find(fbo);
+    if (it == gFbProfVk.end()) return;
+    if (it->second.fb) { Basura b = BasuraVacia(); b.fb = it->second.fb; Tirar(b); }
+    gFbProfVk.erase(it);
+}
+static void TirarRb(RbGL* r) {
+    if (!r || !r->img) return;
+    Basura b = BasuraVacia(); b.img = r->img; b.vista = r->v; b.a = r->a; Tirar(b);
+    r->img = VK_NULL_HANDLE; r->v = VK_NULL_HANDLE; r->a.b = 0; r->w = r->h = 0;
+}
+static VkFramebuffer FbConProf(GLuint fbo, TexGL* t, RbGL* rb) {
+    std::map<GLuint, FbProf>::iterator it = gFbProfVk.find(fbo);
+    if (it != gFbProfVk.end()) {
+        if (it->second.vc == t->vista0 && it->second.vp == rb->v) return it->second.fb;
+        TirarFbProf(fbo);   // (la textura o el renderbuffer son otros)
+    }
+    VkImageView vs[2] = { t->vista0, rb->v };
+    VkFramebufferCreateInfo fi = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+    fi.renderPass = gRpDef; fi.attachmentCount = 2; fi.pAttachments = vs;
+    fi.width = (uint32_t)t->w; fi.height = (uint32_t)t->h; fi.layers = 1;
+    FbProf f; memset(&f, 0, sizeof(f));
+    if (vkCreateFramebuffer(gDev, &fi, 0, &f.fb) != VK_SUCCESS) return VK_NULL_HANDLE;
+    f.vc = t->vista0; f.vp = rb->v;
+    gFbProfVk[fbo] = f;
+    return f.fb;
+}
+void vkglGenRenderbuffers(GLsizei n, GLuint* r) {
+    for (int i = 0; i < n; i++) { RbGL* x = new RbGL(); memset(x, 0, sizeof(*x)); r[i] = gSigRb++; gRbs[r[i]] = x; }
+}
+void vkglDeleteRenderbuffers(GLsizei n, const GLuint* r) {
+    for (int i = 0; i < n; i++) {
+        std::map<GLuint, RbGL*>::iterator it = gRbs.find(r[i]);
+        if (!r[i] || it == gRbs.end()) continue;
+        for (std::map<GLuint, GLuint>::iterator f = gFboProf.begin(); f != gFboProf.end(); ++f)
+            if (f->second == r[i]) { if (f->first == gFboActual) TerminarPase(); TirarFbProf(f->first); f->second = 0; }
+        if (gListo) TirarRb(it->second);
+        delete it->second; gRbs.erase(it);
+        if (gRbActual == r[i]) gRbActual = 0;
+    }
+}
+void vkglBindRenderbuffer(GLenum, GLuint r) { gRbActual = r; }
+void vkglRenderbufferStorage(GLenum, GLenum, GLsizei w, GLsizei h) {
+    std::map<GLuint, RbGL*>::iterator it = gRbs.find(gRbActual);
+    if (it == gRbs.end() || !gListo || w <= 0 || h <= 0) return;
+    RbGL* r = it->second;
+    if (r->img && r->w == w && r->h == h) return;
+    for (std::map<GLuint, GLuint>::iterator f = gFboProf.begin(); f != gFboProf.end(); ++f)
+        if (f->second == gRbActual) { if (f->first == gFboActual) TerminarPase(); TirarFbProf(f->first); }
+    TirarRb(r);
+    if (!CrearImagen(gFmtProf, w, h, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+                     r->img, r->a, r->v)) { ErrorGL(GL_OUT_OF_MEMORY); r->img = VK_NULL_HANDLE; return; }
+    r->w = w; r->h = h;
+    // (en el layout de siempre, como la de la pantalla: el render pass la carga y la deja asi)
+    Barrera(CmdPre(), r->img, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+}
+void vkglFramebufferRenderbuffer(GLenum, GLenum adjunto, GLenum, GLuint r) {
+    if (!gFboActual || (adjunto != GL_DEPTH_ATTACHMENT && adjunto != 0x821A /*GL_DEPTH_STENCIL_ATTACHMENT*/)) return;
+    TerminarPase();
+    TirarFbProf(gFboActual);
+    if (r) gFboProf[gFboActual] = r; else gFboProf.erase(gFboActual);
 }
 GLenum vkglCheckFramebufferStatus(GLenum) {
     if (!gFboActual) return GL_FRAMEBUFFER_COMPLETE;
@@ -2287,6 +2375,15 @@ void VkGLTerminar() {
             delete t;
         }
         gTex.clear();
+        for (std::map<GLuint, FbProf>::iterator it = gFbProfVk.begin(); it != gFbProfVk.end(); ++it)
+            if (it->second.fb) vkDestroyFramebuffer(gDev, it->second.fb, 0);
+        gFbProfVk.clear(); gFboProf.clear();
+        for (std::map<GLuint, RbGL*>::iterator it = gRbs.begin(); it != gRbs.end(); ++it) {
+            if (it->second->v) vkDestroyImageView(gDev, it->second->v, 0);
+            if (it->second->img) vkDestroyImage(gDev, it->second->img, 0);
+            delete it->second;
+        }
+        gRbs.clear();
         if (gNegra) {
             if (gNegra->vista) vkDestroyImageView(gDev, gNegra->vista, 0);
             if (gNegra->img) vkDestroyImage(gDev, gNegra->img, 0);

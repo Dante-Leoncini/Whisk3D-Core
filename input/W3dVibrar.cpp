@@ -10,14 +10,19 @@
 //      todo esto vive detras de una API que promete poco.
 //  ANDROID: el vibrador del telefono por JNI, con el metodo vibrar(int) de la
 //  actividad del juego (lo genera Compilar juego).
-//  SYMBIAN/otros: el hueco esta listo (ver el #else) para engancharlo con la
-//  API de vibracion del sistema; los MANDOS vibran por W3dScriptMandosVibrarHook.
+//  SYMBIAN (S60 3ra edicion, el N95): el vibrador del telefono con CHWRMVibra
+//  (hwrmvibraclient.lib; no pide capacidades). Si el perfil tiene la vibracion
+//  apagada, el sistema no vibra y no pasa nada.
+//  ESCRITORIO/otros: solo los MANDOS (W3dScriptMandosVibrarHook).
 // ============================================================================
 #include "W3dVibrar.h"
 #include "W3dConfig.h"
 
 #ifdef __EMSCRIPTEN__
     #include <emscripten.h>
+#endif
+#ifdef W3D_SYMBIAN
+    #include <hwrmvibra.h>   // CHWRMVibra: el vibrador del telefono
 #endif
 #ifdef __ANDROID__
     #include <jni.h>
@@ -143,7 +148,41 @@ void VibrarMs(int ms, float fuerza) {
     if (W3dScriptMandosVibrarHook) W3dScriptMandosVibrarHook(ms, fuerza);   // (un mando conectado al telefono)
 }
 
-#else   // ---------------- escritorio / Symbian / consolas ----------------
+#elif defined(W3D_SYMBIAN)   // ---------------- Symbian: el vibrador del telefono ----------------
+static CHWRMVibra* gVibra = 0;
+static bool gVibraFallo = false;   // (no se pudo abrir: no se vuelve a intentar)
+static void VibrarSymbian(int ms, float fuerza) {
+    if (gVibraFallo || ms <= 0) return;
+    if (!gVibra) {
+        TRAPD(err, gVibra = CHWRMVibra::NewL());
+        if (err != KErrNone || !gVibra) { gVibra = 0; gVibraFallo = true; return; }
+    }
+    // la intensidad va de -100 a 100 (0 = la del perfil); un poco de fuerza siempre, que se sienta
+    if (fuerza < 0.0f) fuerza = 0.0f; if (fuerza > 1.0f) fuerza = 1.0f;
+    const TInt intensidad = (TInt)(30.0f + 70.0f * fuerza);
+    TRAPD(err2, gVibra->StartVibraL((TInt)ms, intensidad));
+    (void)err2;   // (perfil sin vibracion: KErrAccessDenied, se ignora)
+}
+void VibrarInit() {
+    if (gListo) return;
+    gListo = true;
+    ConfigLoad();
+    gActiva = ConfigGetInt("vibracion", 1) != 0;
+}
+void Vibrar(VibFuerza f) {
+    if (!gListo) VibrarInit();
+    if (!gActiva) return;
+    VibrarSymbian((f == VibGolpe) ? 32 : (f == VibToque ? 18 : 10), f == VibGolpe ? 1.0f : 0.6f);
+}
+bool VibrarDisponible() { if (!gListo) VibrarInit(); return !gVibraFallo; }
+void VibrarMs(int ms, float fuerza) {
+    if (!gListo) VibrarInit();
+    if (!gActiva || ms <= 0) return;
+    VibrarSymbian(ms, fuerza);
+    if (W3dScriptMandosVibrarHook) W3dScriptMandosVibrarHook(ms, fuerza);   // (un mando conectado al telefono)
+}
+
+#else   // ---------------- escritorio / consolas ----------------
 
 void VibrarInit() {
     if (gListo) return;
@@ -152,8 +191,7 @@ void VibrarInit() {
     gActiva = ConfigGetInt("vibracion", 1) != 0;
 }
 
-// Hueco a completar por plataforma: en Symbian con la API de vibracion del telefono, en
-// escritorio con el rumble del mando. Mientras tanto no hace nada y nadie se rompe.
+// En escritorio vibra el mando (el rumble); sin mando no hace nada y nadie se rompe.
 void Vibrar(VibFuerza /*f*/) { if (!gListo) VibrarInit(); }
 
 bool VibrarDisponible() { return W3dScriptMandosVibrarHook != 0; }

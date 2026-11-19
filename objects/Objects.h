@@ -175,6 +175,16 @@ class Object {
         // celda se cachea (escenario, cajas); false = DINAMICO (Crash, enemigos), se re-evalua su celda por
         // frame. Solo importa cuando el objeto cuelga de un GridCull (afuera se ignora). Default true.
         bool estatico;
+        // SOMBRAS EN TIEMPO REAL (main/render/SombrasTiempoReal.h), como el "Cast / Receive Shadows" de Unity: PROYECTA = tapa
+        // la luz (su forma va al mapa de sombras); RECIBE = se oscurece donde otro le tapa la luz. Default true los dos
+        bool proyectaSombra;
+        bool recibeSombra;
+        // LA LUZ PRECALCULADA (y el render con rayos): REBOTA = la luz que le llega rebota y alumbra lo de alrededor (la luz
+        // indirecta); apagado, los rayos de rebote le pasan de largo como si no estuviera (pero puede seguir proyectando
+        // sombra). CAPTADOR DE SOMBRAS = solo recibe: no tapa la luz ni la rebota, y al hornearlo su textura sale BLANCA con
+        // solo las sombras y la oclusion ambiental que le caen encima. Default: rebota, no es captador
+        bool rebotaLuz;
+        bool captaSombras;
         // SIN TRANSFORMACION: el recorrido no apila ni multiplica su matriz (la Rutina: solo ejecuta sus pasos)
         bool sinTransformacion;
         bool desplegado;

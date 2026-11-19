@@ -472,6 +472,12 @@ void MaterialShininess(float s) { if (s != matShine) { matShine = s; lucesSucias
 void MaterialPBR(float, float, float, float, bool) {}   // (pipeline fijo de la PSP: sin luz PBR)
 bool MaterialMapas(unsigned, unsigned, unsigned, unsigned, unsigned) { return false; }   // (sin shaders)
 void AmbienteSH(const float*, const float*) {}
+bool SombrasSoportadas() { return false; }   // (sin shaders: las sombras van por la CPU, SombrasTiempoReal.cpp)
+bool SombraMapaEmpezar(int, int) { return false; }
+void SombraMapaCaja(int, int, int, int) {}
+void SombraMapaTerminar() {}
+void SombraReceptores(const float*) {}
+void SombraRecibir(int) {}
 void Entorno(unsigned int, unsigned int, const float*) {}
 void EscenaCopiar(bool) {}
 bool GpuLimitada() { return false; }

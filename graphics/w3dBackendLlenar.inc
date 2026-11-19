@@ -79,6 +79,12 @@ void W3D_BACKEND_LLENAR(W3dBackendTabla& t) {
     t.MaterialPBR = &w3dEngine::W3D_BACKEND_NS::MaterialPBR;
     t.MaterialMapas = &w3dEngine::W3D_BACKEND_NS::MaterialMapas;
     t.AmbienteSH = &w3dEngine::W3D_BACKEND_NS::AmbienteSH;
+    t.SombrasSoportadas = &w3dEngine::W3D_BACKEND_NS::SombrasSoportadas;
+    t.SombraMapaEmpezar = &w3dEngine::W3D_BACKEND_NS::SombraMapaEmpezar;
+    t.SombraMapaCaja = &w3dEngine::W3D_BACKEND_NS::SombraMapaCaja;
+    t.SombraMapaTerminar = &w3dEngine::W3D_BACKEND_NS::SombraMapaTerminar;
+    t.SombraReceptores = &w3dEngine::W3D_BACKEND_NS::SombraReceptores;
+    t.SombraRecibir = &w3dEngine::W3D_BACKEND_NS::SombraRecibir;
     t.Entorno = &w3dEngine::W3D_BACKEND_NS::Entorno;
     t.EscenaCopiar = &w3dEngine::W3D_BACKEND_NS::EscenaCopiar;
     t.GpuLimitada = &w3dEngine::W3D_BACKEND_NS::GpuLimitada;

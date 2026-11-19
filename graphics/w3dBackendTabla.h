@@ -84,6 +84,12 @@ struct W3dBackendTabla {
     void (*MaterialPBR)(float metal, float rug, float f0, float trans, bool ssr);
     bool (*MaterialMapas)(unsigned normal, unsigned rugosidad, unsigned metalico, unsigned alfa, unsigned emision);
     void (*AmbienteSH)(const float* sh27, const float* ojoAMundo9);
+    bool (*SombrasSoportadas)();
+    bool (*SombraMapaEmpezar)(int w, int h);
+    void (*SombraMapaCaja)(int x, int y, int w, int h);
+    void (*SombraMapaTerminar)();
+    void (*SombraReceptores)(const float* datos);
+    void (*SombraRecibir)(int modo);
     void (*Entorno)(unsigned int tex, unsigned int texBorrosa, const float* ojoAImagen);
     void (*EscenaCopiar)(bool on);
     bool (*GpuLimitada)();
