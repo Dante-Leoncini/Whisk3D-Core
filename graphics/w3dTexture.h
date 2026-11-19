@@ -53,6 +53,10 @@ namespace w3dEngine {
     unsigned int UploadRGBA(const unsigned char* rgba, int w, int h,
                             bool filtrado = true, bool conMips = true,
                             bool forzarPOT = false, bool permitir16 = false);
+    // EL ALFA ES UN DATO, NO TRANSPARENCIA (la mascara del sol de la luz horneada, Materials.h TexLayer::mascaraSol):
+    // mientras esta prendido, UploadRGBA sube OPACO (alfa 255). Lo usa la carga donde ese dato no se usa (el pipeline
+    // fijo): la textura entra en 16 bits como siempre
+    void TexAlfaDescartar(bool on);
     // TEXTURAS DE 16 BITS del PROYECTO ("texturas16" en el .w3d): false (defecto) = solo las que entran sin perdida
     // visible; true = SIEMPRE 565 / 5551 (opacas y de alfa de un bit; hasta 4/255 de error por canal: la mitad de
     // memoria). Las de alfa con niveles quedan en 8 bits. Gobierna las cargas nuevas

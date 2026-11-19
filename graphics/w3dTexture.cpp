@@ -344,10 +344,19 @@ bool TextureSize(unsigned int id, int& w, int& h) {
 #define W3D_TEX_POT_RGBA 1
 #endif
 
+// EL ALFA QUE ES UN DATO (TexAlfaDescartar): mientras esta prendido, lo que se sube va OPACO
+static bool g_texAlfaDescartar = false;
+void TexAlfaDescartar(bool on) { g_texAlfaDescartar = on; }
 unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, bool conMips, bool forzarPOT,
                         bool permitir16) {
     if (!rgba || w <= 0 || h <= 0) {
         return 0;
+    }
+    static std::vector<unsigned char> opaca;
+    if (g_texAlfaDescartar) {   // (una copia con el alfa en 255: entra en 565 donde el alfa no se usa)
+        opaca.assign(rgba, rgba + (size_t)w * h * 4);
+        for (size_t i = 3; i < opaca.size(); i += 4) opaca[i] = 255;
+        rgba = &opaca[0];
     }
 #if defined(W3D_SYMBIAN) || defined(W3D_TEX_POT_RGBA)
 #ifdef W3D_TEX_POT_RGBA

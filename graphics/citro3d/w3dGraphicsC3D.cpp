@@ -542,6 +542,8 @@ void SombraMapaCaja(int, int, int, int) {}
 void SombraMapaTerminar() {}
 void SombraReceptores(const float*) {}
 void SombraRecibir(int) {}
+bool CapturaEmpezar(int, int) { return false; }   // (sin la imagen fuera de pantalla: la sonda de tiempo real no se dibuja)
+void CapturaTerminar() {}
 void Entorno(unsigned int, unsigned int, const float*) {}
 void EscenaCopiar(bool) {}
 bool GpuLimitada() { return false; }

@@ -90,6 +90,8 @@ struct W3dBackendTabla {
     void (*SombraMapaTerminar)();
     void (*SombraReceptores)(const float* datos);
     void (*SombraRecibir)(int modo);
+    bool (*CapturaEmpezar)(int w, int h);
+    void (*CapturaTerminar)();
     void (*Entorno)(unsigned int tex, unsigned int texBorrosa, const float* ojoAImagen);
     void (*EscenaCopiar)(bool on);
     bool (*GpuLimitada)();

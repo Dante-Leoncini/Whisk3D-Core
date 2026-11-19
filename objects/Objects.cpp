@@ -192,10 +192,11 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
       estatico(true),   // por defecto NO se mueve en runtime (convencion RenderWare); el juego marca dinamicos a Crash/enemigos
       proyectaSombra(true), recibeSombra(true),   // (las sombras en tiempo real: como Unity, las dos prendidas)
       rebotaLuz(true), captaSombras(false),       // (la luz precalculada: rebota y no es captador de sombras)
+      enSondas(true),                             // (lo ven las sondas de reflejo y de luz)
       sinTransformacion(false),
       desplegado(true),
       showRelantionshipsLines(true),
-      posadoPorCurvas(false),   // nace en reposo: nadie lo poso todavia
+      posadoPorCurvas(false), posadoPorClip(false),   // nace en reposo: nadie lo poso todavia
       select(false), // Seleccionar() al final lo deja seleccionado
       name(nombre),
       pos(Pos),
@@ -1403,6 +1404,7 @@ const char* W3dNombreTipo(ObjectType t){
         case ObjectType::sonido:     return "sonido";
         case ObjectType::postproceso: return "postproceso";
         case ObjectType::sondaluz:   return "sondaluz";
+        case ObjectType::sondareflejo: return "sondareflejo";
     }
     return "objeto";
 }

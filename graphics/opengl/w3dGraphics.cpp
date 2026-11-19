@@ -1210,6 +1210,8 @@ void SombraMapaCaja(int, int, int, int) {}
 void SombraMapaTerminar() {}
 void SombraReceptores(const float*) {}
 void SombraRecibir(int) {}
+bool CapturaEmpezar(int, int) { return false; }   // (sin la imagen fuera de pantalla: la sonda de tiempo real no se dibuja)
+void CapturaTerminar() {}
 void Entorno(unsigned int, unsigned int, const float*) {}   // (sin shaders: el cielo es la esfera texturada)
 void EscenaCopiar(bool) {}   // (sin shaders: el vidrio es mezcla)
 bool GpuLimitada() { return false; }

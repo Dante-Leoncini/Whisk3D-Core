@@ -343,7 +343,8 @@ W3D_BACKEND_CERRAR
     // SombraReceptores (SombraDatosN floats; NULL = sin sombras en este pase) y SombraRecibir(modo) por material: 0 no las
     // recibe; 1 con la luz de tiempo real (la luz que da sombra no llega donde algo la tapa); 2 sobre la luz HORNEADA (el
     // color se oscurece solo donde lo tapa algo que SE MUEVE: la sombra de lo estatico ya esta en la textura horneada, como
-    // el "Subtractive" de Unity). Al dibujar el mapa, el ALFA del color (Color4f) dice si lo que se dibuja se mueve (1). false / nada en los backends sin shaders (el GL fijo y GL ES 1.1, la PSP, la
+    // el "Shadowmask" de Unity). El mapa guarda DOS profundidades: la MASCARA DE COLOR elige cual se escribe (RG: todo lo que
+    // proyecta; BA: solo lo que se mueve, en una pasada aparte con el z-buffer limpio). false / nada en los backends sin shaders (el GL fijo y GL ES 1.1, la PSP, la
     // 3DS): ahi las sombras las arma SombrasTiempoReal.cpp con la CPU. Los datos:
     //   [0..63]  4 matrices (por columnas) OJO -> (u, v, profundidad) del mapa, una por cascada
     //   [64..79] el rectangulo de cada cascada en el mapa (u0, v0, u1, v1)
@@ -361,6 +362,12 @@ W3D_BACKEND_ABRIR
     void SombraMapaTerminar();
     void SombraReceptores(const float* datos);
     void SombraRecibir(int modo);
+    // DIBUJAR FUERA DE LA PANTALLA (la sonda de reflejo de tiempo real: sus 6 caras): CapturaEmpezar arma una imagen de
+    // w x h (RGBA + profundidad) y desde ahi todo se dibuja ahi -el viewport es toda la imagen, sin recorte- hasta
+    // CapturaTerminar, que vuelve a la pantalla como estaba (viewport, recorte y color de borrado). ReadPixelsRGBA, en el
+    // medio, lee la imagen. false: este backend no puede (los sin shaders) o la GPU es chica (un programa por draw)
+    bool CapturaEmpezar(int w, int h);
+    void CapturaTerminar();
     // EL ENTORNO (el fondo como textura 360) para la luz PBR por pixel: 'tex' la imagen, 'texBorrosa' una copia chica y
     // borrosa (la luz difusa y los reflejos rugosos; 0 = la misma) y 'ojoAImagen' la matriz 3x3 (filas) que pasa una
     // direccion del OJO a la de la imagen (la vista invertida y la rotacion del fondo). tex = 0: sin entorno. Los
@@ -788,6 +795,8 @@ W3D_BACKEND_CERRAR
     // true SOLO durante el render FINAL (la foto/los pases): los objetos con
     // renderizable=false se saltean (en el viewport se ven igual)
     extern bool w3dRenderFinal;
+    // dibujando las caras de una SONDA DE REFLEJO de tiempo real: lo que no sale en las sondas (Object::enSondas) no se dibuja
+    extern bool w3dPaseSonda;
 
     // PASE DE ESPEJO: true mientras el Mirror dibuja el reflejo. El material de
     // la malla NO puede decidir el z-test durante ese pase (el espejo ya lo

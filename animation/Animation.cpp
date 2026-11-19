@@ -1281,6 +1281,8 @@ static void AplicarCurvasJuegoCanales(Object* o, std::vector<AnimProperty>& prop
         // (solo mallas y vacios: una camara o una luz ocultas pueden seguir en uso)
         if (!o->visible && (o->getType() == ObjectType::mesh || o->getType() == ObjectType::empty)) return;
     }
+    if ((hayP && (transform & kCanalPos)) || (hayS && (transform & kCanalEsc)) || (hayR && (transform & kCanalRot)) || hayRnd)
+        o->posadoPorClip = true;   // (lo que escribe un clip no es un cambio del usuario: ver Object::posadoPorClip)
     if (hayP && (transform & kCanalPos)) o->pos   = EvalPropVecF(props, AnimPosition, fr, o->pos);
     if (hayS && (transform & kCanalEsc)) o->scale = EvalPropVecF(props, AnimScale,    fr, o->scale);
     if (hayR && (transform & kCanalRot)) { Vector3 e = EvalPropVecF(props, AnimRotation, fr, o->rotEuler); o->SetRotEuler(e); }
@@ -1743,6 +1745,7 @@ static void AplicarRaiz(W3dAnimObjetoSonando& s, std::vector<AnimProperty>& prop
         }
     }
     if (rot) o->SetRotEuler(e);
+    o->posadoPorClip = true;   // (ver Object::posadoPorClip)
 }
 // los canales de transformacion (bits de W3dCanalesPosados) que tienen curva en 'props', de los que 'canales'
 // (kCanal*) deja aplicar

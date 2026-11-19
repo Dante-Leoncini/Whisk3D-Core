@@ -83,7 +83,8 @@ struct ObjectType {
                         // posicional (3D, desde donde esta) o como musica (main/objects/Sonido.h)
         postproceso,    // POSTPROCESADO puesto en el arbol: sus efectos se aplican a lo ya dibujado en ese punto
                         // (main/objects/PostprocesoObj.h)
-        sondaluz        // SONDA DE LUZ: una grilla de puntos con la luz indirecta horneada (main/objects/SondaLuz.h)
+        sondaluz,       // SONDA DE LUZ: una grilla de puntos con la luz indirecta horneada (main/objects/SondaLuz.h)
+        sondareflejo    // SONDA DE REFLEJO: una imagen 360 horneada desde un lugar, para los reflejos (main/objects/SondaReflejo.h)
     };
     Enum v;
     ObjectType(Enum e) : v(e) {}
@@ -185,6 +186,9 @@ class Object {
         // solo las sombras y la oclusion ambiental que le caen encima. Default: rebota, no es captador
         bool rebotaLuz;
         bool captaSombras;
+        // SALE EN LAS SONDAS (de reflejo -la horneada y la de tiempo real- y de luz): apagado, la sonda no lo ve. Para la
+        // sonda que va ADENTRO de algo (la de un auto, que lo sigue): sin esto, desde adentro se ve la carroceria (negro)
+        bool enSondas;
         // SIN TRANSFORMACION: el recorrido no apila ni multiplica su matriz (la Rutina: solo ejecuta sus pasos)
         bool sinTransformacion;
         bool desplegado;
@@ -197,6 +201,9 @@ class Object {
         // nunca aplico (el timeline no estaba en su animacion) se movia A MANO, y el guardado
         // escribia el cuadro base en vez del movimiento. Ver ReposoAnimObjetos (main/io/GuardarW3D.cpp).
         bool posadoPorCurvas;
+        // UN CLIP (de jerarquia, del juego) le escribio la transformacion en esta sesion: lo que tiene no es un cambio del
+        // usuario. Los overrides de lo que genera un prefab o un proxy no la toman (io/Prefabs.cpp)
+        bool posadoPorClip;
         bool select;
         std::string name;
 

@@ -94,7 +94,11 @@ class TexLayer {
         bool horneada;  // LUZ HORNEADA (la tarjeta "Bake Lighting"): la textura ya tiene la luz. Mientras esta capa este
                         // prendida el material se dibuja SIN la luz de tiempo real (se sumaria dos veces); sacarla o
                         // apagarla devuelve la luz sola (Material::LuzTiempoReal)
-        TexLayer() : tex(NULL), blend(0), uvMapa(0), on(true), fuerza(1.0f), horneada(false) {}
+        bool mascaraSol;   // (horneada) el ALFA de la textura es CUANTO de la luz de cada texel es la luz directa del SOL
+                           // (como el "Shadowmask" de Unity): la sombra en tiempo real de lo que se mueve le saca solo eso
+                           // y deja la del ambiente y los rebotes, igual que la sombra horneada (se juntan sin costura).
+                           // Sin la mascara (un horneado de antes) la sombra baja hasta el ambiente, sin pasarse
+        TexLayer() : tex(NULL), blend(0), uvMapa(0), on(true), fuerza(1.0f), horneada(false), mascaraSol(false) {}
 };
 
 // LOS MAPAS del material (la tarjeta Material de Properties, de arriba a abajo): el color base, el normal map y los del
@@ -161,6 +165,8 @@ class Material {
         int  reflectMode; // 0 = Matcap (normal-del-ojo, matriz de textura, HARDWARE en PC y N95; rapido)
                           // 1 = Sphere Map exacto (GL_SPHERE_MAP: HARDWARE en PC via texgen, SOFTWARE en N95)
                           // 2 = Equirectangular 360 (SOFTWARE, calidad). (VGP exacto por HW = futuro, falta API de IMG)
+        bool reflejoSonda; // el reflejo es el de LA SONDA DE REFLEJO MAS CERCANA (main/objects/SondaReflejo.h): cada malla
+                           // toma la imagen 360 de la sonda de su lugar (en vez de la textura). Clave: "reflejoSonda"
         bool normalMap;   // NORMAL MAPPING (DOT3): la textura 'normalTexture' perturba la normal por pixel.
                           // Multi-pass: base * (N.L). Excluyente con chrome (mismo combiner). Portable PC+N95.
         Texture* normalTexture; // el normal map (RGB = normal en tangent-space)

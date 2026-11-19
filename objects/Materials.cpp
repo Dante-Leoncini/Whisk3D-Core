@@ -78,7 +78,7 @@ Material::Material(const std::string& nombre, bool MaterialDefectoFlag, bool Tie
       uv8bit(false), culling(true), depth_test(true), fondo(false),
       depth_write(true), depth_bias(0.0f), sesgo_metros(0.0f), orden_pasada(0), mezcla(0), alphaTest(0.0f),
       rtRugosidad(0.5f), rtMetalico(0.0f),
-      chrome(false), reflectMode(0),
+      chrome(false), reflectMode(0), reflejoSonda(false),
       normalMap(false), normalTexture(NULL), texturaB(NULL), mezclaB(0.0f), toon(0), contorno(0.0f),
       porPixel(false), luzIndirecta(false), lineas(false), grosorLinea(1.0f),
       interpolacion(0), texture(NULL), shininess(12.0f) { // interpolacion 0 = lineal (suave), 1 = closest (pixel); igual en TODOS los sistemas

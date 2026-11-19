@@ -349,7 +349,7 @@ static float blurY = 0.0f;
 static float alphaRef = 0.0f;
 static int   alfaAbajo = 0;
 static GLint uMDiff,uMAmb,uMSpec,uMEmis,uShine,uAmbGlobal,uNLuces,uLPos,uLAmb,uLDif,uLSpec,uLAtt,uLCono,uMPbr,uEnvTex,uEnvTexB,uEnvF0,uEnvF1,uEnvF2,uEscena,uEscenaVp,uMExtra,uEscenaZ,uProj,uEscenaZOn,uMapN,uMapR,uMapM,uMapA,uMapE,uMapOn,uMapEOn,uSHa,uSHb,uSHc,uSHOn,uOjoMundo,
-    uSomLuzV,uSomNV,uSomCV,uSomOn,uSomLuz,uSomTex,uSomM0,uSomM1,uSomM2,uSomM3,uSomCaja0,uSomCaja1,uSomCaja2,uSomCaja3,uSomCortes,uSomRad,uSomP,uSomQ,uSomHorn,uSomRV;
+    uSHaV,uSHbV,uSHcV,uSHOnV,uOjoMundoV,uSomLuzV,uSomNV,uSomCV,uSomOn,uSomLuz,uSomTex,uSomM0,uSomM1,uSomM2,uSomM3,uSomCaja0,uSomCaja1,uSomCaja2,uSomCaja3,uSomCortes,uSomRad,uSomP,uSomQ,uSomHorn,uSomRV,uSomColor,uSomHornModo,uSomPiso;
 static GLint uFogColor,uFogStart,uFogEnd,uFogModo,uFogDens;
 // los atributos, en lugares fijos (los mismos en todos los programas, ver linkear)
 static const GLint aLpos=0, aLnrm=1, aLuv=2, aLcol=3, aLuv1=4;
@@ -392,6 +392,15 @@ static const char* VS =
 "#ifdef W3D_SOMBRA\n"
 "uniform int uSomLuzV; uniform vec4 uSomNV; uniform vec4 uSomCV; uniform float uSomRV;\n"
 "varying vec3 vSomP; varying vec3 vSomC;\n"
+"#endif\n"
+// LA SONDA DE LUZ CON LA LUZ POR VERTICE (W3D_SH_V): la misma cuenta que el fragment shader (SHEval) en cada vertice,
+// con otros nombres (los del FS tienen otra precision). La luz de la sonda segun hacia donde mira la normal, sobre el
+// color difuso: sin esto un material comun (por vertice) solo recibia el promedio por su ambiente (un 30%)
+"#if defined(W3D_SH_V) && defined(W3D_LUZ) && !defined(W3D_LUZ_PIXEL)\n"
+"uniform vec4 uSHaV[3]; uniform vec4 uSHbV[3]; uniform vec4 uSHcV[3]; uniform float uSHOnV; uniform mat3 uOjoMundoV;\n"
+"vec3 SHEvalV(vec3 n){ return uSHaV[0].xyz*0.282095+uSHaV[1].xyz*(0.488603*n.y)+uSHaV[2].xyz*(0.488603*n.z)"
+"+uSHbV[0].xyz*(0.488603*n.x)+uSHbV[1].xyz*(1.092548*n.x*n.y)+uSHbV[2].xyz*(1.092548*n.y*n.z)"
+"+uSHcV[0].xyz*(0.315392*(3.0*n.z*n.z-1.0))+uSHcV[1].xyz*(1.092548*n.x*n.z)+uSHcV[2].xyz*(0.546274*(n.x*n.x-n.y*n.y)); }\n"
 "#endif\n"
 "attribute vec3 aPos; attribute vec3 aNrm; attribute vec4 aUV; attribute vec4 aCol; attribute vec2 aUV1;\n"
 "varying vec3 vP; varying vec2 vT; varying vec2 vT1; varying vec4 vC; varying float vFogZ;\n"
@@ -456,6 +465,9 @@ static const char* VS =
 "  if(uLightOn==1){\n"
 "    vec4 md=(uColorMat==1)?aCol:uMDiff; vec4 ma=(uColorMat==1)?aCol:uMAmb;\n"   // COLOR_MATERIAL = AMBIENT_AND_DIFFUSE
 "    vec3 acc=uMEmis.rgb+ma.rgb*uAmbGlobal.rgb;\n"
+"#ifdef W3D_SH_V\n"   // (una sonda de luz manda sobre el ambiente, como en la luz por pixel)
+"    if(uSHOnV>0.5) acc=uMEmis.rgb+md.rgb*max(SHEvalV(normalize(uOjoMundoV*N)),vec3(0.0));\n"
+"#endif\n"
 // las luces una por una (LUCES = LUZ(0) LUZ(1) ..., ver DefsPrograma) y no con un for: el compilador del driver Broadcom
 // (VideoCore IV, Android 2.3) desenrolla mal ese for y no linkea el programa ("Indexing with an integral constant
 // expression greater than declared size"). La macro va en UNA linea (sin \n entre los pedazos): GLSL ES 1.00 no
@@ -514,11 +526,18 @@ static const char* FS =
 "uniform W3D_ALTA mat4 uSomM0; uniform W3D_ALTA mat4 uSomM1; uniform W3D_ALTA mat4 uSomM2; uniform W3D_ALTA mat4 uSomM3;\n"
 "uniform W3D_ALTA vec4 uSomCaja0; uniform W3D_ALTA vec4 uSomCaja1; uniform W3D_ALTA vec4 uSomCaja2; uniform W3D_ALTA vec4 uSomCaja3;\n"
 "uniform W3D_ALTA vec4 uSomCortes; uniform vec4 uSomRad; uniform W3D_ALTA vec4 uSomP; uniform W3D_ALTA vec4 uSomQ;\n"
-"uniform float uSomHorn;\n"   // 1 = sobre la luz HORNEADA: solo tapa lo que se mueve (el alfa del mapa)
+"uniform float uSomHorn;\n"   // 1 = sobre la luz HORNEADA: solo tapa lo que se mueve (la profundidad de BA)
+// (y DONDE esta la luz horneada: 1 = no se sabe -se oscurece el color-, 2 = en la unidad 1, 3 / 4 = es lo que dibuja esta
+//  pasada, Multiply / Multiply 2x. Piso: rgb hasta donde baja sin mascara -el ambiente mas el color-, a = hay mascara)
+"uniform float uSomHornModo; uniform vec4 uSomPiso;\n"
+"uniform vec4 uSomColor;\n"   // el COLOR de la sombra (negro = sin luz; azulado = la luz del cielo que llega igual)
 "varying W3D_ALTA vec3 vSomP; varying vec3 vSomC;\n"
-// la luz en un texel: la profundidad en RGB (24 bits) y en el alfa si lo que la tapa se mueve (1) o es estatico (0)
-"float SomLuz(W3D_ALTA vec2 uv,W3D_ALTA float z){ vec4 t=texture2D(uSomTex,uv);"
-" return max(step(z,dot(t.rgb,vec3(1.0,1.0/255.0,1.0/65025.0))),uSomHorn*(1.0-t.a)); }\n"
+// la luz en un texel: DOS profundidades de 16 bits. RG: lo mas cercano al sol de todo lo que proyecta; BA: lo mas cercano
+// de lo que SE MUEVE (su pasada aparte, SombrasTiempoReal). Sobre la luz horneada cuenta solo BA: la sombra de lo
+// estatico ya esta en la textura, y si lo estatico tapaba a lo que se mueve (un solo valor: el mas cercano) la sombra de
+// lo que se mueve desaparecia ahi y asomaba la penumbra horneada con el borde duro del mapa
+"W3D_ALTA float SomZ(vec4 t){ return dot((uSomHorn>0.5)?t.ba:t.rg,vec2(1.0,1.0/255.0)); }\n"
+"float SomLuz(W3D_ALTA vec2 uv,W3D_ALTA float z){ return step(z,SomZ(texture2D(uSomTex,uv))); }\n"
 // el filtro de 2x2 con los pesos de la interpolacion bilineal (como el PCF de las GPU con textura de profundidad), sin
 // salirse del rectangulo de la cascada
 "float SomPCF(W3D_ALTA vec2 uv,W3D_ALTA float z,W3D_ALTA vec4 caja){\n"
@@ -528,27 +547,74 @@ static const char* FS =
 "  float s0=SomLuz(clamp(b,lo,hi),z); float s1=SomLuz(clamp(b+vec2(d.x,0.0),lo,hi),z);\n"
 "  float s2=SomLuz(clamp(b+vec2(0.0,d.y),lo,hi),z); float s3=SomLuz(clamp(b+d,lo,hi),z);\n"
 "  return mix(mix(s0,s1,f.x),mix(s2,s3,f.x),f.y); }\n"
-// una cascada: con desenfoque (las lejanas), 4 filtros de 2x2 en una grilla girada de ese radio
-"float SomCascada(W3D_ALTA mat4 M,W3D_ALTA vec4 caja,float rad){\n"
+// LA PENUMBRA DE CONTACTO (PCSS, la de NVIDIA): donde la sombra toca lo que la proyecta es NITIDA y se va difuminando a
+// medida que se aleja (la base de un poste nitida, la punta de su sombra borrosa), como la de un sol que no es un punto.
+// 1) se busca alrededor (3 x 3, hasta la penumbra maxima) la profundidad promedio de lo que TAPA la luz; 2) la penumbra
+// es esa distancia (receptor - lo que tapa) por k (los texeles de penumbra por unidad de profundidad: el tamanio del sol);
+// 3) el filtro de 2x2 en 8 lugares de un anillo de ese radio. k = 0: la sombra de siempre (nitida o con el 2x2)
+"W3D_ALTA float SomBloq(W3D_ALTA vec2 uv,W3D_ALTA float z,W3D_ALTA vec4 caja,float r){\n"
+"  W3D_ALTA vec2 d=1.0/uSomP.xy; W3D_ALTA vec2 lo=caja.xy+0.5*d; W3D_ALTA vec2 hi=caja.zw-0.5*d;\n"
+"  W3D_ALTA float acc=0.0; float n=0.0;\n"
+"  for(int j=-1;j<=1;j++) for(int i=-1;i<=1;i++){\n"
+"    W3D_ALTA float zb=SomZ(texture2D(uSomTex,clamp(uv+vec2(float(i),float(j))*r*d,lo,hi)));\n"
+"    float c=step(zb,z);\n"
+"    acc+=zb*c; n+=c; }\n"
+"  return (n>0.0)?acc/n:-1.0; }\n"
+// la penumbra ancha: 16 muestras en un disco de Poisson GIRADO al azar en cada pixel (sin el giro se veian copias
+// escalonadas de la sombra; con el, un granulado fino que se funde)
+"float SomDisco(W3D_ALTA vec2 uv,W3D_ALTA float z,W3D_ALTA vec4 caja,float rad){\n"
+"  W3D_ALTA vec2 d=1.0/uSomP.xy; W3D_ALTA vec2 lo=caja.xy+0.5*d; W3D_ALTA vec2 hi=caja.zw-0.5*d;\n"
+"  float a=6.2831853*fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453);\n"
+"  vec2 cs=vec2(cos(a),sin(a)); W3D_ALTA vec2 o=rad*d; float s=0.0;\n"
+"#define SPD(pa,pb) s+=SomLuz(clamp(uv+vec2(cs.x*(pa)-cs.y*(pb),cs.y*(pa)+cs.x*(pb))*o,lo,hi),z);\n"
+"  SPD(-0.9420,-0.3991)\n"
+"  SPD(0.9456,-0.7689)\n"
+"  SPD(-0.0942,-0.9294)\n"
+"  SPD(0.3450,0.2939)\n"
+"  SPD(-0.9159,0.4577)\n"
+"  SPD(-0.8154,-0.8791)\n"
+"  SPD(-0.3828,0.2768)\n"
+"  SPD(0.9748,0.7565)\n"
+"  SPD(0.4432,-0.9751)\n"
+"  SPD(0.5374,-0.4737)\n"
+"  SPD(-0.2650,-0.4189)\n"
+"  SPD(0.7920,0.1909)\n"
+"  SPD(-0.2419,0.9971)\n"
+"  SPD(-0.8141,0.9144)\n"
+"  SPD(0.1998,0.7864)\n"
+"  SPD(0.1438,-0.1410)\n"
+"  return s*0.0625; }\n"
+"float SomCascada(W3D_ALTA mat4 M,W3D_ALTA vec4 caja,float k){\n"
 "  W3D_ALTA vec3 s=(M*vec4(vSomP,1.0)).xyz;\n"
 "  if(s.z>=1.0) return 1.0;\n"
 "  W3D_ALTA float z=s.z-uSomQ.z;\n"
-"  if(rad<0.5) return SomPCF(s.xy,z,caja);\n"
-"  W3D_ALTA vec2 o=rad/uSomP.xy;\n"
-"  return 0.25*(SomPCF(s.xy+vec2(-0.4,-1.0)*o,z,caja)+SomPCF(s.xy+vec2(1.0,-0.4)*o,z,caja)"
-"+SomPCF(s.xy+vec2(0.4,1.0)*o,z,caja)+SomPCF(s.xy+vec2(-1.0,0.4)*o,z,caja)); }\n"
+"  if(k<=0.0 || uSomQ.y<0.5) return SomPCF(s.xy,z,caja);\n"
+"  W3D_ALTA float zb=SomBloq(s.xy,z,caja,uSomQ.y*0.5);\n"
+"  if(zb<0.0) return SomPCF(s.xy,z,caja);\n"
+"  float rad=min((z-zb)*k,uSomQ.y);\n"
+"  if(rad<0.75) return SomPCF(s.xy,z,caja);\n"
+"  return mix(SomPCF(s.xy,z,caja),SomDisco(s.xy,z,caja,rad),clamp(rad-0.75,0.0,1.0)); }\n"
 // la luz que llega (1 = toda, 0 = sombra entera por la intensidad): la cascada de su distancia y el BORDE (se desvanece
 // hasta la distancia maxima, sin un corte)
 "float Sombra(){\n"
 "  W3D_ALTA float dz=-vSomP.z; float s;\n"
 "  if(dz>=uSomP.w) return 1.0;\n"
-"  float fr=dz/uSomP.w;\n"   // (el desenfoque crece con la distancia)
-"  if(dz<uSomCortes.x) s=SomCascada(uSomM0,uSomCaja0,uSomRad.x*fr);\n"
-"  else if(dz<uSomCortes.y) s=SomCascada(uSomM1,uSomCaja1,uSomRad.y*fr);\n"
-"  else if(dz<uSomCortes.z) s=SomCascada(uSomM2,uSomCaja2,uSomRad.z*fr);\n"
-"  else s=SomCascada(uSomM3,uSomCaja3,uSomRad.w*fr);\n"
-"  s=mix(s,1.0,clamp((dz-uSomP.z)/max(uSomP.w-uSomP.z,1e-4),0.0,1.0));\n"
-"  return 1.0-uSomQ.x*(1.0-s); }\n"
+"  if(dz<uSomCortes.x) s=SomCascada(uSomM0,uSomCaja0,uSomRad.x);\n"
+"  else if(dz<uSomCortes.y) s=SomCascada(uSomM1,uSomCaja1,uSomRad.y);\n"
+"  else if(dz<uSomCortes.z) s=SomCascada(uSomM2,uSomCaja2,uSomRad.z);\n"
+"  else s=SomCascada(uSomM3,uSomCaja3,uSomRad.w);\n"
+"  return mix(s,1.0,clamp((dz-uSomP.z)/max(uSomP.w-uSomP.z,1e-4),0.0,1.0)); }\n"
+// la luz que queda en la sombra: de toda (1) al COLOR de la sombra, por la intensidad. 'piso' = lo que queda de la luz
+// sobre la luz HORNEADA (la indirecta tambien esta en la textura: un 25% aunque la sombra sea negra)
+"vec3 SomF(float s,float piso){ return mix(vec3(1.0),piso+(1.0-piso)*uSomColor.rgb,uSomQ.x*(1.0-s)); }\n"
+// LA SOMBRA DE LO QUE SE MUEVE SOBRE LA LUZ HORNEADA (como el "Shadowmask" de Unity): L es la luz de la textura horneada
+// en el texel y 'a' su MASCARA DEL SOL (el alfa: que fraccion de L es la directa del sol). La sombra le saca solo esa
+// parte (tenida por el color, por la intensidad): queda la luz del ambiente y de los rebotes, la misma que hay en la
+// sombra horneada, y donde las dos se tocan no hay costura ni se oscurece dos veces. Sin mascara (un horneado de antes)
+// baja hasta el PISO -el ambiente- sin pasarse: lo que ya estaba mas oscuro (la sombra horneada) no se toca
+"vec3 SomHornL(vec3 L,float a){ float q=uSomQ.x*(1.0-Sombra());\n"
+"  if(uSomPiso.a>0.5) return L*(vec3(1.0)-a*q*(vec3(1.0)-uSomColor.rgb));\n"
+"  return min(L,mix(L,uSomPiso.rgb,q)); }\n"
 "#endif\n"
 "varying vec3 vP; varying vec2 vT; varying vec2 vT1; varying vec4 vC; varying float vFogZ;\n"
 "varying W3D_ALTA vec2 vCentro; varying W3D_ALTA float vTam;\n"
@@ -627,7 +693,7 @@ static const char* FS =
 "#endif\n"
 "  vec4 cPrim = vC;\n"  // el color primario: la luz por vertice (interpolada), o el color del vertice
 "#if defined(W3D_SOMBRA) && !defined(W3D_LUZ_PIXEL)\n"   // (la luz que da sombra vino aparte: por la sombra)
-"  cPrim.rgb=min(cPrim.rgb+vSomC*((uSomOn>0.5)?Sombra():1.0),1.0);\n"
+"  cPrim.rgb=min(cPrim.rgb+vSomC*((uSomOn>0.5)?SomF(Sombra(),0.0):vec3(1.0)),1.0);\n"
 "#endif\n"
 "#if defined(W3D_LUZ_PIXEL) && defined(W3D_PBR)\n"
 "  vec3 brilloPbr=vec3(0.0);\n"   // el brillo PBR va DESPUES de la textura (no lo apaga una textura oscura)
@@ -683,19 +749,19 @@ static const char* FS =
 "    vec3 ambPbr=uAmbGlobal.rgb;\n"
 "#define LUZ_BRILLO(i) if(pbr){ W3D_ALTA vec3 Hh=normalize(L+V); float nh=max(dot(N,Hh),0.0); float vh=max(dot(V,Hh),0.0);"
 " vec3 fl=f0B+(vec3(1.0)-f0B)*((mp.z>0.0 || mp.x>0.0)?pow(1.0-vh,5.0):0.0);"
-" brilloPbr+=at*fl*uLSpec[i].rgb*(pesoB*pow(nh,expo)*(expo+2.0)*0.125*ndl); }"
+" brilloPbr+=at*tinte*fl*uLSpec[i].rgb*(pesoB*pow(nh,expo)*(expo+2.0)*0.125*ndl); }"
 " else { float nh=max(dot(N,normalize(L+vec3(0.0,0.0,1.0))),0.0); col1+=uMSpec.rgb*uLSpec[i].rgb*((uShine>0.0)?pow(nh,uShine):1.0); }\n"
 "#else\n"   // (sin PBR: la luz de siempre)
 "    const float kd=1.0;\n"
 "#define LUZ_BRILLO(i) { float nh=max(dot(N,normalize(L+vec3(0.0,0.0,1.0))),0.0); col1+=uMSpec.rgb*uLSpec[i].rgb*((uShine>0.0)?pow(nh,uShine):1.0); }\n"
 "#endif\n"
 "#ifdef W3D_SOMBRA\n"   // (la luz que da sombra, por la sombra: la del ambiente de la luz tambien)
-"    float sombra=(uSomOn>0.5)?Sombra():1.0;\n"
-"#define SOMBRA_LUZ(i) if(i==uSomLuz) at*=sombra;\n"
+"    vec3 sombra=(uSomOn>0.5)?SomF(Sombra(),0.0):vec3(1.0);\n"
+"#define SOMBRA_LUZ(i) if(i==uSomLuz) tinte=sombra;\n"
 "#else\n"
 "#define SOMBRA_LUZ(i)\n"
 "#endif\n"
-"#define LUZ(i) if(i<uNLuces){ W3D_ALTA vec3 L; float at=1.0;"
+"#define LUZ(i) if(i<uNLuces){ W3D_ALTA vec3 L; float at=1.0; vec3 tinte=vec3(1.0);"
 "      if(uLPos[i].w!=0.0){ W3D_ALTA vec3 d=uLPos[i].xyz/uLPos[i].w-eye; float dist=length(d); L=d/max(dist,1e-6);"
 "        at=1.0/max(uLAtt[i].x+uLAtt[i].y*dist+uLAtt[i].z*dist*dist,1e-6); }"
 "      else L=normalize(uLPos[i].xyz);"
@@ -704,7 +770,7 @@ static const char* FS =
 "      float ndl=max(dot(N,L),0.0);"
 "      vec3 col1=ma.rgb*uLAmb[i].rgb+md.rgb*uLDif[i].rgb*ndl*kd;"
 "      if(ndl>0.0){ LUZ_BRILLO(i) }"
-"      acc+=at*col1; }\n"
+"      acc+=at*col1*tinte; }\n"
 "    LUCES\n"
 // EL ENTORNO 360: la luz difusa (la imagen borrosa en la direccion de la normal) y el reflejo (en la direccion
 // reflejada; mas rugoso, mas borroso), con el mismo Fresnel y el mismo tinte del metal que el brillo de las luces
@@ -873,13 +939,17 @@ static const char* FS =
 "  }\n"
 "#else\n"
 "  if(uMezcla>=0){ vec4 b=texture2D(uTex1,vT1);\n"   // la unidad 1 sobre lo que salio de la 0 (el alfa no cambia)
+"#ifdef W3D_SOMBRA\n"   // (la luz horneada en la unidad 1: la sombra de lo que se mueve, sobre ella)
+"    if(uSomHornModo>1.5 && uSomHornModo<2.5 && uMezcla>=1 && uMezcla<=2){ float k=(uMezcla==2)?2.0:1.0; b.rgb=SomHornL(b.rgb*k,b.a)/k; }\n"
+"#endif\n"
 "    if(uMezcla==0) col.rgb=mix(col.rgb,b.rgb,uMezclaK);\n"
 "    else if(uMezcla==3) col.rgb=max(col.rgb-b.rgb,0.0);\n"
 "    else col.rgb=min(col.rgb*b.rgb*((uMezcla==2)?2.0:1.0),1.0); }\n"
 "#endif\n"
 "#endif\n"
-"#ifdef W3D_SOMBRA\n"   // (sobre la luz HORNEADA: la sombra de lo que se mueve oscurece el color hasta un 75%: la luz
-"  if(uSomHorn>0.5) col.rgb*=1.0-0.75*(1.0-Sombra());\n"   //  indirecta tambien esta en la textura y en la sombra queda)
+"#ifdef W3D_SOMBRA\n"   // (sobre la luz HORNEADA: esta pasada ES la textura horneada -3 / 4- o no se sabe donde esta -1: se
+"  if(uSomHornModo>2.5){ float k=(uSomHornModo>3.5)?2.0:1.0; col.rgb=SomHornL(col.rgb*k,col.a)/k; col.a=1.0; }\n"
+"  else if(uSomHornModo>0.5 && uSomHornModo<1.5) col.rgb*=SomF(Sombra(),0.25);\n"   //  oscurece el color hasta un 75%)
 "#endif\n"
 "#ifdef W3D_NIEBLA\n"
 "#ifdef W3D_NIEBLA_MODO\n"
@@ -989,8 +1059,10 @@ static const int kLucesPorDraw = 4;
     X(uLDif) X(uLSpec) X(uLAtt) X(uLCono) X(uFogColor) X(uFogStart) X(uFogEnd) X(uFogModo) X(uFogDens) X(uMPbr) \
     X(uEnvTex) X(uEnvTexB) X(uEnvF0) X(uEnvF1) X(uEnvF2) X(uEscena) X(uEscenaVp) X(uMExtra) X(uEscenaZ) X(uProj) X(uEscenaZOn) \
     X(uMapN) X(uMapR) X(uMapM) X(uMapA) X(uMapE) X(uMapOn) X(uMapEOn) X(uSHa) X(uSHb) X(uSHc) X(uSHOn) X(uOjoMundo) \
+    X(uSHaV) X(uSHbV) X(uSHcV) X(uSHOnV) X(uOjoMundoV) \
     X(uSomLuzV) X(uSomNV) X(uSomCV) X(uSomOn) X(uSomLuz) X(uSomTex) X(uSomM0) X(uSomM1) X(uSomM2) X(uSomM3) \
-    X(uSomCaja0) X(uSomCaja1) X(uSomCaja2) X(uSomCaja3) X(uSomCortes) X(uSomRad) X(uSomP) X(uSomQ) X(uSomHorn) X(uSomRV)
+    X(uSomCaja0) X(uSomCaja1) X(uSomCaja2) X(uSomCaja3) X(uSomCortes) X(uSomRad) X(uSomP) X(uSomQ) X(uSomHorn) X(uSomRV) X(uSomColor) \
+    X(uSomHornModo) X(uSomPiso)
 // lo ultimo que se subio a un uniform (n = 0: nada todavia). Una llamada a GL que no cambia nada no se hace: en la
 // VideoCore IV de Android 2.3 cada una es un mensaje al chip, y un draw subia ~40 uniforms
 struct UCache { unsigned char b[64]; int n; };
@@ -1018,7 +1090,9 @@ static int  progPixel = -1;     // (programa ENTERO) donde quedo el de la luz po
 // ([0] la luz por vertice, [1] por pixel; -1 sin armar, -2 no entra en esta GPU) y lo que dice si este draw las recibe
 static int  progSom[2] = { -1, -1 };
 static bool somActiva = false;     // hay sombras en este pase (SombraReceptores)
-static int  somModo = 0;           // el material que se dibuja las recibe (SombraRecibir: 1 luz de tiempo real, 2 horneada)
+static int  somModo = 0;           // el material que se dibuja las recibe (SombraRecibir: 1 luz de tiempo real, 2 horneada;
+                                   // 3 su luz horneada en la unidad 1, 4 / 5 esta pasada es la horneada Multiply / 2x)
+static bool somMasc = false;       // (2..5) la textura horneada trae la mascara del sol en el alfa
 // los vertices de cada draw como arreglos del cliente (el driver los copia en el draw) y no subidos a un VBO: en la
 // misma GPU (la VideoCore IV de Android 2.3) un glBufferData por draw al mismo VBO a veces deja a un draw con los datos
 // del siguiente (los rotulos "X" "Y" "Z" de Properties salian "X" "Z" "Z"), y ademas cuesta mas
@@ -1048,7 +1122,8 @@ static void DefsPrograma(Clave clave, char* d, int tam){
         if((e >> 39) & 1) n += snprintf(d+n, tam-n, "#define W3D_ENTORNO\n");
         if((e >> 40) & 1) n += snprintf(d+n, tam-n, "#define W3D_PANTALLA\n");
         if((e >> 41) & 1) n += snprintf(d+n, tam-n, "#define W3D_ENTORNO_CUBO\n");
-    }
+        if((e >> 42) & 1) n += snprintf(d+n, tam-n, "#define W3D_SH_V\n");   // (la sonda de luz por vertice)
+    } else n += snprintf(d+n, tam-n, "#define W3D_SH_V\n");   // (el programa ENTERO: con un uniform)
     if(!porDraw && MapasHay()) n += snprintf(d+n, tam-n, "#define W3D_MAPAS\n");   // (los mapas del material)
     if(clave & PSombra) n += snprintf(d+n, tam-n, "#define W3D_SOMBRA\n");   // (las sombras en tiempo real)
 #if !defined(W3D_ES2_NATIVO) || defined(W3D_VKGL)
@@ -1613,7 +1688,11 @@ static float somD[SombraDatosN];     // los datos del pase (la disposicion, en w
 static float somVpAntes[4]; static bool somScAntes = false; static int somScRect[4];
 // la unidad del mapa: la 11 donde estan los mapas del material (6..10); si no, la 6 (los mapas no se usan)
 static int SomUnidad(){ return MapasHay() ? 11 : 6; }
-static void SombrasOlvidarGL(){ somFbo = somTex = somRb = 0; somW = somH = 0; somOk = -1; somActiva = false; }
+// LA CAPTURA FUERA DE PANTALLA (CapturaEmpezar, mas abajo): su FBO, mientras esta puesta el mapa de sombras vuelve a el
+static GLuint capFbo = 0, capTex = 0, capRb = 0; static int capW = 0, capH = 0; static bool capActiva = false;
+static float capVpAntes[4]; static bool capScAntes = false; static int capScRect[4]; static float capClearAntes[4];
+static void SombrasOlvidarGL(){ somFbo = somTex = somRb = 0; somW = somH = 0; somOk = -1; somActiva = false;
+                               capFbo = capTex = capRb = 0; capW = capH = 0; capActiva = false; }
 static void SombraMapaBorrar(){
     if(somFbo){ W3D_GLC(glDeleteFramebuffers(1, &somFbo)); somFbo = 0; }
     if(somRb){ W3D_GLC(glDeleteRenderbuffers(1, &somRb)); somRb = 0; }
@@ -1677,23 +1756,83 @@ void SombraMapaTerminar(){
     if(paseEsp != 5) return;
     LoteVaciar();
     paseEsp = 0;
-    W3D_GLC(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+    W3D_GLC(glBindFramebuffer(GL_FRAMEBUFFER, capActiva ? capFbo : 0));
     Viewport((int)somVpAntes[0], (int)somVpAntes[1], (int)somVpAntes[2], (int)somVpAntes[3]);
     if(somScAntes){ Scissor(somScRect[0], somScRect[1], somScRect[2], somScRect[3]); Enable(ScissorTest); }
+}
+static void CapturaBorrar(){
+    if(capFbo){ W3D_GLC(glDeleteFramebuffers(1, &capFbo)); capFbo = 0; }
+    if(capRb){ W3D_GLC(glDeleteRenderbuffers(1, &capRb)); capRb = 0; }
+    if(capTex){ texParamGL.erase(capTex); W3D_GLC(glDeleteTextures(1, &capTex)); capTex = 0; }
+    capW = capH = 0;
+}
+bool CapturaEmpezar(int w, int h){
+    if(!ready || w <= 0 || h <= 0 || porDraw || capActiva || paseEsp != 0) return false;
+#if !defined(W3D_ES2_NATIVO) && !defined(W3D_VKGL)
+    if(!glGenFramebuffers || !glGenRenderbuffers || !glFramebufferRenderbuffer || !glRenderbufferStorage) return false;
+#endif
+    LoteVaciar();
+    if(!capFbo || w != capW || h != capH){
+        CapturaBorrar();
+        W3D_GLC(glGenTextures(1, &capTex)); texParamGL.erase(capTex);
+        W3D_GLC(glBindTexture(GL_TEXTURE_2D, capTex));
+        W3D_GLC(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0));
+        W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));
+        W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST));
+        W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE));
+        W3D_GLC(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE));
+        W3D_GLC(glBindTexture(GL_TEXTURE_2D, boundTex));
+        W3D_GLC(glGenRenderbuffers(1, &capRb)); W3D_GLC(glBindRenderbuffer(GL_RENDERBUFFER, capRb));
+        W3D_GLC(glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, w, h));
+        W3D_GLC(glGenFramebuffers(1, &capFbo)); W3D_GLC(glBindFramebuffer(GL_FRAMEBUFFER, capFbo));
+        W3D_GLC(glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, capTex, 0));
+        W3D_GLC(glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, capRb));
+        if(W3D_GLC(glCheckFramebufferStatus(GL_FRAMEBUFFER)) != GL_FRAMEBUFFER_COMPLETE){
+            W3D_GLC(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+            CapturaBorrar();
+            w3dLogfW("[w3dGLES2] la imagen fuera de pantalla (%dx%d) no se puede armar en este GL", w, h);
+            return false;
+        }
+        capW = w; capH = h;
+    } else W3D_GLC(glBindFramebuffer(GL_FRAMEBUFFER, capFbo));
+    for(int i=0;i<4;i++){ capVpAntes[i] = vpActual[i]; capClearAntes[i] = clearCol[i]; }
+    capScAntes = cap_scissor; for(int i=0;i<4;i++) capScRect[i] = scissorPedido[i];
+    if(cap_scissor) Disable(ScissorTest);
+    Viewport(0, 0, w, h);
+    capActiva = true;
+    return true;
+}
+void CapturaTerminar(){
+    if(!capActiva) return;
+    LoteVaciar();
+    capActiva = false;
+    W3D_GLC(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+    Viewport((int)capVpAntes[0], (int)capVpAntes[1], (int)capVpAntes[2], (int)capVpAntes[3]);
+    if(capScAntes){ Scissor(capScRect[0], capScRect[1], capScRect[2], capScRect[3]); Enable(ScissorTest); }
+    else if(cap_scissor) Disable(ScissorTest);
+    ClearColor(capClearAntes[0], capClearAntes[1], capClearAntes[2], capClearAntes[3]);
 }
 void SombraReceptores(const float* d){
     if(!d || !somTex){ somActiva = false; return; }
     memcpy(somD, d, sizeof(somD)); somActiva = true;
 }
-void SombraRecibir(int modo){ somModo = modo; }
+void SombraRecibir(int modo){ somModo = modo & 7; somMasc = (modo & 8) != 0; }
 static void SubirSombras(){
     int idx = -1;   // (la luz que da sombra, en el lugar que le toco entre las prendidas: ver SubirLuces)
     { const int slot = (int)somD[100];
       if(slot >= 0 && slot < LucesMax && luces[slot].on){ idx = 0; for(int i=0;i<slot;i++) if(luces[i].on) idx++; } }
     U_1I(uSomLuzV, idx); U_1I(uSomLuz, idx); U_1F(uSomOn, somActiva && somModo == 1 ? 1.0f : 0.0f);
-    U_1F(uSomHorn, somActiva && somModo == 2 ? 1.0f : 0.0f);
+    U_1F(uSomHorn, somActiva && somModo >= 2 ? 1.0f : 0.0f);
+    U_1F(uSomHornModo, somActiva && somModo >= 2 ? (float)(somModo - 1) : 0.0f);
+    {   // el PISO sin mascara: el ambiente de este objeto mas el color de la sombra (hasta 1)
+        GLfloat pz[4];
+        for (int k = 0; k < 3; k++) { const float v = ambGlobal[k] + somD[101 + k]; pz[k] = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+        pz[3] = somMasc ? 1.0f : 0.0f;
+        U_4F(uSomPiso, pz);
+    }
     U_4F(uSomNV, &somD[88]); U_4F(uSomCV, &somD[80]);
-    U_1F(uSomRV, somD[95] > 0.0f ? somD[84] / somD[95] : 0.0f);   // (el desenfoque en texeles por metro de distancia)
+    U_1F(uSomRV, 0.0f);   // (antes: el desenfoque lejano corria mas la normal lejos; la penumbra de contacto no lo necesita)
+    { const GLfloat c[4] = { somD[101], somD[102], somD[103], 1.0f }; U_4F(uSomColor, c); }   // el color de la sombra
     const int u = SomUnidad();
     U_1I(uSomTex, u);
     U_M4(uSomM0, &somD[0]); U_M4(uSomM1, &somD[16]); U_M4(uSomM2, &somD[32]); U_M4(uSomM3, &somD[48]);
@@ -2011,7 +2150,7 @@ static void ElegirProgramaEntero(){
     }
     // LAS SOMBRAS: el objeto que las recibe usa el gemelo con W3D_SOMBRA (por vertice o por pixel, como sin sombras). Se
     // arma la primera vez que hace falta; si no entra en la GPU, se dibuja sin sombras
-    if(somActiva && ((somModo == 1 && luz) || somModo == 2)){
+    if(somActiva && ((somModo == 1 && luz) || somModo >= 2)){
         const int k = (pix && progPixel >= 0) ? 1 : 0;
         if(progSom[k] == -1 && nProgramas < kProgramasMax){
             ArmarPrograma(programas[nProgramas], (Clave)(PTodo | PSombra | (k ? PLuzPixel : 0) | (LucesMax << PLuces)));
@@ -2056,7 +2195,7 @@ static void ElegirPrograma(int nV){
         if(pbr && envTex && envF[3] > 0.5f) e |= (Clave)1 << 39;
         if(pbr && envTex && envF[3] > 0.5f && envCubo) e |= (Clave)1 << 41;   // (el entorno es un cubemap)
         if(pbr && escVp[2] > 0.0f && texEscena && (matPbr[3] > 0.0f || matExtra[0] > 0.5f)) e |= (Clave)1 << 40;
-    }
+    } else if((f & PLuz) && shOn) e |= (Clave)1 << 42;   // (la sonda de luz con la luz por vertice)
     const Clave clave = (Clave)f | (e << PEstado);
     if(progUso && progUso->clave == clave) return;
     for(int i=0;i<nProgramas;i++) if(programas[i].clave == clave){ UsarPrograma(programas[i]); return; }
@@ -2125,7 +2264,7 @@ static const char* FS_ESP =
 "uniform int uUseTex; uniform sampler2D uTex; uniform int uDosCaras;\n"
 "uniform vec4 uMDiff; uniform vec4 uMAmb; uniform vec4 uMSpec; uniform vec4 uMEmis; uniform float uShine; uniform vec4 uAmbGlobal;\n"
 "uniform vec4 uLPos; uniform vec4 uLAmb; uniform vec4 uLDif; uniform vec4 uLSpec;\n"
-"uniform W3D_ALTA vec4 uTam; uniform W3D_ALTA float uLejos; uniform float uDin;\n"
+"uniform W3D_ALTA vec4 uTam; uniform W3D_ALTA float uLejos;\n"
 "varying vec3 vN; varying vec2 vT; varying W3D_ALTA vec4 vAct; varying W3D_ALTA vec4 vAnt; varying W3D_ALTA float vZ;\n"
 // el movimiento en PIXELES de la imagen (X a la derecha, Y hacia abajo) codificado como el pase de la CPU:
 // 128 + d * 2 (render/VectoresMovimiento.h), de 1 a 255
@@ -2136,11 +2275,12 @@ static const char* FS_ESP =
 "  if(uUseTex==1) a=texture2D(uTex,vT).a;\n"   // (los transparentes: solo el alfa de su textura, como la CPU)
 "  gl_FragColor=vec4(N*0.5+0.5,a);\n"
 "#elif defined(W3D_P_SOMBRA)\n"
-// EL MAPA DE SOMBRAS: la profundidad vista desde la luz en los 4 canales de 8 bits (R la parte alta). Sin texturas de
-// profundidad: anda igual en cualquier ES 2.0, en la PC y en Vulkan
-"  W3D_ALTA vec3 e=fract(clamp(vZ,0.0,0.99999)*vec3(1.0,255.0,65025.0));\n"
-"  e.xy-=e.yz*(1.0/255.0);\n"
-"  gl_FragColor=vec4(e,uDin);\n"   // (el alfa: lo que se dibuja se mueve -1- o es estatico -0-)
+// EL MAPA DE SOMBRAS: la profundidad vista desde la luz en 16 bits, en RG y en BA (R / B la parte alta): la mascara de
+// color elige cual se escribe (RG: todo lo que proyecta; BA: lo que se mueve). Sin texturas de profundidad: anda igual en
+// cualquier ES 2.0, en la PC y en Vulkan
+"  W3D_ALTA vec2 e=fract(clamp(vZ,0.0,0.99999)*vec2(1.0,255.0));\n"
+"  e.x-=e.y*(1.0/255.0);\n"
+"  gl_FragColor=vec4(e,e);\n"
 "#elif defined(W3D_P_SOLIDO)\n"
 "  vec3 N=normalize(vN); if(uDosCaras==1 && !gl_FrontFacing) N=-N;\n"
 "  vec3 L; if(uLPos.w!=0.0) L=normalize(uLPos.xyz/uLPos.w-vAct.xyz); else L=normalize(uLPos.xyz);\n"
@@ -2164,7 +2304,7 @@ static const char* FS_ESP =
 "#endif\n"
 "}\n";
 struct ProgEsp { GLuint id; bool armado; GLint uMVP, uMV, uNMat, uVPAnt, uVPAct, uTam, uLejos, uUseTex, uTex, uDosCaras,
-                 uMDiff, uMAmb, uMSpec, uMEmis, uShine, uAmbGlobal, uLPos, uLAmb, uLDif, uLSpec, uDin; };
+                 uMDiff, uMAmb, uMSpec, uMEmis, uShine, uAmbGlobal, uLPos, uLAmb, uLDif, uLSpec; };
 static ProgEsp progEsp[6];          // por modo (PaseNormal .. PaseDatos, 5 = el mapa de sombras)
 // (paseEsp: el pase prendido, 0 = ninguno; declarado arriba con las sombras, que prenden el 5)
 static float paseP[35];             // sus parametros (VP del anterior, tamanio de la imagen, el lejos, VP de ahora)
@@ -2190,7 +2330,7 @@ static ProgEsp* ProgDePase(int modo){
 #define W3D_UE(n) p.n = W3D_GLC(glGetUniformLocation(id, #n));
     W3D_UE(uMVP) W3D_UE(uMV) W3D_UE(uNMat) W3D_UE(uVPAnt) W3D_UE(uVPAct) W3D_UE(uTam) W3D_UE(uLejos) W3D_UE(uUseTex) W3D_UE(uTex)
     W3D_UE(uDosCaras) W3D_UE(uMDiff) W3D_UE(uMAmb) W3D_UE(uMSpec) W3D_UE(uMEmis) W3D_UE(uShine) W3D_UE(uAmbGlobal)
-    W3D_UE(uLPos) W3D_UE(uLAmb) W3D_UE(uLDif) W3D_UE(uLSpec) W3D_UE(uDin)
+    W3D_UE(uLPos) W3D_UE(uLAmb) W3D_UE(uLDif) W3D_UE(uLSpec)
 #undef W3D_UE
     return &p;
 }
@@ -2210,7 +2350,6 @@ static bool setupEspecial(int nV){
     if(p->uVPAct >= 0) W3D_GLC(glUniformMatrix4fv(p->uVPAct, 1, GL_FALSE, paseP + 19));
     if(p->uTam >= 0){ const float t4[4] = { paseP[16], paseP[17], 0, 0 }; W3D_GLC(glUniform4fv(p->uTam, 1, t4)); }
     if(p->uLejos >= 0) W3D_GLC(glUniform1f(p->uLejos, paseP[18] > 0.0f ? paseP[18] : 1.0f));
-    if(p->uDin >= 0) W3D_GLC(glUniform1f(p->uDin, curColor[3]));   // (el mapa de sombras: lo que se mueve, en el alfa)
     const bool tex = cap_tex && paseEsp == 1;
     if(p->uUseTex >= 0) W3D_GLC(glUniform1i(p->uUseTex, tex ? 1 : 0));
     if(p->uTex >= 0) W3D_GLC(glUniform1i(p->uTex, 0));
@@ -2624,7 +2763,7 @@ static void setupState(int nV){
     U_4F(uMDiff, matDiff); U_4F(uMAmb, matAmb);
     U_4F(uMSpec, matSpec); U_4F(uMEmis, matEmis); U_1F(uShine, matShine);
     U_4F(uMPbr, matPbr); U_4F(uMExtra, matExtra);
-    // LA SONDA DE LUZ (solo la luz por pixel la lee)
+    // LA SONDA DE LUZ: la luz por pixel (uSH*) o la de cada vertice (uSH*V, los materiales comunes)
     {
         const bool sh = shOn && luzPixel;
         U_1F(uSHOn, sh ? 1.0f : 0.0f);
@@ -2633,6 +2772,14 @@ static void setupState(int nV){
             if(uSHb>=0 && UNuevo(progUso->c_uSHb, &shU[12], 48)) W3D_GLC(glUniform4fv(uSHb, 3, &shU[12]));
             if(uSHc>=0 && UNuevo(progUso->c_uSHc, &shU[24], 48)) W3D_GLC(glUniform4fv(uSHc, 3, &shU[24]));
             U_M3(uOjoMundo, ojoMundo);
+        }
+        const bool shv = shOn && !luzPixel;
+        U_1F(uSHOnV, shv ? 1.0f : 0.0f);
+        if(shv){
+            if(uSHaV>=0 && UNuevo(progUso->c_uSHaV, &shU[0], 48))  W3D_GLC(glUniform4fv(uSHaV, 3, &shU[0]));
+            if(uSHbV>=0 && UNuevo(progUso->c_uSHbV, &shU[12], 48)) W3D_GLC(glUniform4fv(uSHbV, 3, &shU[12]));
+            if(uSHcV>=0 && UNuevo(progUso->c_uSHcV, &shU[24], 48)) W3D_GLC(glUniform4fv(uSHcV, 3, &shU[24]));
+            U_M3(uOjoMundoV, ojoMundo);
         }
     }
     // EL ENTORNO 360 en las unidades 2 y 3 (apagado, los samplers miran la 0: sin textura en una unidad el navegador avisa)
@@ -2741,6 +2888,7 @@ static bool AchicarPrograma(Programa& p){
     if((e >> 39) & 1)      { c &= ~(((Clave)1 << (39 + PEstado)) | ((Clave)1 << (41 + PEstado))); sin = "el entorno 360"; }
     else if((e >> 40) & 1) { c &= ~((Clave)1 << (40 + PEstado)); sin = "la copia de la pantalla (vidrio / reflejos)"; }
     else if((e >> 38) & 1) { c &= ~((Clave)1 << (38 + PEstado)); sin = "el PBR"; }
+    else if((e >> 42) & 1) { c &= ~((Clave)1 << (42 + PEstado)); sin = "la sonda de luz por vertice"; }
     else if(c & PLuzPixel) { c &= ~(Clave)PLuzPixel;             sin = "la luz por pixel"; }
     else return false;
     BorrarPrograma(p);

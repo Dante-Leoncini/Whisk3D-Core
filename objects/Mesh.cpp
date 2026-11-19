@@ -532,6 +532,14 @@ void Mesh::ActualizarToonUV(const GLbyte* nor) {
     }
 }
 
+// LAS SONDAS DE REFLEJO (main/objects/SondaReflejo.h): un material con el reflejo en "La sonda mas cercana" usa la imagen
+// 360 de la sonda que le toca a la malla (el gancho la busca). Con la PROYECCION EN CAJA, el reflejo de cada vertice se
+// corrige por la caja de la sonda: el rayo reflejado choca contra sus paredes y se mira desde el centro de la captura
+Texture* (*g_w3dReflejoSondaHook)(Object* o, float* caja, float* centro, bool* conCaja) = NULL;
+// EL ENTORNO DE UNA MALLA PBR (main/render/EscenaRender.cpp): la sonda de reflejo que la contiene o el fondo de la escena
+void (*g_w3dEntornoObjetoHook)(Object* o) = NULL;
+static bool  gReflCaja = false;
+static float gReflB[6], gReflC[3];
 // === REFLEJO por SOFTWARE, matematica COMPARTIDA (la usan la malla base Y la generada) ===
 // UV de UN corner: pos LOCAL + normal LOCAL -> reflejo. equirect=true: lat-long 360 en MUNDO. false: matcap
 // (sphere-map en espacio de OJO, replica de GL_SPHERE_MAP). 'polo' marca el corner sobre el polo (equirect).
@@ -549,6 +557,20 @@ static void ChromeUVCorner(const Vector3& lp, const Vector3& ln, const Matrix4& 
         Vector3 I = (wp - cam).Normalized();
         float dd = I.x*wn.x + I.y*wn.y + I.z*wn.z;
         Vector3 R(I.x - 2*dd*wn.x, I.y - 2*dd*wn.y, I.z - 2*dd*wn.z);
+        if (gReflCaja) {   // (la proyeccion en caja: donde el reflejo choca con la caja, visto desde el centro de la captura)
+            float t = 1e30f;
+            const float rp[3] = { wp.x, wp.y, wp.z }, rd[3] = { R.x, R.y, R.z };
+            for (int k = 0; k < 3; k++) {
+                if (fabsf(rd[k]) < 1e-6f) continue;
+                const float tk = ((rd[k] > 0.0f ? gReflB[3 + k] : gReflB[k]) - rp[k]) / rd[k];
+                if (tk > 0.0f && tk < t) t = tk;
+            }
+            if (t < 1e29f) {
+                Vector3 H(wp.x + R.x * t - gReflC[0], wp.y + R.y * t - gReflC[1], wp.z + R.z * t - gReflC[2]);
+                const float l = sqrtf(H.x * H.x + H.y * H.y + H.z * H.z);
+                if (l > 1e-6f) R = Vector3(H.x / l, H.y / l, H.z / l);
+            }
+        }
         float ry = R.y < -1.0f ? -1.0f : (R.y > 1.0f ? 1.0f : R.y);
         u = atan2f(R.z, R.x) / (2.0f*PI) + 0.5f;
         v = acosf(ry) / PI;
@@ -591,7 +613,8 @@ void Mesh::ActualizarChromeUV(bool equirect) {
     // base de camara (para el MATCAP, espacio de OJO): right/up/forward en mundo
     Vector3 cr = g_renderCamRight, cu = g_renderCamUp, cf = g_renderCamForward;
     // cache hit: mismo modo + misma camara + misma matriz de mundo + misma cantidad de corners -> nada que hacer
-    if (chromeUVValid && chromeExpUV && chromeExpCount == facesSize && chromeCacheEq == equirect) {
+    // (con la proyeccion en caja de una sonda de reflejo no se cachea: la caja y la sonda pueden cambiar)
+    if (!gReflCaja && chromeUVValid && chromeExpUV && chromeExpCount == facesSize && chromeCacheEq == equirect) {
         bool igual = (chromeCacheCam.x == cam.x && chromeCacheCam.y == cam.y && chromeCacheCam.z == cam.z);
         for (int i = 0; igual && i < 16; i++) if (chromeCacheW[i] != W.m[i]) igual = false;
         if (igual) return;
@@ -771,7 +794,8 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         gfx::Material(gfx::MatEmission, emi);
         gfx::MaterialShininess(2.0f + liso * liso * 126.0f);
         // la LUZ PBR por pixel de los shaders (GLES2 / WebGL / Vulkan): los mismos valores que el trazado de rayos
-        if (pbrShader) gfx::MaterialPBR(met, rug, f0M, transM, mat->ssr);
+        if (pbrShader) { gfx::MaterialPBR(met, rug, f0M, transM, mat->ssr);
+                         if (g_w3dEntornoObjetoHook) g_w3dEntornoObjetoHook(this); }   // (la sonda de reflejo de su lugar)
         else           gfx::MaterialPBR(0.0f, -1.0f, 0.04f, 0.0f, false);
         // LOS MAPAS con textura (el backend de shaders los aplica; el alfa tambien sin la luz PBR)
         if (solido) gfx::MaterialMapas(0, 0, 0, 0, 0);
@@ -814,7 +838,13 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     // textura (nunca en Solid; respeta el checkbox textureOn del material)
     if (!solido && mat->texture && mat->textureOn) {
         gfx::Enable(gfx::Texture2D);
-        gfx::BindTexture(g_w3dTexturaForzada ? g_w3dTexturaForzada : mat->texture->iID);
+        unsigned int texId = mat->texture->iID;
+        gReflCaja = false;
+        if (mat->chrome && mat->reflejoSonda && g_w3dReflejoSondaHook) {   // (la imagen de la sonda de reflejo de su lugar)
+            Texture* ts = g_w3dReflejoSondaHook(this, gReflB, gReflC, &gReflCaja);
+            if (ts && ts->iID) texId = ts->iID; else gReflCaja = false;
+        }
+        gfx::BindTexture(g_w3dTexturaForzada ? g_w3dTexturaForzada : texId);
         gfx::TexFilter(!gfx::PixeladoGlobal() && mat->filtrado);
         gfx::TexWrap(mat->repeat);
         // MEZCLA DE TEXTURAS (Material::texturaB / mezclaB): la unidad 1 interpola B con lo de arriba, en la MISMA pasada
@@ -863,6 +893,7 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
         else if (uv) { if (vboRenderActivo && vboUVEnUso) gfx::TexCoordVBO(vboUVEnUso); else gfx::TexCoordPointer2f(0, uv); } // UV del modelo (VBO o RAM)
     } else {
         gfx::Disable(gfx::Texture2D);
+        capaUnidad1 = -1;   // (sin textura base las capas van todas en su pasada: la de un material anterior no vale)
         // (un toon sin textura base: la unidad 1 recibe el color plano como "lo anterior" y le resta la rampa)
         if (toonOn) { gfx::MezclaTexturas(mat->texturaB->iID, 1.0f, false, false, mat->toon == 2 ? 4 : 3);
                       gfx::MezclaTexturasUV(&toonUV[0]); }
@@ -888,11 +919,21 @@ void Mesh::AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetE
     // LAS SOMBRAS EN TIEMPO REAL, si la malla las recibe: con la luz de tiempo real, la del sol no llega donde algo la
     // tapa (1); con la luz HORNEADA entera, la sombra de lo que SE MUEVE oscurece el color (2: la de lo estatico ya esta
     // en la textura horneada, como el "Subtractive" de Unity). Sin luz (un material "sin luz"), nada
+    // SOBRE LA HORNEADA la sombra va sobre la LUZ de la textura horneada (Shadowmask: ver TexLayer::mascaraSol): en esta
+    // pasada si esa textura va en la unidad 1 (3); si llega en su propia pasada de capa, ahi (RenderObject) y aca nada
     if (gSombraObjeto) {
         int modo = 0;
         if (!solido && conLuz) {
             if (mat->LuzTiempoReal() && !nmPasada && !toonOn) modo = 1;
-            else if (mat->lighting && mat->FactorLuzHorneada() >= 0.999f) modo = 2;
+            else if (mat->lighting && mat->FactorLuzHorneada() >= 0.999f) {
+                const TexLayer* hl = NULL;
+                for (size_t k = 0; k < mat->capas.size() && !hl; k++)
+                    if (mat->capas[k].horneada && mat->capas[k].on && mat->capas[k].tex) hl = &mat->capas[k];
+                const bool mult = hl && (hl->blend == W3D_CAPA_MULTIPLY || hl->blend == W3D_CAPA_MULTIPLY2X);
+                if (mult && capaUnidad1 == 0 && hl == &mat->capas[0]) modo = 3 | (hl->mascaraSol ? 8 : 0);
+                else if (mult) modo = 0;   // (en la pasada de la capa)
+                else modo = 2;             // (no se sabe donde esta la luz: se oscurece el color, como antes)
+            }
         }
         gfx::SombraRecibir(modo);
     }
@@ -1997,6 +2038,7 @@ void Mesh::RenderObject() {
     if (soloRutina) { if (w3dReflejando) RenderSoloRutinaReflejo(); return; }
     // en el render FINAL un objeto no-renderizable no sale (en el viewport si)
     if (w3dEngine::w3dRenderFinal && !renderizable) return;
+    if (w3dEngine::w3dPaseSonda && !enSondas) return;   // (la sonda de reflejo de tiempo real no lo ve)
     // (P4) horneada en el lote estatico de una Collection ESTE frame: el lote ya
     // la dibujo en su tanda por material; aca no se dibuja nada.
     if (w3dLoteStamp && enLoteEstatico == w3dLoteStamp) return;
@@ -2772,6 +2814,12 @@ void Mesh::RenderObject() {
                     }
                     const int bl = cap.blend;
                     bool segundo = false;   // (Multiply 2x arriba de 50%: el dibujo de la escala)
+                    // LA LUZ HORNEADA en su pasada: aca recibe la sombra de lo que se mueve (sobre su luz: ver
+                    // AplicarMaterial). Su alfa es la mascara del sol, no transparencia: el alfa de la pantalla no se toca
+                    const bool horn = cap.horneada && f >= 1.0f && (bl == W3D_CAPA_MULTIPLY || bl == W3D_CAPA_MULTIPLY2X);
+                    if (horn && gSombraObjeto && conLuz && mat->lighting)
+                        gfx::SombraRecibir((bl == W3D_CAPA_MULTIPLY2X ? 5 : 4) | (cap.mascaraSol ? 8 : 0));
+                    if (cap.mascaraSol) gfx::ColorMask(true, true, true, false);
                     if (f >= 1.0f || bl == W3D_CAPA_MIX) {
                         gfx::Color4f(1.0f, 1.0f, 1.0f, f);
                         gfx::BlendMode(bl);
@@ -2787,12 +2835,14 @@ void Mesh::RenderObject() {
                         gfx::BlendMode(bl);
                     }
                     gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxDraw[dgrp.startDrawn]);
+                    if (horn) gfx::SombraRecibir(0);
                     if (segundo) {
                         gfx::Disable(gfx::Texture2D);
                         gfx::Color4f(f, f, f, 1.0f);   // (Multiply 2x: dst * 2f)
                         gfx::BlendMode(W3D_CAPA_MULTIPLY2X);
                         gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxDraw[dgrp.startDrawn]);
                     }
+                    if (cap.mascaraSol) gfx::ColorMask(true, true, true, true);
                 }
                 gfx::Color4f(1.0f, 1.0f, 1.0f, 1.0f);
                 if (uvAjeno) gfx::TexCoordPointer2f(0, uv);

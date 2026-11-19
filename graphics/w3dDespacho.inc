@@ -84,6 +84,8 @@ void SombraMapaCaja(int x, int y, int w, int h) { W3D_TABLA()->SombraMapaCaja(x,
 void SombraMapaTerminar() { W3D_TABLA()->SombraMapaTerminar(); }
 void SombraReceptores(const float* d) { W3D_TABLA()->SombraReceptores(d); }
 void SombraRecibir(int modo) { W3D_TABLA()->SombraRecibir(modo); }
+bool CapturaEmpezar(int w, int h) { return W3D_TABLA()->CapturaEmpezar(w, h); }
+void CapturaTerminar() { W3D_TABLA()->CapturaTerminar(); }
 void Entorno(unsigned int tex, unsigned int texBorrosa, const float* m) { W3D_TABLA()->Entorno(tex, texBorrosa, m); }
 void EscenaCopiar(bool on) { W3D_TABLA()->EscenaCopiar(on); }
 bool GpuLimitada() { return W3D_TABLA()->GpuLimitada(); }
