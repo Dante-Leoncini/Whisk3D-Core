@@ -14,6 +14,7 @@
 // ============================================================================
 
 #include <stddef.h>   // size_t (las texturas desde memoria)
+#include <vector>     // EncodeJPG (el JPG en memoria)
 
 #include "w3dBackend.h"   // (W3D_BACKEND_ABRIR / CERRAR: varios backends en un ejecutable)
 namespace w3dEngine {
@@ -163,4 +164,6 @@ W3D_BACKEND_CERRAR
     // Solo PC/Web/Android/consolas (stdio): en Symbian no existen
     bool SavePNGRGBA(const char* path, const unsigned char* rgba, int w, int h, bool flipY = true);
     bool SaveJPG(const char* path, const unsigned char* rgba, int w, int h, int calidad, bool flipY = true);
+    // el JPG en memoria (calidad 1..100): SaveJPG lo escribe con stdio y Symbian con RFile (w3dtexload.cpp)
+    bool EncodeJPG(const unsigned char* rgba, int w, int h, int calidad, bool flipY, std::vector<unsigned char>& out);
 }

@@ -59,6 +59,7 @@ bool InclinacionLeer(float& x, float& y, float& z) {
         for (int k = 0; k < 3; k++) gSuave[k] = gG > 0.0f ? v[k] / gG : 0.0f;
     }
     if (gG <= 0.0f) return false;
+    // (las muestras de arriba ya dejaron gSuave al dia)
     // arriba de la pantalla: el eje largo del telefono (vertical) o el corto (apaisada), con el signo que marca el peso
     // (con un margen: inclinado de costado casi 90 grados no se da vuelta)
     const float a = gApaisada ? gSuave[0] : gSuave[1];
@@ -71,6 +72,13 @@ bool InclinacionLeer(float& x, float& y, float& z) {
     x = -(gSuave[0] * R[0] + gSuave[1] * R[1]);
     y = gSuave[0] * U[0] + gSuave[1] * U[1];
     z = gSuave[2] * gArriba;
+    return true;
+}
+
+bool InclinacionLeerTelefono(float& x, float& y, float& z) {
+    float a, b, c;
+    if (!InclinacionLeer(a, b, c)) return false;   // (actualiza gSuave con la ultima muestra)
+    x = gSuave[0]; y = gSuave[1]; z = gSuave[2];
     return true;
 }
 

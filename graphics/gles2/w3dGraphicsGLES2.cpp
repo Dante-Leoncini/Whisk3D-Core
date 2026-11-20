@@ -201,6 +201,25 @@ bool w3dRenderLuces     = true;   // (el render: las luces de la escena. El edit
 #ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool w3dRenderNormalColor = false;
 #endif
+// (las sondas de luz y el horneado: mas unidades de textura, cube maps y RGB565. El GL/gl.h de Windows es 1.1; fuera de las ramas: vale tambien para W3D_VKGL)
+#ifndef GL_TEXTURE2
+    #define GL_TEXTURE2         0x84C2
+#endif
+#ifndef GL_TEXTURE3
+    #define GL_TEXTURE3         0x84C3
+#endif
+#ifndef GL_TEXTURE4
+    #define GL_TEXTURE4         0x84C4
+#endif
+#ifndef GL_TEXTURE_CUBE_MAP
+    #define GL_TEXTURE_CUBE_MAP            0x8513
+#endif
+#ifndef GL_TEXTURE_CUBE_MAP_POSITIVE_X
+    #define GL_TEXTURE_CUBE_MAP_POSITIVE_X 0x8515
+#endif
+#ifndef GL_UNSIGNED_SHORT_5_6_5
+    #define GL_UNSIGNED_SHORT_5_6_5        0x8363
+#endif
 #ifndef W3D_BACKEND_NS   // (con varios backends lo define graphics/w3dGraphicsDespacho.cpp)
 bool w3dRenderAlpha       = false; // pase ALPHA (matte): blanco unlit + solo el alpha de la textura
 #endif

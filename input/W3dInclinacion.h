@@ -39,6 +39,10 @@ bool InclinacionDisponible();
 void InclinacionSetApaisada(bool si);
 // El ultimo dato, en los ejes de la pantalla y en g. false si esta apagada o todavia no llego nada
 bool InclinacionLeer(float& x, float& y, float& z);
+// Lo mismo en los ejes del TELEFONO (x a la derecha, y arriba, z saliendo de la pantalla, con la pantalla vertical),
+// en g, SIN elegir que lado es arriba: para medir cuanto se GIRO desde un momento (el editor: rotar inclinando), sin el
+// salto de 180 grados que da InclinacionLeer al cambiar de lado
+bool InclinacionLeerTelefono(float& x, float& y, float& z);
 // De donde sale el dato (para el log): "RRSensorApi", "sin sensor"...
 const char* InclinacionInfo();
 

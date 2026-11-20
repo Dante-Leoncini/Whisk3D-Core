@@ -38,13 +38,12 @@
 #endif
 #include "graphics/vulkan/w3dGLDesvio.h"   // (con el backend Vulkan no hay contexto de GL: las texturas van por el suyo, ver ahi)
 #include <vector>
-#ifndef W3D_SYMBIAN
-    // el JPG del render a archivo (SaveJPG): solo el codificador, sin su stdio (W3dJpgEscribir escribe el archivo)
-    #define STB_IMAGE_WRITE_IMPLEMENTATION
-    #define STB_IMAGE_WRITE_STATIC
-    #define STBI_WRITE_NO_STDIO
-    #include "stb/stb_image_write.h"
-#endif
+// el JPG del render a archivo (EncodeJPG / SaveJPG): solo el codificador, sin su stdio (cada plataforma escribe el
+// archivo: stdio en la PC, RFile en Symbian)
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_STATIC
+#define STBI_WRITE_NO_STDIO
+#include "stb/stb_image_write.h"
 
 // LA PIRAMIDE DE MIPMAPS en ES 2.0 (Android, la web y Symbian^3 con W3D_GLES2) la arma glGenerateMipmap: el
 // GL_GENERATE_MIPMAP de ES 1.1 / GL 1.4 no existe ahi (GL_INVALID_ENUM) y la textura quedaba sin niveles -> incompleta
@@ -1205,14 +1204,27 @@ static bool SavePNGImpl(const char* path, const unsigned char* rgba, int w, int 
 bool SavePNG(const char* path, const unsigned char* rgba, int w, int h, bool flipY){ return SavePNGImpl(path, rgba, w, h, flipY, false); }
 bool SavePNGRGBA(const char* path, const unsigned char* rgba, int w, int h, bool flipY){ return SavePNGImpl(path, rgba, w, h, flipY, true); }
 
-// JPG con el codificador de stb_image_write (dominio publico): sin stdio propio (lo escribe W3dJpgEscribir)
-struct W3dJpgSalida { FILE* f; bool ok; };
-static void W3dJpgEscribir(void* ctx, void* data, int n) {
-    W3dJpgSalida* s = (W3dJpgSalida*)ctx;
-    if (s->ok && n > 0 && fwrite(data, 1, (size_t)n, s->f) != (size_t)n) s->ok = false;
-}
 bool SaveJPG(const char* path, const unsigned char* rgba, int w, int h, int calidad, bool flipY){
-    if (!path || !rgba || w <= 0 || h <= 0) return false;
+    if (!path) return false;
+    std::vector<unsigned char> jpg;
+    if (!EncodeJPG(rgba, w, h, calidad, flipY, jpg)) return false;
+    FILE* f = fopen(path, "wb");
+    if (!f) { w3dLogfE("SaveJPG: fopen FALLO path='%s' errno=%d (%s)", path, errno, strerror(errno)); return false; }
+    const size_t wr = fwrite(&jpg[0], 1, jpg.size(), f);
+    const bool cerro = (fclose(f) == 0);
+    if (wr != jpg.size() || !cerro) { w3dLogfE("SaveJPG: no se pudo escribir '%s' (disco lleno?)", path); return false; }
+    return true;
+}
+#endif
+
+// JPG con el codificador de stb_image_write (dominio publico), a MEMORIA: lo usan SaveJPG (stdio) y el de Symbian (RFile)
+static void W3dJpgAMemoria(void* ctx, void* data, int n) {
+    std::vector<unsigned char>* v = (std::vector<unsigned char>*)ctx;
+    if (n > 0) v->insert(v->end(), (unsigned char*)data, (unsigned char*)data + n);
+}
+bool EncodeJPG(const unsigned char* rgba, int w, int h, int calidad, bool flipY, std::vector<unsigned char>& out){
+    out.clear();
+    if (!rgba || w <= 0 || h <= 0) return false;
     if (calidad < 1) calidad = 1; if (calidad > 100) calidad = 100;
     std::vector<unsigned char> dado;   // (el JPG va de arriba hacia abajo; glReadPixels, de abajo hacia arriba)
     const unsigned char* px = rgba;
@@ -1221,14 +1233,8 @@ bool SaveJPG(const char* path, const unsigned char* rgba, int w, int h, int cali
         for (int y = 0; y < h; y++) memcpy(&dado[(size_t)y * w * 4], rgba + (size_t)(h - 1 - y) * w * 4, (size_t)w * 4);
         px = &dado[0];
     }
-    FILE* f = fopen(path, "wb");
-    if (!f) { w3dLogfE("SaveJPG: fopen FALLO path='%s' errno=%d (%s)", path, errno, strerror(errno)); return false; }
-    W3dJpgSalida s; s.f = f; s.ok = true;
-    const int r = stbi_write_jpg_to_func(W3dJpgEscribir, &s, w, h, 4, px, calidad);
-    const bool cerro = (fclose(f) == 0);
-    if (!r || !s.ok || !cerro) { w3dLogfE("SaveJPG: no se pudo escribir '%s' (disco lleno?)", path); return false; }
-    return true;
+    const int r = stbi_write_jpg_to_func(W3dJpgAMemoria, &out, w, h, 4, px, calidad);
+    return r != 0 && !out.empty();
 }
-#endif
 
 } // namespace w3dEngine
