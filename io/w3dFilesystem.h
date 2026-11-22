@@ -3,6 +3,10 @@
 #include <string>
 #include <vector>
 
+// (Windows: windows.h define ReplaceFile como macro -ReplaceFileA/W-: la de aca es otra, la del motor)
+#ifdef ReplaceFile
+#undef ReplaceFile
+#endif
 namespace w3dFileSystem {
     // Inicializa rutas globales
     void Init();

@@ -96,6 +96,10 @@ std::string W3dLibPathPacked(const std::string& name, const std::string& entry) 
 #elif !defined(W3D_SYMBIAN)
     #include <sstream>     // Linux/Android: istringstream para XDG_DATA_DIRS
 #endif
+// (Windows: windows.h define ReplaceFile como macro -ReplaceFileA/W-: la de aca es otra, la del motor)
+#ifdef ReplaceFile
+#undef ReplaceFile
+#endif
 
 namespace w3dFileSystem {
 

@@ -3,6 +3,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+// (Windows: windows.h -que llega por w3dGraphics.h- define 'near' y 'far' como macros vacias y rompe 'v.near')
+#ifdef near
+#undef near
+#endif
+#ifdef far
+#undef far
+#endif
 
 namespace gfx = w3dEngine;
 
