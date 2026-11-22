@@ -24,64 +24,64 @@
 #endif
 
 #include "w3dFilesystem.h"
-#include "W3dAlmacen.h" // contenedor montado (el .w3d abierto): tercer origen de ReadFileBytes
+#include "W3dStore.h" // contenedor montado (el .w3d abierto): tercer origen de ReadFileBytes
 #include "w3dlog.h"    // avisar si un pak registrado viene invalido
 #include <algorithm>   // std::sort
 
 // ---------------------------------------------------------------------------
-//  CONTENEDOR MONTADO (ver W3dAlmacen.h)
+//  CONTENEDOR MONTADO (ver W3dStore.h)
 //
-//  El registro vive ACA y no en W3dAlmacen.cpp a proposito: ReadFileBytes tiene
+//  El registro vive ACA y no en W3dStore.cpp a proposito: ReadFileBytes tiene
 //  que consultarlo SIEMPRE, y los builds que compilan este archivo pero no el
 //  almacen (el .mmp de Symbian, los 3 juegos de ejemplo) no deben arrastrar el
 //  lector de zip por una funcion que nunca van a usar. Aca es un puntero y nada
-//  mas; quien construye el AlmacenZip es el editor.
+//  mas; quien construye el StoreZip es el editor.
 //
 //  NO transfiere la propiedad: el que monta destruye, y desmonta antes.
 // ---------------------------------------------------------------------------
-static W3dAlmacen* gAlmacenMontado = 0;
-void W3dAlmacenMontar(W3dAlmacen* a) { gAlmacenMontado = a; }
-void W3dAlmacenDesmontar()           { gAlmacenMontado = 0; }
-W3dAlmacen* W3dAlmacenMontado()      { return gAlmacenMontado; }
+static W3dStore* gMountedStore = 0;
+void W3dStoreMount(W3dStore* a) { gMountedStore = a; }
+void W3dStoreUnmount()           { gMountedStore = 0; }
+W3dStore* W3dMountedStore()      { return gMountedStore; }
 
 #include <string>
 #include <vector>
 #include <map>
 
 // ---------------------------------------------------------------------------
-//  LOS ALMACENES CON NOMBRE (las librerias, ver W3dAlmacen.h): "lib:<nombre>/..."
+//  LOS ALMACENES CON NOMBRE (las librerias, ver W3dStore.h): "lib:<nombre>/..."
 //  Pocos y consultados por nombre: un mapa alcanza (no hay recorrido por frame).
 // ---------------------------------------------------------------------------
-static std::map<std::string, W3dAlmacen*> gAlmacenesNombrados;
-void W3dAlmacenRegistrar(const std::string& nombre, W3dAlmacen* a) {
-    if (nombre.empty()) return;
-    if (a) gAlmacenesNombrados[nombre] = a;
-    else gAlmacenesNombrados.erase(nombre);
+static std::map<std::string, W3dStore*> gNamedStores;
+void W3dStoreRegister(const std::string& name, W3dStore* a) {
+    if (name.empty()) return;
+    if (a) gNamedStores[name] = a;
+    else gNamedStores.erase(name);
 }
-W3dAlmacen* W3dAlmacenPorNombre(const std::string& nombre) {
-    std::map<std::string, W3dAlmacen*>::const_iterator it = gAlmacenesNombrados.find(nombre);
-    return it == gAlmacenesNombrados.end() ? 0 : it->second;
+W3dStore* W3dStoreByName(const std::string& name) {
+    std::map<std::string, W3dStore*>::const_iterator it = gNamedStores.find(name);
+    return it == gNamedStores.end() ? 0 : it->second;
 }
-bool (*W3dAlmacenPedirHook)(const std::string& nombre) = 0;
-// el almacen de la libreria 'nombre': el registrado o, si no hay, el que el editor monte ahora (W3dAlmacenPedirHook)
-static W3dAlmacen* AlmacenDeLibreria(const std::string& nombre) {
-    W3dAlmacen* a = W3dAlmacenPorNombre(nombre);
-    if (!a && W3dAlmacenPedirHook && W3dAlmacenPedirHook(nombre)) a = W3dAlmacenPorNombre(nombre);
+bool (*W3dStoreRequestHook)(const std::string& name) = 0;
+// el almacen de la libreria 'nombre': el registrado o, si no hay, el que el editor monte ahora (W3dStoreRequestHook)
+static W3dStore* LibStore(const std::string& name) {
+    W3dStore* a = W3dStoreByName(name);
+    if (!a && W3dStoreRequestHook && W3dStoreRequestHook(name)) a = W3dStoreByName(name);
     return a;
 }
-bool W3dRutaDeLibreria(const std::string& ruta, std::string* nombre, std::string* entrada) {
-    if (ruta.size() < 7 || ruta.compare(0, 4, "lib:") != 0) return false;
-    const size_t barra = ruta.find('/', 4);
-    if (barra == std::string::npos || barra == 4 || barra + 1 >= ruta.size()) return false;
-    if (nombre) *nombre = ruta.substr(4, barra - 4);
-    if (entrada) *entrada = ruta.substr(barra + 1);
+bool W3dSplitLibPath(const std::string& path, std::string* name, std::string* entry) {
+    if (path.size() < 7 || path.compare(0, 4, "lib:") != 0) return false;
+    const size_t bar = path.find('/', 4);
+    if (bar == std::string::npos || bar == 4 || bar + 1 >= path.size()) return false;
+    if (name) *name = path.substr(4, bar - 4);
+    if (entry) *entry = path.substr(bar + 1);
     return true;
 }
-std::string W3dRutaLibreriaEmpaquetada(const std::string& nombre, const std::string& entrada) {
-    return "librerias/" + nombre + "/" + entrada;
+std::string W3dLibPathPacked(const std::string& name, const std::string& entry) {
+    return "libs/" + name + "/" + entry;
 }
 #include <cstdlib>      // getenv
-#include <cstdio>       // fopen (RutaExiste de archivos en Symbian)
+#include <cstdio>       // fopen (PathExists de archivos en Symbian)
 
 #ifdef __ANDROID__
     #include <android/asset_manager.h> // leer recursos del APK (NO SDL)
@@ -109,22 +109,22 @@ namespace w3dFileSystem {
     // normaliza: '\' -> '/', colapsa los segmentos '.' y '..', saca barra final (salvo raiz "C:/" o "/").
     // Colapsar '..' es CLAVE para Symbian: RFs/TParse NO resuelve componentes relativos (un '..' intermedio
     // da KErrBadName/KErrNotFound), mientras que fopen en PC/Linux/Android los resuelve al abrir. Asi un path
-    // como "E:/modelos/banana/../textures/foo.png" (tipico de las texturas de un FBX) queda
-    // "E:/modelos/textures/foo.png" en los 4 OS. Los paths SIN './..' toman el camino viejo (byte identico).
-    static std::string Normaliza(const std::string& in) {
+    // como "E:/models/banana/../textures/foo.png" (tipico de las texturas de un FBX) queda
+    // "E:/models/textures/foo.png" en los 4 OS. Los paths SIN './..' toman el camino viejo (byte identico).
+    static std::string Normalizes(const std::string& in) {
         std::string s = in;
         for (size_t i = 0; i < s.size(); i++) if (s[i] == '\\') s[i] = '/';
 
         // pre-scan barato: hay algun segmento que sea exactamente "." o ".."? si no, camino viejo.
-        bool tieneRel = false;
+        bool hasRel = false;
         for (size_t i = 0; i < s.size(); i++) {
             if (s[i] == '.' && (i == 0 || s[i - 1] == '/')) {
                 size_t j = i + 1;
                 if (j < s.size() && s[j] == '.') j++;
-                if (j == s.size() || s[j] == '/') { tieneRel = true; break; }
+                if (j == s.size() || s[j] == '/') { hasRel = true; break; }
             }
         }
-        if (!tieneRel) {
+        if (!hasRel) {
             while (s.size() > 1 && s[s.size() - 1] == '/' && !(s.size() == 3 && s[1] == ':')) s.erase(s.size() - 1);
             return s;
         }
@@ -157,11 +157,11 @@ namespace w3dFileSystem {
         if (dir.empty()) return name;
         std::string d = dir;
         if (d[d.size() - 1] != '/') d += '/';
-        return Normaliza(d + name);
+        return Normalizes(d + name);
     }
 
     std::string ParentPath(const std::string& path) {
-        std::string p = Normaliza(path);
+        std::string p = Normalizes(path);
         // ya en una raiz ("C:/" o "/"): sin padre
         if (p == "/" || (p.size() == 3 && p[1] == ':' && p[2] == '/')) return path;
         size_t pos = p.find_last_of('/');
@@ -203,12 +203,12 @@ namespace w3dFileSystem {
 #endif
 
     // existe la ruta? (portable)
-    static bool RutaExiste(const std::string& p) {
+    static bool PathExists(const std::string& p) {
     #if defined(_WIN32)
         std::error_code ec; return std::filesystem::exists(WPath(p), ec);
     #elif defined(W3D_SYMBIAN)
         // stat es poco confiable en el N95; un dir abre con opendir y un archivo
-        // existe si fopen lo abre. (RutaExiste se usa para drives -> son dirs.)
+        // existe si fopen lo abre. (PathExists se usa para drives -> son dirs.)
         DIR* d = OpenDirRobust(p);
         if (d) { closedir(d); return true; }
         FILE* f = fopen(p.c_str(), "rb");
@@ -218,7 +218,7 @@ namespace w3dFileSystem {
         struct stat st; return stat(p.c_str(), &st) == 0;
     #endif
     }
-    static bool EsCarpeta(const std::string& p) {
+    static bool IsFolder(const std::string& p) {
     #if defined(_WIN32)
         std::error_code ec; return std::filesystem::is_directory(WPath(p), ec);
     #elif defined(W3D_SYMBIAN)
@@ -249,7 +249,7 @@ namespace w3dFileSystem {
         std::string path(buffer);
         size_t pos = path.find_last_of("\\/");
         if (pos != std::string::npos) path = path.substr(0, pos);
-        return Normaliza(path);
+        return Normalizes(path);
     #elif defined(W3D_SYMBIAN)
         return std::string(); // Symbian arma el res a mano (no usa esto)
     #elif defined(W3D_VITA)
@@ -287,15 +287,15 @@ namespace w3dFileSystem {
         std::string exeDir = gExeDir;
         if (!exeDir.empty()) {
             std::string portable = exeDir + "/res";   // ./res al lado del exe
-            if (RutaExiste(portable)) return portable;
+            if (PathExists(portable)) return portable;
         }
         #if !defined(_WIN32)
             // instalacion con PREFIJO, relativa al binario: <prefijo>/bin/whisk3d -> <prefijo>/share/Whisk3d/res. Cubre
             // el .deb instalado, /usr/local, ~/.local y el .deb DESCOMPRIMIDO sin instalar (data/usr/bin/whisk3d). Antes
             // solo se miraba /usr/share: descomprimido, el editor abria sin texturas ni iconos (cuadrados blancos).
             if (!exeDir.empty()) {
-                std::string prefijo = exeDir + "/../share/Whisk3d/res";
-                if (RutaExiste(prefijo)) return prefijo;
+                std::string prefix = exeDir + "/../share/Whisk3d/res";
+                if (PathExists(prefix)) return prefix;
             }
         #endif
         #if !defined(_WIN32)
@@ -306,9 +306,9 @@ namespace w3dFileSystem {
             std::string dir;
             while (std::getline(stream, dir, ':')) {
                 std::string path = dir + "/Whisk3d/res";
-                if (RutaExiste(path)) return path;
+                if (PathExists(path)) return path;
             }
-            if (RutaExiste("/usr/share/Whisk3d/res")) return "/usr/share/Whisk3d/res";
+            if (PathExists("/usr/share/Whisk3d/res")) return "/usr/share/Whisk3d/res";
         #endif
         return exeDir + "/res";
     #endif
@@ -335,33 +335,37 @@ namespace w3dFileSystem {
     }
 
     static std::string gUserDataDir; // ruta escribible (config/bookmarks). La setea la plataforma.
-    void SetUserDataDir(const std::string& dir) { gUserDataDir = dir; }
+    void SetUserDataDir(const std::string& dir) {
+        gUserDataDir = dir;
+        while (gUserDataDir.size() > 1 && (gUserDataDir[gUserDataDir.size() - 1] == '/' || gUserDataDir[gUserDataDir.size() - 1] == '\\'))
+            gUserDataDir.erase(gUserDataDir.size() - 1);
+    }
     const std::string& GetUserDataDir() { return gUserDataDir.empty() ? GetResDir() : gUserDataDir; }
 
     // ========================================================
     //  PAK embebido ("Assets: Empaquetados" del Compilar juego). Formato y
     //  ofuscacion documentados en w3dFilesystem.h; el ESCRITOR vive en
-    //  main/io/CompilarJuego.cpp (EscribirPak) y DEBE quedar en sincronia.
+    //  main/io/CompileGame.cpp (WritePak) y DEBE quedar en sincronia.
     //  El XOR es ofuscacion anti-curiosos, NO criptografia (la semilla viaja
     //  en el mismo binario). C++03 puro (Symbian compila este archivo).
     // ========================================================
-    struct PakEntrada {
-        std::string nombre;   // ruta relativa normalizada ("menu.w3dui", "assets/pausa.png")
-        unsigned    off;      // offset absoluto dentro del pak
-        unsigned    tam;      // tamano en bytes
+    struct PakEntry {
+        std::string name;   // ruta relativa normalizada ("menu.w3dui", "assets/pausa.png")
+        unsigned    off;    // offset absoluto dentro del pak
+        unsigned    size;   // tamano en bytes
     };
-    static const unsigned char*    gPakDatos = 0;
-    static unsigned                gPakTam = 0;
-    static unsigned                gPakSemilla = 0;
-    static std::vector<PakEntrada> gPakToc;
+    static const unsigned char*    gPakData = 0;
+    static unsigned                gPakSize = 0;
+    static unsigned                gPakSeed = 0;
+    static std::vector<PakEntry> gPakToc;
 
     // flujo XOR: xorshift32 avanzado cada 4 bytes (mismo generador que el escritor)
-    struct PakFlujo { unsigned s; unsigned w; unsigned n; };
-    static void PakFlujoInit(PakFlujo* f, unsigned semilla) {
-        f->s = semilla ? semilla : 0x57334441u;   // estado 0 atasca xorshift
+    struct PakFlow { unsigned s; unsigned w; unsigned n; };
+    static void PakFlowInit(PakFlow* f, unsigned seed) {
+        f->s = seed ? seed : 0x57334441u;   // estado 0 atasca xorshift
         f->w = 0; f->n = 0;
     }
-    static unsigned char PakFlujoByte(PakFlujo* f) {
+    static unsigned char PakFlowByte(PakFlow* f) {
         if ((f->n & 3u) == 0u) {
             unsigned x = f->s; x ^= x << 13; x ^= x >> 17; x ^= x << 5;
             f->s = x; f->w = x;
@@ -371,126 +375,126 @@ namespace w3dFileSystem {
         return b;
     }
     // lee un u32 LE del pak des-XOReando con el flujo (avanza 'pos')
-    static unsigned PakLeerU32(const unsigned char* d, unsigned* pos, PakFlujo* f) {
+    static unsigned PakReadU32(const unsigned char* d, unsigned* pos, PakFlow* f) {
         unsigned v = 0;
         for (int i = 0; i < 4; i++) {
-            unsigned char b = (unsigned char)(d[*pos] ^ PakFlujoByte(f));
+            unsigned char b = (unsigned char)(d[*pos] ^ PakFlowByte(f));
             v |= ((unsigned)b) << (i * 8);
             (*pos)++;
         }
         return v;
     }
 
-    void W3dPakRegistrar(const unsigned char* datos, unsigned tam) {
-        gPakDatos = 0; gPakTam = 0; gPakSemilla = 0; gPakToc.clear();
-        static const unsigned char magia[8] = { 'W','3','D','P','A','K','1','\n' };
-        if (!datos || tam < 16) { w3dLogfE("W3dPakRegistrar: pak vacio o corto"); return; }
+    void W3dPakRegister(const unsigned char* data, unsigned size) {
+        gPakData = 0; gPakSize = 0; gPakSeed = 0; gPakToc.clear();
+        static const unsigned char magic[8] = { 'W','3','D','P','A','K','1','\n' };
+        if (!data || size < 16) { w3dLogfE("W3dPakRegistrar: pak vacio o corto"); return; }
         for (int i = 0; i < 8; i++)
-            if (datos[i] != magia[i]) { w3dLogfE("W3dPakRegistrar: magia invalida"); return; }
-        unsigned semilla = (unsigned)datos[8] | ((unsigned)datos[9] << 8) |
-                           ((unsigned)datos[10] << 16) | ((unsigned)datos[11] << 24);
+            if (data[i] != magic[i]) { w3dLogfE("W3dPakRegistrar: magia invalida"); return; }
+        unsigned seed = (unsigned)data[8] | ((unsigned)data[9] << 8) |
+                           ((unsigned)data[10] << 16) | ((unsigned)data[11] << 24);
         // el TOC (cantidad + entradas) es UN flujo XOR continuo desde el byte 12
-        PakFlujo f; PakFlujoInit(&f, semilla ^ 0x544F4321u);
+        PakFlow f; PakFlowInit(&f, seed ^ 0x544F4321u);
         unsigned pos = 12;
-        unsigned cantidad = PakLeerU32(datos, &pos, &f);
-        if (cantidad > 65535u) { w3dLogfE("W3dPakRegistrar: TOC invalido (cantidad)"); return; }
-        std::vector<PakEntrada> toc;
-        for (unsigned i = 0; i < cantidad; i++) {
-            if (pos + 2 > tam) { w3dLogfE("W3dPakRegistrar: TOC truncado"); return; }
-            unsigned largo = (unsigned)(unsigned char)(datos[pos] ^ PakFlujoByte(&f)); pos++;
-            largo |= ((unsigned)(unsigned char)(datos[pos] ^ PakFlujoByte(&f))) << 8; pos++;
-            if (largo == 0 || largo > 1024u || pos + largo + 8 > tam) {
+        unsigned count = PakReadU32(data, &pos, &f);
+        if (count > 65535u) { w3dLogfE("W3dPakRegistrar: TOC invalido (cantidad)"); return; }
+        std::vector<PakEntry> toc;
+        for (unsigned i = 0; i < count; i++) {
+            if (pos + 2 > size) { w3dLogfE("W3dPakRegistrar: TOC truncado"); return; }
+            unsigned length = (unsigned)(unsigned char)(data[pos] ^ PakFlowByte(&f)); pos++;
+            length |= ((unsigned)(unsigned char)(data[pos] ^ PakFlowByte(&f))) << 8; pos++;
+            if (length == 0 || length > 1024u || pos + length + 8 > size) {
                 w3dLogfE("W3dPakRegistrar: TOC invalido (nombre)"); return;
             }
-            PakEntrada e;
-            e.nombre.reserve(largo);
-            for (unsigned k = 0; k < largo; k++) {
-                e.nombre += (char)(datos[pos] ^ PakFlujoByte(&f)); pos++;
+            PakEntry e;
+            e.name.reserve(length);
+            for (unsigned k = 0; k < length; k++) {
+                e.name += (char)(data[pos] ^ PakFlowByte(&f)); pos++;
             }
-            e.off = PakLeerU32(datos, &pos, &f);
-            e.tam = PakLeerU32(datos, &pos, &f);
-            if (e.off > tam || e.tam > tam - e.off) {
-                w3dLogfE("W3dPakRegistrar: TOC invalido (offset/tamano de '%s')", e.nombre.c_str());
+            e.off  = PakReadU32(data, &pos, &f);
+            e.size = PakReadU32(data, &pos, &f);
+            if (e.off > size || e.size > size - e.off) {
+                w3dLogfE("W3dPakRegistrar: TOC invalido (offset/tamano de '%s')", e.name.c_str());
                 return;
             }
             toc.push_back(e);
         }
-        gPakDatos = datos; gPakTam = tam; gPakSemilla = semilla;
+        gPakData = data; gPakSize = size; gPakSeed = seed;
         gPakToc.swap(toc);
-        w3dLogf("W3dPakRegistrar: pak de %u bytes con %u archivo(s)", tam, cantidad);
+        w3dLogf("W3dPakRegistrar: pak de %u bytes con %u archivo(s)", size, count);
     }
 
     // busca 'path' en el pak; si esta, lo copia des-XOReado a 'out'. Rutas
     // comparadas NORMALIZADAS (mismo criterio que el resto del filesystem).
-    static bool PakBuscar(const std::string& path, std::vector<unsigned char>& out) {
-        if (!gPakDatos || gPakToc.empty() || path.empty()) return false;
-        std::string p = Normaliza(path);
+    static bool PakFind(const std::string& path, std::vector<unsigned char>& out) {
+        if (!gPakData || gPakToc.empty() || path.empty()) return false;
+        std::string p = Normalizes(path);
         for (size_t i = 0; i < gPakToc.size(); i++) {
-            if (gPakToc[i].nombre != p) continue;
-            const PakEntrada& e = gPakToc[i];
-            out.resize(e.tam);
-            if (e.tam) {
-                PakFlujo f;
-                PakFlujoInit(&f, gPakSemilla ^ (e.off * 2654435761u) ^ e.tam);
-                for (unsigned k = 0; k < e.tam; k++)
-                    out[k] = (unsigned char)(gPakDatos[e.off + k] ^ PakFlujoByte(&f));
+            if (gPakToc[i].name != p) continue;
+            const PakEntry& e = gPakToc[i];
+            out.resize(e.size);
+            if (e.size) {
+                PakFlow f;
+                PakFlowInit(&f, gPakSeed ^ (e.off * 2654435761u) ^ e.size);
+                for (unsigned k = 0; k < e.size; k++)
+                    out[k] = (unsigned char)(gPakData[e.off + k] ^ PakFlowByte(&f));
             }
             return true;
         }
         return false;
     }
 
-    bool ReadFileRange(const std::string& path, unsigned desde, unsigned n, std::vector<unsigned char>& out) {
+    bool ReadFileRange(const std::string& path, unsigned from, unsigned n, std::vector<unsigned char>& out) {
         out.clear();
         {
             std::string lib, ent;
-            if (W3dRutaDeLibreria(path, &lib, &ent)) {
-                W3dAlmacen* a = AlmacenDeLibreria(lib);
-                if (a) return a->LeerRango(Normaliza(ent), desde, n, out);
+            if (W3dSplitLibPath(path, &lib, &ent)) {
+                W3dStore* a = LibStore(lib);
+                if (a) return a->ReadRange(Normalizes(ent), from, n, out);
             }
         }
-        if (!gPakDatos && gAlmacenMontado && gAlmacenMontado->LeerRango(Normaliza(path), desde, n, out)) return true;
-        std::vector<unsigned char> todo;
-        if (!ReadFileBytes(path, todo) || desde > todo.size() || todo.size() - desde < n) { out.clear(); return false; }
-        out.assign(todo.begin() + desde, todo.begin() + desde + n);
+        if (!gPakData && gMountedStore && gMountedStore->ReadRange(Normalizes(path), from, n, out)) return true;
+        std::vector<unsigned char> all;
+        if (!ReadFileBytes(path, all) || from > all.size() || all.size() - from < n) { out.clear(); return false; }
+        out.assign(all.begin() + from, all.begin() + from + n);
         return true;
     }
 
     bool ReadFileBytes(const std::string& path, std::vector<unsigned char>& out) {
         out.clear();
-        // UNA ENTRADA DE LIBRERIA ("lib:<nombre>/texturas/x.png", ver W3dAlmacen.h): la lee el
+        // UNA ENTRADA DE LIBRERIA ("lib:<nombre>/textures/x.png", ver W3dStore.h): la lee el
         // almacen de ESA libreria; sin almacen (el juego compilado), su copia empaquetada
         {
             std::string lib, ent;
-            if (W3dRutaDeLibreria(path, &lib, &ent)) {
-                W3dAlmacen* a = AlmacenDeLibreria(lib);
+            if (W3dSplitLibPath(path, &lib, &ent)) {
+                W3dStore* a = LibStore(lib);
                 if (a) {
-                    if (a->Leer(Normaliza(ent), out)) return true;
+                    if (a->Read(Normalizes(ent), out)) return true;
                     out.clear();
                     return false;
                 }
-                return ReadFileBytes(W3dRutaLibreriaEmpaquetada(lib, Normaliza(ent)), out);
+                return ReadFileBytes(W3dLibPathPacked(lib, Normalizes(ent)), out);
             }
         }
         // LA RUTA NORMALIZADA (sin "." ni ".."). El pak y el AAssetManager buscan por
         // NOMBRE EXACTO: no existe un "directorio actual" que resuelva los ".." como
         // hace fopen. Un .mtl escribe sus texturas relativas al .obj
-        // ("modelos/crash/../../texturas/sombra_blob.png") y ese nombre no esta en
+        // ("models/crash/../../textures/sombra_blob.png") y ese nombre no esta en
         // ningun indice -> adentro del APK la textura no cargaba y el quad salia
         // BLANCO (la sombra de Crash), aunque el PNG estuviera empaquetado.
-        const std::string norm = Normaliza(path);
+        const std::string norm = Normalizes(path);
         // PRIMERO el pak embebido (si el juego se compilo con assets empaquetados);
         // si la ruta no esta adentro, se cae al filesystem real de siempre.
-        if (gPakDatos && (PakBuscar(path, out) || (norm != path && PakBuscar(norm, out)))) return true;
+        if (gPakData && (PakFind(path, out) || (norm != path && PakFind(norm, out)))) return true;
         // SEGUNDO el CONTENEDOR montado (el .w3d abierto en el editor). Sus entradas
-        // son rutas VIRTUALES relativas ("texturas/pausa.png"): una ruta absoluta no
+        // son rutas VIRTUALES relativas ("textures/pausa.png"): una ruta absoluta no
         // puede ser una entrada, asi que los assets externos caen igual al disco.
         // Este es el truco central del formato v4: montar el .w3d alcanza para que
         // texturas, fuentes, lua, .w3dui y GLB carguen de adentro sin tocar un solo
         // call site.
-        if (gAlmacenMontado) {
-            std::string virt = Normaliza(path);
-            if (gAlmacenMontado->Leer(virt, out)) return true;
+        if (gMountedStore) {
+            std::string virt = Normalizes(path);
+            if (gMountedStore->Read(virt, out)) return true;
             out.clear();   // el Leer fallido pudo dejar basura a medias
         }
     #ifdef __ANDROID__
@@ -528,20 +532,31 @@ namespace w3dFileSystem {
         return r ? std::string(b.begin(), b.end()) : std::string();
     }
 
+    bool ReplaceFile(const std::string& tmp, const std::string& dest) {
+        if (rename(tmp.c_str(), dest.c_str()) == 0) return true;   // POSIX: atomico, pisa el destino
+        // este sistema no pisa un destino que ya existe: el viejo se corre, entra el nuevo, se borra el viejo
+        const std::string bak = dest + ".bak";
+        remove(bak.c_str());
+        if (rename(dest.c_str(), bak.c_str()) != 0) return false;   // (no habia destino: fallo por otra cosa)
+        if (rename(tmp.c_str(), dest.c_str()) != 0) { rename(bak.c_str(), dest.c_str()); return false; }
+        remove(bak.c_str());
+        return true;
+    }
+
     bool WriteTextFile(const std::string& path, const std::string& data) {
         FILE* f = fopen(path.c_str(), "wb");
         if (!f) return false;
         size_t wr = data.empty() ? 0 : fwrite(data.data(), 1, data.size(), f);
         // el fclose HACE el flush: con un archivo mas chico que el buffer de stdio (4 KB) el
         // fwrite "entra" entero en el buffer y el disco lleno recien se ve al cerrar
-        bool cerro = (fclose(f) == 0);
-        return cerro && wr == data.size();   // escritura CORTA (disco lleno) = fallo
+        bool closed = (fclose(f) == 0);
+        return closed && wr == data.size();   // escritura CORTA (disco lleno) = fallo
     }
 
     // ========================================================
     //  orden: carpetas primero, alfabetico case-insensitive
     // ========================================================
-    static bool Menor(const DirEntry& a, const DirEntry& b) {
+    static bool Lower(const DirEntry& a, const DirEntry& b) {
         const std::string& x = a.name; const std::string& y = b.name;
         size_t n = (x.size() < y.size()) ? x.size() : y.size();
         for (size_t i = 0; i < n; i++) {
@@ -552,8 +567,8 @@ namespace w3dFileSystem {
         }
         return x.size() < y.size();
     }
-    static void Ordenar(std::vector<DirEntry>& v) {
-        std::sort(v.begin(), v.end(), Menor);   // una carpeta real (Descargas) puede tener miles de entradas
+    static void Sort(std::vector<DirEntry>& v) {
+        std::sort(v.begin(), v.end(), Lower);   // una carpeta real (Descargas) puede tener miles de entradas
     }
 
     // ========================================================
@@ -579,8 +594,8 @@ namespace w3dFileSystem {
             std::string name(reinterpret_cast<const char*>(_u8.data()), _u8.size());
             if (name.empty() || name[0] == '.') continue;
             std::error_code ec2;
-            DirEntry de; de.name = name; de.isDir = it->is_directory(ec2);
-            (de.isDir ? dirs : files).push_back(de);
+            DirEntry of; of.name = name; of.isDir = it->is_directory(ec2);
+            (of.isDir ? dirs : files).push_back(of);
         }
     #else
         DIR* dir = OpenDirRobust(path);
@@ -598,14 +613,14 @@ namespace w3dFileSystem {
             std::string name = e->d_name;
     #endif
             if (name.empty() || name[0] == '.') continue; // ocultos y . / ..
-            DirEntry de; de.name = name; de.isDir = EsCarpeta(JoinPath(path, name));
-            (de.isDir ? dirs : files).push_back(de);
+            DirEntry of; of.name = name; of.isDir = IsFolder(JoinPath(path, name));
+            (of.isDir ? dirs : files).push_back(of);
         }
         closedir(dir);
     #endif
 
-        Ordenar(dirs);
-        Ordenar(files);
+        Sort(dirs);
+        Sort(files);
         out.reserve(dirs.size() + files.size());
         for (size_t i = 0; i < dirs.size(); i++)  out.push_back(dirs[i]);
         for (size_t i = 0; i < files.size(); i++) out.push_back(files[i]);
@@ -616,8 +631,8 @@ namespace w3dFileSystem {
     //  GetHomeDir
     // ========================================================
 #if defined(__ANDROID__)
-    static bool CarpetaLegible(const char* ruta) {
-        DIR* d = opendir(ruta);
+    static bool FolderLegible(const char* path) {
+        DIR* d = opendir(path);
         if (!d) return false;
         closedir(d);
         return true;
@@ -626,10 +641,10 @@ namespace w3dFileSystem {
     std::string GetHomeDir() {
     #if defined(_WIN32)
         const char* up = std::getenv("USERPROFILE");
-        if (up && *up) return Normaliza(up);
+        if (up && *up) return Normalizes(up);
         return "C:/";
     #elif defined(W3D_SYMBIAN)
-        if (EsCarpeta("E:/")) return "E:/"; // tarjeta de memoria del N95
+        if (IsFolder("E:/")) return "E:/"; // tarjeta de memoria del N95
         return "C:/";
     #elif defined(W3D_DREAMCAST)
         return "/ram";   // la Dreamcast: lo unico escribible es el disco en RAM (se pierde al apagar)
@@ -650,13 +665,13 @@ namespace w3dFileSystem {
         // Se mira que se pueda LEER (no solo que exista): sin tarjeta SD (el Galaxy Ace) /sdcard existe pero no se
         // puede listar, y el explorador quedaba en "/" sin nada a donde ir. Ahi, la carpeta de Whisk3D (la de la app:
         // siempre se lee y se escribe)
-        if (CarpetaLegible("/storage/emulated/0")) return "/storage/emulated/0";
-        if (CarpetaLegible("/sdcard")) return "/sdcard";
+        if (FolderLegible("/storage/emulated/0")) return "/storage/emulated/0";
+        if (FolderLegible("/sdcard")) return "/sdcard";
         if (!gUserDataDir.empty()) return gUserDataDir;
         return "/";
     #else
         const char* h = std::getenv("HOME");
-        return (h && *h) ? Normaliza(h) : std::string("/");
+        return (h && *h) ? Normalizes(h) : std::string("/");
     #endif
     }
 
@@ -664,20 +679,20 @@ namespace w3dFileSystem {
     // en el resto, la carpeta del usuario. Symbian usa sus rutas fijas E:/whisk3d/* en el editor.
     std::string GetDefaultOutputDir() {
     #if defined(__ANDROID__)
-        if (EsCarpeta("/storage/emulated/0/Download")) return "/storage/emulated/0/Download";
-        if (EsCarpeta("/sdcard/Download")) return "/sdcard/Download";
+        if (IsFolder("/storage/emulated/0/Download")) return "/storage/emulated/0/Download";
+        if (IsFolder("/sdcard/Download")) return "/sdcard/Download";
         return GetHomeDir();
     #else
         return GetHomeDir();
     #endif
     }
 
-    // es una CARPETA? (version publica de EsCarpeta). La usan los flujos de "elegir
+    // es una CARPETA? (version publica de IsFolder). La usan los flujos de "elegir
     // carpeta de salida" para saber si lo que devolvio el explorador es un directorio
     // (hay que pegarle el nombre) o un archivo (se respeta tal cual).
     bool IsDir(const std::string& path) {
         if (path.empty()) return false;
-        return EsCarpeta(path);
+        return IsFolder(path);
     }
 
     // existe un ARCHIVO en 'path'? (fopen: file-specific, no matchea carpetas). Se usa para
@@ -687,10 +702,10 @@ namespace w3dFileSystem {
         // UNA ENTRADA DE LIBRERIA: la mira el almacen de esa libreria (o su copia empaquetada)
         {
             std::string lib, ent;
-            if (W3dRutaDeLibreria(path, &lib, &ent)) {
-                W3dAlmacen* a = AlmacenDeLibreria(lib);
-                if (a) return a->Existe(Normaliza(ent));
-                return FileExists(W3dRutaLibreriaEmpaquetada(lib, Normaliza(ent)));
+            if (W3dSplitLibPath(path, &lib, &ent)) {
+                W3dStore* a = LibStore(lib);
+                if (a) return a->Exists(Normalizes(ent));
+                return FileExists(W3dLibPathPacked(lib, Normalizes(ent)));
             }
         }
         // el CONTENEDOR montado cuenta como "existe": en el formato v4 la ruta de
@@ -698,16 +713,16 @@ namespace w3dFileSystem {
         // (la escena UI que se va a cargar, el icono del proyecto, el fallback de
         // rutas al abrir) preguntan por FileExists ANTES de leer. Sin esto un .w3d
         // v4 abriria "sin las escenas" aunque el zip las tenga.
-        if (gAlmacenMontado && gAlmacenMontado->Existe(Normaliza(path))) return true;
+        if (gMountedStore && gMountedStore->Exists(Normalizes(path))) return true;
         // ...y por el MISMO motivo cuentan el PAK embebido y los assets del APK:
         // ReadFileBytes los resuelve, pero FileExists caia derecho al fopen y
         // devolvia false. En Android eso hacia que el juego se saltara TODO lo que
         // se consulta ANTES de leer (la escena de UI, el .mtl de cada .obj, los
         // sidecars): la app abria con media escena o directamente en negro.
-        const std::string normEx = Normaliza(path);   // ver ReadFileBytes: el indice no resuelve ".."
-        if (gPakDatos) {
+        const std::string normEx = Normalizes(path);   // ver ReadFileBytes: el indice no resuelve ".."
+        if (gPakData) {
             std::vector<unsigned char> tmp;
-            if (PakBuscar(path, tmp) || (normEx != path && PakBuscar(normEx, tmp))) return true;
+            if (PakFind(path, tmp) || (normEx != path && PakFind(normEx, tmp))) return true;
         }
     #ifdef __ANDROID__
         // ruta RELATIVA = asset del APK (mismo criterio que ReadFileBytes). Si no
@@ -734,9 +749,9 @@ namespace w3dFileSystem {
     #if defined(_WIN32)
         // Windows: todas las unidades disponibles (C:, D:, E: ...)
         for (char d = 'C'; d <= 'Z'; d++) {
-            std::string raiz = std::string(1, d) + ":/";
-            if (RutaExiste(raiz)) {
-                Bookmark b; b.name = std::string(1, d) + ":"; b.path = raiz;
+            std::string root = std::string(1, d) + ":/";
+            if (PathExists(root)) {
+                Bookmark b; b.name = std::string(1, d) + ":"; b.path = root;
                 out.push_back(b);
             }
         }
@@ -746,20 +761,19 @@ namespace w3dFileSystem {
         // tengo que ver si en el n8 que tiene como 3 memorias esto afecta
         const char syms[] = { 'C', 'E', 0 };
         for (int i = 0; syms[i]; i++) {
-            std::string raiz = std::string(1, syms[i]) + ":/";
-            if (RutaExiste(raiz)) {
-                Bookmark b; b.name = std::string(1, syms[i]) + ":"; b.path = raiz;
+            std::string root = std::string(1, syms[i]) + ":/";
+            if (PathExists(root)) {
+                Bookmark b; b.name = std::string(1, syms[i]) + ":"; b.path = root;
                 out.push_back(b);
             }
         }
     #else
         // Linux / Android: carpetas tipicas del usuario + la raiz
-        std::string h = GetHomeDir();
-        const char* nombres[]   = { "Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos" };
-        const char* etiquetas[] = { "Escritorio", "Documentos", "Descargas", "Imagenes", "Musica", "Videos" };
+        std::string h       = GetHomeDir();
+        const char* names[] = { "Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos" };
         for (int i = 0; i < 6; i++) {
-            std::string p = JoinPath(h, nombres[i]);
-            if (EsCarpeta(p)) { Bookmark b; b.name = etiquetas[i]; b.path = p; out.push_back(b); }
+            std::string p = JoinPath(h, names[i]);
+            if (IsFolder(p)) { Bookmark b; b.name = names[i]; b.path = p; out.push_back(b); }
         }
         Bookmark br; br.name = "/"; br.path = "/"; out.push_back(br);
     #endif

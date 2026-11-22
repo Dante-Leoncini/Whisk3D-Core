@@ -16,8 +16,8 @@ void W3dVideoUnlock() { W3dVideoUnlockBackend(); }
 W3dVideo* W3dVideoOpen(const char* path, bool loop) {
     return W3dVideoOpenBackend(path, loop);
 }
-W3dVideo* W3dVideoOpenMemory(const void* bytes, size_t len, const char* mime, bool loop, bool conSonido) {
-    return W3dVideoOpenMemoryBackend(bytes, len, mime, loop, conSonido);
+W3dVideo* W3dVideoOpenMemory(const void* bytes, size_t len, const char* mime, bool loop, bool withSound) {
+    return W3dVideoOpenMemoryBackend(bytes, len, mime, loop, withSound);
 }
 #else
 // Modulo apagado: sin backend, sin dependencias. La app maneja el NULL (frame estatico o nada).

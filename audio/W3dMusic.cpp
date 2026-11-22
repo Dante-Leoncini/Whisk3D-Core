@@ -5,30 +5,30 @@
 // ============================================================================
 #include "W3dMusic.h"
 #include "W3dMusicBackend.h"   // contrato compartido con los backends
-#include "W3dVolumen.h"
+#include "W3dVolume.h"
 
 namespace w3dEngine {
 
 // --- registro de pistas vivas (sin memoria dinamica: sirve igual en Symbian) ---
 enum { W3D_MUSIC_MAX = 8 };
-static W3dMusic* gPistas[W3D_MUSIC_MAX] = {0,0,0,0,0,0,0,0};
+static W3dMusic* gTracks[W3D_MUSIC_MAX] = {0,0,0,0,0,0,0,0};
 
-W3dMusic::W3dMusic() : propio(1.0f) {
-    for (int i = 0; i < W3D_MUSIC_MAX; i++) if (!gPistas[i]) { gPistas[i] = this; break; }
+W3dMusic::W3dMusic() : own(1.0f) {
+    for (int i = 0; i < W3D_MUSIC_MAX; i++) if (!gTracks[i]) { gTracks[i] = this; break; }
 }
 W3dMusic::~W3dMusic() {
-    for (int i = 0; i < W3D_MUSIC_MAX; i++) if (gPistas[i] == this) { gPistas[i] = 0; break; }
+    for (int i = 0; i < W3D_MUSIC_MAX; i++) if (gTracks[i] == this) { gTracks[i] = 0; break; }
 }
 void W3dMusic::SetVolume(float v) {
     if (v < 0.0f) v = 0.0f;
     if (v > 1.0f) v = 1.0f;
-    propio = v;
-    AplicarVolumen(propio * VolumenGanancia());
+    own = v;
+    ApplyVolume(own * VolumeGain());
 }
-void W3dMusic::RefrescarVolumen() { AplicarVolumen(propio * VolumenGanancia()); }
+void W3dMusic::RefreshVolume() { ApplyVolume(own * VolumeGain()); }
 
-void W3dMusicRefrescarVolumenes() {
-    for (int i = 0; i < W3D_MUSIC_MAX; i++) if (gPistas[i]) gPistas[i]->RefrescarVolumen();
+void W3dMusicRefreshVolumes() {
+    for (int i = 0; i < W3D_MUSIC_MAX; i++) if (gTracks[i]) gTracks[i]->RefreshVolume();
 }
 
 #ifdef W3D_ENABLE_MUSIC

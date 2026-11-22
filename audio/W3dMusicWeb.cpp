@@ -31,7 +31,7 @@ EM_JS(void, w3dMusicJS_Unlock, (), {
     // verdad es el listener de gesto de W3dClip (touchstart/click sobre el documento).
     // (Antes se creaba el elemento aca igual: quedaba "reservado" pero NUNCA estrenado, y despues
     //  el estreno del gesto lo salteaba por ya existir -> en iOS la musica no sonaba.)
-    Module.__w3dPrimeMusica = function () {
+    Module.__w3dPrimeMusic = function () {
         var a = Module.__w3dPrimed;
         if (!a) {
             a = new Audio();
@@ -46,7 +46,7 @@ EM_JS(void, w3dMusicJS_Unlock, (), {
         if (p && p.catch) p.catch(function () { a.__w3dOk = false; });
     };
     // si el gesto del usuario ya paso, se estrena en el acto
-    if (Module.__w3dGestoOk) Module.__w3dPrimeMusica();
+    if (Module.__w3dGestureOk) Module.__w3dPrimeMusic();
 });
 
 // MUSICA POR WEBAUDIO, no por un elemento <audio>.
@@ -70,11 +70,11 @@ EM_JS(int, w3dMusicJS_OpenMem, (const unsigned char* ptr, int len, const char* m
     // 'quiere' = deberia estar sonando. Se decodifica en segundo plano; cuando el buffer llega,
     // arranca solo (o no, si mientras tanto lo pausaron o lo liberaron).
     var m = { buf: null, src: null, gain: null, vol: vol, loop: !!loop,
-              quiere: true, t0: 0, offset: 0, ctx: ctx };
+              wants: true, t0: 0, offset: 0, ctx: ctx };
     Module.__w3dMusic.push(m);
 
-    m.arrancar = function () {
-        if (!m.buf || !m.quiere || m.src) return;
+    m.start = function () {
+        if (!m.buf || !m.wants || m.src) return;
         try {
             if (ctx.state !== 'running' && ctx.resume) { try { ctx.resume(); } catch (e) {} }
             var s = ctx.createBufferSource(); s.buffer = m.buf; s.loop = m.loop;
@@ -85,10 +85,10 @@ EM_JS(int, w3dMusicJS_OpenMem, (const unsigned char* ptr, int len, const char* m
         } catch (e) {}
     };
 
-    var datos = HEAPU8.slice(ptr, ptr + len).buffer;   // copia propia: decodeAudioData la consume
+    var data = HEAPU8.slice(ptr, ptr + len).buffer;   // copia propia: decodeAudioData la consume
     try {
-        ctx.decodeAudioData(datos,
-            function (b) { m.buf = b; m.arrancar(); },
+        ctx.decodeAudioData(data,
+            function (b) { m.buf = b; m.start(); },
             function ()  { console.log('[musica] no pude decodificar la pista'); });
     } catch (e) {}
     return i;
@@ -97,7 +97,7 @@ EM_JS(int, w3dMusicJS_OpenMem, (const unsigned char* ptr, int len, const char* m
 EM_JS(void, w3dMusicJS_Stop, (int h), {
     var m = Module.__w3dMusic && Module.__w3dMusic[h];
     if (!m) return;
-    m.quiere = false;
+    m.wants = false;
     try { if (m.src) { m.src.stop(0); m.src.disconnect(); } } catch (e) {}
     m.src = null; m.buf = null;                 // suelta el PCM decodificado (son varios MB)
     Module.__w3dMusic[h] = null;
@@ -115,11 +115,11 @@ EM_JS(void, w3dMusicJS_Vol, (int h, float v), {
     if (m.gain) { try { m.gain.gain.value = v; } catch (e) {} }
 });
 
-EM_JS(void, w3dMusicJS_Pausa, (int h, int pausar), {
+EM_JS(void, w3dMusicJS_Pause, (int h, int pause), {
     var m = Module.__w3dMusic && Module.__w3dMusic[h];
     if (!m) return;
-    if (pausar) {
-        m.quiere = false;
+    if (pause) {
+        m.wants = false;
         if (m.src) {
             // Un BufferSource no se puede repausar: se guarda POR DONDE IBA y al reanudar se
             // crea uno nuevo que arranca desde ahi.
@@ -127,8 +127,8 @@ EM_JS(void, w3dMusicJS_Pausa, (int h, int pausar), {
             m.src = null;
         }
     } else {
-        m.quiere = true;
-        if (m.arrancar) m.arrancar();
+        m.wants = true;
+        if (m.start) m.start();
     }
 });
 
@@ -146,10 +146,10 @@ public:
     explicit W3dMusicWeb(int handle) : h(handle) {}
     virtual ~W3dMusicWeb() { Stop(); }
     virtual void Stop() { if (h >= 0) { w3dMusicJS_Stop(h); h = -1; } }
-    virtual void AplicarVolumen(float v) { if (h >= 0) w3dMusicJS_Vol(h, v); }
+    virtual void ApplyVolume(float v) { if (h >= 0) w3dMusicJS_Vol(h, v); }
     virtual bool Playing() const { return h >= 0 && w3dMusicJS_Playing(h) != 0; }
-    virtual void Pausar()   { if (h >= 0) w3dMusicJS_Pausa(h, 1); }
-    virtual void Reanudar() { if (h >= 0) w3dMusicJS_Pausa(h, 0); }
+    virtual void Pause()   { if (h >= 0) w3dMusicJS_Pause(h, 1); }
+    virtual void Resume() { if (h >= 0) w3dMusicJS_Pause(h, 0); }
 };
 
 W3dMusic* W3dMusicPlayMemoryBackend(const void* bytes, size_t len, const char* mime, bool loop, float volume) {

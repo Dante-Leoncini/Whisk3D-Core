@@ -56,7 +56,7 @@ class EditMesh; // malla de EDICION (datos de edit mode), en EditMesh.h
 // ===================================================
 // enum class portable (idiom struct+Enum, como ObjectType)
 struct MeshType {
-    enum Enum { cube, UVsphere, IcoSphere, plane, vertice, circle, cone, cylinder };
+    enum Enum { cube, UVsphere, IcoSphere, plane, vertex, circle, cone, cylinder };
     Enum v;
     MeshType(Enum e) : v(e) {}
     operator Enum() const { return v; }
@@ -66,45 +66,45 @@ struct MeshType {
 //  CAPAS DE DATOS de la malla (UV / vertex color / vertex group) — PERSISTENTES y
 //  EXCLUSIVAS de cada malla. Se guardan como LISTAS DE PUNTEROS con un indice ACTIVO.
 //  Las edita el editor; el render usa la capa ACTIVA. Indexadas por CORNER (esquina de
-//  cara, en el orden de faces3d) salvo el vertex color cuando es 'porVertice'.
+//  cara, en el orden de faces3d) salvo el vertex color cuando es 'perVertex'.
 // ====================================================================
 class UVMap {
     public:
-        std::string nombre;
+        std::string name;
         std::vector<GLfloat> uv; // 2 por corner (u, v)
-        UVMap(const std::string& n) : nombre(n) {}
+        UVMap(const std::string& n) : name(n) {}
 };
 
 class ColorLayer {
     public:
-        std::string nombre;
-        bool porVertice;             // true = 1 color por posicion unica; false = por corner
-        std::vector<GLubyte> color;  // 4 (rgba) por corner (o por posicion unica si porVertice)
+        std::string name;
+        bool perVertex;              // true = 1 color por posicion unica; false = por corner
+        std::vector<GLubyte> color;  // 4 (rgba) por corner (o por posicion unica si perVertex)
 
         // ---- COLOR POR INDICE DE PALETA (concepto del EDITOR) ----
-        // Con porIndice, cada elemento no guarda un color libre sino el INDICE de un color de la
+        // Con byIndex, cada elemento no guarda un color libre sino el INDICE de un color de la
         // paleta EFECTIVA del objeto (-1 = sin asignar, se respeta el color libre que tenga).
         // El CORE no interpreta esto: sigue rindiendo 'color', que es el RGBA ya resuelto -- al
         // final del dia en GL hay que dejar en memoria como se dibuja. El editor es el que
         // rehornea 'color' desde los indices cuando se pinta o cuando cambia la paleta, y de ahi
         // sale el palette-swap: cambiar la paleta del padre re-pinta a todos sus herederos.
-        // Combinado con porVertice dan las cuatro formas de guardar el vertex color:
+        // Combinado con perVertex dan las cuatro formas de guardar el vertex color:
         //   corner libre | corner por indice | vertice libre | vertice por indice
-        bool porIndice;
-        std::vector<int> indice;     // 1 por elemento (mismo largo que color/4). Vacio = sin usar.
+        bool byIndex;
+        std::vector<int> index;     // 1 por elemento (mismo largo que color/4). Vacio = sin usar.
 
-        ColorLayer(const std::string& n) : nombre(n), porVertice(false), porIndice(false) {}
+        ColorLayer(const std::string& n) : name(n), perVertex(false), byIndex(false) {}
 };
 
 // ====================================================================
 //  LOS DOS GRUPOS DE PESOS DE LA MALLA (entidades DISTINTAS, sin cruces entre si):
 //
 //    VertexGroup  -> pesos por CONTROL-POINT (punto 3D). Es el grupo del VIEWPORT 3D:
-//                    lo pinta el weight paint del 3D, lo lee el skinning 3D (SkinearMesh),
+//                    lo pinta el weight paint del 3D, lo lee el skinning 3D (SkinMesh),
 //                    lo exporta el GLB y lo bindea POR NOMBRE el hueso del ARMATURE 3D.
 //    UVGroup      -> pesos por RENDER-VERT (CORNER, esquina de cara). Es el grupo del
 //                    EDITOR UV: lo pinta el pincel del UV, lo lee el skinning 2D
-//                    (Armature2DAplicar) + el relleno de color del UV, y lo bindea POR
+//                    (Armature2DApply) + el relleno de color del UV, y lo bindea POR
 //                    NOMBRE el hueso del ARMATURE 2D. SIEMPRE por corner (no hay
 //                    variante por control-point: si fuera por punto 3D, pesar UNA cara
 //                    del cubo arrastraria las 3 islas UV que comparten ese punto).
@@ -112,23 +112,23 @@ class ColorLayer {
 //  REGLA DE BINDING (la unica que hay que recordar):
 //    3D: hueso <-> vertex group (vertices / control-points)
 //    2D: hueso <-> UV group     (corners / render-verts)
-//  Los dos viven en listas propias del Mesh (vertexGroups/grupoActivo y uvGroups/
-//  uvGrupoActivo) y NO se bakean uno del otro: son datos distintos de la misma malla.
+//  Los dos viven en listas propias del Mesh (vertexGroups/activeGroup y uvGroups/
+//  uvActiveGroup) y NO se bakean uno del otro: son datos distintos de la misma malla.
 // ====================================================================
 class VertexGroup {
     public:
-        std::string nombre;
-        std::vector<int>     verts;  // indices de posicion afectados (SPARSE, paralelo a pesos)
-        std::vector<GLfloat> pesos;  // peso 0..1 de cada vert
-        VertexGroup(const std::string& n) : nombre(n) {}
+        std::string name;
+        std::vector<int>     verts;    // indices de posicion afectados (SPARSE, paralelo a pesos)
+        std::vector<GLfloat> weights;  // peso 0..1 de cada vert
+        VertexGroup(const std::string& n) : name(n) {}
 };
 
 class UVGroup {
     public:
-        std::string nombre;
-        std::vector<int>     verts;  // indices de RENDER-VERT / CORNER (SPARSE, paralelo a pesos)
-        std::vector<GLfloat> pesos;  // peso 0..1 de cada corner
-        UVGroup(const std::string& n) : nombre(n) {}
+        std::string name;
+        std::vector<int>     verts;    // indices de RENDER-VERT / CORNER (SPARSE, paralelo a pesos)
+        std::vector<GLfloat> weights;  // peso 0..1 de cada corner
+        UVGroup(const std::string& n) : name(n) {}
 };
 
 // ====================================================================
@@ -140,23 +140,23 @@ class UVGroup {
 //  El armature 3D usa la OTRA entidad (vertex group, por control-point): ver el
 //  bloque VertexGroup/UVGroup de arriba.
 //  VARIOS ARMATURES POR MALLA: la malla guarda una LISTA (Mesh::armatures2d) + el indice del
-//  ACTIVO (Mesh::armature2dActivo), igual patron que uvMaps/vertexGroups/uvGroups. Cada armature
+//  ACTIVO (Mesh::armature2dActive), igual patron que uvMaps/vertexGroups/uvGroups. Cada armature
 //  es INDEPENDIENTE: sus huesos, SUS clips de animacion y su hueso/clip activo (struct Armature2D
 //  aca abajo). El editor UV los selecciona en su MODO OBJETO y todo lo que edita huesos opera
-//  sobre el ACTIVO (Mesh::Arm2DHuesos() y compania). El SKINNING en cambio aplica TODOS los
-//  armatures a la vez (cada hueso pesa por su UV group homonimo; ver Armature2DAplicar).
+//  sobre el ACTIVO (Mesh::Arm2DBones() y compania). El SKINNING en cambio aplica TODOS los
+//  armatures a la vez (cada hueso pesa por su UV group homonimo; ver Armature2DApply).
 //  ANIMACION: va por CLIPS PROPIOS (Armature2D::anims, ver animation/Armature2DAnimation.h):
 //  cada clip tiene un track por hueso y una curva por canal (posU/posV/rot/sclX/sclY).
-//  Los reproduce Armature2DEvaluar: con el clip 2D en el timeline (ActiveAnimKind==4) o,
-//  en MODO JUEGO (kind 2), TODAS las mallas de la escena via Armature2DEvaluarEscena.
+//  Los reproduce Armature2DEvaluate: con el clip 2D en el timeline (ActiveAnimKind==4) o,
+//  en MODO JUEGO (kind 2), TODAS las mallas de la escena via Armature2DEvaluateScene.
 //  RETROCOMPAT: una malla SIN clips 2D se comporta como antes -> la animacion sale de la
 //  VERTEX ANIMATION UV horneada (VertexFrame::uvs, el camino viejo) y sigue corriendo
 //  igual en el editor y en el runtime. La pose ACTUAL (no keyframeada) se re-aplica al
-//  abrir el .w3d (Armature2DAplicar corre en el editor y en el juego compilado).
+//  abrir el .w3d (Armature2DApply corre en el editor y en el juego compilado).
 // ====================================================================
 struct W3dBone2D {
-    std::string nombre;           // = nombre del UV GROUP que lo pesa (binding por nombre)
-    int   padre;                  // indice en Armature2D::huesos (-1 = raiz). Invariante: padre < hijo
+    std::string name;           // = nombre del UV GROUP que lo pesa (binding por nombre)
+    int   parent;               // indice en Armature2D::huesos (-1 = raiz). Invariante: padre < hijo
                                   // (extrude/borrar lo conservan; re-parentar REORDENA topologico en el editor)
     float headU, headV;           // extremos del hueso (rest) en espacio UV
     float tailU, tailV;
@@ -167,13 +167,13 @@ struct W3dBone2D {
     // sola). "Disconnect Bone" (Alt+P) lo apaga SIN tocar el padre: el hueso sigue emparentado
     // (linea punteada al separarlo) pero las puntas quedan libres. Se guarda en el .w3d
     // ("suelto": true solo cuando esta apagado con padre -> los archivos viejos no cambian).
-    bool  conectado;
+    bool  connected;
     bool  select;                 // seleccion en el editor UV (transitorio, no se guarda)
     bool  selHead, selTail;       // seleccion POR PUNTA estilo Blender (transitorio; hueso entero = select + ambas)
-    W3dBone2D() : padre(-1), headU(0.5f), headV(0.5f), tailU(0.5f), tailV(0.3f),
+    W3dBone2D() : parent(-1), headU(0.5f), headV(0.5f), tailU(0.5f), tailV(0.3f),
                   poseTU(0.0f), poseTV(0.0f), poseRot(0.0f), poseSX(1.0f), poseSY(1.0f),
-                  conectado(true), select(false), selHead(false), selTail(false) {}
-    bool PoseIdentidad() const {
+                  connected(true), select(false), selHead(false), selTail(false) {}
+    bool PoseIdentity() const {
         return poseTU > -1e-6f && poseTU < 1e-6f && poseTV > -1e-6f && poseTV < 1e-6f &&
                poseRot > -1e-6f && poseRot < 1e-6f &&
                poseSX > 1.0f - 1e-6f && poseSX < 1.0f + 1e-6f &&
@@ -186,12 +186,12 @@ struct W3dBone2D {
 // MISMA malla (ej: un personaje y su sombrero, o cara y cuerpo) tienen curvas y keyframes
 // SEPARADOS. La animacion (ActiveAnimKind==4) reproduce el clip activo del armature ACTIVO.
 struct Armature2D {
-    std::string nombre;                        // unico dentro de la malla (lo muestra el outliner / el UV)
-    std::vector<W3dBone2D> huesos;             // vacio = armature sin huesos (existe igual)
+    std::string name;                          // unico dentro de la malla (lo muestra el outliner / el UV)
+    std::vector<W3dBone2D> bones;              // vacio = armature sin huesos (existe igual)
     std::vector<Armature2DAnimation*> anims;   // clips PROPIOS de ESTE armature (punteros: se liberan aca)
-    int animActiva;                            // clip activo (-1 = ninguno)
-    int boneActivo;                            // hueso activo del editor UV (-1 = ninguno; transitorio)
-    Armature2D(const std::string& n = "Armature 2D") : nombre(n), animActiva(-1), boneActivo(-1) {}
+    int activeAnim;                            // clip activo (-1 = ninguno)
+    int activeBone;                            // hueso activo del editor UV (-1 = ninguno; transitorio)
+    Armature2D(const std::string& n = "Armature 2D") : name(n), activeAnim(-1), activeBone(-1) {}
     ~Armature2D();                             // libera anims (definido en Mesh.cpp: el tipo es incompleto aca)
 private: // no copiable (es dueno de punteros): la lista guarda Armature2D*
     Armature2D(const Armature2D&);
@@ -203,8 +203,8 @@ private: // no copiable (es dueno de punteros): la lista guarda Armature2D*
 // pero la realidad es que no me termina de gustar esta logica y lo quiero cambiar... me gustaria que el Core quede lo mas simple y limpio posible
 // pero toda la logica de modificadores, capas, etc etc solo lo complico de mas al pedo.
 class Modifier;
-struct InsetOpciones;   // (main/edit/MeshEdit.h) las opciones de Inset Faces
-struct BevelOpciones;   // (main/edit/MeshEdit.h) las opciones del Bevel
+struct InsetOptions;   // (main/edit/MeshEdit.h) las opciones de Inset Faces
+struct BevelOptions;   // (main/edit/MeshEdit.h) las opciones del Bevel
 
 // cara LOGICA (poligono): triangulo / quad / ngon. La malla de RENDER la
 // triangula en faces[]; el overlay (y a futuro la edicion de mallas) la usa
@@ -215,7 +215,7 @@ class MeshFace {
         std::vector<int> idx; // indices (en vertex[]) en orden alrededor del poligono
         int mat;              // indice del mesh part (materialsGroup) al que pertenece la cara
         int smooth;           // shading POR CARA: -1 = hereda meshSmooth global; 0 = flat; 1 = smooth (Face>Shade)
-        MeshFace() : mat(0), smooth(-1) {} // por defecto el primer mesh part + hereda el shading global. SOBREVIVE GenerarRender
+        MeshFace() : mat(0), smooth(-1) {} // por defecto el primer mesh part + hereda el shading global. SOBREVIVE GenerateRender
 };
 
 // fuente de la capa de UN corner nuevo (para reconstruir las capas tras una op que
@@ -241,7 +241,7 @@ class MaterialGroup {
         // LAS CAPAS DE MATERIAL de encima (2, 3...): cada una se dibuja OTRA VEZ sobre la misma superficie, en orden, con
         // su material y su mezcla (lo de abajo se ve donde la capa es transparente). Funciona en todos los backends,
         // tambien en OpenGL ES 1.1: es una pasada mas por capa. Se guardan con el objeto ("capasMaterial" del .w3d)
-        std::vector<Material*> capasMat;
+        std::vector<Material*> layersMat;
 
         MaterialGroup()
             : name("Mesh"), drawMode(GL_TRIANGLES), start(0), count(0),
@@ -249,7 +249,7 @@ class MaterialGroup {
 };
 
 // ====================================================================
-//  PRESERVACION DE LO DESCONOCIDO del .w3dm (formato de malla propio, io/W3dMalla.h)
+//  PRESERVACION DE LO DESCONOCIDO del .w3dm (formato de malla propio, io/W3dMesh.h)
 //
 //  El .w3dm es EXTENSIBLE: agregar una capa nueva es AGREGAR un bloque. Para que
 //  guardar con un Whisk3D VIEJO no DESTRUYA los datos de uno NUEVO, el lector se
@@ -265,29 +265,29 @@ class MaterialGroup {
 //  no, se DESCARTA con aviso. Un lector viejo puede aplicar esa regla SIN
 //  ENTENDER NADA del bloque, que es todo el punto.
 // ====================================================================
-struct W3dBloqueAjeno {
-    std::string texto;  // el bloque tal cual vino (cabecera .. END, con sus saltos de linea)
-    std::string nombre; // nombre del bloque (para el aviso)
-    int dominio;        // 0=punto 1=esquina 2=cara 3=arista 4=global
-    int cantidad;       // cantidad declarada en la cabecera (para el aviso)
-    W3dBloqueAjeno() : dominio(4), cantidad(0) {}
+struct W3dForeignBlock {
+    std::string text; // el bloque tal cual vino (cabecera .. END, con sus saltos de linea)
+    std::string name; // nombre del bloque (para el aviso)
+    int domain;       // 0=punto 1=esquina 2=cara 3=arista 4=global
+    int count;        // cantidad declarada en la cabecera (para el aviso)
+    W3dForeignBlock() : domain(4), count(0) {}
 };
-struct W3dAjenos {
-    std::vector<W3dBloqueAjeno> bloques;
+struct W3dForeign {
+    std::vector<W3dForeignBlock> blocks;
     // SELLO: cantidades por dominio en el momento de la carga (-1 = no se cargo de un .w3dm)
-    int nPuntos, nEsquinas, nCaras, nAristas;
+    int nPoints, nCorners, nFaces, nEdges;
     // EL FRENO DE MANO del formato: los nombres de la directiva "requiere" TAL CUAL
     // vinieron en el archivo. Es la unica pieza que no se puede agregar mas tarde
     // (un lector viejo ignoraria una valvula nueva como cualquier directiva
-    // desconocida), asi que TIENE que sobrevivir un ciclo abrir->guardar de un
+    // desconocida), asi que TIENE que sobrevivir un ciclo open->save de un
     // Whisk3D que no entiende el bloque protegido. Antes se perdia: el escritor
     // emitia siempre "requiere V F" a mano y el primer guardado dejaba el archivo
     // SIN la valvula, o sea el degradado silencioso que 'requiere' existe para
     // evitar. Vacio = malla que no salio de un .w3dm -> el escritor pone el default.
-    std::vector<std::string> requiere;
+    std::vector<std::string> requiresValue;
     // la malla se abrio con errores (bloque sin END / faltaba V o F): guardar
-    // encima HORNEA lo que se perdio. Ver W3dMallaInfo::truncado.
-    bool truncado;
+    // encima HORNEA lo que se perdio. Ver W3dMeshInfo::truncado.
+    bool truncated;
     // EL LECTOR RECHAZO EL ARCHIVO ENTERO: no es un W3DMESH, o es de una version
     // del lexico MAS NUEVA, o le falta V/F. La malla que quedo en la escena esta
     // VACIA (no es la del archivo) y guardar encima HORNEA esa nada: el objeto
@@ -295,61 +295,61 @@ struct W3dAjenos {
     // Es el degradado silencioso que el formato existe para impedir, y en el caso
     // estrella (un .w3d escrito por un Whisk3D mas nuevo). 'truncado' NO lo cubre:
     // el lector se va ANTES de setearlo y ademas la malla es otra, recien creada.
-    // Con esto puesto EscribirMallaW3dm se NIEGA, igual que con el freno "requiere".
-    bool noCargo;
-    // ---- lo mismo para el .w3db (io/W3dMallaBin.h): la geometria BINARIA ----
+    // Con esto puesto WriteMeshW3dm se NIEGA, igual que con el freno "requiere".
+    bool notLoaded;
+    // ---- lo mismo para el .w3db (io/W3dMeshBin.h): la geometria BINARIA ----
     // bloques binarios que este Whisk3D no conoce: 'nombre' = el fourcc (4 letras),
     // 'texto' = el payload CRUDO (bytes, no texto), 'dominio'/'cantidad' de su cabecera.
     // Se reescriben tal cual con la misma regla del sello que los de texto.
-    std::vector<W3dBloqueAjeno> bloquesBin;
+    std::vector<W3dForeignBlock> blocksBin;
     // el bloque REQ del .w3db TAL CUAL vino (fourcc que un lector DEBE entender). Si nombra
     // uno desconocido, la malla abre pero no se puede guardar encima (el mismo freno).
-    std::vector<std::string> requiereBin;
+    std::vector<std::string> requiresBin;
     // el sello de los dos dominios que solo tiene el binario (-1 = no se cargo de un .w3db)
-    int nRender, nTriangulos;
-    W3dAjenos() : nPuntos(-1), nEsquinas(-1), nCaras(-1), nAristas(-1), truncado(false), noCargo(false),
-                  nRender(-1), nTriangulos(-1) {}
-    void Limpiar() {
-        bloques.clear(); requiere.clear(); bloquesBin.clear(); requiereBin.clear();
-        nPuntos = -1; nEsquinas = -1; nCaras = -1; nAristas = -1; truncado = false; noCargo = false;
-        nRender = -1; nTriangulos = -1;
+    int nRender, nTriangles;
+    W3dForeign() : nPoints(-1), nCorners(-1), nFaces(-1), nEdges(-1), truncated(false), notLoaded(false),
+                  nRender(-1), nTriangles(-1) {}
+    void Clear() {
+        blocks.clear(); requiresValue.clear(); blocksBin.clear(); requiresBin.clear();
+        nPoints = -1; nCorners = -1; nFaces = -1; nEdges = -1; truncated = false; notLoaded = false;
+        nRender = -1; nTriangles = -1;
     }
 };
 
 // ===========================================================================
 //  ESTADISTICAS DE LA GEOMETRIA (AABB + centro + radio + posiciones unicas).
-//  UNA sola implementacion para todos los que las calculan: CalcularBordes y
-//  CalcularAABBSolo (editor), el escritor del .w3db (que las hornea al guardar) y
+//  UNA sola implementacion para todos los que las calculan: ComputeBorders y
+//  ComputeAABBOnly (editor), el escritor del .w3db (que las hornea al guardar) y
 //  su lector (cuando el proyecto pide el otro modo). Tienen que dar los MISMOS
 //  bits en los cuatro lados, asi que es el mismo codigo, no una copia.
 //   rep = representante de cada vertice (posRep); NULL = todos cuentan (el centro
-//   es el promedio de TODOS los vertices, como CalcularAABBSolo).
+//   es el promedio de TODOS los vertices, como ComputeAABBOnly).
 //  Sin geometria (nV <= 0 o v NULL): ok=false y lo demas no se toca.
 // ===========================================================================
 struct W3dGeomStats {
-    Vector3 aabbMin, aabbMax, centro;
-    float radio;
-    int agrupados;   // posiciones unicas (solo con rep; 0 sin rep)
+    Vector3 aabbMin, aabbMax, center;
+    float radius;
+    int grouped;   // posiciones unicas (solo con rep; 0 sin rep)
     bool ok;
-    W3dGeomStats() : aabbMin(0, 0, 0), aabbMax(0, 0, 0), centro(0, 0, 0), radio(0.0f), agrupados(0), ok(false) {}
+    W3dGeomStats() : aabbMin(0, 0, 0), aabbMax(0, 0, 0), center(0, 0, 0), radius(0.0f), grouped(0), ok(false) {}
 };
-void W3dCalcularGeomStats(const GLfloat* v, int nV, const int* rep, W3dGeomStats& out);
+void W3dComputeGeomStats(const GLfloat* v, int nV, const int* rep, W3dGeomStats& out);
 
 // ===========================================================================
 //  ANIMACION UV de la malla = un FLIPBOOK del Core (ver animation/Flipbook.h).
 //
 //  La malla referencia un Flipbook (grilla de celdas + curvas de UV) y lo reproduce
 //  con un FlipbookPlayer PROPIO. Animar = sumarle a la capa UV del render el OFFSET
-//  de la esquina 0 de la ventana actual (uvActual[0],[1]); para una tira clasica de
+//  de la esquina 0 de la ventana actual (uvCurrent[0],[1]); para una tira clasica de
 //  N celdas eso es cuadro/N sobre u (o v), igual que antes. El wrap lo da GL_REPEAT.
 //
 //  AUTOPLAY: el player se tickea en UpdateUVAnims(dt) (el mismo pase de siempre, que
 //  ademas ESCRIBE uv[]); NO va en el registro global de UpdateFlipbooks porque la
-//  malla escribe geometria, no solo lee uvActual. Sin lua ni timeline.
+//  malla escribe geometria, no solo lee uvCurrent. Sin lua ni timeline.
 //
 //  flipUvBase: copia del uv[] SIN desplazar, capturada perezosamente. Si OTRO sistema
 //  regenera la geometria (skinGeomVersion salta sin pasar por aca) la base se recaptura
-//  sola. GUARDAR: ReposarUVAnimTira() deja uv[] = base antes de escribir el .w3dm.
+//  sola. GUARDAR: RestUVAnimStrip() deja uv[] = base antes de escribir el .w3dm.
 // ===========================================================================
 
 // avanza TODAS las animaciones UV de la escena (autoplay). true si alguna malla
@@ -357,9 +357,9 @@ void W3dCalcularGeomStats(const GLfloat* v, int nV, const int* rep, W3dGeomStats
 bool UpdateUVAnims(float dtSeg = 1.0f / 60.0f);
 
 // ===========================================================================
-//  DATOS COMPARTIDOS (MallaDatos.h + io/W3dRecursos.h): mascara de capas de
+//  DATOS COMPARTIDOS (MeshData.h + io/W3dResources.h): mascara de capas de
 //  render cuya MEMORIA es del dato compartido (no de esta instancia). Todo
-//  camino que ESCRIBE una de estas capas llama antes a DesinstanciarDatos()
+//  camino que ESCRIBE una de estas capas llama antes a UninstantiateData()
 //  con su bit (copy-on-write); todo camino que la BORRA para regenerarla usa
 //  copiar=false (abandona sin copiar). Con la mascara en 0 nada cambia.
 // ===========================================================================
@@ -369,23 +369,23 @@ enum {
     W3DMD_UV    = 4,    // uv[]
     W3DMD_COL   = 8,    // vertexColor[]
     W3DMD_FACES = 16,   // faces[]
-    W3DMD_TODO  = 31
+    W3DMD_ALL   = 31
 };
 
 // ===================================================
 // Clase Mesh
 // ===================================================
 class Armature; // objects/Armature.h — skinning (deform por esqueleto)
-struct MallaRecurso; // objects/MallaRecurso.h — la malla 3D con nombre, compartida por sus objetos
+struct MeshResource; // objects/MeshResource.h — la malla 3D con nombre, compartida por sus objetos
 
 // ---------------------------------------------------------------------------
 //  SHAPE KEY (blend shape / morph target): un desplazamiento POR PUNTO DE CONTROL (el mismo espacio que los vertex
 //  groups) de una forma de la malla, ej: las formas de la cara de un
-//  personaje que habla en una cinematica (boca, ojos, cejas). La malla que se DIBUJA = base + suma(peso_k * forma_k), y DESPUES el skinning (se mueve la boca y
+//  personaje que habla en una cinematica (boca, ojos, cejas). La malla que se DIBUJA = base + sum(peso_k * forma_k), y DESPUES el skinning (se mueve la boca y
 //  ademas la cabeza gira con su hueso). Esparso: solo los puntos que la forma mueve.
 // ---------------------------------------------------------------------------
 struct W3dShapeKey {
-    std::string nombre;
+    std::string name;
     std::vector<int>   idx;   // puntos de control que mueve
     std::vector<float> d;     // 3 floats (dx, dy, dz) por idx, en el espacio de la malla
 };
@@ -396,31 +396,31 @@ class Mesh : public Object {
         // = indice de la forma) de una animacion de escena (ej: la cara que habla en una cinematica). shapeSerial sube
         // en cada cambio de peso: el skinning cacheado por frame se rehace aunque el frame no cambie.
         std::vector<W3dShapeKey> shapeKeys;
-        std::vector<float>       shapePesos;
+        std::vector<float>       shapeWeights;
         unsigned                 shapeSerial;
         unsigned                 skinShapeSerial;   // shapeSerial con el que se calculo skinVertex
         std::vector<float>       shapeCpDelta;      // temp por frame: suma de las formas por punto de control
-        void SetShapePeso(int k, float w) {
+        void SetShapeWeight(int k, float w) {
             if (k < 0 || k >= (int)shapeKeys.size()) return;
-            if ((int)shapePesos.size() < (int)shapeKeys.size()) shapePesos.resize(shapeKeys.size(), 0.0f);
-            if (shapePesos[k] != w) { shapePesos[k] = w; shapeSerial++; }
+            if ((int)shapeWeights.size() < (int)shapeKeys.size()) shapeWeights.resize(shapeKeys.size(), 0.0f);
+            if (shapeWeights[k] != w) { shapeWeights[k] = w; shapeSerial++; }
         }
-        bool HayFormasActivas() const {
-            for (size_t k = 0; k < shapePesos.size() && k < shapeKeys.size(); k++) if (shapePesos[k] != 0.0f) return true;
+        bool HasShapesActive() const {
+            for (size_t k = 0; k < shapeWeights.size() && k < shapeKeys.size(); k++) if (shapeWeights[k] != 0.0f) return true;
             return false;
         }
         // defaults en el constructor (Mesh.cpp), C++03
         int vertexSize;
         // POSICIONES de los render-verts (3 floats por vert).
         // OJO: si vas a MOVER estas posiciones (no rebuildear la malla entera),
-        // abri un W3dMoverVerts sobre la malla ANTES de escribir. Sin eso las
+        // abri un W3dMoveVerts sobre la malla ANTES de escribir. Sin eso las
         // marcas sharp/seam (indexadas por los BYTES de la posicion) quedan
         // apuntando a donde ya no hay nada y se pierden SIN AVISO al guardar.
-        // Ver Mesh::ReanclarMarcasPos y la clase W3dMoverVerts (abajo del todo).
+        // Ver Mesh::ReanchorMarksPos y la clase W3dMoveVerts (abajo del todo).
         //
         // Y SI VAS A COPIARLAS (a otra malla, o a un snapshot de undo) NO son
         // dato suficiente: las mismas posiciones significan EL MODELO o LA POSE
-        // de un cuadro segun 'posadaPorAnim' (abajo). Copiar el buffer sin el
+        // de un cuadro segun 'posedByAnim' (abajo). Copiar el buffer sin el
         // estado deja una malla que dice "estoy en reposo" con la pose adentro.
         // Usa W3dPosVerts, que guarda y escribe las dos cosas juntas.
         GLfloat* vertex;
@@ -431,7 +431,7 @@ class Mesh : public Object {
         // el archivo ya no esta, se avisa y la malla carga igual. Antes era al
         // reves: sin origen se exportaba un GLB y CON origen no se guardaba
         // geometria ninguna -> mover el .obj dejaba la malla vacia.
-        std::string origen;
+        std::string origin;
 
         // SKINNING (deform por esqueleto, del CORE): si skinArmature != NULL, la malla se deforma a la pose del
         // esqueleto (por los vertex groups = pesos por hueso) y se dibuja skinVertex en vez de vertex. El modificador
@@ -440,44 +440,44 @@ class Mesh : public Object {
         GLfloat*  skinVertex;   // posiciones deformadas (vertexSize floats)
         GLbyte*   skinNormals;  // normales deformadas (rotadas por los huesos) -> iluminacion correcta al doblar
         int       skinVertexCap;// floats reservados en skinVertex (realloc si vertexSize cambia -> evita overflow)
-        bool      skinConLuz;   // el render lo prende si algun meshpart tiene luz (sino no vale la pena rotar normales)
+        bool      skinWithLight;   // el render lo prende si algun meshpart tiene luz (sino no vale la pena rotar normales)
         int       lastSkinFrame;// cache: no re-skinnea si el frame no cambio
         unsigned  skinPoseSerial;// poseSerial del armature con el que se calculo skinVertex; si cambia (posar/elegir clip
                                  // en el MISMO frame) se re-skinnea aunque lastSkinFrame no cambie
-        std::vector<GLfloat> skinBordesBuf; // contorno/overlay deformado (edges con skinVertex); cache por frame
-        int       lastSkinBordesFrame;      // cache del contorno skinneado
-        // AUTOCULL por frustum: AABB LOCAL de la ULTIMA pose skinneada (lo actualiza SkinearMesh; para
+        std::vector<GLfloat> skinBordersBuf; // contorno/overlay deformado (edges con skinVertex); cache por frame
+        int       lastSkinBordersFrame;      // cache del contorno skinneado
+        // AUTOCULL por frustum: AABB LOCAL de la ULTIMA pose skinneada (lo actualiza SkinMesh; para
         // la malla sin esqueleto se usa aabbMin/aabbMax de siempre) + cuantos frames seguidos quedo
         // fuera de camara (cada tanto se re-skinnea sin dibujar para refrescar el AABB). Ver RenderObject.
         Vector3   skinAabbMin, skinAabbMax;
         bool      skinAabbOk;
-        int       skinCullSeguidos;
+        int       consecutiveSkinCull;
         // SKINNING INCREMENTAL (SkeletalAnimation.cpp): referencia de lo APLICADO + indices inversos
         // para traducir "se movio el hueso B / la forma K" a la lista exacta de vertices a recalcular.
-        std::vector<float> skinPrevMat;    // 12f por hueso (rot 3x3 + traslacion) con los que se skinneo por ultima vez
-        std::vector<float> skinPrevPesos;  // pesos de shape keys ya aplicados en skinVertex
-        std::vector<int>   skinBoneCpOff;  // CSR inverso: hueso -> CPs que influye
+        std::vector<float> skinPrevMat;      // 12f por hueso (rot 3x3 + traslacion) con los que se skinneo por ultima vez
+        std::vector<float> skinPrevWeights;  // pesos de shape keys ya aplicados en skinVertex
+        std::vector<int>   skinBoneCpOff;    // CSR inverso: hueso -> CPs que influye
         std::vector<int>   skinBoneCp;
         std::vector<int>   skinCpRvOff;    // CSR inverso: CP -> render-verts
         std::vector<int>   skinCpRv;
         std::vector<unsigned char> skinCpDirty; // bitmap temporal por CP (se limpia por lista, no con memset)
         float     skinEpsPos, skinEpsRot;  // umbral sub-visible (escalado al tamaño de la malla)
         bool      skinIncOk;               // hay referencia valida (un pase COMPLETO con este layout)
-        bool      skinPrevConLuz;          // el ultimo pase completo skinneo normales?
-        unsigned  skinBordesPoseSerial;     // poseSerial con el que se calculo el contorno; si cambia (posar/elegir clip
+        bool      skinPrevWithLight;       // el ultimo pase completo skinneo normales?
+        unsigned  skinBordersPoseSerial;     // poseSerial con el que se calculo el contorno; si cambia (posar/elegir clip
                                             // en el mismo frame) se recalcula el borde (sino la silueta flota en bind)
         // CACHE CSR de pesos por CONTROL-POINT (no por render-vert): se arma UNA vez, no por frame. Un mesh de juego
         // duplica cada control-point en varios render-verts por seams de UV/normal/material (banana: 42840 render pero
         // solo 7186 CP = 6x). Los render-verts de un mismo CP comparten bind + pesos -> el MISMO skinning. Por eso el
-        // blend caro de matrices se hace 1 vez POR CP (en registros, SkinPunto) y se ESCALEA a los render-verts.
-        // Invalida via firma de topologia (skinFlatSig). vertCtrlPoint[render] -> CP da el mapeo al escalear.
-        std::vector<int>    skinCpBone;   // indices de hueso (valores CSR, por CP)
-        std::vector<float>  skinCpW;      // pesos 0..1 normalizados a suma 1 (CSR, paralelo a skinCpBone)
-        std::vector<int>    skinCpOff;    // offset por control-point (size skinNCtrl+1)
-        int                 skinNCtrl;    // cantidad de control-points (max vertCtrlPoint + 1)
-        unsigned            skinFlatSig;  // firma de la topologia con la que se armo el CSR (0 = sin armar)
-        unsigned            skinGeomVersion;// se incrementa en CalcularBordes (regenerar geometria); entra en skinFlatSig
-                                            // para invalidar el CSR si GenerarRender reindexa vertex[] con igual tamaño
+        // blend caro de matrices se hace 1 vez POR CP (en registros, SkinPoint) y se ESCALEA a los render-verts.
+        // Invalida via firma de topologia (nextSkinFlat). vertCtrlPoint[render] -> CP da el mapeo al escalear.
+        std::vector<int>    skinCpBone;    // indices de hueso (valores CSR, por CP)
+        std::vector<float>  skinCpW;       // pesos 0..1 normalizados a suma 1 (CSR, paralelo a skinCpBone)
+        std::vector<int>    skinCpOff;     // offset por control-point (size skinNCtrl+1)
+        int                 skinNCtrl;     // cantidad de control-points (max vertCtrlPoint + 1)
+        unsigned            nextSkinFlat;  // firma de la topologia con la que se armo el CSR (0 = sin armar)
+        unsigned            skinGeomVersion;// se incrementa en ComputeBorders (regenerar geometria); entra en nextSkinFlat
+                                            // para invalidar el CSR si GenerateRender reindexa vertex[] con igual tamaño
 
         // ---- VBOs de render (buffer objects): la malla se sube 1 vez a memoria de GPU y se dibuja desde ahi, en vez
         //      de re-transferir los client-arrays de RAM en cada glDrawElements. 0 = sin crear. Solo para el caso
@@ -495,154 +495,154 @@ class Mesh : public Object {
         unsigned     vboPvsVer;    // RETIRADO (P3): el IBO ya no se re-sube por cambio de sector; los indices
                                    // del subconjunto van de CLIENTE (DrawTrianglesClientIdx). Queda declarado
                                    // para no tocar el layout; nadie lo consulta.
-        bool         vboRenderActivo; // true mientras se dibuja desde VBOs -> AplicarMaterial bindea el uv VBO (no client-uv)
-        bool         vboPoseSkinneada; // el VBO de posiciones tiene una pose DEFORMADA subida? -> al quitar el armature
+        bool         vboRenderActive; // true mientras se dibuja desde VBOs -> ApplyMaterial bindea el uv VBO (no client-uv)
+        bool         vboPoseSkinned; // el VBO de posiciones tiene una pose DEFORMADA subida? -> al quitar el armature
                                        // (skinArmature=NULL) hay que re-subir el bind 1 vez (sino queda la ultima pose pegada)
-        void SubirVBO(const GLfloat* posBuf, const GLbyte* norBuf, bool soloPose); // sube/actualiza los VBOs
-        // capas (W3DMD_*) que este dibujo toma de los VBO COMPARTIDOS del recurso (MallaRecurso.h):
-        // SubirVBO no las sube. Lo decide RenderObject en cada dibujo (una skinneada dibuja SU pose).
-        unsigned char vboCompartidas;
-        unsigned int  vboUVEnUso;  // el VBO de UV del dibujo en curso (el propio o el del recurso)
+        void UploadVBO(const GLfloat* posBuf, const GLbyte* norBuf, bool onlyPose); // sube/actualiza los VBOs
+        // capas (W3DMD_*) que este dibujo toma de los VBO COMPARTIDOS del recurso (MeshResource.h):
+        // UploadVBO no las sube. Lo decide RenderObject en cada dibujo (una skinneada dibuja SU pose).
+        unsigned char sharedVbo;
+        unsigned int  vboUVInUse;  // el VBO de UV del dibujo en curso (el propio o el del recurso)
 
         // capas persistentes EXCLUSIVAS de la malla (lista de punteros + indice ACTIVO,
         // -1 = ninguna). El render usa la activa; el editor las crea/edita/borra.
-        std::vector<UVMap*>       uvMaps;       int uvMapActivo;
-        std::vector<ColorLayer*>  colorLayers;  int colorActivo;
+        std::vector<UVMap*>       uvMaps;       int uvActiveMap;
+        std::vector<ColorLayer*>  colorLayers;  int activeColor;
         // CAPAS UV EXTRA EN EL RENDER (por render-vert): uvExtra[i] es la capa uvMaps[i] llevada al render (2 floats
         // por vert; VACIA para la activa, que ya es uv[]). Las usan las capas de textura del material que piden su
-        // propio UV (TexLayer::uvMapa: un lightmap con su unwrap). Las derivan AplicarCapasAlRender / GenerarRender;
+        // propio UV (TexLayer::uvMap: un lightmap con su unwrap). Las derivan ApplyLayersToRender / GenerateRender;
         // en el .w3db viajan en el bloque RUVX; el importador glTF las trae de TEXCOORD_1. Son de la malla (no un
         // array compartido del recurso): una copia por usuario, que siempre es memoria propia (sin COW).
         std::vector< std::vector<GLfloat> > uvExtra;
         // el array de render de la capa UV 'i' (0 = la base): uv[] si es la activa (o no hay capas), sino
         // uvExtra[i]; NULL si esa capa no esta en el render (el que dibuja cae a uv[]).
-        const GLfloat* UVDeCapa(int i) const;
-        // EL UV DE UN MAPA DEL MATERIAL EN ESTE OBJETO: por defecto el INDICE del material (Material::uvMapa, compartido
+        const GLfloat* UVOfLayer(int i) const;
+        // EL UV DE UN MAPA DEL MATERIAL EN ESTE OBJETO: por defecto el INDICE del material (Material::uvMap, compartido
         // por todos los que lo usan); un objeto puede elegir uno PERSONALIZADO, por NOMBRE de su capa UV, para un mapa de
         // un material ("" = usa el indice). Clave del .w3d: "uvMateriales"
         // (o un INDICE propio: la capa UV en esa posicion de ESTA malla, en vez del indice del material)
         std::map<std::string, std::string> uvPersonal;   // "material\x1fmapa" -> nombre de la capa UV
         std::map<std::string, int>         uvPersonalIdx; // "material\x1fmapa" -> indice propio (0 = la primera)
-        std::string UVPersonalizado(const Material* m, int mapa) const;
-        void FijarUVPersonalizado(const Material* m, int mapa, const std::string& uv);
-        int  UVPersonalIndice(const Material* m, int mapa) const;            // -1 = no tiene
-        void FijarUVPersonalIndice(const Material* m, int mapa, int indice); // -1 = lo quita
-        bool UVEsPersonal(const Material* m, int mapa) const { return !UVPersonalizado(m, mapa).empty() || UVPersonalIndice(m, mapa) >= 0; }
-        const GLfloat* UVDeMapa(const Material* m, int mapa) const;   // la del personalizado o la del indice (NULL = la base)
+        std::string UVCustomized(const Material* m, int map) const;
+        void SetUVCustomized(const Material* m, int map, const std::string& uv);
+        int  UVPersonalIndex(const Material* m, int map) const;         // -1 = no tiene
+        void SetUVPersonalIndex(const Material* m, int map, int index); // -1 = lo quita
+        bool UVIsPersonal(const Material* m, int map) const { return !UVCustomized(m, map).empty() || UVPersonalIndex(m, map) >= 0; }
+        const GLfloat* UVOfMap(const Material* m, int map) const;   // la del personalizado o la del indice (NULL = la base)
         // los DOS grupos de pesos (ver el bloque VertexGroup/UVGroup arriba): por
         // CONTROL-POINT (3D, armature 3D) y por CORNER (editor UV, armature 2D).
-        std::vector<VertexGroup*> vertexGroups; int grupoActivo;
-        std::vector<UVGroup*>     uvGroups;     int uvGrupoActivo;
+        std::vector<VertexGroup*> vertexGroups; int activeGroup;
+        std::vector<UVGroup*>     uvGroups;     int uvActiveGroup;
 
         // ===== ANIMACION UV de la malla = FLIPBOOK del Core (ver comentario arriba) =====
         Flipbook*      flipbook;   // NULL = la malla no anima sus UV (heap, como uvAnim antes)
-        bool           flipbookPropio; // true = la malla creo/posee el flipbook (lo borra al quitar);
+        bool           flipbookOwn; // true = la malla creo/posee el flipbook (lo borra al quitar);
                                        // false = es un asset CON NOMBRE compartido (SceneFlipbooks, NO se borra)
         FlipbookPlayer flipPlay;   // estado de reproduccion (fuera del registro global: la malla lo tickea)
         std::vector<GLfloat> flipUvBase;  // uv[] sin desplazar (2 floats por render-vert)
         // desplazarUV() de Lua (reflejos que deslizan la textura: el parabrisas de Daytona): uv[] base
         // capturada en la primera llamada + el desplazamiento aplicado (para ver si otro la reescribio)
-        std::vector<GLfloat> uvDesplBase;
-        GLfloat  uvDesplU, uvDesplV;
-        int      flipAplicado;     // cuadro APLICADO en uv[] (-1 = uv[] esta en base)
-        unsigned flipGeomVer;      // skinGeomVersion tras aplicar (detecta rebuilds ajenos)
-        bool EsFlipbookMesh() const { return flipbook != 0; }
-        void SetUVAnimTira(int frames, float fps, int eje, int desfase,
-                           float ancho = 1.0f, float alto = 1.0f); // crea/reconfigura y registra; ancho/alto = fraccion de sub-tira en el atlas
-        void UsarFlipbook(Flipbook* fb, int desfase);   // usa un flipbook COMPARTIDO (con nombre) sin poseerlo
-        void QuitarUVAnimTira();          // libera + desregistra (tambien la llama ~Mesh)
-        bool TickUVAnimTira(float dtSeg); // avanza y escribe uv[]; true si cambio el cuadro
-        void ReposarUVAnimTira();         // uv[] = base (llamar ANTES de escribir el .w3dm)
+        std::vector<GLfloat> uvOffsetBase;
+        GLfloat  uvOffsetU, uvOffsetV;
+        int      flipApplied;     // cuadro APLICADO en uv[] (-1 = uv[] esta en base)
+        unsigned flipGeomVer;     // skinGeomVersion tras aplicar (detecta rebuilds ajenos)
+        bool IsFlipbookMesh() const { return flipbook != 0; }
+        void SetUVAnimStrip(int frames, float fps, int axis, int offset,
+                           float width = 1.0f, float height = 1.0f); // crea/reconfigura y registra; ancho/alto = fraccion de sub-tira en el atlas
+        void UseFlipbook(Flipbook* fb, int offset);   // usa un flipbook COMPARTIDO (con nombre) sin poseerlo
+        void RemoveUVAnimStrip();          // libera + desregistra (tambien la llama ~Mesh)
+        bool TickUVAnimStrip(float dtSeg); // avanza y escribe uv[]; true si cambio el cuadro
+        void RestUVAnimStrip();            // uv[] = base (llamar ANTES de escribir el .w3dm)
 
         // ===== ARMATURES 2D DEL MESH (ver W3dBone2D / struct Armature2D arriba) =====
         // LISTA de armatures 2D + el ACTIVO (patron uvMaps/vertexGroups/uvGroups). Vacia = la
         // malla no tiene rig 2D. TODO lo que edita huesos/clips (editor UV, panel, timeline)
         // pasa por el ACTIVO via los accesores de abajo; el SKINNING aplica TODOS.
         std::vector<Armature2D*> armatures2d;
-        int armature2dActivo;               // indice en armatures2d (-1 = ninguno)
-        bool TieneArm2D() const { return !armatures2d.empty(); }
+        int armature2dActive;               // indice en armatures2d (-1 = ninguno)
+        bool HasArm2D() const { return !armatures2d.empty(); }
         // hay ALGUN armature 2D con huesos? (no "el activo": el SKINNING aplica TODOS, ver
-        // Armature2DAplicar). Es el gate correcto para "hay rig que pueda deformar": con el
+        // Armature2DApply). Es el gate correcto para "hay rig que pueda deformar": con el
         // activo vacio (o siendo otro rig) el de al lado igual deforma sus UVs.
-        bool Arm2DAlgunHueso() const {
+        bool Arm2DAnyBone() const {
             for (size_t a = 0; a < armatures2d.size(); a++)
-                if (armatures2d[a] && !armatures2d[a]->huesos.empty()) return true;
+                if (armatures2d[a] && !armatures2d[a]->bones.empty()) return true;
             return false;
         }
         // ---- acceso al armature ACTIVO. Sin armature devuelven un DUMMY estatico vacio (los
         // consumidores ya preguntan .empty() antes de tocar nada) -> nunca hay que chequear NULL.
-        // OJO: NO agregar huesos por estos accesores sin asegurar antes el armature (Arm2DAsegurar).
-        Armature2D* Arm2DActivoP();
-        const Armature2D* Arm2DActivoP() const;
-        std::vector<W3dBone2D>& Arm2DHuesos();
-        const std::vector<W3dBone2D>& Arm2DHuesos() const;
-        int& Arm2DBoneActivo();
-        int  Arm2DBoneActivo() const;
+        // OJO: NO agregar huesos por estos accesores sin asegurar antes el armature (Arm2DEnsure).
+        Armature2D* Arm2DActiveP();
+        const Armature2D* Arm2DActiveP() const;
+        std::vector<W3dBone2D>& Arm2DBones();
+        const std::vector<W3dBone2D>& Arm2DBones() const;
+        int& Arm2DActiveBone();
+        int  Arm2DActiveBone() const;
         std::vector<Armature2DAnimation*>& Arm2DAnims();
         const std::vector<Armature2DAnimation*>& Arm2DAnims() const;
-        int& Arm2DAnimActiva();
-        int  Arm2DAnimActiva() const;
+        int& Arm2DActiveAnim();
+        int  Arm2DActiveAnim() const;
         // ---- gestion de la lista ----
-        Armature2D* Arm2DAsegurar();                        // crea el armature 0 si no hay ninguno; devuelve el activo
-        int  Arm2DAgregar(const std::string& nombre = "");   // crea uno nuevo (nombre unico) y lo deja activo; devuelve su indice
-        void Arm2DBorrar(int idx);                          // borra uno (libera sus clips) y reacomoda el activo
-        std::string Arm2DNombreUnico(const std::string& base) const; // "Armature 2D", "Armature 2D.001", ...
-        std::string Arm2DNombreLibre(const std::string& base, int excepto) const; // idem, para el RENAME
-        // ===== NOMBRES UNICOS por MALLA (misma regla que todo el editor, base/W3dNombres.h) =====
+        Armature2D* Arm2DEnsure();                        // crea el armature 0 si no hay ninguno; devuelve el activo
+        int  Arm2DAdd(const std::string& armName = "");   // crea uno nuevo (nombre unico) y lo deja activo; devuelve su indice
+        void Arm2DDelete(int idx);                          // borra uno (libera sus clips) y reacomoda el activo
+        std::string Arm2DUniqueName(const std::string& base) const; // "Armature 2D", "Armature 2D.001", ...
+        std::string Arm2DFreeName(const std::string& base, int except) const; // idem, para el RENAME
+        // ===== NOMBRES UNICOS por MALLA (misma regla que todo el editor, base/W3dNames.h) =====
         // Cada lista es su PROPIO espacio de nombres: un UV group puede llamarse igual que un
         // vertex group (de hecho es lo normal: el rig 2D y el 3D comparten nombres de hueso).
         // 'excepto' = el elemento que puede conservar su nombre (rename); -1 = ninguno.
         // NO globalizar estos scopes: el Join (Ctrl+J) mergea los grupos POR NOMBRE entre
         // mallas del mismo rig, y con "Brazo"/"Brazo.001" perderia el binding.
-        std::string NombreLibreVGroup (const std::string& base, int excepto) const;
-        std::string NombreLibreUVGroup(const std::string& base, int excepto) const;
-        std::string NombreLibreUVMap  (const std::string& base, int excepto) const;
-        std::string NombreLibreColor  (const std::string& base, int excepto) const;
-        std::string NombreLibreMeshPart(const std::string& base, int excepto) const;
-        std::string NombreLibreVertexAnim(const std::string& base, int excepto) const;
+        std::string FreeNameVGroup (const std::string& base, int except) const;
+        std::string FreeNameUVGroup(const std::string& base, int except) const;
+        std::string FreeNameUVMap  (const std::string& base, int except) const;
+        std::string FreeNameColor  (const std::string& base, int except) const;
+        std::string FreeNameMeshPart(const std::string& base, int except) const;
+        std::string FreeNameVertexAnim(const std::string& base, int except) const;
         // hueso 2D: unico por MALLA a traves de TODOS sus armatures 2D (el binding es
         // contra el UV group, que es del mesh y no del rig). 'exArm'/'exBone' = el que
         // puede conservar su nombre (-1/-1 = ninguno).
-        std::string NombreLibreBone2D(const std::string& base, int exArm, int exBone) const;
-        // UV de REST (base del skinning 2D): Armature2DAplicar deforma DESDE aca hacia uv[].
-        // Se captura LAZY (Armature2DRestCapturar) al posar; un tamano distinto de
+        std::string FreeNameBone2D(const std::string& base, int exArm, int exBone) const;
+        // UV de REST (base del skinning 2D): Armature2DApply deforma DESDE aca hacia uv[].
+        // Se captura LAZY (Armature2DRestCapture) al posar; un tamano distinto de
         // vertexSize*2 = rest invalido (la topologia cambio) -> se recaptura del uv actual.
         //
         // ===== INVARIANTE DEL MAPEO (no se puede violar):  uv = f(uv2dRest, pose) =====
         // uv[] es SIEMPRE el resultado de aplicar la pose 2D al rest. O sea que uv[] es
-        // DERIVADO: cualquiera puede re-ejecutar Armature2DAplicar y tiene que salir lo mismo.
+        // DERIVADO: cualquiera puede re-ejecutar Armature2DApply y tiene que salir lo mismo.
         // Por eso TODA escritura a mano de uv[] (G/R/S del editor UV, tarjeta Transform UV,
-        // snap, split de caras, etc.) tiene que cerrar con Armature2DRestDesdeUV(): el rest se
+        // snap, split de caras, etc.) tiene que cerrar con Armature2DRestFromUV(): el rest se
         // re-deriva del uv nuevo y el invariante se restablece. Si no se hace, el proximo
-        // Armature2DAplicar (posar, pintar con pose activa, abrir el proyecto, undo...) pisa
+        // Armature2DApply (posar, pintar con pose activa, abrir el proyecto, undo...) pisa
         // uv[] con el rest VIEJO y la edicion del usuario se pierde en silencio (era el bug de
         // "muevo una cara en el UV, pinto y se resetea todo al mismo lugar").
         std::vector<GLfloat> uv2dRest;
-        void Armature2DRestCapturar();      // uv[] -> uv2dRest si no hay un rest valido
+        void Armature2DRestCapture();      // uv[] -> uv2dRest si no hay un rest valido
         // RE-DERIVA el rest desde el uv[] ACTUAL para que valga uv = f(uv2dRest, pose):
         //  - sin armature 2D: no hay rest que mantener -> se descarta (se recaptura lazy).
         //  - pose en identidad: el rest ES el uv (copia directa).
         //  - con pose puesta: el skinning es AFIN por vert (uv_i = A_i*rest_i + b_i, ver
-        //    Armature2DAplicar), asi que se invierte -> rest_i = A_i^-1 (uv_i - b_i). Con eso la
+        //    Armature2DApply), asi que se invierte -> rest_i = A_i^-1 (uv_i - b_i). Con eso la
         //    edicion queda EXACTAMENTE donde el usuario la solto y sobrevive al re-evaluar.
         //    A_i singular (escala 0) = no se puede invertir: ese vert conserva su rest previo.
-        void Armature2DRestDesdeUV();
-        bool Armature2DPoseIdentidad() const; // true = TODOS los huesos de TODOS los armatures en identidad
+        void Armature2DRestFromUV();
+        bool Armature2DPoseIdentity() const; // true = TODOS los huesos de TODOS los armatures en identidad
         // matrices AFINES 2D de la pose de cada hueso del armature ACTIVO, con la jerarquia (FK).
         // 6 floats por hueso: [a b tx c d ty] tal que u' = a*u + b*v + tx ; v' = c*u + d*v + ty.
         void Armature2DMatrices(std::vector<float>& out) const;
         // idem para UN armature cualquiera de la lista (el editor UV dibuja/pickea TODOS).
-        void Armature2DMatricesDe(const Armature2D* a, std::vector<float>& out) const;
+        void Armature2DMatricesOf(const Armature2D* a, std::vector<float>& out) const;
         // APLANA todos los armatures 2D: un puntero por hueso + sus matrices FK concatenadas
         // (6 floats por hueso, mismo orden que 'bones'). Es lo que consume el skinning 2D.
-        void Armature2DHuesosPlanos(std::vector<const W3dBone2D*>& bones, std::vector<float>& out) const;
+        void Armature2DBonesPlanes(std::vector<const W3dBone2D*>& bones, std::vector<float>& out) const;
         // SKINNING 2D: uv[i] = mezcla de (matriz de cada hueso aplicada a uv2dRest[i]) por los
         // pesos del UV GROUP del MISMO NOMBRE del hueso (POR CORNER / render-vert; ver la regla
         // de binding en el bloque VertexGroup/UVGroup: 3D = vertex group, 2D = UV group).
         // Suma de pesos < 1 -> el resto se queda en el rest (como el skinning 3D).
         // Aplica los huesos de TODOS los armatures 2D de la malla (no solo el activo): el rig que
         // no estas editando tambien deforma sus UVs. Corre en el editor (al posar) y en el runtime.
-        void Armature2DAplicar();
+        void Armature2DApply();
         // cache de evaluacion (TRANSITORIO, no se guarda): mismo rol que lastPoseFrame/lastPoseAnim/
         // poseDirty del armature 3D. pose2dDirty = la pose se edito a mano -> re-aplicar el skinning
         // sin refrescar los canales desde la curva.
@@ -651,157 +651,162 @@ class Mesh : public Object {
 
         // STACK de MODIFICADORES (del EDITOR): lista de punteros + activo (-1=ninguno). El core solo los guarda;
         // el editor los crea/gestiona (main/edit) y a futuro genera la malla de render. El ORDEN importa.
-        std::vector<Modifier*>    modificadores; int modificadorActivo;
+        std::vector<Modifier*>    modifiers; int activeModifier;
 
         // gestion del stack (DEFINIDAS EN EL EDITOR, main/edit/MeshEdit.cpp; el core solo las declara + las llama en ~Mesh):
-        void AgregarModificador(int tipo);           // agrega uno del tipo dado al final + lo deja activo
-        void QuitarModificadorActivo();              // borra el modificador activo (lo LIBERA)
+        void AddModifier(int type);            // agrega uno del tipo dado al final + lo deja activo
+        void DeleteActiveModifier();           // borra el modificador activo (lo LIBERA)
         // saca el activo del stack SIN liberarlo y lo devuelve (el que llama pasa a ser dueno).
-        // La usa el paso de undo del Remove, que lo adopta: ver UndoModQuitar en undo/Undo.h.
-        Modifier* SacarModificadorActivo();
-        void MoverModificador(int dir);              // reordena el activo (-1 sube / +1 baja) intercambiando
-        void LiberarModificadores();                 // libera todos (lo llama el destructor)
-        std::string NombreModificador(int i) const;  // nombre del modificador i (para el selector, sin exponer la clase)
+        // La usa el paso de undo del Remove, que lo adopta: ver UndoModRemove en undo/Undo.h.
+        Modifier* DetachActiveModifier();
+        void MoveModifier(int dir);             // reordena el activo (-1 sube / +1 baja) intercambiando
+        void FreeModifiers();                   // libera todos (lo llama el destructor)
+        std::string ModifierName(int i) const;  // nombre del modificador i (para el selector, sin exponer la clase)
 
-        // MALLA GENERADA por el stack de modificadores (buffers de RENDER). Cuando genValido, RenderObject dibuja
-        // ESTA en vez de la editable (vertex[]/faces[]). La produce el EDITOR (GenerarMallaModificada, main/edit);
+        // MALLA GENERADA por el stack de modificadores (buffers de RENDER). Cuando genValid, RenderObject dibuja
+        // ESTA en vez de la editable (vertex[]/faces[]). La produce el EDITOR (GenerateMeshModified, main/edit);
         // el core solo la guarda + la dibuja. La malla EDITABLE (vertex/faces3d) queda intacta (se edita esa).
         GLfloat*  genVertex; GLbyte* genNormals; GLfloat* genUV; GLubyte* genColor;
         MeshIndex* genFaces; int genVertexSize; int genFacesSize;
         std::vector<MaterialGroup> genMaterialsGroup;
-        std::vector<GLfloat> genBordesBuf; // aristas de POLIGONO de la malla generada (sin diagonales de tri) para el
+        std::vector<GLfloat> genBordersBuf; // aristas de POLIGONO de la malla generada (sin diagonales de tri) para el
                                            // CONTORNO de seleccion (subdiv/screw): sino el objeto seleccionado no muestra borde
-        std::vector<MeshIndex> genLineasIdx; // las mismas aristas, como pares de indices de la malla generada: las
+        std::vector<MeshIndex> genLinesIdx; // las mismas aristas, como pares de indices de la malla generada: las
                                              // LINEAS del material (Material::lineas) sin las diagonales de los triangulos
-        bool genValido; // true = hay malla generada por modificadores -> usarla en el render
+        bool genValid; // true = hay malla generada por modificadores -> usarla en el render
         // VERSION DE LA GEOMETRIA EDITABLE: sube cada vez que algo cambia vertex[]/faces3d por las dos
-        // puertas al render (RefrescarRender / GenerarRender, en el editor). El Core no la usa: es para
+        // puertas al render (RefreshRender / GenerateRender, en el editor). El Core no la usa: es para
         // que OTRA malla que depende de esta (un Boolean cuyo target es esta) sepa, comparando UN entero,
         // si tiene que regenerarse -- sin hashear vertices por frame.
         unsigned geoVersion;
-        void GenerarMallaModificada(); // EDITOR: rehace las gen buffers aplicando el stack (genValido=false si vacio)
-        void LiberarMallaModificada(); // libera las gen buffers
-        void AplicarModificadorActivo(); // "Apply Modifier": hornea la malla generada en la editable + saca el modificador
+        void GenerateMeshModified(); // EDITOR: rehace las gen buffers aplicando el stack (genValid=false si vacio)
+        void FreeMeshModified();     // libera las gen buffers
+        void ApplyActiveModifier(); // "Apply Modifier": hornea la malla generada en la editable + saca el modificador
 
         // ================================================================
         //  PVS (modificador "Culling" por TRIANGULO, estilo PS1): override del INDEX
         //  BUFFER. Cuando pvsFaces != NULL, el render dibuja ESTOS indices (el subconjunto
         //  de triangulos del sector activo) en vez de faces[], con pvsGroups como mesh
         //  parts (mismo orden/material que materialsGroup, rangos recortados al sector).
-        //  Los llena el EDITOR (W3dPVSAplicarSector, main/edit/MeshEdit.cpp) al cambiar de
+        //  Los llena el EDITOR (W3dPVSApplySector, main/edit/MeshEdit.cpp) al cambiar de
         //  sector; el core solo dibuja: cambiar de sector = swap de indices (el VBO re-sube
         //  SOLO el IBO al ver pvsVersion distinto), NUNCA trabajo por frame. Los atributos
         //  (vertex/normals/uv/color) son los de SIEMPRE: la malla editable queda intacta.
         //  NULL = sin override (malla completa). No pisa a la malla generada por
-        //  modificadores geometricos (genValido manda primero) ni al Edit Mode (ahi se
+        //  modificadores geometricos (genValid manda primero) ni al Edit Mode (ahi se
         //  dibuja completa: se edita todo).
         // ================================================================
         MeshIndex* pvsFaces;    int pvsFacesSize;
         std::vector<MaterialGroup> pvsGroups;
         unsigned   pvsVersion;  // bump en cada swap de sector -> el fast-path re-sube el IBO
-        // pvsOrdenado: los indices del override vienen EN ORDEN DE DIBUJO (lejos->cerca,
+        // pvsSorted: los indices del override vienen EN ORDEN DE DIBUJO (far->near,
         // el orden del pintor que trae un VisSet ordenado). Los OPACOS siguen agrupados
         // por material (con z-buffer el orden interno es gratis); los TRANSPARENTES se
         // dibujan en EL ORDEN DE LA LISTA via pvsRuns: transparencia sin sort en runtime.
-        bool       pvsOrdenado;
+        bool       pvsSorted;
         // (P4) SELLO de lote estatico: si es IGUAL al sello del frame actual
-        // (w3dLoteStamp), la malla esta horneada en el lote de una Collection y
+        // (w3dBatchStamp), la malla esta horneada en el lote de una Collection y
         // su RenderObject no dibuja (el lote ya la contiene). El lote re-marca a
         // sus miembros EN CADA FRAME: una malla que sale del lote (reparent,
         // visibilidad, fin del juego) deja de marcarse y vuelve a dibujarse sola
         // al frame siguiente, sin bookkeeping de liberacion. 0 = nunca marcada.
-        unsigned   enLoteEstatico;
-        // runs de TRANSPARENTES en orden de lista (solo con pvsOrdenado): cada run es un
+        unsigned   inStaticBatch;
+        // runs de TRANSPARENTES en orden de lista (solo con pvsSorted): cada run es un
         // rango CONTIGUO de pvsFaces que comparte mesh part (material). Los emite el
         // materializador (editor); el render los dibuja DESPUES de opacos/decales, en
         // este orden exacto (el orden del pintor del dato precalculado). Los grupos
         // transparentes de pvsGroups quedan con count 0 (sus tris viven aca).
-        struct PvsRun { int grupo; int start; int count; };
+        struct PvsRun { int group; int start; int count; };
         std::vector<PvsRun> pvsRuns;
-        void PvsLimpiar();      // libera el override (vuelve a la malla completa)
+        void PvsClear();      // libera el override (vuelve a la malla completa)
 
         // noEditable: malla de ESCENARIO cerrada a edicion. Al importar NO se calculan
-        // posRep/edges/bordesBuf (CalcularAABBSolo deja solo AABB+radio para el culling)
+        // posRep/edges/bordersBuf (ComputeAABBOnly deja solo AABB+radio para el culling)
         // y el Tab a Edit Mode la ignora. Ahorra tiempo de carga y memoria. La oclusion
         // por triangulo de estas mallas la lleva el modificador CullingTri ("Oclusion"),
         // que puede seguir un PATH (Curve o malla de aristas) eligiendo el nodo solo.
         bool noEditable;
-        // soloRutina: la malla la DIBUJA UNA RUTINA (pasos "Pose pointer" / "Draw visible"), no el recorrido del arbol.
+        // onlyRoutine: la malla la DIBUJA UNA RUTINA (pasos "Pose pointer" / "Draw visible"), no el recorrido del arbol.
         // Sigue viva para todo lo demas (su script, su vertex anim, el modificador Oclusion, la fisica): solo no se
         // dibuja sola (ni push/pop, ni material, ni subir su VBO). Asi una pose animada no re-especifica ningun buffer:
         // la rutina apunta los vertices a la pose de RAM y la UV y los indices al recurso, subidos una vez.
-        bool soloRutina;
-        bool DibujaAlgo() W3D_OVERRIDE { return !soloRutina; }
-        // bloquearNormales: BLOQUEAR NORMALES (Propiedades > Malla 3D > Edicion). En el Modo Edicion, al confirmar un
+        bool onlyRoutine;
+        bool DrawsSomething() W3D_OVERRIDE { return !onlyRoutine; }
+        // LA LUZ INDIRECTA POR VERTICE de la CPU (Mesh.cpp, IndirectLightVertices): la luz de cada vertice, sin el
+        // material (r, g, b por vertice), y la FIRMA de lo que la produjo (la matriz, la sonda, las lamparas y la
+        // geometria). Si en el cuadro siguiente la firma es la misma, la cuenta no se rehace.
+        std::vector<float> indirectLight;
+        unsigned indirectLightSig;
+        // lockNormals: BLOQUEAR NORMALES (Propiedades > Malla 3D > Edicion). En el Modo Edicion, al confirmar un
         // movimiento NO se recalculan las normales: las importadas o arregladas a mano se conservan. Es de cada malla.
-        bool bloquearNormales;
-        // (soloRutina) su vertex anim avanzo pero NO se evaluo: la pose se calcula recien cuando una rutina la apunta
-        // (W3dPoseAlDia). Lo que no se dibuja no interpola nada
-        bool posePendiente;
-        unsigned paseDibujado;   // (soloRutina) el g_w3dPase en el que una rutina la apunto por ultima vez
-        void RenderSoloRutinaReflejo();   // (pase de un espejo) la pose de RAM con sus materiales, sin tocar VBOs
-        void CalcularAABBSolo();      // AABB + radioGeom + centroGeom sin soldaduras ni edges
+        bool lockNormals;
+        // (onlyRoutine) su vertex anim avanzo pero NO se evaluo: la pose se calcula recien cuando una rutina la apunta
+        // (W3dUpToDatePose). Lo que no se dibuja no interpola nada
+        bool posePending;
+        unsigned drawnPass;   // (onlyRoutine) el g_w3dPass en el que una rutina la apunto por ultima vez
+        void RenderOnlyRoutineReflection();   // (pase de un espejo) la pose de RAM con sus materiales, sin tocar VBOs
+        void ComputeAABBOnly();      // AABB + radiusGeom + centerGeom sin soldaduras ni edges
         // (runtime, por frame) SELECCION de una malla no editable: sin edges no hay contorno
-        // que dibujar -> las caras se tintan ~25% verde EN EL MISMO draw (AplicarMaterial),
+        // que dibujar -> las caras se tintan ~25% verde EN EL MISMO draw (ApplyMaterial),
         // sin segunda pasada ni z-fighting. Lo computa RenderObject; solo editor con overlays.
-        bool tintaNoEditable;
+        bool inkNoEditable;
         // (runtime) TINTE del objeto: multiplica el ambiente y el difuso de TODOS sus materiales (y el color plano de
         // los que no tienen luz) sin tocar el material compartido. 1,1,1 = sin tinte. Lo pone lua setTinte(malla, r, g, b)
         // (un auto que se oscurece al no estar elegido, un objeto que se apaga). No afecta el color por vertice.
-        float tinte[3];
+        float tint[3];
 
         // NORMAL autoritativa POR CORNER (3 GLbyte/corner). El render la DERIVA (no al
         // reves): las edit-ops la ACARREAN (copiar/interpolar via los helpers de capas) ->
-        // mover/loop-cut/etc. NO arruinan las normales; solo RecalcularNormales/shade las
+        // mover/loop-cut/etc. NO arruinan las normales; solo RecalculateNormals/shade las
         // reescriben. Si queda stale (size != corners*3), el render cae a normals[] (fallback).
         std::vector<GLbyte> cornerNormal;
 
         // crea las capas iniciales (1 UVMap "UVMap", 1 ColorLayer "Col") desde los arrays
         // de render actuales si todavia no hay ninguna. Por corner (orden de faces3d).
-        void PoblarCapas();
-        void LiberarCapas(bool incluirGrupos = true); // libera uv/color (+ vertex groups si incluirGrupos). Join/Apply usan false para PRESERVAR el skinning
-        int  ContarCorners() const; // cantidad de esquinas de cara (indice de las capas por-corner)
+        void PopulateLayers();
+        void FreeLayers(bool includeGroups = true); // libera uv/color (+ vertex groups si includeGroups). Join/Apply usan false para PRESERVAR el skinning
+        int  CountCorners() const; // cantidad de esquinas de cara (indice de las capas por-corner)
 
         // el render uv[]/vertexColor[] se DERIVA de la capa ACTIVA (la llama el editor al
         // cambiar de capa activa o editar una capa)
-        void AplicarCapasAlRender();
+        void ApplyLayersToRender();
 
         // === Las DOS unicas puertas al render (las ops NO tocan vertex[]/faces3d a mano) ===
         // IN-PLACE rapido (mover verts / pintar): empuja posiciones del edit + capa activa,
         // SIN realloc ni cambio de topologia. Para tiempo real (N95).
-        void RefrescarRender();
+        void RefreshRender();
 
         // REBUILD completo: destruye y rehace verts/uv/color/normal/faces3d desde los corners
         // + capas activas (mergeando verts). Para cambios de TOPOLOGIA. Lento.
-        // recomputarNormales=false: CONSERVA las normales actuales (normals[]) en vez de recalcularlas.
+        // recomputeNormals=false: CONSERVA las normales actuales (normals[]) en vez de recalcularlas.
         // Lo usa el JOIN: las mallas importadas (glTF/FBX) traen normales del archivo con SPLITS en los bordes
         // filosos, y recalcularlas (promediando) los REDONDEA. Al anexar no cambia la forma de cada malla, asi
         // que sus normales siguen siendo validas -> se preservan.
-        void GenerarRender(bool recomputarNormales = true);
+        void GenerateRender(bool recomputeNormals = true);
 
         // JOIN (Ctrl+J): anexa la geometria de 'otra' a ESTA malla, transformando cada vertice por M (lleva el
         // espacio LOCAL de 'otra' al LOCAL de esta). Preserva UV/color (via capas) + materiales (mesh parts nuevos).
-        // NO rebuildea: el caller hace LiberarCapas + PoblarCapas + GenerarRender al terminar de anexar todas.
-        void AnexarMallaTransformada(Mesh* otra, const Matrix4& M);
+        // NO rebuildea: el caller hace FreeLayers + PopulateLayers + GenerateRender al terminar de anexar todas.
+        void AppendMeshTransformed(Mesh* other, const Matrix4& M);
 
         // APPLY (Alt+A): hornea la matriz B en la geometria (cada vertice v -> B*v). Lo usa Apply Location/
         // Rotation/Scale para bakear el transform del objeto en la malla y despues resetear ese componente.
-        void AplicarMatriz(const Matrix4& B);
+        void ApplyMatrix(const Matrix4& B);
 
         // MESH PARTS (materialsGroup): cada cara (faces3d[f].mat) pertenece a un mesh part. Estas ops
         // tocan SOLO faces3d.mat + materialsGroup + el index buffer (no la geometria ni el edit mesh).
-        void ReagruparMeshParts(); // rearma faces[] + rangos por mesh part desde faces3d.mat
-        void OptimizarCacheRender(); // reordena los triangulos de faces[] para el cache de vertices del GPU (Forsyth, MIT)
+        void RegroupMeshParts(); // rearma faces[] + rangos por mesh part desde faces3d.mat
+        void OptimizeCacheRender(); // reordena los triangulos de faces[] para el cache de vertices del GPU (Forsyth, MIT)
         // (def en main/edit/MeshEdit.cpp: usan el EditMesh + la seleccion de caras)
-        void AsignarFacesAMeshPart(int idx);    // caras SELECCIONADAS (edit) -> mesh part idx
+        void AssignFacesToMeshPart(int idx);    // caras SELECCIONADAS (edit) -> mesh part idx
         // llena sel3d[f] (por faces3d) = 1 para las caras "seleccionadas" segun el EditSelectMode ACTUAL (una
         // cara cuenta si TODOS sus corners estan seleccionados). Sirve en modo vertice/borde/cara (como Delete>Faces).
-        void CarasSelPorModo(std::vector<char>& sel3d);
+        void FacesSelByMode(std::vector<char>& sel3d);
         // llena selVert[gi] (por RENDER-vert) = 1 si el render-vert gi esta seleccionado en el edit 3D segun el
         // EditSelectMode ACTUAL, expandido por posRep (las copias por costura tambien). Lo usa el editor UV para
         // reflejar la seleccion del 3D en las UV (Sync Selection).
-        void VertsSelPorModo(std::vector<char>& selVert);
-        void SeleccionarMeshPart(int idx, bool sel); // (de)selecciona en edit las caras del mesh part idx
+        void VertsSelByMode(std::vector<char>& selVert);
+        void SelectMeshPart(int idx, bool sel); // (de)selecciona en edit las caras del mesh part idx
         GLubyte* vertexColor;
         GLbyte* normals;
         GLfloat* uv;
@@ -816,7 +821,7 @@ class Mesh : public Object {
         bool     chromeCacheEq;    // modo con que se calculo (true=equirect / false=matcap) -> recalcula si cambia
         Vector3  chromeCacheCam;   // camara con la que se calculo
         float    chromeCacheW[16]; // matriz de mundo con la que se calculo
-        void ActualizarChromeUV(bool equirect); // recalcula los buffers (equirect 360 o matcap sphere-map por software)
+        void UpdateChromeUV(bool equirect); // recalcula los buffers (equirect 360 o matcap sphere-map por software)
 
         // CHROME sobre la MALLA GENERADA (screw/subdiv): mismas UV de reflejo pero calculadas desde la geo GENERADA
         // (genVertex/genNormals/genFaces), y SOLO para los mesh parts con reflejo (los demas no cuestan nada). Asi el
@@ -827,7 +832,7 @@ class Mesh : public Object {
         bool     genChromeValid;   // cache valido
         Vector3  genChromeCam;     // camara con la que se calculo
         float    genChromeW[16];   // matriz de mundo con la que se calculo
-        void ActualizarChromeUVGen(); // recalcula genChromeExp* para los mesh parts con reflejo (cache por camara/mundo)
+        void UpdateChromeUVGen(); // recalcula genChromeExp* para los mesh parts con reflejo (cache por camara/mundo)
 
         // NORMAL MAPPING (DOT3): base tangente POR VERTICE de render (T.xyz + handedness en .w), derivada de
         // pos+UV (cache: solo se recalcula si cambia la geometria). 'nmColors' = el vector luz L en tangent-space
@@ -835,8 +840,8 @@ class Mesh : public Object {
         GLfloat*  tangents;     // vertexSize*4
         GLubyte*  nmColors;     // vertexSize*4
         bool      tangentsValid;
-        void CalcularTangentes();                       // T por vertice desde pos+UV (cache)
-        void ActualizarNormalMapColors(const Vector3& luzLocal); // L en tangent-space -> nmColors (por frame)
+        void ComputeTangents();                       // T por vertice desde pos+UV (cache)
+        void UpdateNormalMapColors(const Vector3& lightLocal); // L en tangent-space -> nmColors (por frame)
 
         // SOMBREADO TOON (Material::toon): la coordenada de la rampa por vertice de render, (s, fila) con
         // s = 0.5 + 0.5 * (normal . hacia la luz) en el espacio de la malla, desde las normales YA posadas (skinning).
@@ -844,41 +849,41 @@ class Mesh : public Object {
         // Se rellena cada vez que se dibuja (la pose, la luz y el objeto se mueven) y la lee la unidad 1 de textura
         // desde la RAM (sin VBO). Vacio = la malla no tiene material toon o no hay normales.
         std::vector<GLfloat> toonUV;
-        void ActualizarToonUV(const GLbyte* nor);
+        void UpdateToonUV(const GLbyte* nor);
         // CONTORNO (Material::contorno): las posiciones infladas sobre las normales posadas para el casco invertido
-        std::vector<GLfloat> contornoPos;
+        std::vector<GLfloat> outlinePos;
 
         int facesSize;
         MeshIndex* faces; // index buffer GPU: 16 bits N95 / 32 bits escritorio (ver crossplatform.h)
         std::vector<MaterialGroup> materialsGroup;
 
-        // ---- GEOMETRIA COMPARTIDA (MallaDatos.h): si datosRec != NULL, las
-        //      capas marcadas en datosComp (W3DMD_*) apuntan a arrays de un
-        //      MallaDatos del almacen de recursos y NO se poseen. Copy-on-write:
-        //      escribir una capa exige DesinstanciarDatos() antes. ----
-        void*         datosRec;   // W3dRecurso* (tipo MALLA); NULL = todo propio
-        unsigned char datosComp;  // mascara W3DMD_* de capas compartidas
-        // LA MALLA 3D COMO RECURSO (MallaRecurso.h): el recurso con nombre que usa este objeto
+        // ---- GEOMETRIA COMPARTIDA (MeshData.h): si dataRec != NULL, las
+        //      capas marcadas en dataComp (W3DMD_*) apuntan a arrays de un
+        //      MeshData del almacen de recursos y NO se poseen. Copy-on-write:
+        //      escribir una capa exige UninstantiateData() antes. ----
+        void*         dataRec;   // W3dResource* (tipo MALLA); NULL = todo propio
+        unsigned char dataComp;  // mascara W3DMD_* de capas compartidas
+        // LA MALLA 3D COMO RECURSO (MeshResource.h): el recurso con nombre que usa este objeto
         // ("malla": "Arbol" en el proyecto). Sus capas compartidas apuntan ADENTRO del recurso
-        // (datosComp dice cuales; datosRec queda NULL) y el vinculo SIGUE aunque una capa se
+        // (dataComp dice cuales; dataRec queda NULL) y el vinculo SIGUE aunque una capa se
         // copie por COW (una vertex anim, el flipbook): el objeto es usuario del recurso hasta
         // que se vincula a otro o muere. NULL = malla suelta (sin recurso: el guardado le da uno).
-        MallaRecurso* malla;
+        MeshResource* mesh;
         // la malla vino SUELTA de un ARCHIVO (una geometria por objeto: el formato anterior al
         // registro de mallas). Solo esas se JUNTAN por contenido al guardar (mil arboles iguales
         // de un archivo viejo -> una malla). Una malla nueva de la sesion (Add, Shift+D, un
         // import) no: dos cubos iguales siguen siendo dos mallas (nadie pidio vincularlos).
-        // Lo prende el editor al abrir; una copia (W3dDuplicarUno) nace en false.
-        bool dedupPorContenido;
+        // Lo prende el editor al abrir; una copia (W3dDuplicateOne) nace en false.
+        bool dedupByContent;
         // COW: garantiza que las capas de 'mask' sean PROPIAS. copiar=true las
         // duplica (para escrituras in-place); copiar=false las ABANDONA en NULL
         // (para quien va a regenerarlas de cero y las habria borrado con
         // delete[]). Suelta la referencia al llegar la mascara a 0. No-op si
         // nada esta compartido: es gratis llamarla "por las dudas".
-        void DesinstanciarDatos(unsigned mask, bool copiar = true);
+        void UninstantiateData(unsigned mask, bool copy = true);
         // destruccion: NULLea las capas compartidas y suelta la referencia (el
         // dato muere solo cuando su refcount llega a 0)
-        void SoltarDatosCompartidos();
+        void ReleaseDataShared();
 
         // caras logicas (tri/quad/ngon) para el overlay de normales y la futura
         // edicion. Si esta vacio, el overlay usa los triangulos de faces[].
@@ -888,26 +893,26 @@ class Mesh : public Object {
         // BORDES FILOSOS (sharp): en una malla SMOOTH, estos bordes NO promedian las
         // normales (quedan flat/afilados) -> cilindro = lados suaves + tapas planas. La
         // clave es la POSICION de los 2 extremos (estable: sobrevive el re-merge de
-        // GenerarRender y NO acopla el core al editor). Ver CornerNormalConSharp.
+        // GenerateRender y NO acopla el core al editor). Ver CornerNormalWithSharp.
         std::set<std::string> sharpEdges;
 
         // COSTURAS UV (seams): bordes donde el UV se ABRE al desplegar (unwrap). Se ven
         // MAGENTA en Edit Mode. Misma clave de POSICION que sharpEdges (estable al re-merge).
         std::set<std::string> seamEdges;
 
-        // cuantos guards W3dMoverVerts hay ABIERTOS sobre esta malla. Mientras sea > 0 las
+        // cuantos guards W3dMoveVerts hay ABIERTOS sobre esta malla. Mientras sea > 0 las
         // posiciones estan a MEDIO MOVER (vertex[] ya se escribio, las claves de sharp/seam
-        // todavia NO se re-anclaron) -> PodarMarcasSinArista NO PODA, porque en ese estado
+        // todavia NO se re-anclaron) -> PruneMarksNoEdge NO PODA, porque en ese estado
         // intermedio TODA marca parece huerfana y podarla borraria justo lo que hay que
-        // seguir. Ver el invariante de orden en el comentario de W3dMoverVerts, abajo.
-        int moverVertsAbiertos;
+        // seguir. Ver el invariante de orden en el comentario de W3dMoveVerts, abajo.
+        int moveOpenVerts;
 
         // LA POSO EL PLAYBACK? ESTADO REAL, no una comparacion de posiciones.
         // Lo escribe UNICAMENTE la reproduccion de vertex anims (EvalVertexAnim /
         // ApplyVertexFrame / BlendVertexAnimations, en animation/VertexAnimation.cpp):
         // true = vertex[] tiene la pose de un cuadro que NO es el keyframe base,
         // false = la malla esta en REPOSO (nadie la poso, o el playhead volvio al
-        // cuadro base). Ver el contrato de PosadaPorVertexAnim, que es quien lo lee.
+        // cuadro base). Ver el contrato de PosedByVertexAnim, que es quien lo lee.
         //
         // POR QUE UN FLAG Y NO "vertex[] == frames[0]": comparar no puede distinguir
         // "posada por el playback" de "editada sin autokey". Un move/scale en Edit
@@ -916,7 +921,7 @@ class Mesh : public Object {
         // comparacion daba POSADA en una malla que nadie poso y la poda quedaba
         // apagada PARA SIEMPRE (marcas fantasma que sobrevivian a cortes y un aviso
         // al guardar que el usuario no podia accionar). Esas operaciones re-anclan
-        // solas (W3dMoverVerts) y NO tocan este flag, que es justo lo correcto.
+        // solas (W3dMoveVerts) y NO tocan este flag, que es justo lo correcto.
         //
         // INVARIANTE (la parte que se olvido y hubo que arreglar): ESTE FLAG ES
         // PARTE DE vertex[], no un adorno del objeto. Toda puerta que COPIE,
@@ -926,12 +931,12 @@ class Mesh : public Object {
         // lleva TODAS las marcas y el guardado hornea la pose. No se cumple a
         // fuerza de memoria: se cumple pasando por W3dPosVerts (abajo del todo),
         // que es un solo valor con las posiciones Y el estado.
-        bool posadaPorAnim;
+        bool posedByAnim;
 
         // SELECCION del editor UV (1 por vertice de RENDER, indexado igual que vertex[]/uv[]).
         // Es por-render-vert (no por posicion) a proposito: un mismo vert 3D aparece en VARIAS
         // coordenadas UV y se selecciona INDEPENDIENTE en cada una. Transitorio (no se exporta);
-        // se redimensiona/limpia al re-split de GenerarRender. Lo usa el UVEditor (pick + move/etc).
+        // se redimensiona/limpia al re-split de GenerateRender. Lo usa el UVEditor (pick + move/etc).
         std::vector<unsigned char> uvSelVert;
 
         // BORDES unicos (sin repetir, dedup por POSICION) calculados desde faces3d.
@@ -941,19 +946,19 @@ class Mesh : public Object {
 
         // BORDES SUELTOS (no pertenecen a ninguna cara): pares de indices de
         // vertice. Los crea el borrado en Edit Mode ("Delete > Faces/Edges" deja
-        // los bordes sin sus caras). Se MERGEAN en 'edges' (CalcularBordes) para
+        // los bordes sin sus caras). Se MERGEAN en 'edges' (ComputeBorders) para
         // que el wireframe / contorno / edit los dibujen igual.
         std::vector<int> looseEdges;
         // VERTICES SUELTOS (no pertenecen a ninguna cara NI arista): indices de vertice. Un "Add > Vertex" o lo
-        // que queda al borrar toda la geometria alrededor de un vert. GenerarRender los preserva (sino se perderian
+        // que queda al borrar toda la geometria alrededor de un vert. GenerateRender los preserva (sino se perderian
         // por no estar en ninguna cara/arista). Analogo a looseEdges.
         std::vector<int> looseVerts;
 
-        // representante de cada vertice por POSICION (cacheado por CalcularBordes):
+        // representante de cada vertice por POSICION (cacheado por ComputeBorders):
         // posRep[i] = indice del primer vertice en el mismo lugar. Evita el O(nV^2)
         // por frame en el overlay de vertex-normal.        
         std::vector<int> posRep;
-        int vertsAgrupados; // cantidad de posiciones UNICAS (para el overlay de stats)
+        int groupedVerts; // cantidad de posiciones UNICAS (para el overlay de stats)
 
         // WEIGHT PAINT / rig: por cada vertice de render, el indice de CONTROL-POINT del FBX del que salio (lo llena
         // el importador FBX). Con esto los pesos de un vertex group (indexados por control-point) se mapean a los
@@ -969,67 +974,67 @@ class Mesh : public Object {
         bool vertexPaintOn;
         // rellena weightPaintColor (rampa azul 0 -> amarillo 0.5 -> rojo 1) desde UNO de los dos
         // grupos. Sin grupo valido queda todo en azul (peso 0). Una entrada POR ENTIDAD, sin flags:
-        //   ConstruirColorPeso   -> VIEWPORT 3D: vertex group 'grupo', pesos por CONTROL-POINT
+        //   BuildWeightColor   -> VIEWPORT 3D: vertex group 'grupo', pesos por CONTROL-POINT
         //                           (mapeados al render con vertCtrlPoint).
-        //   ConstruirColorPesoUV -> EDITOR UV:   UV group 'uvGrupo', pesos por CORNER (render-vert).
-        void ConstruirColorPeso(int grupo);
-        void ConstruirColorPesoUV(int uvGrupo);
+        //   BuildWeightColorUV -> EDITOR UV:   UV group 'uvGroup', pesos por CORNER (render-vert).
+        void BuildWeightColor(int group);
+        void BuildWeightColorUV(int uvGroup);
     private:
-        void ColorPesoDesdeRenderVert(const std::vector<float>& rvW); // rampa comun de las dos
+        void WeightColorFromRenderVert(const std::vector<float>& rvW); // rampa comun de las dos
     public:
 
         // centro geometrico LOCAL (promedio de las posiciones unicas). El foco ("."")
-        // y el pivot lo usan (en mundo) en vez del origen. Se calcula en CalcularBordes.
-        Vector3 centroGeom;
-        float   radioGeom;  // radio del bounding LOCAL alrededor de centroGeom (lo usa el foco/encuadre)
+        // y el pivot lo usan (en mundo) en vez del origen. Se calcula en ComputeBorders.
+        Vector3 centerGeom;
+        float   radiusGeom;  // radio del bounding LOCAL alrededor de centerGeom (lo usa el foco/encuadre)
 
         // AABB LOCAL de la geometria (min/max de las posiciones). Lo usa el objeto
-        // Culling para el frustum culling. Se recalcula en CalcularBordes -el MISMO
-        // invalidador que centroGeom/radioGeom: corre en cada cambio de geometria-,
+        // Culling para el frustum culling. Se recalcula en ComputeBorders -el MISMO
+        // invalidador que centerGeom/radiusGeom: corre en cada cambio de geometria-,
         // asi que no hay que invalidarlo a mano. aabbOk=false = sin geometria (o
-        // nunca corrio CalcularBordes): el que pregunta cae a la esfera radioGeom.
+        // nunca corrio ComputeBorders): el que pregunta cae a la esfera radiusGeom.
         Vector3 aabbMin, aabbMax;
         bool    aabbOk;
-        Vector3 PuntoFoco() const W3D_OVERRIDE; // centro geometrico en MUNDO
-        float   RadioFoco() const W3D_OVERRIDE; // radio del bounding en MUNDO (centroGeom*escala); foco '.'
+        Vector3 PointFocus() const W3D_OVERRIDE;  // centro geometrico en MUNDO
+        float   FocusRadius() const W3D_OVERRIDE; // radio del bounding en MUNDO (centerGeom*escala); foco '.'
 
         // escala un radio LOCAL (alrededor de cLocal) a MUNDO tomando el mayor de los 3 ejes (robusto
-        // a escala no uniforme). Lo usan RadioFoco (malla entera) y el encuadre del foco en Edit Mode.
-        float   EscalarRadioLocal(const Vector3& cLocal, float rLocal) const;
+        // a escala no uniforme). Lo usan FocusRadius (malla entera) y el encuadre del foco en Edit Mode.
+        float   ScaleRadiusLocal(const Vector3& cLocal, float rLocal) const;
 
-        // recalcula edges + posRep + bordesBuf + centroGeom. invalidarEdit=false lo
+        // recalcula edges + posRep + bordersBuf + centerGeom. invalidateEdit=false lo
         // usa el transform de malla al CONFIRMAR (mueve vertices sin cambiar la
         // topologia -> conserva la malla de edicion y su seleccion).
-        // reagruparPosRep=false CONSERVA el agrupamiento posRep existente en vez de rederivarlo
+        // regroupPosRep=false CONSERVA el agrupamiento posRep existente en vez de rederivarlo
         // por posicion: clave al confirmar un move (el snap puede dejar 2 verts INDEPENDIENTES
         // encima -> rederivar por posicion los SOLDARIA sin querer, desincronizando caras y edit).
-        void CalcularBordes(bool invalidarEdit = true, bool reagruparPosRep = true);
+        void ComputeBorders(bool invalidateEdit = true, bool regroupPosRep = true);
 
         // recalcula el array de normales desde faces3d (Newell por cara, agrupado
         // por POSICION si meshSmooth). Lo usa el transform de malla al confirmar.
-        void RecalcularNormales();
+        void RecalculateNormals();
 
-        void SincronizarCornerNormal(); // normals[] -> cornerNormal (tras escribir normales)
-        // FLAT: rellena cornerNormal con la normal POR CARA -> GenerarRender NO mergea verts
+        void SyncCornerNormal(); // normals[] -> cornerNormal (tras escribir normales)
+        // FLAT: rellena cornerNormal con la normal POR CARA -> GenerateRender NO mergea verts
         // entre caras distintas (cada cara su normal) => shading plano tras extrude/loop cut/etc.
-        void CornerNormalPorCara();
+        void CornerNormalPerFace();
 
         // SMOOTH con bordes SHARP: normal por GRUPO DE SUAVIZADO (promedia las caras de
         // alrededor sin cruzar un borde sharp). meshSmooth=false => todo flat. Es lo que
         // permite el cilindro (lados suaves, tapas planas con el aro marcado sharp).
-        void CornerNormalConSharp();
+        void CornerNormalWithSharp();
 
         // marca/desmarca como SHARP los bordes seleccionados en Edit Mode (edita sharpEdges
         // por POSICION + regenera). Definida en el editor (lee la EditMesh).
-        void MarcarSharpEdit(bool sharp);
+        void MarkSharpEdit(bool sharp);
 
         // marca/desmarca como SEAM (costura UV) los bordes seleccionados (edita seamEdges por
         // POSICION). Se ven magenta; el unwrap los usa para cortar. Definida en el editor.
-        void MarcarSeamEdit(bool seam);
+        void MarkSeamEdit(bool seam);
 
         // clave de posicion (12 bytes de los 3 floats) para sharpEdges; el borde es el par
         // de extremos ordenado. Comparten la MISMA posicion -> mismos bytes -> match exacto.
-        // DEFINIDA EN EL CORE (Mesh.cpp), no en el editor: la usa PodarMarcasSinArista y el
+        // DEFINIDA EN EL CORE (Mesh.cpp), no en el editor: la usa PruneMarksNoEdge y el
         // Core tiene que linkear sin main/ (juegos de ui/, Android, WebGL, Symbian).
         static std::string SharpEdgeKey(const float* a, const float* b);
 
@@ -1046,42 +1051,42 @@ class Mesh : public Object {
         //  de vertices, en un flujo normalisimo (marcar costuras -> Apply Scale
         //  -> desplegar UV).
         //
-        //  'posViejas' es una copia de vertex[] de ANTES del movimiento
-        //  (nViejo*3 floats) y se llama DESPUES de escribir. Si nViejo no es el
+        //  'oldPos' es una copia de vertex[] de ANTES del movimiento
+        //  (nOld*3 floats) y se llama DESPUES de escribir. Si nOld no es el
         //  vertexSize actual NO hay correspondencia por indice (eso es un
         //  REBUILD, no un move) y no re-ancla nada.
         //
-        //  NO LLAMARLA A MANO: usa el guard W3dMoverVerts, que la llama solo.
-        void ReanclarMarcasPos(const GLfloat* posViejas, int nViejo);
+        //  NO LLAMARLA A MANO: usa el guard W3dMoveVerts, que la llama solo.
+        void ReanchorMarksPos(const GLfloat* oldPos, int nOld);
 
         // ====================================================================
         //  PODAR las marcas que YA NO SON UNA ARISTA DE ESTA MALLA
         //
-        //  Hermana de ReanclarMarcasPos, para el otro tipo de cambio: no MOVER
+        //  Hermana de ReanchorMarksPos, para el otro tipo de cambio: no MOVER
         //  posiciones sino QUEDARSE CON UN PEDAZO (Separate/P, y el borrado que
         //  lo acompania). Ahi las claves no hay que moverlas: hay que TIRAR las
         //  que ya no corresponden, y solo esas.
         //
         //  El criterio es "la arista existe": una marca sobrevive si sus DOS
         //  extremos siguen siendo posiciones de la malla Y hay un borde de esta
-        //  malla que los une (edges[], que CalcularBordes arma desde faces3d +
+        //  malla que los une (edges[], que ComputeBorders arma desde faces3d +
         //  looseEdges). Mirar solo si las POSICIONES existen no alcanza: al
         //  separar una parte, las esquinas del otro pedazo pueden caer en las
         //  mismas posiciones y la marca reaparecia como una costura FANTASMA
         //  sobre una arista que el usuario nunca marco.
         //
         //  NO HACE FALTA LLAMARLA A MANO EN CADA OPERACION: la llama sola
-        //  CalcularBordes, que es EL UNICO lugar donde se recalcula edges[].
+        //  ComputeBorders, que es EL UNICO lugar donde se recalcula edges[].
         //  Toda op de edicion (borrar, aplicar un modificador, extruir, cortar,
-        //  separar, importar...) desemboca ahi via GenerarRender o directo, asi
+        //  separar, importar...) desemboca ahi via GenerateRender o directo, asi
         //  que la clase entera queda cerrada en un solo punto y no hay forma de
         //  olvidarse en la proxima. Se deja publica para los casos que rehacen
-        //  la geometria sin pasar por CalcularBordes.
+        //  la geometria sin pasar por ComputeBorders.
         //
         //  INVARIANTE DE ORDEN (importa): un MOVIMIENTO tiene que RE-ANCLAR
         //  antes de que se pode, sino mover un vertice BORRARIA la marca en vez
-        //  de seguirla. Lo garantiza W3dMoverVerts: mientras haya un guard
-        //  abierto (moverVertsAbiertos > 0) esta funcion no poda nada, y el
+        //  de seguirla. Lo garantiza W3dMoveVerts: mientras haya un guard
+        //  abierto (moveOpenVerts > 0) esta funcion no poda nada, y el
         //  cierre del guard re-ancla ANTES de bajar el contador.
         //
         //  INVARIANTE DE POSE (el tercero, hermano del anterior): la poda
@@ -1091,23 +1096,23 @@ class Mesh : public Object {
         //  por el playback, a proposito SIN re-anclar: las marcas son de la
         //  malla en REPOSO y re-anclarlas por cuadro las destruiria), esta
         //  funcion NO PODA NADA, igual que con el guard abierto. Ver
-        //  PosadaPorVertexAnim.
+        //  PosedByVertexAnim.
         //
         //  Y ESE INVARIANTE ES DE LA CLASE ENTERA, NO SOLO DE LA PODA: las
         //  marcas viven en el espacio de REPOSO, asi que TODA puerta que las
         //  resuelva por posicion tiene que pedir las posiciones por
-        //  Mesh::PosicionesReposo() y no leer vertex[] a mano. Son cuatro y
+        //  Mesh::RestPositions() y no leer vertex[] a mano. Son cuatro y
         //  cada una se rompio por su lado antes de cerrarse aca:
         //    - PODAR   -> esta funcion (se saltea entera si esta posada);
-        //    - CREAR   -> MarcarSharpEdit/MarcarSeamEdit (marcar posado nacia
+        //    - CREAR   -> MarkSharpEdit/MarkSeamEdit (marcar posado nacia
         //                 la clave en el espacio de la pose y al volver a
         //                 reposo la poda se llevaba TODO);
         //    - DIBUJAR -> los seams magenta del Edit Mode y las normales de
-        //                 CornerNormalConSharp (posada no matcheaba ninguna:
+        //                 CornerNormalWithSharp (posada no matcheaba ninguna:
         //                 las marcas se apagaban justo mientras se anima);
         //    - GUARDAR -> el escritor del .w3dm, y ademas el guardado deja la
         //                 malla EN REPOSO antes de serializar
-        //                 (W3dReposoVertexAnim), o el archivo sale con la pose
+        //                 (W3dRestVertexAnim), o el archivo sale con la pose
         //                 HORNEADA como geometria.
         //
         //  Necesita edges[] al dia. Si hay geometria pero edges esta vacio no
@@ -1115,7 +1120,7 @@ class Mesh : public Object {
         //  aristas sueltas, o vertex[] vacio) tira TODAS las marcas, porque no
         //  existe ninguna arista donde puedan vivir.
         //  Devuelve cuantas marcas se tiraron.
-        int PodarMarcasSinArista();
+        int PruneMarksNoEdge();
 
         // ====================================================================
         //  LA MALLA ESTA POSADA POR UNA VERTEX ANIM? (no esta en REPOSO)
@@ -1131,19 +1136,19 @@ class Mesh : public Object {
         //  vatest y con el que se edita la topologia).
         //
         //  LA RESPUESTA SALE DE UN ESTADO REAL, no de comparar posiciones: el
-        //  flag 'posadaPorAnim', que escribe SOLO el playback. La version vieja
+        //  flag 'posedByAnim', que escribe SOLO el playback. La version vieja
         //  contestaba "vertex[] != frames[0] byte a byte" y eso NO distingue
         //  "la poso el playback" de "la edito el usuario sin autokey": un move
         //  en Edit Mode, Set Origin, Apply Loc/Rot/Scale, Merge By Distance,
         //  Apply Mirror o Apply Modifier dan POSADA en una malla que nadie poso
         //  y dejaban la poda apagada hasta que el usuario scrubeara al cuadro
         //  base (marcas fantasma + un aviso al guardar que no se podia
-        //  accionar). Ver el comentario de Mesh::posadaPorAnim.
+        //  accionar). Ver el comentario de Mesh::posedByAnim.
         //
         //  Sin ninguna anim con capa de posiciones -> false: nadie puede estar
         //  moviendo vertex[] por atras (si se borro la anim con la malla
         //  posada, esa pose PASA A SER la geometria).
-        bool PosadaPorVertexAnim() const;
+        bool PosedByVertexAnim() const;
 
         // ====================================================================
         //  POSICIONES EN LAS QUE VIVEN LAS MARCAS (sharp/seam) -- LA OTRA PUNTA
@@ -1153,13 +1158,13 @@ class Mesh : public Object {
         //  la malla EN REPOSO. Con la malla en reposo eso es vertex[] y no hay
         //  nada que pensar; POSADA por una vertex anim, vertex[] esta en la
         //  pose del cuadro y NINGUNA clave matchea. Entonces TODO el que
-        //  resuelve una marca por posicion -crearla (MarcarSharpEdit/
-        //  MarcarSeamEdit), dibujarla (seams magenta, normales con sharp) o
+        //  resuelve una marca por posicion -crearla (MarkSharpEdit/
+        //  MarkSeamEdit), dibujarla (seams magenta, normales con sharp) o
         //  escribirla al .w3dm- tiene que pedir las posiciones POR ACA y no
         //  usar vertex[] directo. Devuelve vertex[] o el keyframe base, siempre
         //  con la MISMA numeracion (indice de render-vert) y nunca NULL si hay
         //  geometria.
-        const GLfloat* PosicionesReposo() const;
+        const GLfloat* RestPositions() const;
 
         // posiciones del KEYFRAME BASE alineadas con vertex[] (primer keyframe
         // con posiciones de la primera anim que anima posiciones), o NULL si no
@@ -1169,42 +1174,42 @@ class Mesh : public Object {
         // === PROYECCIONES de UV sobre las CARAS SELECCIONADAS (Edit Mode) ===
         // tipo: 0=Cube, 1=Cylinder, 2=Sphere. Calcula UV por corner desde la POSICION del vert
         // y reconstruye. (Las "from view" van por el editor: necesitan la camara -> arman el
-        // uvPorCorner y llaman EscribirUVProyeccion.)
-        void ProyectarUVCaras(int tipo);
+        // uvByCorner y llaman WriteUVProjection.)
+        void ProjectUVFaces(int type);
 
         // escribe el UV (2 floats por corner, en ORDEN de faces3d) en la capa activa SOLO en los
         // corners de las caras SELECCIONADAS (el resto conserva su UV) y reconstruye (re-split).
-        void EscribirUVProyeccion(const std::vector<float>& uvPorCorner);
+        void WriteUVProjection(const std::vector<float>& uvByCorner);
 
         // ===== BUFFERS PRECALCULADOS (no se rehacen por frame, solo se dibujan) =====
-        // lineas del contorno/wireframe (pares de puntos xyz), armadas en CalcularBordes.
-        std::vector<GLfloat> bordesBuf;
+        // lineas del contorno/wireframe (pares de puntos xyz), armadas en ComputeBorders.
+        std::vector<GLfloat> bordersBuf;
         // RECETA de un vertice NUEVO creado por un corte (loop cut / subdivision): es la
         // INTERPOLACION de dos verts viejos -> pos = (1-t)*vert[a] + t*vert[b]. La usa
         // RemapVertexAnims para recalcular ese vert en CADA keyframe (que el corte SIGA la
         // animacion, no quede estatico). a==b = copia simple. La op de corte llena
-        // vtxAnimRecipes (una por vert nuevo, desde vtxAnimRecipeBase) antes de GenerarRender.
-        // soloUV (duplicar/extrude, pedido del dueno): la receta aplica SOLO a la capa UV
+        // vtxAnimRecipes (una por vert nuevo, desde vtxAnimRecipeBase) antes de GenerateRender.
+        // onlyUV (duplicar/extrude, pedido del dueno): la receta aplica SOLO a la capa UV
         // (el vert nuevo COPIA el UV animado de su vert de ORIGEN en cada keyframe);
         // posiciones y normales quedan ESTATICAS en la pose actual (regla previa intacta:
         // lo duplicado/extruido no hereda la animacion de posiciones).
-        struct VtxRecipe { int a, b; float t; bool soloUV;
-            VtxRecipe(): a(-1), b(-1), t(0.0f), soloUV(false) {}
-            VtxRecipe(int A,int B,float T): a(A), b(B), t(T), soloUV(false) {} };
+        struct VtxRecipe { int a, b; float t; bool onlyUV;
+            VtxRecipe(): a(-1), b(-1), t(0.0f), onlyUV(false) {}
+            VtxRecipe(int A,int B,float T): a(A), b(B), t(T), onlyUV(false) {} };
         std::vector<VtxRecipe> vtxAnimRecipes; // receta de cada vert nuevo [vtxAnimRecipeBase, base+size)
         int vtxAnimRecipeBase;                 // primer indice de vert nuevo cubierto por las recetas
 
-        // skinGeomVersion con el que se lleno bordesBuf. Si difiere, algo movio vertex[]
+        // skinGeomVersion con el que se lleno bordersBuf. Si difiere, algo movio vertex[]
         // POR FUERA (tipico: una vertex anim parada en un frame) y el contorno quedo en la
-        // pose vieja -> RenderBordes lo re-arma desde vertex[]. Editar no bumpea la version
+        // pose vieja -> RenderBorders lo re-arma desde vertex[]. Editar no bumpea la version
         // (va por EditMesh), asi que no dispara re-arme espurio.
-        unsigned bordesGeomVersion;
-        // re-arma bordesBuf desde vertex[] usando las aristas actuales (sin recalcular
+        unsigned bordersGeomVersion;
+        // re-arma bordersBuf desde vertex[] usando las aristas actuales (sin recalcular
         // topologia): para seguir la deformacion de una vertex anim en Modo Objeto.
-        void RefrescarBordesDesdeVertex();
+        void RefreshBordersFromVertex();
 
         // lineas de los overlays de normales (pares de puntos xyz), armadas en
-        // CalcularOverlayNormales SOLO cuando cambia la geometria o el largo L.
+        // ComputeOverlayNormals SOLO cuando cambia la geometria o el largo L.
         std::vector<GLfloat> normFaceBuf, normCustomBuf, normVertBuf;
         float overlayLcache; // largo (OverlayNormalSize) con el que se armaron; -1 = rehacer
 
@@ -1213,14 +1218,14 @@ class Mesh : public Object {
         // malla de EDICION (vertices/bordes editables, seleccion, vertex color) vive
         // en EditMesh, se construye on-demand al entrar a Edit Mode y se invalida al
         // cambiar la geometria. Ver EditMesh.h.
-        EditMesh* edit;       // NULL hasta que se entra a Edit Mode (fwd-decl: core no incluye EditMesh)
-        void EnsureEdit();    // construye 'edit' desde esta malla si hace falta
-        void InvalidarEdit(); // borra 'edit' (geometria cambio)
+        EditMesh* edit;        // NULL hasta que se entra a Edit Mode (fwd-decl: core no incluye EditMesh)
+        void EnsureEdit();     // construye 'edit' desde esta malla si hace falta
+        void InvalidateEdit(); // borra 'edit' (geometria cambio)
         void RenderEditOverlay(); // dibuja el overlay de edit (hook: el cuerpo deref edit, vive en main/)
 
-        // delegan en EditMesh (los llaman SeleccionarTodo/DeseleccionarTodo/Invertir)
-        void EditSeleccionarTodo(bool sel) W3D_OVERRIDE;
-        void EditInvertir() W3D_OVERRIDE;
+        // delegan en EditMesh (los llaman SelectAll/DeselectAll/Invertir)
+        void EditSelectAll(bool sel) W3D_OVERRIDE;
+        void EditInvert() W3D_OVERRIDE;
 
         // BORRA la seleccion de Edit Mode segun el modo (SelVertex/SelEdge/SelFace):
         //  - SelFace:   borra las caras seleccionadas; mantiene sus bordes+vertices
@@ -1229,51 +1234,51 @@ class Mesh : public Object {
         //               quedan como lineas sueltas y los verts que quedan aislados como puntos sueltos (queda
         //               el wireframe, no se pierde el resto de la malla)
         // Reconstruye la malla de render (preserva UV/normales) e invalida el edit.
-        // sinRestos = true: lo que SOLO usaban las caras borradas (sus aristas y sus vertices) se va con ellas, no queda
+        // noRests = true: lo que SOLO usaban las caras borradas (sus aristas y sus vertices) se va con ellas, no queda
         // como lineas ni puntos sueltos. Lo usa Separar (P): el pedazo se va entero a la malla nueva.
-        void BorrarSeleccionEdit(int mode, bool sinRestos = false);
+        void DeleteSelectionEdit(int mode, bool noRests = false);
 
-        bool BorrarEdgeLoopEdit(); // Delete > Edge Loops: disuelve el loop seleccionado (inverso del loop cut)
-        // EXTRUDE en Edit Mode segun el modo (Vertex/Edge/Face): vertice->arista,
-        // arista->quad (cadena=pared), cara->tapa+paredes de contorno. Duplica la
+        bool DeleteEdgeLoopEdit(); // Delete > Edge Loops: disuelve el loop seleccionado (inverso del loop cut)
+        // EXTRUDE en Edit Mode segun el modo (Vertex/Edge/Face): vertex->arista,
+        // arista->quad (cadena=pared), face->cap+paredes de contorno. Duplica la
         // "tapa" (offset epsilon) y la deja seleccionada para que el editor la mueva.
         // outDirLocal = direccion (normal); outConstrain=false si no hay caras (libre).
-        bool ExtruirEdit(Vector3& outDirLocal, bool& outConstrain);
+        bool ExtrudeEdit(Vector3& outDirLocal, bool& outConstrain);
         // INSET FACES (I en Edit Mode, menu Face; main/edit/MeshEdit.cpp): achica hacia adentro las caras
         // 'selFace3d' (una marca por faces3d) dejando un anillo de caras nuevas en el contorno. Las opciones son las
-        // del panel "Inset Faces" (InsetOpciones, main/edit/MeshEdit.h). Deja seleccionadas las caras de adentro (o el
+        // del panel "Inset Faces" (InsetOptions, main/edit/MeshEdit.h). Deja seleccionadas las caras de adentro (o el
         // anillo, con "Select Outer"). No captura undo: lo hace el modal al confirmar
-        bool InsetEdit(const InsetOpciones& o, const std::vector<char>& selFace3d);
+        bool InsetEdit(const InsetOptions& o, const std::vector<char>& selFace3d);
         // las faces3d que forma la seleccion de la UI (todas sus esquinas seleccionadas); false si no hay ninguna
-        bool CarasSeleccionadas3d(std::vector<char>& selFace3d);
+        bool SelectedFaces3d(std::vector<char>& selFace3d);
         // BEVEL (Ctrl+B; main/edit/MeshEdit.cpp): redondea las aristas 'aristas' (o los vertices 'selRep', con afecta = 0)
-        // con un perfil de N segmentos. Las opciones son las del panel "Bevel" (BevelOpciones). Deja seleccionadas las
-        // caras nuevas. No captura undo: lo hace el modal al confirmar. BevelSeleccion lee la seleccion de la UI
-        bool BevelEdit(const BevelOpciones& o, const std::vector<char>& selRep, const std::vector<std::pair<int,int> >& aristas);
-        bool BevelSeleccion(std::vector<char>& selRep, std::vector<std::pair<int,int> >& aristas);
+        // con un perfil de N segmentos. Las opciones son las del panel "Bevel" (BevelOptions). Deja seleccionadas las
+        // caras nuevas. No captura undo: lo hace el modal al confirmar. BevelSelection lee la seleccion de la UI
+        bool BevelEdit(const BevelOptions& o, const std::vector<char>& selRep, const std::vector<std::pair<int,int> >& selEdges);
+        bool BevelSelection(std::vector<char>& selRep, std::vector<std::pair<int,int> >& selEdges);
         // selecciona (vertices/aristas/caras) las caras de la EDICION cuyo centro coincide con alguno de 'centros'
-        void SeleccionarCarasPorCentro(const std::vector<Vector3>& centros);
+        void SelectFacesByCenter(const std::vector<Vector3>& centers);
 
         // reconstruye la malla de edicion y deja seleccionados los verts marcados en
-        // selVertNuevo (indice GPU nuevo). Lo usan extrude/duplicate/delete.
-        void ReconstruirEditSel(const std::vector<char>& selVertNuevo);
+        // newSelVert (indice GPU nuevo). Lo usan extrude/duplicate/delete.
+        void RebuildEditSel(const std::vector<char>& newSelVert);
 
-        // restaurar la seleccion POR POSICION alrededor de un GenerarRender (que re-numera
+        // restaurar la seleccion POR POSICION alrededor de un GenerateRender (que re-numera
         // los verts): capturar ANTES, reconstruir DESPUES. Robusto al re-merge.
-        std::vector<Vector3> CapturarPosSel(const std::vector<char>& selPorGPU);
-        void ReconstruirEditSelPorPos(const std::vector<Vector3>& posSel);
+        std::vector<Vector3> CapturePosSel(const std::vector<char>& selByGPU);
+        void RebuildEditSelByPos(const std::vector<Vector3>& posSel);
 
         // DUPLICATE (Shift+D): copia la seleccion (verts/aristas/caras), offset chico,
         // y la deja seleccionada para moverla (libre). false si no hay seleccion.
-        bool DuplicarSeleccionEdit();
+        bool DuplicateSelectionEdit();
 
         // RIP (V): separa la malla a lo largo de la seleccion (flood-fill de lados + duplica los verts del corte).
         // Deja seleccionada la pieza nueva. false si la seleccion no separa nada.
-        bool RipSeleccionEdit();
+        bool RipSelectionEdit();
 
         // F "New Edge/Face from Vertices": con los verts sel crea arista(2)/tri(3)/
         // ngon(4+). NO crea verts (conecta los existentes). false si hay < 2.
-        bool CrearCaraEdit();
+        bool CreateFaceEdit();
 
         // SHADE SMOOTH/FLAT (menu Face) sobre las caras sel: smooth=normal promedio
         // por posicion (redondea); flat=split + normal de cara (aplana). false si
@@ -1284,15 +1289,15 @@ class Mesh : public Object {
         // todas si no hay sel) para que las normales miren para AFUERA respecto al centro
         // de la malla; inside=true las deja para adentro (tilde del panel). Arregla caras
         // invisibles (normal al reves). No cambia la geometria, solo el orden de los verts.
-        bool RecalcularOrientacionEdit(bool inside);
+        bool RecalculateOrientationEdit(bool inside);
 
         // FLIP NORMALS (menu Mesh > Normals > Flip): invierte el winding de las caras sel (o todas) sin
         // condicion -> da vuelta las normales. Simple: si miran para un lado, quedan para el otro.
-        bool FlipNormalesEdit();
+        bool FlipNormalsEdit();
 
         // TRIANGULATE FACES (Ctrl+T, menu Face): parte las caras SELECCIONADAS de >3 lados en triangulos
         // (abanico desde el 1er vertice). Preserva UV/color/normal por corner. false si no hay caras que triangular.
-        bool TriangularSeleccionEdit();
+        bool TriangulateSelectionEdit();
 
         // CLIPPING del modificador Mirror (edit-time): impide que los verts CRUCEN el plano del mirror al moverlos
         // (half-space). editKs = verts que se mueven (indices en edit->pos); startLocal = su pos LOCAL
@@ -1307,8 +1312,8 @@ class Mesh : public Object {
         bool LoopCutEdit(int startEditEdge, int numCuts, float factor, bool correctUV = true);
 
         // recorre el loop de quads desde startEditEdge (helper de LoopCut: corte + preview)
-        bool LoopCutRecorrido(int startEditEdge, std::vector<int>& rungEg, std::vector<int>& rungA,
-                              std::vector<int>& rungB, std::vector<int>& loopFaces, bool& cerrado);
+        bool LoopCutTraversal(int startEditEdge, std::vector<int>& rungEg, std::vector<int>& rungA,
+                              std::vector<int>& rungB, std::vector<int>& loopFaces, bool& closed);
 
         // vista previa: segmentos de linea (pares de puntos LOCALES) del corte, sin modificar nada
         //esto es del editor y NO va a estar mas aca....
@@ -1320,24 +1325,24 @@ class Mesh : public Object {
         // PRIMITIVA: tipo + parametros para regenerar la geometria en vivo (el
         // panel "Add" de la ventanita los edita). meshSize = span del cubo/plano
         // o radio del circulo; meshVerts = vertices del circulo (default 8).
-        int meshTipo;     // MeshType, -1 si no es una primitiva regenerable
-        float meshSize;   // span (cubo/plano) o radio (circulo/esfera) o radio1/base (cono)
-        float meshSize2;  // radio2/punta del cono (0 = termina en vertice)
-        float meshDepth;  // altura del cono (depth)
-        int meshVerts;    // vertices (circulo/cono) o segments/longitud (UV sphere)
-        int meshVerts2;   // rings/latitud (UV sphere)
-        void Regenerar(); // reconstruye vertex/normals/uv/faces desde los parametros
+        int meshType;      // MeshType, -1 si no es una primitiva regenerable
+        float meshSize;    // span (cubo/plano) o radio (circulo/esfera) o radio1/base (cono)
+        float meshSize2;   // radio2/punta del cono (0 = termina en vertice)
+        float meshDepth;   // altura del cono (depth)
+        int meshVerts;     // vertices (circulo/cono) o segments/longitud (UV sphere)
+        int meshVerts2;    // rings/latitud (UV sphere)
+        void Regenerate(); // reconstruye vertex/normals/uv/faces desde los parametros
 
         // bloques del .w3dm que este Whisk3D no entiende (los trajo una version mas nueva) +
-        // el sello de cantidades por dominio con el que se cargaron. Ver W3dAjenos arriba.
-        W3dAjenos w3dmAjenos;
+        // el sello de cantidades por dominio con el que se cargaron. Ver W3dForeign arriba.
+        W3dForeign w3dmForeign;
 
         // ENTRADA .w3db cuyos bloques de EDICION (faces3d, capas, marcas, aristas) todavia NO
         // se leyeron: el juego compilado carga solo los de RENDER y los materializa recien si
-        // alguien los pide (ConstruirPolyMesh: un modificador geometrico, el Boolean que usa
+        // alguien los pide (BuildPolyMesh: un modificador geometrico, el Boolean que usa
         // esta malla de target). "" = estan en memoria (el editor siempre los lee).
-        // Ver W3dMallaBinMaterializarEdicion (io/W3dMallaBin.h).
-        std::string edicionPendiente;
+        // Ver W3dMeshBinMaterializeEdit (io/W3dMeshBin.h).
+        std::string pendingEdit;
 
         Mesh(Object* parent = NULL, Vector3 pos = Vector3(0,0,0));
 
@@ -1345,23 +1350,23 @@ class Mesh : public Object {
 
         ObjectType getType() W3D_OVERRIDE;
 
-        void LiberarMemoria();
+        void FreeMemory();
         void RenderObject() W3D_OVERRIDE;
-        // true si TODOS sus grupos de material son CALCOMANIA (orden_pasada 1):
+        // true si TODOS sus grupos de material son CALCOMANIA (order_pass 1):
         // una sombra SUELTA, declarada aparte del cuerpo. Esas mallas no se dibujan durante
         // el recorrido del arbol: se anotan y se dibujan al final del frame (ver
-        // W3dDecalesDibujarPendientes en Mesh.cpp).
+        // W3dDecalsDrawPending en Mesh.cpp).
         // true si TODOS sus grupos de material son LUZ (mezcla aditiva/sustractiva/
-        // multiplicativa/screen; ver W3dMaterialEsLuz): una chispa, un halo, un rayo.
+        // multiplicativa/screen; ver W3dMaterialIsLight): una chispa, un halo, un rayo.
         // Igual que las calcomanias, esas mallas no se dibujan en el recorrido del
-        // arbol: se anotan y se dibujan al final (ver W3dLucesDibujarPendientes).
-        bool EsSoloLuz() const;
-        bool EsSoloPantalla() const;
-        std::vector<float> vertCPUPos;          // las posiciones movidas por el @vertice en la CPU (ShaderCPU.h), de este dibujo
+        // arbol: se anotan y se dibujan al final (ver W3dLightsDrawPending).
+        bool IsOnlyLight() const;
+        bool IsOnlyScreen() const;
+        std::vector<float> vertCPUPos;          // las posiciones movidas por el @vertex en la CPU (ShaderCPU.h), de este dibujo
         std::vector<signed char> vertCPUNor;    // y sus normales   // todos sus materiales tienen un shader escrito que lee la pantalla (se dibuja al final)
         // dibuja los bordes (edges) como GL_LINES. pushBack empuja el zbuffer
         // atras (para el contorno verde: tapa las lineas internas, deja el borde).
-        void RenderBordes(const float* color, float width, bool pushBack);
+        void RenderBorders(const float* color, float width, bool pushBack);
     public:
         // aplica TODO el estado GL de un material. RenderObject la llama SOLO
         // cuando el material cambia (asi no se repiten llamadas por grupo).
@@ -1369,34 +1374,34 @@ class Mesh : public Object {
         // PUBLICA desde P4: el lote estatico (Collection) la pide prestada para
         // aplicar el material de cada rango horneado (y despues re-bindea SUS
         // punteros: los de la malla que presto el material no valen para el lote).
-        void AplicarMaterial(Material* mat, bool conLuz, bool solido, bool offsetEdit = false);
+        void ApplyMaterial(Material* mat, bool withLight, bool solid, bool offsetEdit = false);
 
         // ---- DIBUJO CRUDO (lo usa el objeto Rutina): SOLO la geometria, con el estado GL que ya haya ----
-        // CrudoPreparar deja los atributos listos (VBO del recurso o propios; sin VBO, arrays de RAM). CrudoParte
-        // dibuja una parte (-1 = todas), con su material si conMaterial. CrudoRango dibuja los triangulos
-        // [primero, ultimo] del orden de dibujo (con materiales: un draw por cada parte que toca). CrudoTerminar
+        // RawPrepare deja los atributos listos (VBO del recurso o propios; sin VBO, arrays de RAM). RawPart
+        // dibuja una parte (-1 = todas), con su material si withMaterial. RawRange dibuja los triangulos
+        // [primero, ultimo] del orden de dibujo (con materiales: un draw por cada parte que toca). RawFinish
         // vuelve a los arrays de cliente (lo que esperan las demas mallas). Sin chequeos: la Rutina los hace en el
         // EDITOR.
-        // la capa de textura que AplicarMaterial mando a la UNIDAD 1 (un lightmap Multiply / 2x en la misma pasada,
-        // gfx::MezclaTexturas); -1 = ninguna: el pase de capas la saltea
-        int capaUnidad1;
-        void CrudoPreparar();
-        void CrudoParte(int parte, bool conMaterial);
-        void CrudoRango(int primero, int ultimo, bool conMaterial);
-        static void CrudoTerminar();
-        bool crudoVBO;
+        // la capa de textura que ApplyMaterial mando a la UNIDAD 1 (un lightmap Multiply / 2x en la misma pasada,
+        // gfx::MixTextures); -1 = ninguna: el pase de capas la saltea
+        int layerUnit1;
+        void RawPrepare();
+        void RawPart(int part, bool withMaterial);
+        void RawRange(int first, int last, bool withMaterial);
+        static void RawFinish();
+        bool rawVBO;
 };
 
-// TEXTURA FORZADA (la pone el paso "Bind texture" de una Rutina): mientras sea != 0, AplicarMaterial usa ESTA
+// TEXTURA FORZADA (la pone el paso "Bind texture" de una Rutina): mientras sea != 0, ApplyMaterial usa ESTA
 // textura en vez de la del material. Asi una malla compartida (la carroceria de 39 autos) se dibuja con la
 // textura de cada uno sin duplicar la malla ni sus materiales. 0 = cada material la suya (lo de siempre).
-extern unsigned int g_w3dTexturaForzada;
+extern unsigned int g_w3dForcedTexture;
 
 // ============================================================================
-//  W3dMoverVerts: LA UNICA PUERTA PARA MOVER POSICIONES DE UNA MALLA
+//  W3dMoveVerts: LA UNICA PUERTA PARA MOVER POSICIONES DE UNA MALLA
 //
 //  Escribir vertex[] a mano y acordarse de re-anclar sharp/seam no funciono:
-//  el re-anclaje se puso en UNA puerta (EditMesh::EmpujarPosiciones) y las
+//  el re-anclaje se puso en UNA puerta (EditMesh::PushPositions) y las
 //  otras -Apply Location/Rotation/Scale, Merge Vertices, Apply Armature- lo
 //  seguian tirando entero, en silencio y en flujos normalisimos. El olvido no
 //  se arregla con disciplina: se arregla haciendo que no haya nada que
@@ -1407,34 +1412,34 @@ extern unsigned int g_w3dTexturaForzada;
 //  destructor re-ancla. Ejemplo:
 //
 //      {
-//          W3dMoverVerts mv(m);          // snapshotea (gratis si no hay marcas)
+//          W3dMoveVerts mv(m);          // snapshotea (gratis si no hay marcas)
 //          for (...) m->vertex[i] = ...; // mover lo que sea
 //      }                                 // <- aca se re-ancla sharp/seam
-//      m->GenerarRender();               // recien DESPUES (re-numera los verts)
+//      m->GenerateRender();               // recien DESPUES (re-numera los verts)
 //
-//  Tiene que CERRARSE ANTES de cualquier GenerarRender()/CalcularBordes():
+//  Tiene que CERRARSE ANTES de cualquier GenerateRender()/ComputeBorders():
 //    (a) el guard compara por INDICE contra el snapshot y un rebuild re-numera
 //        los verts (si la cantidad cambia, el guard no hace nada, que es lo
 //        correcto);
-//    (b) CalcularBordes PODA las marcas que ya no son una arista, y con el
+//    (b) ComputeBorders PODA las marcas que ya no son una arista, y con el
 //        movimiento a medio hacer TODAS parecen huerfanas. Por eso el guard
-//        marca la malla mientras esta abierto (Mesh::moverVertsAbiertos) y
-//        Mesh::PodarMarcasSinArista se saltea: un recalculo en el medio NO
+//        marca la malla mientras esta abierto (Mesh::moveOpenVerts) y
+//        Mesh::PruneMarksNoEdge se saltea: un recalculo en el medio NO
 //        dispara una poda que no corresponde. Es una RED, no un permiso:
 //        el orden correcto sigue siendo cerrar y despues regenerar.
 //  Cuesta CERO cuando la malla no tiene marcas: ni copia el snapshot.
 // ============================================================================
-class W3dMoverVerts {
+class W3dMoveVerts {
     public:
-        explicit W3dMoverVerts(Mesh* m);
-        ~W3dMoverVerts();
-        void Cerrar();   // re-ancla YA (para cerrar antes del fin del scope); idempotente
+        explicit W3dMoveVerts(Mesh* m);
+        ~W3dMoveVerts();
+        void Close();   // re-ancla YA (para cerrar antes del fin del scope); idempotente
     private:
-        Mesh* malla;
-        std::vector<GLfloat> viejo;
-        bool cerrado;
-        W3dMoverVerts(const W3dMoverVerts&);            // sin copia (C++03: privadas y sin definir)
-        W3dMoverVerts& operator=(const W3dMoverVerts&);
+        Mesh* mesh;
+        std::vector<GLfloat> old;
+        bool closed;
+        W3dMoveVerts(const W3dMoveVerts&);            // sin copia (C++03: privadas y sin definir)
+        W3dMoveVerts& operator=(const W3dMoveVerts&);
 };
 
 // ============================================================================
@@ -1442,7 +1447,7 @@ class W3dMoverVerts {
 //               (LA UNICA PUERTA PARA COPIAR/RESTAURAR vertex[])
 //
 //  vertex[] NO se explica solo. Las mismas 24 posiciones significan cosas
-//  distintas segun Mesh::posadaPorAnim: en false son EL MODELO (el espacio
+//  distintas segun Mesh::posedByAnim: en false son EL MODELO (el espacio
 //  donde viven las claves de sharp/seam y lo que se escribe al .w3dm); en true
 //  son LA POSE de un cuadro y ninguna decision por posicion vale. El estado es
 //  PARTE del dato.
@@ -1450,38 +1455,38 @@ class W3dMoverVerts {
 //  Mientras el flag fue un miembro suelto de Mesh, cada puerta que copiaba o
 //  restauraba posiciones tenia que ACORDARSE de arrastrarlo, y las que se
 //  olvidaron dejaban la copia diciendo "estoy en reposo" con la pose adentro:
-//    - Shift+D (W3dDuplicarUno) -> la copia guardaba la pose HORNEADA, sin
+//    - Shift+D (W3dDuplicateOne) -> la copia guardaba la pose HORNEADA, sin
 //      bloques SHARP/SEAM y con aviso, mientras el original salia perfecto;
-//    - Separate (P) -> el GenerarRender del clon podaba el 100% de las marcas;
+//    - Separate (P) -> el GenerateRender del clon podaba el 100% de las marcas;
 //    - Ctrl+Z de una op de topologia hecha posado -> restauraba el vertex[]
 //      POSADO con el flag apagado y podaba contra la pose;
 //    - el snapshot del loop cut, idem.
-//  Es exactamente el mismo tipo de olvido que arregla W3dMoverVerts (la puerta
+//  Es exactamente el mismo tipo de olvido que arregla W3dMoveVerts (la puerta
 //  de MOVER), y se arregla igual: haciendo que no haya nada que recordar.
 //
 //  USO:
-//      W3dPosVerts p; p.Capturar(orig);   // posiciones + estado, juntos
+//      W3dPosVerts p; p.Capture(orig);   // posiciones + estado, juntos
 //      d->vertexSize = orig->vertexSize;  // la TOPOLOGIA la sigue manejando el caller
-//      p.EscribirEn(d);                   // las dos cosas, siempre juntas
+//      p.WriteIn(d);                   // las dos cosas, siempre juntas
 //
 //  Un comando de undo que guarde su vertex[] ACA ADENTRO (en vez de un
 //  std::vector<GLfloat> pelado) ya no puede olvidarse: no existe la forma de
 //  guardar uno sin el otro.
 //
 //  NO toca vertexSize a proposito: el tamano es de la TOPOLOGIA y lo maneja el
-//  caller (que tambien restaura faces3d/capas). EscribirEn realoca vertex[] con
+//  caller (que tambien restaura faces3d/capas). WriteIn realoca vertex[] con
 //  lo que haya guardado; sin posiciones no hay pose posible -> el estado queda
 //  en false.
 // ============================================================================
 class W3dPosVerts {
     public:
         std::vector<GLfloat> pos;   // copia de vertex[] (vertexSize*3); vacio = la malla no tenia
-        bool posada;                // el Mesh::posadaPorAnim QUE CORRESPONDE a esas posiciones
-        W3dPosVerts() : posada(false) {}
-        void Capturar(const Mesh* m);        // lee vertex[] + el estado
-        void EscribirEn(Mesh* m) const;      // realoca vertex[] + escribe el estado
-        void IntercambiarCon(Mesh* m);       // swap EN EL LUGAR con lo vivo (undo/redo de un move)
-        void Intercambiar(W3dPosVerts& o);   // swap de los dos snapshots (undo/redo de topologia)
+        bool posed;                 // el Mesh::posedByAnim QUE CORRESPONDE a esas posiciones
+        W3dPosVerts() : posed(false) {}
+        void Capture(const Mesh* m);   // lee vertex[] + el estado
+        void WriteIn(Mesh* m) const;   // realoca vertex[] + escribe el estado
+        void SwapWith(Mesh* m);        // swap EN EL LUGAR con lo vivo (undo/redo de un move)
+        void Swap(W3dPosVerts& o);     // swap de los dos snapshots (undo/redo de topologia)
 };
 
 // ===================================================
@@ -1497,7 +1502,7 @@ extern void (*g_meshOverlayHook)(Mesh*);
 // (P4) sello del PASE DE ESCENA actual para el lote estatico: lo incrementa el
 // viewport al abrir cada pase; la Collection con lote marca a sus mallas
 // horneadas con este valor y Mesh::RenderObject las saltea SOLO ese frame.
-extern unsigned w3dLoteStamp;
+extern unsigned w3dBatchStamp;
 
 // ---- PASE DIFERIDO DE CALCOMANIAS (sombras sueltas) ----
 // Ver el comentario largo en Mesh.cpp. Una calcomania NO escribe z; si se dibuja
@@ -1507,24 +1512,24 @@ extern unsigned w3dLoteStamp;
 // cuando la escena opaca ya esta completa.
 // El que dibuja la escena llama Limpiar antes y Dibujar despues (igual que con
 // las particulas): ver Viewport3D::Render.
-void W3dDecalesLimpiarPendientes();
-void W3dDecalesDibujarPendientes();
+void W3dDecalsClearPending();
+void W3dDecalsDrawPending();
 // LUCES SUELTAS (mallas 100% aditivas/sustractivas: chispas, halos, rayos,
 // estelas). Mismo problema al reves que la calcomania: no escriben z (no pueden
 // tapar nada), asi que cualquier translucido que se dibuje DESPUES y ocupe el
 // mismo lugar las borra. Se anotan y se dibujan al final, entre las calcomanias
 // y las particulas. Ver el comentario largo en Mesh.cpp.
-void W3dLucesLimpiarPendientes();
-void W3dLucesDibujarPendientes();
+void W3dLightsClearPending();
+void W3dLightsDrawPending();
 // "dibujar la calcomania / la luz ACA MISMO, sin diferir". Lo prende el pase del
 // espejo (el reflejo tiene su propia matriz y su propio recorte por estencil) y
 // los propios flushes.
-extern bool w3dDecalesInline;
-// el pase de un ESPEJO esta dibujando a sus objetivos: una malla soloRutina se dibuja igual (desde su pose de RAM)
-extern bool w3dReflejando;
-// el PASE de escena actual (sube una vez por cuadro, W3dEscena3DPasada): con Mesh::paseDibujado dice si una rutina
-// dibujo a una malla soloRutina en este cuadro (un espejo solo refleja lo que se ve)
-extern unsigned g_w3dPase;
+extern bool w3dDecalsInline;
+// el pase de un ESPEJO esta dibujando a sus objetivos: una malla onlyRoutine se dibuja igual (desde su pose de RAM)
+extern bool w3dReflecting;
+// el PASE de escena actual (sube una vez por cuadro, W3dScene3DPass): con Mesh::drawnPass dice si una rutina
+// dibujo a una malla onlyRoutine en este cuadro (un espejo solo refleja lo que se ve)
+extern unsigned g_w3dPass;
 
 #include "animation/VertexAnimation.h"
 

@@ -1,32 +1,32 @@
 #include "CameraBase.h"
 #include <math.h> // C puro: compila en RVCT (Symbian) y PC por igual
 
-float g_renderMarco[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+float g_renderFrame[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
 Vector3 g_renderCamPos(0, 0, 0); // la setea el viewport antes de renderizar (chrome equirect)
 Vector3 g_renderCamRight(1, 0, 0);   // base de la camara en mundo (matcap por software / sphere-map)
 Vector3 g_renderCamUp(0, 1, 0);
 Vector3 g_renderCamForward(0, 0, -1);
 Quaternion g_renderCamRot;           // identidad por su propio ctor: la vista sin girar
 float g_renderCamFov    = 45.0f;     // lente de la vista bindeada (la publica el viewport
-float g_renderCamNear   = 0.1f;      // junto con W3dVistaBind; ver el .h). Defaults =
+float g_renderCamNear   = 0.1f;      // junto con W3dViewBind; ver el .h). Defaults =
 float g_renderCamFar    = 1000.0f;   // los de CameraBase, para el que pregunta antes
 float g_renderCamAspect = 1.0f;      // del primer frame.
-bool  g_renderCamOrto   = false;     // vista ortografica: el Culling no corta (ver el .h)
-float g_renderImagenAltoPx = 0.0f;  // alto en PIXELES de la imagen que se dibuja (0 = aun no se sabe)
-bool g_vistaBindeada = false;        // se prende en el primer W3dVistaBind y no se apaga mas
+bool  g_renderCamOrtho  = false;     // vista ortografica: el Culling no corta (ver el .h)
+float g_renderImageHeightPx = 0.0f;  // alto en PIXELES de la imagen que se dibuja (0 = aun no se sabe)
+bool g_viewBound = false;        // se prende en el primer W3dViewBind y no se apaga mas
 Vector3 g_renderLightPos(4, 5, 4); // luz principal en mundo (normal mapping); el viewport la actualiza por frame
 Vector3 g_renderLightColor(1, 1, 1); // color (diffuse) de la luz principal -> tiñe el normal map
 
 // publica la vista que se va a dibujar (ver el comentario del .h). Son las mismas 4 cuentas que hacia a
 // mano ViewPort3D: right/up/forward son los ejes de la camara LLEVADOS A MUNDO por su rotacion, con
 // forward = el -Z del eye space, o sea "hacia la escena".
-void W3dVistaBind(const CameraBase& cam) {
+void W3dViewBind(const CameraBase& cam) {
     g_renderCamPos     = cam.pos;
     g_renderCamRot     = cam.rot;
     g_renderCamRight   = cam.rot * Vector3(1, 0, 0);
     g_renderCamUp      = cam.rot * Vector3(0, 1, 0);
     g_renderCamForward = cam.rot * Vector3(0, 0, -1);
-    g_vistaBindeada    = true;
+    g_viewBound        = true;
 }
 
 CameraBase::CameraBase() {

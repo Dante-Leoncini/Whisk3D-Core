@@ -48,7 +48,7 @@ void      W3dSoundFree(W3dSound* s);
 // volume 0..1; loop=true para musica/ambiente (se repite hasta W3dSoundStop).
 int  W3dSoundPlay(W3dSound* s, float volume, bool loop);
 // Igual pero con PITCH: la voz avanza con paso fraccional 'pitch' (1.0 = normal, 0.5 = una
-// octava abajo, 2.0 = una arriba). Lo usa el bind lua sonido() para los pitchs de un juego
+// octava abajo, 2.0 = una arriba). Lo usa el bind lua sound() para los pitchs de un juego
 // (rate_Hz = pitch/4096*11025 en el PSX -> factor pitch/1024 aca). Sin filtro: nearest,
 // suficiente para efectos (mismo caracter lo-fi que el original).
 int  W3dSoundPlayPitch(W3dSound* s, float volume, bool loop, float pitch);
@@ -62,59 +62,59 @@ void W3dSoundStop(int voice);        // para una voz por su id (no-op si ya term
 // libera sola. Cortar con W3dSoundStop clickea (la onda se corta en cualquier
 // amplitud); esta variante la baja a cero antes. Pensada para el SECUENCIADOR de
 // musica en lua: notas sostenidas = samples en loop que se apagan por nota.
-//   lua: h = sonido("nota.wav", vol, pitch)   -- ahora DEVUELVE el handle de voz
+//   lua: h = sound("nota.wav", vol, pitch)   -- ahora DEVUELVE el handle de voz
 //        pararSonido(h)                       -- corta con el fade default (~5 ms)
 //        pararSonido(h, 0.25)                 -- o con un release de 250 ms
 // El handle es el id (> 0) que devuelven W3dSoundPlay/W3dSoundPlayPitch; en lua,
-// sonido() devuelve nil si la voz NO sono (mute global, mixer cerrado, WAV faltante
+// sound() devuelve nil si la voz NO sono (mute global, mixer cerrado, WAV faltante
 // o las 64 voces ocupadas) y pararSonido(nil) es un no-op seguro.
 void W3dSoundStopFade(int voice, float fadeSeg);
 // AGENDA en el RELOJ DEL MIXER (segundos de audio mezclado desde que abrio, sin contar la pausa): la voz arranca /
-// empieza su rampa de salida en la MUESTRA exacta de 'enSeg' (<= 0 = ya). Un secuenciador de musica las dispara con
-// anticipacion (W3dAudioReloj() + unos ms) y el ritmo no depende de cuando corre el frame del juego.
-//   lua: t = relojAudio(); h = sonido(wav, vol, pitch, loop, pan, t + 0.05); pararSonido(h, rampa, t + 0.05 + dur)
-double W3dAudioReloj();
-int  W3dSoundPlayAt(W3dSound* s, float volume, bool loop, float pitch, float pan, double enSeg);
-void W3dSoundStopFadeAt(int voice, float fadeSeg, double enSeg);
+// empieza su rampa de salida en la MUESTRA exacta de 'inSeg' (<= 0 = ya). Un secuenciador de musica las dispara con
+// anticipacion (W3dAudioClock() + unos ms) y el ritmo no depende de cuando corre el frame del juego.
+//   lua: t = relojAudio(); h = sound(wav, vol, pitch, loop, pan, t + 0.05); pararSonido(h, rampa, t + 0.05 + dur)
+double W3dAudioClock();
+int  W3dSoundPlayAt(W3dSound* s, float volume, bool loop, float pitch, float pan, double inSeg);
+void W3dSoundStopFadeAt(int voice, float fadeSeg, double inSeg);
 void W3dSoundStopAll();
 
 // ENVOLVENTE de una voz: la de los chips de sonido (el AICA de la Dreamcast, el SCSP de la Saturn, el OPL...): ADSR mas
 // la CAIDA del sostenido. Tiempos en segundos. El ataque es lineal (de 0 al maximo); despues todo baja en curva
 // exponencial (lineal en dB, como bajan los chips): el decaimiento va del maximo al nivel 'sostenido', la caida lo
 // sigue bajando mientras la nota sigue (60 dB en 'caida' segundos; 0 = se mantiene) y la liberacion baja 60 dB al SOLTAR
-// la nota. La nota se suelta con W3dSoundSoltar, sola a los 'duracion' segundos, o no se suelta (el sonido termina).
+// la nota. La nota se suelta con W3dSoundRelease, sola a los 'duracion' segundos, o no se suelta (el sonido termina).
 // Por defecto (sin envolvente) la voz suena entera a su volumen. Cuando la envolvente baja de -60 dB la voz se libera.
-struct W3dEnvolvente {
-    float ataque;        // de 0 al maximo (0 = de golpe)
-    float decaimiento;   // del maximo al sostenido (0 = salta al sostenido)
-    float sostenido;     // nivel 0..1 mientras la nota sigue
-    float caida;         // segundos en que el sostenido baja 60 dB aunque la nota siga (0 = no baja)
-    float liberacion;    // segundos en que baja 60 dB al soltar la nota (0 = ~5 ms, el corte sin click)
-    float duracion;      // la nota se suelta sola a los N segundos de empezar (0 = no se suelta)
-    W3dEnvolvente() : ataque(0.0f), decaimiento(0.0f), sostenido(1.0f), caida(0.0f), liberacion(0.0f), duracion(0.0f) {}
+struct W3dEnvelope {
+    float attack;     // de 0 al maximo (0 = de golpe)
+    float decay;      // del maximo al sostenido (0 = salta al sostenido)
+    float held;       // nivel 0..1 mientras la nota sigue
+    float fall;       // segundos en que el sostenido baja 60 dB aunque la nota siga (0 = no baja)
+    float release;    // segundos en que baja 60 dB al soltar la nota (0 = ~5 ms, el corte sin click)
+    float duration;   // la nota se suelta sola a los N segundos de empezar (0 = no se suelta)
+    W3dEnvelope() : attack(0.0f), decay(0.0f), held(1.0f), fall(0.0f), release(0.0f), duration(0.0f) {}
 };
 // Igual que W3dSoundPlayAt con una ENVOLVENTE (NULL = sin) y el ENVIO de la voz a la reverb (0..1: cuanto de su sonido
 // entra a la reverb global; lo directo no cambia). Devuelve el id de la voz o 0.
-int  W3dSoundPlayEnv(W3dSound* s, float volume, bool loop, float pitch, float pan, double enSeg,
-                     const W3dEnvolvente* env, float envioReverb);
+int  W3dSoundPlayEnv(W3dSound* s, float volume, bool loop, float pitch, float pan, double inSeg,
+                     const W3dEnvelope* env, float sendReverb);
 // SOLTAR la nota de una voz: su envolvente pasa a la liberacion (una voz sin envolvente se corta con la rampa de ~5 ms)
-void W3dSoundSoltar(int voice);
-void W3dSoundSetEnvio(int voice, float envioReverb);
+void W3dSoundRelease(int voice);
+void W3dSoundSetSend(int voice, float sendReverb);
 // REVERB global (una sala: peines con amortiguacion y pasa-todos, la estructura de Schroeder y Moorer; estereo). Las
 // voces le mandan su ENVIO y lo que sale se suma a la mezcla. sala 0..1 = el largo de la cola, amortiguacion 0..1 =
 // cuanto se apagan los agudos en la cola, nivel 0..1 = cuanto se suma (0 = apagada: no cuesta nada). En enteros: en un
 // telefono sin FPU rapida (o con denormales lentos) cuesta lo mismo que una voz o dos.
-void W3dAudioReverb(float sala, float amortiguacion, float nivel);
+void W3dAudioReverb(float room, float damping, float level);
 // el rate del mixer (Hz; 0 si no abrio)
 int  W3dAudioRate();
 // MEZCLA SIN DISPOSITIVO (pruebas, grabar a WAV): 'frames' frames estereo de lo que suena ahora, como si los pidiera la
 // salida (las voces avanzan). Pensado con el mixer en PAUSA (la salida no avanza nada): asi lo grabado es exactamente
 // lo que el juego disparo. false si el mixer no abrio.
-bool W3dAudioGrabar(short* stereoOut, int frames);
+bool W3dAudioRecord(short* stereoOut, int frames);
 // PAUSA global del mixer: con true las voces se congelan (el mixer saca silencio y NO avanza ninguna
 // posicion); con false siguen donde estaban. Para el "Pausa" del editor / del juego: la musica se
 // detiene de verdad y retoma del mismo punto. W3dSoundStopAll es el "Parar": corta todo.
-void W3dAudioPause(bool pausa);
+void W3dAudioPause(bool pause);
 bool W3dAudioPaused();
 void W3dSoundSetVolume(int voice, float volume);
 // cambia el PITCH de una voz que ya suena (sin re-dispararla: sigue desde donde iba). Para sonidos
@@ -133,23 +133,23 @@ void W3dSoundSetPos(int voice, float seg);
 // cambia en cada cuadro segun donde esta respecto de quien escucha
 void W3dSoundSetPan(int voice, float pan);
 // las GANANCIAS de cada lado directo (0..1 cada una): un sonido 3D que suena ATRAS se escucha mas bajo y mas al medio
-void W3dSoundSetGanancias(int voice, float gL, float gR);
+void W3dSoundSetGains(int voice, float gL, float gR);
 // cuanto dura un sonido (segundos; 0 si es NULL)
-float W3dSoundDuracion(const W3dSound* s);
+float W3dSoundDuration(const W3dSound* s);
 // un TRAMO de un sonido como un sonido nuevo (copia: desde..hasta, en segundos; hasta <= 0 = hasta el final). Un
 // sonido recortado se repite (loop) EXACTO en la muestra: el mixer da la vuelta al llegar al final de lo que tiene
-W3dSound* W3dSoundRecortar(const W3dSound* s, float desde, float hasta);
+W3dSound* W3dSoundCrop(const W3dSound* s, float from, float until);
 // los PICOS de un sonido para dibujar su forma de onda: 'n' columnas (el maximo absoluto de cada una, 0..1)
-void W3dSoundPicos(const W3dSound* s, int n, float* picos);
+void W3dSoundPeaks(const W3dSound* s, int n, float* peaks);
 void W3dAudioMasterVolume(float v);  // volumen global 0..1 (master de usuario)
-void W3dAudioJuegoVolume(float v);   // volumen del JUEGO 0..1 (lo setea la tarjeta Juego; indep. del master)
+void W3dAudioGameVolume(float v);    // volumen del JUEGO 0..1 (lo setea la tarjeta Juego; indep. del master)
 
 // FUENTE del juego: una funcion que SUMA lo suyo (estereo intercalado, en la escala de 16 bits) al acumulador de la
 // mezcla, en el hilo de audio, despues de las voces y antes del limitador. Para un stream que no entra en la memoria
 // como W3dSound (una cancion entera comprimida que el juego decodifica de a poco); los frames que pide son el reloj
 // real de lo que se escucha. Con el mixer en pausa no se llama. NULL la saca.
-typedef void (*W3dAudioFuenteFn)(int* accEstereo, int frames, void* usuario);
-void W3dAudioFuente(W3dAudioFuenteFn fn, void* usuario);
+typedef void (*W3dAudioSourceFn)(int* stereoAcc, int frames, void* user);
+void W3dAudioSource(W3dAudioSourceFn fn, void* user);
 
 // Lo llama el BACKEND de salida para llenar su buffer (frames = pares L/R, stereo 16-bit).
 // Lo define el mixer del Core; corre en el hilo de audio (bajo exclusion del backend).

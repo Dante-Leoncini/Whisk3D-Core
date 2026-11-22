@@ -11,7 +11,7 @@
 //  editor; el motor NO sabe de donde salio.
 //
 //  Formato en disco: `.w3dbsp` (binario LE, spec en formato/w3dbsp.md, version 1 o 2: la 2 trae ademas la
-//  GEOMETRIA del mundo, que lee MundoBsp a partir de 'geomOff').
+//  GEOMETRIA del mundo, que lee WorldBsp a partir de 'geomOff').
 //  C++03 / Symbian-safe. Sin nada de ningun juego.
 // ============================================================================
 #include <vector>
@@ -19,39 +19,39 @@
 
 class VisBsp {
 public:
-    struct Nodo { float a, b, c, d; int hijo0, hijo1; };   // a x + b y + c z - d >= 0 -> hijo0; hijo < 0 = hoja -(hijo+1)
-    struct Hijo { std::string nombre; std::vector<unsigned char> bits; };   // los clusters que ocupa (bit c)
+    struct Node { float a, b, c, d; int child0, child1; };   // a x + b y + c z - d >= 0 -> hijo0; hijo < 0 = hoja -(hijo+1)
+    struct Child { std::string name; std::vector<unsigned char> bits; };   // los clusters que ocupa (bit c)
 
-    std::vector<Nodo> nodos;
-    std::vector<int>  hojaCluster;   // por hoja: su cluster (-1 = solido / sin PVS)
+    std::vector<Node> nodes;
+    std::vector<int>  leafCluster;   // por hoja: su cluster (-1 = solido / sin PVS)
     int               nClusters;
-    int               bytesFila;     // (nClusters + 7) / 8
-    bool              rle;           // el PVS viene comprimido (byte 0 + cantidad = ceros)
+    int               bytesRow;     // (nClusters + 7) / 8
+    bool              rle;          // el PVS viene comprimido (byte 0 + cantidad = ceros)
     std::vector<unsigned>      pvsOff;   // por cluster: offset de su fila en 'pvs'
     std::vector<unsigned char> pvs;      // el stream de filas
-    std::vector<Hijo> hijos;
+    std::vector<Child> children;
     unsigned          version;       // 1 o 2
     size_t            geomOff;       // version 2: donde empieza la seccion de geometria (0 = no trae)
 
-    VisBsp() { Limpiar(); }
-    void Limpiar();
-    bool Valido() const { return !nodos.empty() && nClusters > 0; }
+    VisBsp() { Clear(); }
+    void Clear();
+    bool Valid() const { return !nodes.empty() && nClusters > 0; }
 
     // parsea un `.w3dbsp` completo desde memoria. false + err = archivo invalido.
-    bool Cargar(const unsigned char* bytes, size_t n, std::string* err = 0);
+    bool Load(const unsigned char* bytes, size_t n, std::string* err = 0);
     // la hoja que contiene al punto (bajando por el arbol); -1 si el dato no es valido
-    int HojaEn(float x, float y, float z) const;
+    int LeafIn(float x, float y, float z) const;
     // el cluster del punto (-1 = solido / fuera del arbol / sin dato)
-    int ClusterEn(float x, float y, float z) const;
-    // decodifica la fila del PVS del cluster en 'out' (bytesFila bytes). false = cluster fuera de rango / stream roto
-    bool Fila(int cluster, std::vector<unsigned char>& out) const;
+    int ClusterIn(float x, float y, float z) const;
+    // decodifica la fila del PVS del cluster en 'out' (bytesRow bytes). false = cluster fuera de rango / stream roto
+    bool Row(int cluster, std::vector<unsigned char>& out) const;
     // algun bit en comun entre la fila del PVS y los clusters del hijo
-    static bool Interseca(const std::vector<unsigned char>& fila, const std::vector<unsigned char>& bits);
+    static bool Intersects(const std::vector<unsigned char>& row, const std::vector<unsigned char>& bits);
     // indice en 'hijos' del nombre (-1 = no esta: ese hijo se dibuja siempre)
-    int IndiceHijo(const std::string& nombre) const;
+    int ChildIndex(const std::string& name) const;
     // los clusters de todas las hojas que toca la caja [mn, mx] (un objeto DINAMICO: se mide por cuadro), como
-    // bitset de bytesFila bytes. false = dato invalido
-    bool ClustersDeCaja(const float* mn, const float* mx, std::vector<unsigned char>& bits) const;
+    // bitset de bytesRow bytes. false = dato invalido
+    bool BoxClusters(const float* mn, const float* mx, std::vector<unsigned char>& bits) const;
 };
 
 #endif

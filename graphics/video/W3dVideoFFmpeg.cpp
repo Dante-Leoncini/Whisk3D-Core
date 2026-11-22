@@ -33,7 +33,7 @@ extern "C" {
 #include <windows.h>
 #endif
 #include <GL/gl.h>
-#include "graphics/vulkan/w3dGLDesvio.h"   // (con el backend Vulkan, las texturas del video van por su GL: ver ahi)
+#include "graphics/vulkan/w3dGLDeviation.h"   // (con el backend Vulkan, las texturas del video van por su GL: ver ahi)
 #include "w3dGraphics.h"   // BindTexture CACHEADO del backend: bindear por la abstraccion (ver UploadFrame)
 #include <cstring>
 #include <cstdio> // SEEK_SET/CUR/END
@@ -66,14 +66,14 @@ class W3dVideoFFmpeg : public W3dVideo {
 public:
     W3dVideoFFmpeg() : fmt(0), codecCtx(0), swsCtx(0), hwDev(0), frame(0), swFrame(0),
                        pkt(0), rgba(0), tex(0), avio(0), ioBuf(0), ownedBytes(0),
-                       vStream(-1), w(0), h(0), alpha(false), loop(false), ok(false), llegoAlFinal(false) {
+                       vStream(-1), w(0), h(0), alpha(false), loop(false), ok(false), reachedEnd(false) {
         mem.data = 0; mem.size = 0; mem.pos = 0;
     }
 
     bool Open(const char* path, bool doLoop) {
         loop = doLoop;
         if (avformat_open_input(&fmt, path, 0, 0) != 0) return false;
-        return OpenComun();
+        return OpenCommon();
     }
 
     // Abre el contenedor desde bytes en memoria. Copia los bytes:
@@ -90,11 +90,11 @@ public:
         fmt = avformat_alloc_context();
         fmt->pb = avio;
         if (avformat_open_input(&fmt, 0, 0, 0) != 0) return false;
-        return OpenComun();
+        return OpenCommon();
     }
 
     // Comun a Open(path) y OpenMem: ya tenemos 'fmt' abierto.
-    bool OpenComun() {
+    bool OpenCommon() {
         if (avformat_find_stream_info(fmt, 0) < 0) return false;
         const AVCodec* codec = 0;
         vStream = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
@@ -142,7 +142,7 @@ public:
             int r = av_read_frame(fmt, pkt);
             if (r < 0) {
                 if (loop) { Rewind(); return false; }
-                llegoAlFinal = true;   // video de una pasada: avisar (RQ borra el festejo con esto)
+                reachedEnd = true;   // video de una pasada: avisar (RQ borra el festejo con esto)
                 return false;
             }
             if (pkt->stream_index != vStream) { av_packet_unref(pkt); continue; }
@@ -201,11 +201,11 @@ private:
         // dibujaba muestreando EL FRAME DEL VIDEO (opaco) -> cada glifo una caja
         // sin transparencia. Mismo aviso que ya esta en UploadRGBA (w3dTexture.cpp).
         BindTexture(tex);
-        W3D_GL_CRUDO(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
-        W3D_GL_CRUDO(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
-        W3D_GL_CRUDO(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE));
-        W3D_GL_CRUDO(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE));
-        W3D_GL_CRUDO(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba));
+        W3D_GL_RAW(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
+        W3D_GL_RAW(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
+        W3D_GL_RAW(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE));
+        W3D_GL_RAW(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE));
+        W3D_GL_RAW(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba));
     }
 
     void Rewind() {
@@ -213,7 +213,7 @@ private:
         avcodec_flush_buffers(codecCtx);
     }
 
-    bool Terminado() const { return llegoAlFinal; }
+    bool Finished() const { return reachedEnd; }
 
     AVFormatContext* fmt;
     AVCodecContext*  codecCtx;
@@ -230,7 +230,7 @@ private:
     W3dMemIO         mem;
     int  vStream, w, h;
     bool alpha, loop, ok;
-    bool llegoAlFinal;
+    bool reachedEnd;
 };
 
 W3dVideo* W3dVideoOpenBackend(const char* path, bool loop) {
@@ -239,7 +239,7 @@ W3dVideo* W3dVideoOpenBackend(const char* path, bool loop) {
     return v;
 }
 
-W3dVideo* W3dVideoOpenMemoryBackend(const void* bytes, size_t len, const char* /*mime*/, bool loop, bool /*conSonido: audio del video no implementado en desktop*/) {
+W3dVideo* W3dVideoOpenMemoryBackend(const void* bytes, size_t len, const char* /*mime*/, bool loop, bool /*withSound: audio del video no implementado en desktop*/) {
     W3dVideoFFmpeg* v = new W3dVideoFFmpeg(); // FFmpeg detecta el contenedor solo; el mime no hace falta
     if (!v->OpenMem(bytes, len, loop)) { delete v; return 0; }
     return v;

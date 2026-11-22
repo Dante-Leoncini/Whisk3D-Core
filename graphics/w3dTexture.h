@@ -16,7 +16,7 @@
 #include <stddef.h>   // size_t (las texturas desde memoria)
 #include <vector>     // EncodeJPG (el JPG en memoria)
 
-#include "w3dBackend.h"   // (W3D_BACKEND_ABRIR / CERRAR: varios backends en un ejecutable)
+#include "w3dBackend.h"   // (W3D_BACKEND_OPEN / CLOSE: varios backends en un ejecutable)
 namespace w3dEngine {
 
     // Carga 'path' del disco y la sube como textura. Devuelve true y deja en
@@ -28,94 +28,94 @@ namespace w3dEngine {
 
     // .w3dt: TEXTURA LISTA PARA LA GPU (16 bits + mipmaps hechos; formato en w3dTexture.cpp). LoadTexture y
     // DecodeImage la reconocen por la extension en todas las plataformas: cargarla es leer y subir, sin decodificar
-    bool EsW3dt(const char* path);
+    bool IsW3dt(const char* path);
     bool LoadTextureW3dt(const char* path, unsigned int& outId, int* outW = 0, int* outH = 0);
     // el mismo, de un .w3dt que ya esta en memoria (un paquete de texturas); 'nombre' solo para el log
-    bool LoadTextureW3dtMemoria(const unsigned char* datos, size_t largo, unsigned int& outId, int* outW = 0,
-                                int* outH = 0, const char* nombre = 0);
-    // su nivel 0 (o el primero que entra en 'maxLado', si > 0) a RGBA 8888, en un buffer de FreeImage
-    bool DecodeW3dt(const char* path, int maxLado, unsigned char** outRGBA, int* outW, int* outH);
-    bool DecodeW3dtMemoria(const unsigned char* datos, size_t largo, int maxLado, unsigned char** outRGBA, int* outW,
+    bool LoadTextureW3dtMemory(const unsigned char* data, size_t length, unsigned int& outId, int* outW = 0,
+                                int* outH = 0, const char* name = 0);
+    // su nivel 0 (o el primero que entra en 'maxSide', si > 0) a RGBA 8888, en un buffer de FreeImage
+    bool DecodeW3dt(const char* path, int maxSide, unsigned char** outRGBA, int* outW, int* outH);
+    bool DecodeW3dtMemory(const unsigned char* data, size_t length, int maxSide, unsigned char** outRGBA, int* outW,
                            int* outH);
 
     // Sube pixeles RGBA 8888 ya decodificados como textura 2D y devuelve su id
     // (0 si falla). 'filtrado' = LINEAR si true, NEAREST si false. Formato
     // interno GL_RGBA: valido tanto en GL de escritorio como en GLES 1.1.
-    // 'conMips' = false la excluye del mipmapping global (la UI 2D lo evita a
+    // 'withMips' = false la excluye del mipmapping global (la UI 2D lo evita a
     // proposito: los mips promediaban los slice9 chicos).
-    // 'forzarPOT' remuestrea a potencia-de-dos ANTES de subir (solo hace falta
+    // 'forcePOT' remuestrea a potencia-de-dos ANTES de subir (solo hace falta
     // en Symbian: GLES 1.1 del N95 rechaza las texturas NPOT y el billboard sale
-    // sin textura). El camino de material ya lo hace (w3dtexload ReescalarPOT); el
+    // sin textura). El camino de material ya lo hace (w3dtexload RescalePOT); el
     // de particulas/UI-2D (Textura2D) se lo saltaba. No-op en el resto de OSes.
     // 'permitir16': si la imagen ENTRA en 16 bits sin perdida visible (cada canal a menos de 2/255 de su valor
     // cuantizado: las texturas de la ROM, la UI de pocos colores), sube 565 (opaca) o 5551 (alfa de un bit): la MITAD
     // de memoria. Solo para las que nunca se reescriben (UpdateRGBA manda RGBA de 8 bits y GLES exige el mismo
     // formato): los materiales y las imagenes de la UI, no la pintura ni el video
     unsigned int UploadRGBA(const unsigned char* rgba, int w, int h,
-                            bool filtrado = true, bool conMips = true,
-                            bool forzarPOT = false, bool permitir16 = false);
-    // EL ALFA ES UN DATO, NO TRANSPARENCIA (la mascara del sol de la luz horneada, Materials.h TexLayer::mascaraSol):
+                            bool filtered = true, bool withMips = true,
+                            bool forcePOT = false, bool allow16 = false);
+    // EL ALFA ES UN DATO, NO TRANSPARENCIA (la mascara del sol de la luz horneada, Materials.h TexLayer::maskSun):
     // mientras esta prendido, UploadRGBA sube OPACO (alfa 255). Lo usa la carga donde ese dato no se usa (el pipeline
     // fijo): la textura entra en 16 bits como siempre
-    void TexAlfaDescartar(bool on);
+    void TexAlphaDiscard(bool on);
     // TEXTURAS DE 16 BITS del PROYECTO ("texturas16" en el .w3d): false (defecto) = solo las que entran sin perdida
     // visible; true = SIEMPRE 565 / 5551 (opacas y de alfa de un bit; hasta 4/255 de error por canal: la mitad de
     // memoria). Las de alfa con niveles quedan en 8 bits. Gobierna las cargas nuevas
-    bool Texturas16Siempre();
-    void SetTexturas16Siempre(bool on);
+    bool Textures16Always();
+    void SetTextures16Always(bool on);
     // ...y lo mismo SOLO EN EL N95 ("texturas16Movil" en el .w3d): el proyecto se ve igual en PC y en el telefono sus
     // texturas ocupan la mitad (junto con texturasMitadDesde, la cuarta parte). Solo en Symbian; en el resto se ignora
-    bool Texturas16Movil();
-    void SetTexturas16Movil(bool on);
+    bool Textures16Mobile();
+    void SetTextures16Mobile(bool on);
     // TEXTURAS A LA MITAD EN EL N95 ("texturasMitadDesde" en el .w3d; 0 = no, el defecto): cada textura del PROYECTO
     // (las de los materiales y las imagenes de la UI; no las del editor ni las fuentes) con un lado MAYOR a ese se sube
     // a la mitad de resolucion. Un proyecto pensado para PC no entra en la memoria del telefono (Daytona: ~35 MB de
     // texturas, el N95 se cae a los ~20) y en 320x240 la mitad casi no se nota. Las UV no cambian (van de 0 a 1) y lo
     // que se informa como tamano de la imagen es el original. Solo en Symbian; en el resto se ignora. Gobierna las
     // cargas nuevas
-    int TexturasMitadDesde();
-    void SetTexturasMitadDesde(int lado);
+    int TexturesHalfFrom();
+    void SetTexturesHalfFrom(int side);
     // la imagen RGBA a la MITAD (cada 2x2 promediado): un buffer nuevo que se libera con FreeImage; NULL sin memoria
-    unsigned char* ReducirMitadRGBA(const unsigned char* rgba, int w, int h, int& ow, int& oh);
+    unsigned char* ReduceHalfRGBA(const unsigned char* rgba, int w, int h, int& ow, int& oh);
     // la MEMORIA de las texturas subidas (bytes, con su piramide de mips) y cuantas hay / cuantas en 16 bits
     // bytes32: lo que serian todas en RGBA8; bytesPot: lo que ocupan en el N95 (remuestreadas a potencia de dos)
-    struct MemoriaTexturas { long bytes, bytes32, bytesPot; int cantidad, de16; };
-    MemoriaTexturas TexturasMemoria();
+    struct TextureMemory { long bytes, bytes32, bytesPot; int count, from16; };
+    TextureMemory TexturesMemory();
     // la de UNA textura subida (false si ese id no se subio por aca)
-    bool TexturaMemoriaDe(unsigned int id, long& bytes, long& bytesPot, bool& de16);
+    bool TextureMemoryOf(unsigned int id, long& bytes, long& bytesPot, bool& from16);
 
     // actualiza un RECTANGULO (x,y,w,h) de una textura ya subida con w*h pixeles RGBA (pintura en vivo)
-    // regenerarMips=false: no rehace la piramide (en GLES2 eso es la textura ENTERA cada vez); para la pintura en vivo,
-    // que la rehace una sola vez al soltar con RegenerarMips. px1 = un pixel cualquiera de la textura (en GLES1/PC la
+    // regenerateMips=false: no rehace la piramide (en GLES2 eso es la textura ENTERA cada vez); para la pintura en vivo,
+    // que la rehace una sola vez al soltar con RegenerateMips. px1 = un pixel cualquiera de la textura (en GLES1/PC la
     // piramide se rehace re-subiendo ese pixel con GL_GENERATE_MIPMAP).
-    bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect, bool regenerarMips = true);
+    bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect, bool regenerateMips = true);
     // UNA TEXTURA DE 16 BITS QUE SE REESCRIBE ENTERA (los cuadros de un video, objects/W3dVideoTex.h): Reservar565 deja
     // en 'id' (0 = crea una) una RGB565 de w x h (potencias de dos) con esos pixeles (NULL: sin datos), sin mipmaps,
     // LINEAR y repitiendo; devuelve su id. Actualizar565 la reescribe entera con glTexSubImage2D (el mismo formato con
     // que se creo: GLES lo exige). Filas apretadas, la primera es la de v = 0
-    unsigned int Reservar565(unsigned int id, int w, int h, const unsigned short* px);
-    bool Actualizar565(unsigned int id, int w, int h, const unsigned short* px);
-    void RegenerarMips(unsigned int id, int x, int y, const unsigned char* px1);
+    unsigned int Reserve565(unsigned int id, int w, int h, const unsigned short* px);
+    bool Update565(unsigned int id, int w, int h, const unsigned short* px);
+    void RegenerateMips(unsigned int id, int x, int y, const unsigned char* px1);
     // dimensiones con que se subio una textura (para el aspect ratio). false si no se conoce.
     bool TextureSize(unsigned int id, int& w, int& h);
 
-    // CAPTURA DE PANTALLA (un cuadro dibujado, copiado a una textura). ReservarPantalla deja en 'id' (0 = crea una) una
+    // CAPTURA DE PANTALLA (un cuadro dibujado, copiado a una textura). ReserveScreen deja en 'id' (0 = crea una) una
     // textura RGB de w x h sin datos, sin mipmaps, LINEAR y sin repetir (w y h potencias de dos: el N95 no acepta
-    // otras); devuelve su id. CopiarPantalla copia un rectangulo del framebuffer (x, y desde abajo a la izquierda, como
+    // otras); devuelve su id. CopyScreen copia un rectangulo del framebuffer (x, y desde abajo a la izquierda, como
     // glViewport) a la esquina (0,0) de la textura con glCopyTexSubImage2D, que esta en GL 1.1, GLES 1.1 y
     // GLES2/WebGL sin extensiones. La fila 0 de la textura es la de ABAJO del rectangulo: queda dada vuelta respecto de
     // una imagen cargada. En un PowerVR (el N95) copiar en medio del cuadro obliga a dibujar todo lo mandado hasta ahi:
     // es para un cuadro de vez en cuando, no para cada cuadro
-    unsigned int ReservarPantalla(unsigned int id, int w, int h);
-    void CopiarPantalla(unsigned int id, int x, int y, int w, int h);
+    unsigned int ReserveScreen(unsigned int id, int w, int h);
+    void CopyScreen(unsigned int id, int x, int y, int w, int h);
     // ...salvo en un driver que la copia al reves (la fila 0 es la de ARRIBA): la VideoCore IV de Android 2.3. Lo prueba
     // el backend al arrancar (lo implementa cada backend: solo el de GLES2 puede dar true); el que da las UV de una
-    // captura las da vuelta. Ese mismo driver cuenta las filas desde ARRIBA: CopiaPantallaFila da la 'y' que hay que
+    // captura las da vuelta. Ese mismo driver cuenta las filas desde ARRIBA: CopyScreenRow da la 'y' que hay que
     // pedirle para copiar las filas y..y+h contadas desde abajo (en el resto, la misma)
-W3D_BACKEND_ABRIR
-    bool CopiaPantallaDadaVuelta();
-    int CopiaPantallaFila(int y, int h);
-W3D_BACKEND_CERRAR
+W3D_BACKEND_OPEN
+    bool CopyScreenFlipped();
+    int CopyScreenRow(int y, int h);
+W3D_BACKEND_CLOSE
 
     // Decodifica una imagen del disco a pixeles RGBA 8888 en el heap, sin
     // subirla a GL. Util cuando se necesitan los PIXELES (no solo el id), p.ej.
@@ -132,7 +132,7 @@ W3D_BACKEND_CERRAR
     // al cambiar de carpeta o cerrar (clave en el N95 con poca memoria). id 0 = no-op.
     void DeleteTexture(unsigned int id);
     // las texturas GL creadas y no borradas (ver que cargar y descargar no pierde nada)
-    int TexturasVivas();
+    int LiveTextures();
 
     // MINIATURA: decodifica una imagen y la reduce (box filter) a <= maxSize px por lado, MANTENIENDO el aspecto.
     // El buffer FULL se decodifica y se libera ADENTRO (transitorio); solo queda la mini en *outRGBA (liberar con
@@ -156,14 +156,14 @@ W3D_BACKEND_CERRAR
     // la tarjeta). Como EncodePNG, sin comprimir (deflate "stored"), RGB o RGBA. Abrir escribe la cabecera; Filas agrega
     // 'n' filas RGBA de ARRIBA hacia abajo (un IDAT por llamada); Cerrar escribe el final y cierra. false = no se pudo
     // escribir (disco lleno) o faltaron filas. Portable (stdio): tambien en Symbian
-    struct PNGFranjas { void* f; int w, h, filas; bool alfa, ok; unsigned int adler; };
-    bool PNGFranjasAbrir(PNGFranjas& p, const char* path, int w, int h, bool alfa);
-    bool PNGFranjasFilas(PNGFranjas& p, const unsigned char* rgba, int n);
-    bool PNGFranjasCerrar(PNGFranjas& p);
+    struct PNGStripes { void* f; int w, h, rows; bool alpha, ok; unsigned int adler; };
+    bool PNGStripesOpen(PNGStripes& p, const char* path, int w, int h, bool alpha);
+    bool PNGStripesRows(PNGStripes& p, const unsigned char* rgba, int n);
+    bool PNGStripesClose(PNGStripes& p);
     // el RENDER A ARCHIVO (tarjeta Render): PNG que CONSERVA el alfa (RGBA) y JPG (calidad 1..100, stb_image_write).
     // Solo PC/Web/Android/consolas (stdio): en Symbian no existen
     bool SavePNGRGBA(const char* path, const unsigned char* rgba, int w, int h, bool flipY = true);
-    bool SaveJPG(const char* path, const unsigned char* rgba, int w, int h, int calidad, bool flipY = true);
+    bool SaveJPG(const char* path, const unsigned char* rgba, int w, int h, int quality, bool flipY = true);
     // el JPG en memoria (calidad 1..100): SaveJPG lo escribe con stdio y Symbian con RFile (w3dtexload.cpp)
-    bool EncodeJPG(const unsigned char* rgba, int w, int h, int calidad, bool flipY, std::vector<unsigned char>& out);
+    bool EncodeJPG(const unsigned char* rgba, int w, int h, int quality, bool flipY, std::vector<unsigned char>& out);
 }

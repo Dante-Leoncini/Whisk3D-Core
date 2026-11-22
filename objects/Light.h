@@ -26,29 +26,29 @@ class Light : public Object {
         float specular[4];
         // OpenGL fixed-function = UN tipo de luz, configurable: DIRECCIONAL (w=0, como el sol, sin posicion ni
         // atenuacion), PUNTUAL (w=1 + atenuacion) o SPOT (puntual + cono). Editables desde el panel de la luz.
-        bool   direccional;     // true: w=0 (direccional); false: w=1 (puntual/spot, con atenuacion)
+        bool   directional;     // true: w=0 (direccional); false: w=1 (puntual/spot, con atenuacion)
         // IGNORAR EL ORDEN DEL ARBOL (default true): la luz se enciende en el PRE-PASE, antes de toda la geometria,
         // y alumbra la escena entera sin importar donde este colgada. En false vuelve el comportamiento de GL fijo:
         // solo alumbra lo que se dibuja DESPUES de ella en el arbol (sirve para iluminar ciertas cosas con ciertas
         // luces, o para REUSAR uno de los 8 GL lights pisando una luz anterior mas abajo en el arbol).
-        bool   ignorarOrden;
+        bool   ignoreOrder;
         float attConstant;    // atenuacion: 1/(C + L*d + Q*d^2). Solo luz puntual/spot.
         float attLinear;
         float attQuadratic;
         float spotCutoff;     // angulo del cono en grados: 180 = sin cono (punto); 1..90 = spotlight
         float spotExponent;   // concentracion del haz del spot (0 = parejo .. 128 = muy focalizado)
         // TRAZADO DE RAYOS (editor, render/RayTracer): el TAMANO de la lampara y cuantos rayos de sombra manda.
-        //   rtRadio: 0 = puntual (sombra dura); >0 = esfera de ese radio (puntual) o cono de esos GRADOS (solar)
+        //   rtRadius: 0 = puntual (sombra dura); >0 = esfera de ese radio (puntual) o cono de esos GRADOS (solar)
         //            -> penumbra, mas suave cuanto mas grande.
-        //   rtRayos: rayos de sombra por impacto hacia esta lampara; 0 = usar el global de la pestania Render.
-        float rtRadio;
-        float rtRayos;
+        //   rtRays: rayos de sombra por impacto hacia esta lampara; 0 = usar el global de la pestania Render.
+        float rtRadius;
+        float rtRays;
         // INTENSIDAD: multiplica el color (difuso y especular) de la luz, en GL y en el trazado de rayos. 1 = el color
-        // tal cual; mas = mas fuerte (el color queda en 0..1 como siempre y esto la sube). Animable (AnimLuzIntens)
-        float intensidad;
+        // tal cual; mas = mas fuerte (el color queda en 0..1 como siempre y esto la sube). Animable (AnimLightIntens)
+        float intensity;
         // DISTANCIA en metros: hasta donde alumbra una puntual/foco (el largo del cono que se dibuja). 0 = sin limite.
         // En el trazado de rayos la luz se apaga suave hasta llegar a 0 ahi; el GL fijo no la corta (solo atenua)
-        float distancia;
+        float distance;
 
         static Light* Create(Object* parent = NULL, float x = 0, float y = 0, float z = 0);
 
@@ -71,20 +71,20 @@ extern void (*g_lightOverlayHook)(Light*);
 // Contenedor global de luces
 extern std::vector<Light*> Lights;
 // los CANALES de GL (bit i = GL_LIGHT0 + i) que prendieron las luces de la ESCENA al dibujarse. El pase de Render con
-// Constructor los apaga al empezar (W3dEscena3DLuces) y las que siguen en la escena los vuelven a prender: una luz
+// Constructor los apaga al empezar (W3dScene3DLights) y las que siguen en la escena los vuelven a prender: una luz
 // BORRADA (viva para el Ctrl+Z) u oculta no deja su canal prendido iluminando
-extern unsigned g_w3dLucesEscenaPrendidas;
+extern unsigned g_w3dLightsOnScene;
 
 // Máximo de luces
 const int MAX_LIGHTS = 8;     // las de GL (GL_LIGHT0..7): las que el pipeline fijo / los shaders prenden a la vez
 // las de la ESCENA: pasadas las 8, las nuevas COMPARTEN un GL light (en OpenGL se ven 8 a la vez; el trazado de rayos
 // las usa todas: un escenario con muchos focos)
-const int MAX_LUCES_ESCENA = 256;
+const int MAX_LIGHTS_SCENE = 256;
 
 // PRE-PASE DE LUCES (Light.cpp): encender TODAS las luces visibles antes de dibujar la geometria del pase
-void W3dLucesPrepase(Object* raiz);
-void W3dLucesPrepaseFin();
+void W3dLightsPrePass(Object* root);
+void W3dLightsPrePassEnd();
 // EL TIPO de una luz: 0 Punto (para todos lados), 1 Sol (direccional), 2 Foco (un cono de 45 grados si no tenia)
-void W3dLuzPonerTipo(Light* l, int tipo);
+void W3dLightSetType(Light* l, int type);
 
 #endif

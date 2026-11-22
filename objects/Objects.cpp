@@ -1,31 +1,31 @@
 #include "Objects.h"
 #include "animation/W3dAnimSet.h"   // ~Object suelta la biblioteca de clips de jerarquia
-#include "script/W3dScript.h" // W3dScriptDatos completo (el destructor lo libera)
-#include "physics/W3dRigido.h" // W3dRigidoDef completo (idem) + W3dRigidosOlvidar
-#include "physics/W3dColMalla.h" // W3dColOlvidar: la colision leida de una malla que se va
-#include "physics/W3dHitbox.h"   // W3dHitboxOlvidar: los pares de hitbox que lo nombran
-#include "w3dGraphics.h" // flags de estado de render (w3dRenderLuces) — PC y Symbian
-#include "W3dNombres.h"  // LA regla de nombres unicos (una sola, compartida por todo el editor)
+#include "script/W3dScript.h" // W3dScriptData completo (el destructor lo libera)
+#include "physics/W3dRigid.h" // W3dRigidDef completo (idem) + W3dRigidForget
+#include "physics/W3dColMesh.h" // W3dColForget: la colision leida de una malla que se va
+#include "physics/W3dHitbox.h"  // W3dHitboxForget: los pares de hitbox que lo nombran
+#include "w3dGraphics.h" // flags de estado de render (w3dRenderLights) — PC y Symbian
+#include "W3dNames.h"    // LA regla de nombres unicos (una sola, compartida por todo el editor)
 #include "CameraBase.h"  // la vista BINDEADA (g_renderCam*): es lo que leen los constraints
 #include "w3dlog.h"      // avisos (ciclo, vista sin bindear, base espejada): el Core no notifica
 #include "objects/Armature.h"            // Child Of: el hueso de la fuente (W3dBone::poseWorld)
-#include "animation/SkeletalAnimation.h" // Child Of: EvaluarPoseEsqueleto (pose al frame actual)
+#include "animation/SkeletalAnimation.h" // Child Of: EvaluatePoseSkeleton (pose al frame actual)
 #include "animation/Animation.h"         // CurrentFrame
-#include <stdio.h>                        // printf: la traza del harness (g_trazaGLSec)
+#include <stdio.h>                        // printf: la traza del harness (g_traceGLSec)
 
 // RAIZ de la escena. La DEFINE el Core (antes solo la declaraba y la definia el editor, asi que
 // nadie podia enlazar contra el motor sin traerse el editor entero). El editor la llena con su
 // propia raiz (una Scene) en el arranque; para el motor alcanza con que exista y valga 0.
 Object* SceneCollection = 0;
 // LOCAL VIEW (ver Objects.h): el editor los publica por-frame; Object::Render los lee para AISLAR la seleccion.
-bool g_localViewActivo = false;
-const std::set<Object*>* g_localViewVisibles = 0;
-const std::set<Object*>* g_localViewPaso = 0;
-bool W3dVistaLocalSoloPaso(Object* o){
-    return g_localViewActivo && g_localViewVisibles && !g_localViewVisibles->count(o) && g_localViewPaso && g_localViewPaso->count(o);
+bool g_localViewActive = false;
+const std::set<Object*>* g_visibleLocalView = 0;
+const std::set<Object*>* g_localViewStep = 0;
+bool W3dViewLocalOnlyStep(Object* o){
+    return g_localViewActive && g_visibleLocalView && !g_visibleLocalView->count(o) && g_localViewStep && g_localViewStep->count(o);
 }
-bool W3dVistaLocalOculta(Object* o){
-    return g_localViewActivo && g_localViewVisibles && !g_localViewVisibles->count(o) && !(g_localViewPaso && g_localViewPaso->count(o));
+bool W3dViewLocalHidden(Object* o){
+    return g_localViewActive && g_visibleLocalView && !g_visibleLocalView->count(o) && !(g_localViewStep && g_localViewStep->count(o));
 }
 
 #ifdef W3D_SYMBIAN
@@ -45,120 +45,120 @@ bool W3dVistaLocalOculta(Object* o){
 // reciclar (reciclar es exactamente el bug que esto evita).
 // (static: no lo declara ningun header, o sea que nadie de afuera lo puede leer ni
 //  -peor- escribir; sin esto tenia enlace externo "de casualidad")
-static unsigned int W3dSerialProx = 1;
-unsigned int W3dObjetosNacidos() { return W3dSerialProx; }   // (lectura: ver Objects.h)
-unsigned int W3dSeleccionSerial = 0;                          // (ver Objects.h)
+static unsigned int W3dNextSerial = 1;
+unsigned int W3dObjectsSpawned() { return W3dNextSerial; }   // (lectura: ver Objects.h)
+unsigned int W3dSelectionSerial = 0;                          // (ver Objects.h)
 
 // LOS OBJETOS VIVOS (ver Objects.h). Un static LOCAL con puntero y no un std::set global: la raiz del
 // editor nace en un constructor ESTATICO de otra unidad (Scene.cpp) y un set global podria no estar
 // construido todavia (un vector en cero "anda"; un set en cero no). Nunca se libera (vive todo el proceso).
-static std::set<const Object*>& ObjetosVivos() {
+static std::set<const Object*>& LiveObjects() {
     static std::set<const Object*>* s = 0;
     if (!s) s = new std::set<const Object*>();
     return *s;
 }
-// la CACHE de la consulta: W3dObjetoVivo corre en CADA funcion de lua que recibe un objeto (cientos por cuadro en un
+// la CACHE de la consulta: W3dObjectLive corre en CADA funcion de lua que recibe un objeto (cientos por cuadro en un
 // juego) y el set son ~12 saltos de puntero (en el N95, fallos de cache). Una entrada dice "o estaba vivo en la
 // generacion g": cualquier muerte sube la generacion y las invalida todas (los nacimientos no: un vivo sigue vivo).
 // Ceros estaticos: valen desde antes del primer constructor global (la generacion 0 no existe)
-struct W3dVivoCache { const Object* o; unsigned int gen; };
-static W3dVivoCache gVivoCache[256];
-static unsigned int gVivoGen = 1;
-static unsigned int gVivosCambios = 1;   // cualquier alta o baja del conjunto (W3dVivosDeTipo)
-static void ObjetoMuere(const Object* o) { ObjetosVivos().erase(o); gVivoGen++; gVivosCambios++; }
-bool W3dObjetoVivo(const Object* o) {
+struct W3dLiveCache { const Object* o; unsigned int gen; };
+static W3dLiveCache gLiveCache[256];
+static unsigned int gLiveGen = 1;
+static unsigned int gLiveChanges = 1;   // cualquier alta o baja del conjunto (W3dLiveOfType)
+static void ObjectDies(const Object* o) { LiveObjects().erase(o); gLiveGen++; gLiveChanges++; }
+bool W3dObjectLive(const Object* o) {
     if (!o) return false;
-    W3dVivoCache& c = gVivoCache[((unsigned int)(size_t)o * 2654435761u) >> 24];
-    if (c.o == o && c.gen == gVivoGen) return true;
-    const std::set<const Object*>& v = ObjetosVivos();
+    W3dLiveCache& c = gLiveCache[((unsigned int)(size_t)o * 2654435761u) >> 24];
+    if (c.o == o && c.gen == gLiveGen) return true;
+    const std::set<const Object*>& v = LiveObjects();
     if (v.find(o) == v.end()) return false;
-    c.o = o; c.gen = gVivoGen;
+    c.o = o; c.gen = gLiveGen;
     return true;
 }
-unsigned W3dObjetosGen() { return gVivoGen; }
-unsigned W3dVivosCambios() { return gVivosCambios; }
+unsigned W3dObjectsGen() { return gLiveGen; }
+unsigned W3dLiveChanges() { return gLiveChanges; }
 
 // LOS VIVOS POR TIPO (ver Objects.h): se rearman del conjunto de vivos solo cuando cambio (nacio, murio o volvio
 // alguno); el tipo de un objeto no cambia nunca
-static const int kTiposN = (int)ObjectType::rutina + 1;
-const std::vector<Object*>& W3dVivosDeTipo(int tipo) {
-    static std::vector<Object*> listas[kTiposN];
-    static unsigned int armadas = 0;
-    static const std::vector<Object*> vacia;
-    if (tipo < 0 || tipo >= kTiposN) return vacia;
-    if (armadas != gVivosCambios) {
-        for (int k = 0; k < kTiposN; k++) listas[k].clear();
-        const std::set<const Object*>& v = ObjetosVivos();
+static const int kTypesN = (int)ObjectType::routine + 1;
+const std::vector<Object*>& W3dLiveOfType(int type) {
+    static std::vector<Object*> lists[kTypesN];
+    static unsigned int built = 0;
+    static const std::vector<Object*> empty;
+    if (type < 0 || type >= kTypesN) return empty;
+    if (built != gLiveChanges) {
+        for (int k = 0; k < kTypesN; k++) lists[k].clear();
+        const std::set<const Object*>& v = LiveObjects();
         for (std::set<const Object*>::const_iterator it = v.begin(); it != v.end(); ++it) {
             Object* o = const_cast<Object*>(*it);
             const int t = (int)o->getType();
-            if (t >= 0 && t < kTiposN) listas[t].push_back(o);
+            if (t >= 0 && t < kTypesN) lists[t].push_back(o);
         }
-        armadas = gVivosCambios;
+        built = gLiveChanges;
     }
-    return listas[tipo];
+    return lists[type];
 }
-bool W3dColgadoDe(const Object* o, const Object* raiz) {
-    for (; o; o = o->Parent) if (o == raiz) return true;
+bool W3dAttachedTo(const Object* o, const Object* root) {
+    for (; o; o = o->Parent) if (o == root) return true;
     return false;
 }
-bool W3dObjetoVivoSerial(const Object* o, unsigned int serial) {
-    return W3dObjetoVivo(o) && o->serial == serial;
+bool W3dLiveObjectSerial(const Object* o, unsigned int serial) {
+    return W3dObjectLive(o) && o->serial == serial;
 }
-void W3dObjetoVivoMarcar(const Object* o, bool vivo) {
+void W3dLiveObjectMark(const Object* o, bool live) {
     if (!o) return;
-    if (vivo) { ObjetosVivos().insert(o); gVivosCambios++; } else ObjetoMuere(o);
+    if (live) { LiveObjects().insert(o); gLiveChanges++; } else ObjectDies(o);
 }
 
 // ganchos para desvincular tambien lo que NO cuelga del arbol vivo (ver Objects.h).
 // Todo NULL = nadie engancho (el motor sin editor). Inicializacion ESTATICA (constante):
 // vale desde antes del primer constructor global, asi que registrarse desde uno es seguro.
-W3dDesvincularFn W3dDesvincularGanchos[W3dDesvincularMaxGanchos] = {0,0,0,0,0,0,0,0,0,0,0,0};
-bool W3dDesvincularRegistrar(W3dDesvincularFn f){
+W3dUnlinkFn W3dUnlinkHooks[W3dUnlinkMaxHooks] = {0,0,0,0,0,0,0,0,0,0,0,0};
+bool W3dUnlinkRegister(W3dUnlinkFn f){
     if (!f) return false;
-    for (int i = 0; i < (int)W3dDesvincularMaxGanchos; i++){
-        if (W3dDesvincularGanchos[i] == f) return true;   // ya estaba
-        if (!W3dDesvincularGanchos[i]) { W3dDesvincularGanchos[i] = f; return true; }
+    for (int i = 0; i < (int)W3dUnlinkMaxHooks; i++){
+        if (W3dUnlinkHooks[i] == f) return true;   // ya estaba
+        if (!W3dUnlinkHooks[i]) { W3dUnlinkHooks[i] = f; return true; }
     }
-    return false;   // sin lugar: agrandar W3dDesvincularMaxGanchos
+    return false;   // sin lugar: agrandar W3dUnlinkMaxHooks
 }
 
 // ---- RAICES EDITABLES (ver Objects.h): el registro de las escenas/prefabs cargados ----
 // Un vector chico (un proyecto tiene pocas raices): recorrerlo es gratis al lado del arbol.
-bool W3dRaizCreando = false;
-static std::vector<Object*> gRaicesReg;
-void W3dRaizRegistrar(Object* raiz) {
-    if (!raiz) return;
-    for (size_t i = 0; i < gRaicesReg.size(); i++) if (gRaicesReg[i] == raiz) return;
-    gRaicesReg.push_back(raiz);
+bool W3dRootCreating = false;
+static std::vector<Object*> gRootsReg;
+void W3dRootRegister(Object* root) {
+    if (!root) return;
+    for (size_t i = 0; i < gRootsReg.size(); i++) if (gRootsReg[i] == root) return;
+    gRootsReg.push_back(root);
 }
-void W3dRaizOlvidar(Object* raiz) {
-    for (size_t i = 0; i < gRaicesReg.size(); i++)
-        if (gRaicesReg[i] == raiz) { gRaicesReg.erase(gRaicesReg.begin() + (long)i); return; }
+void W3dRootForget(Object* root) {
+    for (size_t i = 0; i < gRootsReg.size(); i++)
+        if (gRootsReg[i] == root) { gRootsReg.erase(gRootsReg.begin() + (long)i); return; }
 }
-int W3dRaicesRegistradas() { return (int)gRaicesReg.size(); }
-Object* W3dRaizRegistradaEn(int i) {
-    return (i >= 0 && i < (int)gRaicesReg.size()) ? gRaicesReg[(size_t)i] : NULL;
+int W3dRootsRegistered() { return (int)gRootsReg.size(); }
+Object* W3dRegisteredRootIn(int i) {
+    return (i >= 0 && i < (int)gRootsReg.size()) ? gRootsReg[(size_t)i] : NULL;
 }
-bool W3dEsRaizRegistrada(const Object* o) {
+bool W3dIsRootRegistered(const Object* o) {
     if (!o) return false;
-    for (size_t i = 0; i < gRaicesReg.size(); i++) if (gRaicesReg[i] == o) return true;
+    for (size_t i = 0; i < gRootsReg.size(); i++) if (gRootsReg[i] == o) return true;
     return false;
 }
-void W3dRaicesVivas(std::vector<Object*>& out) {
+void W3dLiveRoots(std::vector<Object*>& out) {
     out.clear();
     if (SceneCollection) out.push_back(SceneCollection);
-    for (size_t i = 0; i < gRaicesReg.size(); i++)
-        if (gRaicesReg[i] && gRaicesReg[i] != SceneCollection) out.push_back(gRaicesReg[i]);
+    for (size_t i = 0; i < gRootsReg.size(); i++)
+        if (gRootsReg[i] && gRootsReg[i] != SceneCollection) out.push_back(gRootsReg[i]);
 }
-Object* W3dRaizDe(Object* o) {
+Object* W3dRootOf(Object* o) {
     if (!o) return NULL;
-    Object* tope = o;
-    while (tope->Parent) tope = tope->Parent;
-    if (tope == SceneCollection || W3dEsRaizRegistrada(tope)) return tope;
+    Object* limit = o;
+    while (limit->Parent) limit = limit->Parent;
+    if (limit == SceneCollection || W3dIsRootRegistered(limit)) return limit;
     return NULL;
 }
-Object* W3dRaizDeColgado(Object* o) {
+Object* W3dAttachedRoot(Object* o) {
     if (!o) return NULL;
     Object* n = o;
     while (n->Parent) {
@@ -166,17 +166,17 @@ Object* W3dRaizDeColgado(Object* o) {
         if (std::find(h.begin(), h.end(), n) == h.end()) return NULL;   // (detachado: su padre ya no lo tiene)
         n = n->Parent;
     }
-    if (n == SceneCollection || W3dEsRaizRegistrada(n)) return n;
+    if (n == SceneCollection || W3dIsRootRegistered(n)) return n;
     return NULL;
 }
 
 // Variables globales
 std::vector<Object*> ObjSelects;
 Object* CollectionActive = NULL;
-Object* ObjActivo = NULL;
+Object* ActiveObj = NULL;
 Object* g_editMesh = NULL;        // edit mode: malla activa (NULL = nadie)
 int EditSelectMode = SelVertex;   // edit mode: sub-elemento (vertex por defecto)
-std::vector<SaveState> estadoObjetos;
+std::vector<SaveState> objectState;
 
 #ifdef W3D_SYMBIAN
 // en PC lo define ViewPort3D.cpp (todavia sin portar); SceneCollection ya
@@ -184,21 +184,21 @@ std::vector<SaveState> estadoObjetos;
 // (Viewport3DActive: ahora lo define ViewPort3D.cpp real)
 #endif
 
-Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 Rot, Vector3 Scale)
+Object::Object(Object* parent, const std::string& newName, Vector3 Pos, Vector3 Rot, Vector3 Scale)
     : Parent(parent),
       visible(true),
-      renderizable(true),
-      listadoRiel(255),
-      estatico(true),   // por defecto NO se mueve en runtime (convencion RenderWare); el juego marca dinamicos a Crash/enemigos
-      proyectaSombra(true), recibeSombra(true),   // (las sombras en tiempo real: como Unity, las dos prendidas)
-      rebotaLuz(true), captaSombras(false),       // (la luz precalculada: rebota y no es captador de sombras)
-      enSondas(true),                             // (lo ven las sondas de reflejo y de luz)
-      sinTransformacion(false),
-      desplegado(true),
-      showRelantionshipsLines(true),
-      posadoPorCurvas(false), posadoPorClip(false),   // nace en reposo: nadie lo poso todavia
-      select(false), // Seleccionar() al final lo deja seleccionado
-      name(nombre),
+      renderable(true),
+      listingRail(255),
+      isStatic(true),   // por defecto NO se mueve en runtime (convencion RenderWare); el juego marca dinamicos a Crash/enemigos
+      projectsShadow(true), receivesShadow(true),   // (las sombras en tiempo real: como Unity, las dos prendidas)
+      bouncesLight(true), catchesShadows(false),    // (la luz precalculada: rebota y no es captador de sombras)
+      inProbes(true),                               // (lo ven las sondas de reflejo y de luz)
+      noTransform(false),
+      expanded(true),
+      showRelationshipsLines(true),
+      posedByCurves(false), posedByClip(false),   // nace en reposo: nadie lo poso todavia
+      select(false), // Select() al final lo deja seleccionado
+      name(newName),
       pos(Pos),
       scale(Scale) {
 
@@ -216,32 +216,32 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
     
     rot = qY * qX * qZ; // Aplicación: (Z) * (X) * (Y)
 
-    serial = W3dSerialProx++;    // identidad estable: se asigna al NACER y no se reusa jamas
-    ObjetosVivos().insert(this); // (ver W3dObjetoVivo: lo que lua trae de vuelta se valida contra esto)
-    gVivosCambios++;
-    constraintActivo = -1;       // stack de constraints vacio: no hay ninguno seleccionado
+    serial = W3dNextSerial++;   // identidad estable: se asigna al NACER y no se reusa jamas
+    LiveObjects().insert(this); // (ver W3dObjectLive: lo que lua trae de vuelta se valida contra esto)
+    gLiveChanges++;
+    activeConstraint = -1;       // stack de constraints vacio: no hay ninguno seleccionado
     consEval = false;            // guardia de reentrada de la evaluacion (ver Objects.h)
     rotMode = RotEulerXYZ;       // default: XYZ Euler
     rotAngle = 0.0f;
     rotAxis = Vector3(0, 0, 1);
-    scriptDatos = NULL;          // script lua opcional (ver script/W3dScript.h)
-    clipsJer = NULL;             // biblioteca de clips de jerarquia opcional (ver animation/W3dAnimSet.h)
-    fisica = NULL;               // cuerpo rigido opcional (ver physics/W3dRigido.h)
-    ActualizarDisplayRot();
+    scriptData = NULL;          // script lua opcional (ver script/W3dScript.h)
+    clipsHier = NULL;           // biblioteca de clips de jerarquia opcional (ver animation/W3dAnimSet.h)
+    physics = NULL;             // cuerpo rigido opcional (ver physics/W3dRigid.h)
+    UpdateDisplayRot();
 
     // PADRE NORMALIZADO: un objeto de primer nivel tiene Parent = la raiz (antes quedaba en NULL
     // aunque viviera en SceneCollection->Childrens, mientras los loaders y el reparent si ponian
     // la raiz). Con varias raices (escenas, prefabs) un Parent NULL no diria de cual es, y todos
     // los 'Parent ? Parent : SceneCollection' lo mandarian a la ACTIVA. Una raiz que nace
-    // (W3dRaizCreando) no se cuelga de nadie.
+    // (W3dRootCreating) no se cuelga de nadie.
     if (Parent) {
         Parent->Childrens.push_back(this);
-    } else if (SceneCollection && this != SceneCollection && !W3dRaizCreando) {
+    } else if (SceneCollection && this != SceneCollection && !W3dRootCreating) {
         Parent = SceneCollection;
         SceneCollection->Childrens.push_back(this);
     }
 
-    if (W3dRaizCreando) return;   // una raiz nueva: ni nombre libre ni seleccion (vive afuera)
+    if (W3dRootCreating) return;   // una raiz nueva: ni nombre libre ni seleccion (vive afuera)
 
     // NOMBRE UNICO desde el nacimiento: ya esta en el arbol, asi que su scope
     // (la escena a la que pertenece) es el definitivo. Con esto los ~15 ctores
@@ -249,12 +249,12 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
     // homonimos sin que cada uno tenga que acordarse. En Object el getType()
     // virtual todavia devuelve baseObject: no importa, el scope se decide
     // subiendo por Parent (una raiz UI queda con scope global, que es lo que
-    // corresponde). Durante la carga no se toca (ver W3dNombresCargando).
-    if (!W3dNombresCargando && SceneCollection && this != SceneCollection)
-        name = NombreLibre(name);
+    // corresponde). Durante la carga no se toca (ver W3dNamesLoading).
+    if (!W3dNamesLoading && SceneCollection && this != SceneCollection)
+        name = FreeName(name);
 
-    DeseleccionarTodo();
-    Seleccionar();
+    DeselectAll();
+    Select();
 }
 
 // refresca los valores de DISPLAY (rotEuler / rotAxis+rotAngle) desde 'rot'.
@@ -273,29 +273,29 @@ Object::Object(Object* parent, const std::string& nombre, Vector3 Pos, Vector3 R
 // ============================================================================
 
 // el equivalente de 'v' (mod 360) mas cercano a 'ref'
-static float CercaMod360(float v, float ref){
+static float NearMod360(float v, float ref){
     float k = floorf((ref - v) / 360.0f + 0.5f);
     return v + k * 360.0f;
 }
 
-Vector3 W3dEulerCercano(const Vector3& e, const Vector3& ref){
+Vector3 W3dNearEuler(const Vector3& e, const Vector3& ref){
     // un euler no es unico: (a) sumarle 360 a cualquier componente da la MISMA rotacion, y (b) tambien la da la
     // forma "dada vuelta" (x+180, 180-y, z+180). Se prueban las dos familias y gana la que menos se aleja de 'ref'.
-    Vector3 mejor = e; float mejorD = 1e30f;
+    Vector3 best = e; float bestD = 1e30f;
     for (int flip = 0; flip < 2; flip++){
         Vector3 c = flip ? Vector3(e.x + 180.0f, 180.0f - e.y, e.z + 180.0f) : e;
-        c.x = CercaMod360(c.x, ref.x);
-        c.y = CercaMod360(c.y, ref.y);
-        c.z = CercaMod360(c.z, ref.z);
+        c.x = NearMod360(c.x, ref.x);
+        c.y = NearMod360(c.y, ref.y);
+        c.z = NearMod360(c.z, ref.z);
         float d = fabsf(c.x - ref.x) + fabsf(c.y - ref.y) + fabsf(c.z - ref.z);
-        if (d < mejorD){ mejorD = d; mejor = c; }
+        if (d < bestD){ bestD = d; best = c; }
     }
-    return mejor;
+    return best;
 }
 
-void Object::ActualizarDisplayRot(){
+void Object::UpdateDisplayRot(){
     // el euler se re-deriva del quaternion CONSERVANDO las vueltas que ya tenia (ver arriba)
-    rotEuler = W3dEulerCercano(rot.ToEulerXYZ(), rotEuler);
+    rotEuler = W3dNearEuler(rot.ToEulerXYZ(), rotEuler);
     rot.ToAxisAngle(rotAngle, rotAxis);
     rotQuat = rot;
 }
@@ -305,7 +305,7 @@ void Object::ActualizarDisplayRot(){
 void Object::SetRot(const Quaternion& q){
     rot = q;
     rot.normalize();
-    ActualizarDisplayRot();
+    UpdateDisplayRot();
 }
 
 // Pone la rotacion desde un EULER que ya trae sus vueltas (la curva de animacion, el panel, el .w3d): el euler
@@ -320,10 +320,10 @@ void Object::SetRotEuler(const Vector3& e){
 
 // EL AXIS/ANGLE MANDA (el panel en modo Axis Angle). El eje tiene que ser unitario para que el angulo signifique
 // lo que dice: se normaliza aca y no en el caller.
-void Object::SetRotAxisAngle(const Vector3& eje, float angDeg){
-    rot = Quaternion::FromAxisAngle(eje.Normalized(), angDeg);
+void Object::SetRotAxisAngle(const Vector3& axis, float angDeg){
+    rot = Quaternion::FromAxisAngle(axis.Normalized(), angDeg);
     rot.normalize();
-    ActualizarDisplayRot();
+    UpdateDisplayRot();
 }
 
 // Restaura un SNAPSHOT (undo, cancelar el transform, la sim del juego): el euler se escribe TAL CUAL se habia
@@ -339,39 +339,39 @@ void Object::SetRotSnapshot(const Quaternion& q, const Vector3& euler){
 //  CONSTRAINTS (objects/W3dConstraint.h). Vive todo aca -y no en un .cpp propio-
 //  porque un .cpp nuevo hay que agregarlo a las 9 listas de fuentes del proyecto
 //  (el .mmp de Symbian, los 3 CMakeLists y los 3 Android.mk de los ejemplos, y las
-//  dos listas de CompilarJuego.cpp); Objects.cpp ya esta en todas.
+//  dos listas de CompileGame.cpp); Objects.cpp ya esta en todas.
 // ============================================================================
 
-// CONTADOR de identidad estable de los constraints (ver W3dConSerial en
+// CONTADOR de identidad estable de los constraints (ver W3dConstraintSerial en
 // objects/W3dConstraint.h). Arranca en 1: el 0 significa "no es un constraint".
-static unsigned int W3dConSerialProx = 1;
-W3dConSerial::W3dConSerial() : v(W3dConSerialProx++) {}
-W3dConSerial::W3dConSerial(const W3dConSerial&) : v(W3dConSerialProx++) {}
+static unsigned int W3dConstraintNextSerial = 1;
+W3dConstraintSerial::W3dConstraintSerial() : v(W3dConstraintNextSerial++) {}
+W3dConstraintSerial::W3dConstraintSerial(const W3dConstraintSerial&) : v(W3dConstraintNextSerial++) {}
 
 // nombre por defecto de cada tipo (para la lista + el menu "Add")
-const char* W3dNombreTipoConstraint(int tipo){
-    switch (tipo) {
-        case W3dConstraintTipo::CopyLocation: return "Copy Location";
-        case W3dConstraintTipo::CopyRotation: return "Copy Rotation";
-        case W3dConstraintTipo::Billboard:    return "Billboard";
-        case W3dConstraintTipo::ChildOf:      return "Child Of";
+const char* W3dConstraintTypeName(int type){
+    switch (type) {
+        case W3dConstraintType::CopyLocation: return "Copy Location";
+        case W3dConstraintType::CopyRotation: return "Copy Rotation";
+        case W3dConstraintType::Billboard:    return "Billboard";
+        case W3dConstraintType::ChildOf:      return "Child Of";
     }
     return "Constraint";
 }
 
 int Object::ConstraintsCount() const { return (int)constraints.size(); }
 
-std::string Object::NombreConstraint(int i) const {
+std::string Object::ConstraintName(int i) const {
     if (i < 0 || i >= (int)constraints.size()) return std::string();
-    return constraints[i]->nombre;
+    return constraints[i]->name;
 }
 
-void Object::SetConstraintActivo(int i){
-    constraintActivo = (i >= 0 && i < (int)constraints.size()) ? i : -1;
+void Object::SetActiveConstraint(int i){
+    activeConstraint = (i >= 0 && i < (int)constraints.size()) ? i : -1;
 }
 
 // busca por SERIAL, nunca por indice ni por puntero (ver Objects.h). NULL = ya no esta.
-W3dConstraint* Object::ConstraintPorSerial(unsigned int s) const {
+W3dConstraint* Object::ConstraintBySerial(unsigned int s) const {
     if (!s) return NULL;
     for (size_t i = 0; i < constraints.size(); i++)
         if (constraints[i]->serial.v == s) return constraints[i];
@@ -382,50 +382,50 @@ W3dConstraint* Object::ConstraintPorSerial(unsigned int s) const {
 //  EL VINCULO POR NOMBRE DE LA FUENTE (contrato en Objects.h)
 //
 //  Se corre UNA vez, con la escena entera ya construida. Va por FindObjectByName,
-//  o sea EXACTAMENTE la misma busqueda que resuelve targetName / RielName /
+//  o sea EXACTAMENTE la misma busqueda que resuelve targetName / RailName /
 //  modArmature: si dos objetos comparten nombre, el constraint queda ligado al
 //  MISMO de los dos que resolveria cualquier otro vinculo del archivo.
 //
-//  fuenteTipo == Vista no lleva nombre y no se toca: 'Vista' es un tipo explicito
+//  sourceType == Vista no lleva nombre y no se toca: 'Vista' es un tipo explicito
 //  justo para que "sin puntero" no signifique nunca "segui a la camara".
 // ============================================================================
-static void W3dConsResolverRec(Object* nodo, Object* raiz, int& rotos){
-    if (!nodo) return;
-    for (size_t i = 0; i < nodo->constraints.size(); i++) {
-        W3dConstraint* c = nodo->constraints[i];
-        if (!c || c->fuenteTipo != W3dConstraintFuente::Objeto) continue;
-        if (c->fuenteNombre.empty()) { c->fuenteObj = NULL; continue; }
+static void W3dConsResolveRec(Object* node, Object* root, int& broken){
+    if (!node) return;
+    for (size_t i = 0; i < node->constraints.size(); i++) {
+        W3dConstraint* c = node->constraints[i];
+        if (!c || c->sourceType != W3dConstraintSource::Object) continue;
+        if (c->sourceName.empty()) { c->sourceObj = NULL; continue; }
         // POR SCOPE: el constraint de un objeto generado por una instancia de prefab mira primero
         // adentro de SU instancia (su propia "Guia", no la de la primera instancia); afuera, igual que siempre
-        c->fuenteObj = W3dBuscarNombreDesde(nodo, c->fuenteNombre, raiz);
-        if (!c->fuenteObj) {
+        c->sourceObj = W3dFindNameFrom(node, c->sourceName, root);
+        if (!c->sourceObj) {
             // el NOMBRE se conserva a proposito: es el dato del modelo, y si el objeto
             // vuelve (undo del borrado, o el usuario lo crea) el vinculo se recupera solo.
             w3dLogfW("[W3D] '%s': el constraint '%s' apunta a '%s', que no esta en la escena "
                      "(queda sin fuente y no hace nada)",
-                     nodo->name.c_str(), c->nombre.c_str(), c->fuenteNombre.c_str());
-            rotos++;
+                     node->name.c_str(), c->name.c_str(), c->sourceName.c_str());
+            broken++;
         }
     }
-    for (size_t i = 0; i < nodo->Childrens.size(); i++)
-        W3dConsResolverRec(nodo->Childrens[i], raiz, rotos);
+    for (size_t i = 0; i < node->Childrens.size(); i++)
+        W3dConsResolveRec(node->Childrens[i], root, broken);
 }
 
 // 'raiz' es lo que se RECORRE (en la carga es SceneCollection; al generar una instancia de prefab, la
-// instancia). Se BUSCA por scope (W3dBuscarNombreDesde) y, afuera de toda instancia, en el arbol entero
+// instancia). Se BUSCA por scope (W3dFindNameFrom) y, afuera de toda instancia, en el arbol entero
 // del que cuelga 'raiz' (la escena), como siempre.
-void W3dConstraintsResolverNombres(Object* raiz){
-    if (!raiz) return;
-    int rotos = 0;
-    Object* arbol = W3dRaizDe(raiz);
-    W3dConsResolverRec(raiz, arbol ? arbol : raiz, rotos);
-    if (rotos) w3dLogfW("[W3D] %d constraint(s) quedaron sin fuente", rotos);
+void W3dConstraintsResolveNames(Object* root){
+    if (!root) return;
+    int broken = 0;
+    Object* tree = W3dRootOf(root);
+    W3dConsResolveRec(root, tree ? tree : root, broken);
+    if (broken) w3dLogfW("[W3D] %d constraint(s) quedaron sin fuente", broken);
 }
 
 // duplicar el stack (contrato en Objects.h). El 'new W3dConstraint(*c)' es la clave:
-// el copy-ctor implicito copia todos los campos MENOS el serial, que W3dConSerial
+// el copy-ctor implicito copia todos los campos MENOS el serial, que W3dConstraintSerial
 // re-genera para que la copia tenga identidad propia.
-void W3dCopiarConstraints(Object* dst, const Object* src){
+void W3dCopyConstraints(Object* dst, const Object* src){
     if (!dst || !src) return;
     for (size_t i = 0; i < src->constraints.size(); i++) {
         const W3dConstraint* c = src->constraints[i];
@@ -434,84 +434,84 @@ void W3dCopiarConstraints(Object* dst, const Object* src){
     }
     // el seleccionado de la lista es estado de UI y viaja con el stack: si no, el panel
     // de la copia se abre en "ninguno" con la lista llena.
-    if (!dst->constraints.empty() && dst->constraintActivo < 0)
-        dst->constraintActivo = (int)dst->constraints.size() - 1;
+    if (!dst->constraints.empty() && dst->activeConstraint < 0)
+        dst->activeConstraint = (int)dst->constraints.size() - 1;
 }
 
 // ---- LA PUERTA DE REFS: solo RUTEA (ver el bloque grande de Objects.h) ----
-// [0 .. RefsPropias()-1] = la subclase; de ahi en adelante, un slot por constraint.
-int Object::RefsObjeto() const { return RefsPropias() + (int)constraints.size(); }
+// [0 .. OwnRefs()-1] = la subclase; de ahi en adelante, un slot por constraint.
+int Object::RefsObject() const { return OwnRefs() + (int)constraints.size(); }
 
-Object* Object::RefObjeto(int i) const {
-    const int propias = RefsPropias();
-    if (i < propias) return RefPropia(i);
-    const int c = i - propias;
+Object* Object::RefObject(int i) const {
+    const int own = OwnRefs();
+    if (i < own) return OwnRef(i);
+    const int c = i - own;
     if (c < 0 || c >= (int)constraints.size()) return NULL;
-    return constraints[c]->fuenteObj;
+    return constraints[c]->sourceObj;
 }
 
-void Object::SetRefObjeto(int i, Object* o){
-    const int propias = RefsPropias();
-    if (i < propias) { SetRefPropia(i, o); return; }
-    const int c = i - propias;
+void Object::SetRefObject(int i, Object* o){
+    const int own = OwnRefs();
+    if (i < own) { SetOwnRef(i, o); return; }
+    const int c = i - own;
     if (c < 0 || c >= (int)constraints.size()) return;
-    constraints[c]->fuenteObj = o;
+    constraints[c]->sourceObj = o;
 }
 
-std::string* Object::RefObjetoNombre(int i){
-    const int propias = RefsPropias();
-    if (i < propias) return RefPropiaNombre(i);
-    const int c = i - propias;
+std::string* Object::RefObjectName(int i){
+    const int own = OwnRefs();
+    if (i < own) return RefOwnName(i);
+    const int c = i - own;
     if (c < 0 || c >= (int)constraints.size()) return NULL;
-    return &constraints[c]->fuenteNombre;
+    return &constraints[c]->sourceName;
 }
 
 // suelta TODA referencia por puntero a 'borrado' (la enumeracion generica de Objects.h).
 // El vinculo por NOMBRE se deja como esta: es dato del modelo y lo maneja quien borra.
-void Object::DesvincularDe(Object* borrado){
-    const int n = RefsObjeto();
+void Object::UnlinkFrom(Object* deleted){
+    const int n = RefsObject();
     for (int i = 0; i < n; i++)
-        if (RefObjeto(i) == borrado) SetRefObjeto(i, NULL);
+        if (RefObject(i) == deleted) SetRefObject(i, NULL);
 }
 
 // recorre el arbol y le avisa a cada objeto que 'borrado' deja de existir, asi
 // el que lo referencia (ej: Instance->target) suelta el puntero y no crashea
-static void DesvincularDelArbol(Object* nodo, Object* borrado){
-    if (!nodo) return;
-    nodo->DesvincularDe(borrado);
-    for (size_t i = 0; i < nodo->Childrens.size(); i++)
-        DesvincularDelArbol(nodo->Childrens[i], borrado);
+static void UnlinkFromTree(Object* node, Object* deleted){
+    if (!node) return;
+    node->UnlinkFrom(deleted);
+    for (size_t i = 0; i < node->Childrens.size(); i++)
+        UnlinkFromTree(node->Childrens[i], deleted);
 }
 
 Object::~Object() {
-    ObjetoMuere(this);                        // deja de ser un objeto VIVO (ver W3dObjetoVivo)
-    delete scriptDatos; scriptDatos = NULL;   // datos del script lua (si tenia)
-    W3dRigidosOlvidar(this);                  // su cuerpo rigido runtime (si tenia)
+    ObjectDies(this);                       // deja de ser un objeto VIVO (ver W3dObjectLive)
+    delete scriptData; scriptData = NULL;   // datos del script lua (si tenia)
+    W3dRigidForget(this);                   // su cuerpo rigido runtime (si tenia)
     // ...y su colision de mallas (colSuelo/colPared) si alguna consulta la leyo: la cache es por
     // Object* + el buffer de vertices, y los dos se RECICLAN (~Mesh ya libera su geometria):
     // un objeto nuevo en la misma direccion usaria la grilla vieja, en otro lugar del mundo.
-    W3dColOlvidar(this);
-    W3dHitboxOlvidar(this);                   // ...y los pares de hitbox que lo nombran (sin evento)
-    delete fisica; fisica = NULL;             // y la definicion de fisica
+    W3dColForget(this);
+    W3dHitboxForget(this);                      // ...y los pares de hitbox que lo nombran (sin evento)
+    delete physics; physics = NULL;             // y la definicion de fisica
     // su biblioteca de clips de jerarquia (suelta la referencia al animset compartido)
-    if (clipsJer) { W3dJerSoltar(this); delete clipsJer; clipsJer = NULL; }
+    if (clipsHier) { W3dHierRelease(this); delete clipsHier; clipsHier = NULL; }
     // antes de irse: soltar cualquier puntero que apunte a este objeto (las
     // instancias linkeadas a el) para evitar punteros colgados al renderizar
     if (SceneCollection && SceneCollection != this)
-        DesvincularDelArbol(SceneCollection, this);
+        UnlinkFromTree(SceneCollection, this);
     // ...y las OTRAS raices cargadas (escenas/prefabs que no son la activa): una referencia
     // de alla (una instancia, un riel, la fuente de un constraint) no puede quedar colgando.
     // Sin raices registradas (el caso normal) no cuesta nada.
-    for (size_t r = 0; r < gRaicesReg.size(); r++) {
-        Object* raiz = gRaicesReg[r];
-        if (raiz && raiz != SceneCollection && raiz != this) DesvincularDelArbol(raiz, this);
+    for (size_t r = 0; r < gRootsReg.size(); r++) {
+        Object* root = gRootsReg[r];
+        if (root && root != SceneCollection && root != this) UnlinkFromTree(root, this);
     }
     // ...y lo que NO esta en el arbol: los subarboles DETACHADOS que tienen los comandos del
     // undo son inalcanzables desde SceneCollection, asi que el recorrido de arriba nunca les
     // llega y se quedaban apuntando a esta direccion despues del free. Lo mismo los punteros
     // que se guarda la UI del editor (popup de color, panel "Add"): ver Objects.h.
-    for (int g = 0; g < (int)W3dDesvincularMaxGanchos; g++)
-        if (W3dDesvincularGanchos[g]) W3dDesvincularGanchos[g](this);
+    for (int g = 0; g < (int)W3dUnlinkMaxHooks; g++)
+        if (W3dUnlinkHooks[g]) W3dUnlinkHooks[g](this);
 
     // el stack de constraints es NUESTRO (nadie mas lo comparte). Va ANTES de la
     // promocion de hijos: mientras la lista viva, las refs de constraints siguen
@@ -534,12 +534,12 @@ Object::~Object() {
 // la lista de hijos a cada dueno ANTES de destruirlo: cuando corre su ~Object el Childrens ya
 // esta VACIO, asi que la promocion de arriba no tiene a quien mover a ningun lado. El Parent
 // se pone en NULL por lo mismo (ese padre sigue vivo y no es nuestro).
-void W3dLiberarSubarbol(Object* raiz){
-    if (!raiz) return;
-    std::vector<Object*> hijos; hijos.swap(raiz->Childrens);
-    for (size_t i = 0; i < hijos.size(); i++) W3dLiberarSubarbol(hijos[i]);
-    raiz->Parent = NULL;
-    delete raiz;
+void W3dFreeSubtree(Object* root){
+    if (!root) return;
+    std::vector<Object*> children; children.swap(root->Childrens);
+    for (size_t i = 0; i < children.size(); i++) W3dFreeSubtree(children[i]);
+    root->Parent = NULL;
+    delete root;
 }
 
 // ============================================================================
@@ -547,104 +547,104 @@ void W3dLiberarSubarbol(Object* raiz){
 //
 //  SCOPE (decision documentada): un objeto es unico dentro de SU ESCENA, no
 //  globalmente. La escena es la raiz UI de la que cuelga (el MISMO scope con el
-//  que se resuelven las refs de los scripts, SimJuego.cpp) o SceneCollection si
+//  que se resuelven las refs de los scripts, SimGame.cpp) o SceneCollection si
 //  no cuelga de ninguna. Las RAICES UI en cambio son unicas GLOBALMENTE: su
-//  nombre es la clave de gEscenas y el nombre del .w3dui en disco.
+//  nombre es la clave de gScenes y el nombre del .w3dui en disco.
 //  Sin esto, abrir whiskpaddle (14 widgets homonimos entre sus 3 escenas)
-//  renombraria medio proyecto y dejaria los objeto("op1") de lua en nil.
+//  renombraria medio proyecto y dejaria los object("op1") de lua en nil.
 // ============================================================================
 
 // true mientras se esta CARGANDO un archivo: los loaders escriben el nombre
 // crudo (asi el .w3d entra tal cual) y la reparacion se hace de una sola vez al
 // final, con el arbol completo y arrastrando los vinculos por nombre. Ademas
 // evita el O(n^2) de uniquificar objeto por objeto durante la carga.
-bool W3dNombresCargando = false;
+bool W3dNamesLoading = false;
 
 // ---- LAS FRONTERAS DE SCOPE (ver Objects.h): UN solo predicado para todo el motor ----
-bool W3dEsFronteraScope(const Object* o) {
+bool W3dIsBoundaryScope(const Object* o) {
     if (!o) return false;
     const ObjectType t = const_cast<Object*>(o)->getType();
-    return t == ObjectType::ui || W3dEsTipoInstancia(t);   // (una instancia de prefab o un proxy de libreria)
+    return t == ObjectType::ui || W3dIsInstanceType(t);   // (una instancia de prefab o un proxy de libreria)
 }
-Object* W3dInstanciaDe(const Object* o) {
+Object* W3dInstanceOf(const Object* o) {
     if (!o) return NULL;
     for (Object* p = o->Parent; p; p = p->Parent)
-        if (W3dEsTipoInstancia(p->getType())) return p;
+        if (W3dIsInstanceType(p->getType())) return p;
     return NULL;
 }
 // preorden por el SCOPE de 'inst' (sus hijos generados): no entra a las instancias anidadas (su contenido es
 // de ellas) pero si ve su nombre (una instancia anidada es un objeto de este scope)
-static Object* BuscarEnScopeInstancia(Object* nodo, const std::string& nombre) {
-    for (size_t i = 0; i < nodo->Childrens.size(); i++) {
-        Object* h = nodo->Childrens[i];
+static Object* FindInScopeInstance(Object* node, const std::string& name) {
+    for (size_t i = 0; i < node->Childrens.size(); i++) {
+        Object* h = node->Childrens[i];
         if (!h) continue;
-        if (h->name == nombre) return h;
-        if (W3dEsFronteraScope(h)) continue;
-        Object* r = BuscarEnScopeInstancia(h, nombre);
+        if (h->name == name) return h;
+        if (W3dIsBoundaryScope(h)) continue;
+        Object* r = FindInScopeInstance(h, name);
         if (r) return r;
     }
     return NULL;
 }
-Object* W3dBuscarNombreDesde(Object* desde, const std::string& nombre, Object* raiz) {
-    if (nombre.empty()) return NULL;
-    for (Object* inst = W3dInstanciaDe(desde); inst; inst = W3dInstanciaDe(inst)) {
-        Object* r = BuscarEnScopeInstancia(inst, nombre);
+Object* W3dFindNameFrom(Object* from, const std::string& name, Object* root) {
+    if (name.empty()) return NULL;
+    for (Object* inst = W3dInstanceOf(from); inst; inst = W3dInstanceOf(inst)) {
+        Object* r = FindInScopeInstance(inst, name);
         if (r) return r;
     }
-    if (!raiz) raiz = desde ? W3dRaizDe(desde) : NULL;
-    if (!raiz) raiz = SceneCollection;
-    return FindObjectByName(raiz, nombre);
+    if (!root) root = from ? W3dRootOf(from) : NULL;
+    if (!root) root = SceneCollection;
+    return FindObjectByName(root, name);
 }
 
-Object* W3dNombreScopeDe(Object* o) {
+Object* W3dScopeNameOf(Object* o) {
     if (!o) return SceneCollection;
     // una raiz UI (escena) NO se mide contra si misma: va contra TODO el arbol. Cualquier otro objeto
     // es del scope de la FRONTERA mas cercana que lo contiene (una UI o una instancia de prefab)
-    const bool esUI = (o->getType() == ObjectType::ui);
-    Object* tope = o;
+    const bool isUI = (o->getType() == ObjectType::ui);
+    Object* limit = o;
     for (Object* p = o->Parent; p; p = p->Parent) {
-        if (!esUI && W3dEsFronteraScope(p)) return p;
-        tope = p;
+        if (!isUI && W3dIsBoundaryScope(p)) return p;
+        limit = p;
     }
     // el scope global de un objeto de OTRA raiz cargada (una escena o un prefab que no es el
     // activo) es esa raiz, no la activa. Para los de la activa (el caso de siempre) no cambia nada.
-    if (tope != o && tope != SceneCollection && W3dEsRaizRegistrada(tope)) return tope;
+    if (limit != o && limit != SceneCollection && W3dIsRootRegistered(limit)) return limit;
     return SceneCollection;
 }
 
 // le pasa al INDICE los nombres del scope de una sola pasada (menos el propio, que
 // puede conservar el suyo).
 //
-// LA PARTICION ES LA MISMA QUE LA DE LA REPARACION (RepararRec en ObjectMode.cpp), y
+// LA PARTICION ES LA MISMA QUE LA DE LA REPARACION (RepairRec en ObjectMode.cpp), y
 // esa coherencia importa: antes esto indexaba el SUBARBOL ENTERO desde la raiz, o sea
 // que los widgets de una UI ANIDADA contaban como tomados en el scope de AFUERA. No
 // fabricaba duplicados (indexar de mas solo renombra de mas), pero mudar un objeto al
 // scope global lo renumeraba contra nombres que ahi no son suyos.
-// La regla, textual, es la de W3dNombreScopeDe: un objeto pertenece a la UI mas cercana
+// La regla, textual, es la de W3dScopeNameOf: un objeto pertenece a la UI mas cercana
 // que lo contiene, y una RAIZ UI (a cualquier profundidad) pertenece al scope GLOBAL.
 //   - scope GLOBAL (raiz == SceneCollection): cuenta todo lo que NO esta dentro de
 //     ninguna UI, MAS todas las raices UI (hay que seguir bajando para encontrarlas).
 //   - scope de una UI: cuenta sus descendientes que no cruzan otra UI; al toparse con
 //     una UI anidada se corta (esa UI y todo lo suyo viven en otros scopes).
-//   - con INSTANCIAS DE PREFAB (la otra frontera, W3dEsFronteraScope): la instancia es un objeto
+//   - con INSTANCIAS DE PREFAB (la otra frontera, W3dIsBoundaryScope): la instancia es un objeto
 //     del scope de afuera, y lo que genera es de ella (se corta ahi, igual que con una UI).
-static void IndexarScopeGlobal(Object* obj, const Object* me, W3dNombreIndice& ix, bool dentroDeUI) {
+static void IndexScopeGlobal(Object* obj, const Object* me, W3dIndexName& ix, bool insideUI) {
     if (!obj) return;
     for (size_t i = 0; i < obj->Childrens.size(); i++) {
         Object* h = obj->Childrens[i];
-        const bool esUI = (h->getType() == ObjectType::ui);
-        if ((esUI || !dentroDeUI) && h != me) ix.Ver(h->name);
-        IndexarScopeGlobal(h, me, ix, dentroDeUI || W3dEsFronteraScope(h));
+        const bool isUI = (h->getType() == ObjectType::ui);
+        if ((isUI || !insideUI) && h != me) ix.Show(h->name);
+        IndexScopeGlobal(h, me, ix, insideUI || W3dIsBoundaryScope(h));
     }
 }
-static void IndexarScopeUI(Object* obj, const Object* me, W3dNombreIndice& ix) {
+static void IndexScopeUI(Object* obj, const Object* me, W3dIndexName& ix) {
     if (!obj) return;
     for (size_t i = 0; i < obj->Childrens.size(); i++) {
         Object* h = obj->Childrens[i];
         if (h->getType() == ObjectType::ui) continue;   // otro scope (el suyo y el global)
-        if (h != me) ix.Ver(h->name);
-        if (W3dEsFronteraScope(h)) continue;             // una instancia anidada: su nombre es de aca, su contenido no
-        IndexarScopeUI(h, me, ix);
+        if (h != me) ix.Show(h->name);
+        if (W3dIsBoundaryScope(h)) continue;             // una instancia anidada: su nombre es de aca, su contenido no
+        IndexScopeUI(h, me, ix);
     }
 }
 
@@ -654,42 +654,42 @@ static void IndexarScopeUI(Object* obj, const Object* me, W3dNombreIndice& ix) {
 //
 // PERFORMANCE: UNA sola pasada por el scope (antes: una pasada por CANDIDATO,
 // o sea O(N^2) por nombre y O(N^3) para armar la escena - 3000 "add vertex"
-// tardaban 19 segundos). Ver W3dNombreIndice en W3dNombres.h.
-std::string Object::NombreLibre(const std::string& base) {
-    Object* raiz = W3dNombreScopeDe(this);
-    if (!raiz) return W3dNombreNormalizar(base, "Objeto");
-    W3dNombreIndice ix;
-    ix.Empezar(base, "Objeto");
+// tardaban 19 segundos). Ver W3dIndexName en W3dNames.h.
+std::string Object::FreeName(const std::string& base) {
+    Object* root = W3dScopeNameOf(this);
+    if (!root) return W3dNameNormalize(base, "Object");
+    W3dIndexName ix;
+    ix.Begin(base, "Object");
     // la raiz del scope tambien ocupa su nombre (la busqueda por nombre arranca EN ella;
-    // es la misma semilla que usa RepararRec). Una INSTANCIA DE PREFAB no: su nombre es del scope de
-    // afuera y la busqueda adentro de ella arranca en sus hijos (W3dBuscarNombreDesde)
-    const bool esInst = W3dEsTipoInstancia(raiz->getType());
-    if (raiz != this && !esInst) ix.Ver(raiz->name);
-    if (raiz->getType() == ObjectType::ui || esInst) IndexarScopeUI(raiz, this, ix);
-    else                                             IndexarScopeGlobal(raiz, this, ix, false);
-    return ix.Resolver();
+    // es la misma semilla que usa RepairRec). Una INSTANCIA DE PREFAB no: su nombre es del scope de
+    // afuera y la busqueda adentro de ella arranca en sus hijos (W3dFindNameFrom)
+    const bool isInst = W3dIsInstanceType(root->getType());
+    if (root != this && !isInst) ix.Show(root->name);
+    if (root->getType() == ObjectType::ui || isInst) IndexScopeUI(root, this, ix);
+    else                                             IndexScopeGlobal(root, this, ix, false);
+    return ix.Resolve();
 }
 
 // LA PUERTA: todo el editor pasa por aca para escribir el nombre de un objeto
 // (crear, menu Add, duplicar, importar, pegar, y el campo de texto del panel).
-void Object::SetNameObj(const std::string& nombre) {
-    if (W3dNombresCargando) { name = nombre; return; }  // carga: crudo + reparacion al final
-    name = NombreLibre(nombre);
+void Object::SetNameObj(const std::string& newName) {
+    if (W3dNamesLoading) { name = newName; return; }  // carga: crudo + reparacion al final
+    name = FreeName(newName);
 }
 
 // asignacion CRUDA, sin uniquificar. SOLO para los loaders (el .w3d puede traer
-// duplicados de archivos viejos: se reparan de una en W3dNombresRepararEscena,
+// duplicados de archivos viejos: se reparan de una en W3dNamesRepairScene,
 // que ademas arrastra las refs de scripts) y para el harness de tests, que
 // necesita poder FABRICAR duplicados para verificar la reparacion.
-void Object::SetNameCrudo(const std::string& nombre) {
-    name = nombre;
+void Object::SetRawName(const std::string& newName) {
+    name = newName;
 }
 
-void Object::EliminarObjetosSeleccionados(bool IncluirCollecciones) {
+void Object::RemoveObjectsSelected(bool IncludeCollections) {
     for (int i = (int)Childrens.size() - 1; i >= 0; i--) {
         Object* child = Childrens[i];
-        child->EliminarObjetosSeleccionados(IncluirCollecciones);
-        if (child->select && (IncluirCollecciones || child->getType() != ObjectType::collection)) {
+        child->RemoveObjectsSelected(IncludeCollections);
+        if (child->select && (IncludeCollections || child->getType() != ObjectType::collection)) {
             std::cout << "Se borro '" << child->name << "'" << std::endl;
             Childrens.erase(Childrens.begin() + i);
             delete child;
@@ -700,19 +700,19 @@ void Object::EliminarObjetosSeleccionados(bool IncluirCollecciones) {
 // SetName: nombre libre para 'this' SIN escribirlo (lo escribe el caller).
 // Se conserva por compatibilidad; por dentro es la MISMA regla que SetNameObj.
 std::string Object::SetName(const std::string& baseName) {
-    return NombreLibre(baseName);
+    return FreeName(baseName);
 }
 
-void Object::Seleccionar(){
-    W3dSeleccionSerial++;   // la escena eligio algo (ver Objects.h)
-    ObjActivo = this;
+void Object::Select(){
+    W3dSelectionSerial++;   // la escena eligio algo (ver Objects.h)
+    ActiveObj = this;
     if (!select){
         select = true;
         ObjSelects.push_back(this);
     }
 }
 
-void Object::Deseleccionar(){
+void Object::Deselect(){
     select = false;
     for(size_t o=0; o < ObjSelects.size(); o++){
         if (this == ObjSelects[o]){
@@ -722,54 +722,54 @@ void Object::Deseleccionar(){
     } 
 }
 
-void Object::DeseleccionarCompleto(bool IncluirColecciones){
+void Object::DeselectComplete(bool IncludeCollections){
     select = false;
     for(size_t o=0; o < Childrens.size(); o++){
-        Childrens[o]->DeseleccionarCompleto(IncluirColecciones);		
+        Childrens[o]->DeselectComplete(IncludeCollections);		
     } 
 }
 
-bool Object::EstaSeleccionado(bool IncluirCollecciones){
+bool Object::IsSelected(bool IncludeCollections){
     // Si este objeto está seleccionado y cumple la condición de colecciones → true
-    if ( select && ( IncluirCollecciones || getType() != ObjectType::collection ) ) {
+    if ( select && ( IncludeCollections || getType() != ObjectType::collection ) ) {
         return true;
     }
 
     //si no estaba seleccionado. mira recursivamente a los hijos
     for(size_t o=0; o < Childrens.size(); o++){   
-        if (Childrens[o]->EstaSeleccionado(IncluirCollecciones)) return true;
+        if (Childrens[o]->IsSelected(IncludeCollections)) return true;
     }
     return false;       
 }
 
-bool Object::SeleccionarCompleto(bool IncluirColecciones){
+bool Object::SelectComplete(bool IncludeCollections){
     //si hay algo seleccionado retorna true para deseleccionar todo
     if (select) return true;
 
-    if (IncluirColecciones || (getType() != ObjectType::collection && getType() != ObjectType::baseObject)){
+    if (IncludeCollections || (getType() != ObjectType::collection && getType() != ObjectType::baseObject)){
         select = true;
         ObjSelects.push_back(this);
-        if (!ObjActivo) ObjActivo = this;
+        if (!ActiveObj) ActiveObj = this;
     }
 
     for(size_t o=0; o < Childrens.size(); o++){
-        if (Childrens[o]->SeleccionarCompleto(IncluirColecciones)) return true;
+        if (Childrens[o]->SelectComplete(IncludeCollections)) return true;
     }
     //nada seleccionado
     return false;
 }
 
-void Object::InvertirSeleccionCompleto(bool IncluirColecciones){
-    // flip al mismo conjunto de objetos elegibles que SeleccionarCompleto
-    if (IncluirColecciones || (getType() != ObjectType::collection && getType() != ObjectType::baseObject)){
+void Object::InvertCompleteSelection(bool IncludeCollections){
+    // flip al mismo conjunto de objetos elegibles que SelectComplete
+    if (IncludeCollections || (getType() != ObjectType::collection && getType() != ObjectType::baseObject)){
         select = !select;
         if (select){
             ObjSelects.push_back(this);
-            ObjActivo = this;
+            ActiveObj = this;
         }
     }
     for(size_t o=0; o < Childrens.size(); o++){
-        Childrens[o]->InvertirSeleccionCompleto(IncluirColecciones);
+        Childrens[o]->InvertCompleteSelection(IncludeCollections);
     }
 }
 
@@ -812,7 +812,7 @@ Matrix4 W3dLocalTRS(const Vector3& pos, const Quaternion& rot, const Vector3& sc
 // ============================================================================
 
 // ORIENTACION de una matriz de mundo (contrato completo en Objects.h).
-bool W3dQuatDeMatriz(const Matrix4& m, Quaternion& out){
+bool W3dMatrixQuat(const Matrix4& m, Quaternion& out){
     // column-major: las columnas de la 3x3 son los ejes de la base
     Vector3 cx(m.m[0], m.m[1], m.m[2]);
     Vector3 cy(m.m[4], m.m[5], m.m[6]);
@@ -837,8 +837,8 @@ bool W3dQuatDeMatriz(const Matrix4& m, Quaternion& out){
 }
 
 // el camino CORTO entre dos angulos en grados (ver Objects.h)
-float W3dDifAngCorta(float destino, float origen){
-    float d = destino - origen;
+float W3dShortDifAng(float destination, float origin){
+    float d = destination - origin;
     // los dos vienen de ToEulerYXZ / atan2f, o sea acotados a +-180: esto da a lo sumo una
     // vuelta. while y no fmodf porque tiene que compilar igual en RVCT (Symbian).
     while (d >   180.0f) d -= 360.0f;
@@ -850,15 +850,15 @@ float W3dDifAngCorta(float destino, float origen){
 // vista, un padre espejado) y no de un constraint puntual, asi que no tienen donde guardar su
 // bandera. Y tienen que ser una sola vez si o si: el evaluador corre por objeto, POR VISTA y
 // POR FRAME, o sea que un log sin bandera son 60 lineas por segundo por objeto.
-static bool gAvisoSinVista = false;
-static bool gAvisoBaseEspejada = false;
+static bool gNoticeNoView = false;
+static bool gNoticeBaseMirrored = false;
 
 // ORIENTACION en mundo de la fuente de un Copy Rotation. false = la fuente cuelga de una base
 // espejada / de escala cero y no hay quaternion que la describa -> el constraint se saltea.
-static bool W3dQuatMundoDe(const Object* o, Quaternion& out){
+static bool W3dQuatWorldOf(const Object* o, Quaternion& out){
     Matrix4 W;
     o->GetWorldMatrix(W);      // recursivo a proposito: la fuente llega con SUS constraints puestos
-    return W3dQuatDeMatriz(W, out);
+    return W3dMatrixQuat(W, out);
 }
 
 // ===================================================================================================
@@ -866,83 +866,83 @@ static bool W3dQuatMundoDe(const Object* o, Quaternion& out){
 //  Vive en el Core -y no en el editor- porque el que tiene que saltearse los constraints es el
 //  EVALUADOR, y el evaluador tambien corre sin editor (juego, Android, Symbian), donde este puntero
 //  se queda en NULL para siempre y no cuesta nada. Lo setea el editor al entrar y salir de Edit Mode
-//  (W3dConSetObjEditando, main/objects/ObjectMode.cpp).
+//  (W3dConstraintSetObjEditing, main/objects/ObjectMode.cpp).
 // ===================================================================================================
-Object* g_consObjEditando = NULL;
-void W3dConSetObjEditando(Object* o){ g_consObjEditando = o; }
+Object* g_consObjEditing = NULL;
+void W3dConstraintSetObjEditing(Object* o){ g_consObjEditing = o; }
 
 // un constraint es EFECTIVO si PUEDE cambiar algo. Lo usan el pre-pase (para poder devolver la
 // base sin hacer una sola cuenta) y tambien el bucle, para que el criterio viva en UN solo lugar
 // y no se vayan separando con el tiempo.
 // 'dueno' es el objeto al que pertenece: hace falta para el "ver en modo edicion", que depende de
 // SI ES EL QUE SE ESTA EDITANDO y no del constraint solo.
-static bool W3dConEfectivo(const W3dConstraint* c, const Object* dueno){
+static bool W3dConstraintEffective(const W3dConstraint* c, const Object* owner){
     // VER EN MODO EDICION apagado: mientras se editan los vertices de ESTE objeto, el constraint no
     // se aplica y la malla se dibuja y se edita donde dicen sus campos reales (ver W3dConstraint.h).
     // Solo el objeto en edicion: apagarselo tambien a los padres moveria a sus otros hijos.
-    if (!c->mostrarEdit && dueno && dueno == g_consObjEditando) return false;
-    if (!c->activo) return false;
-    if (c->Peso() <= 0.0f) return false;
-    if (c->tipo == W3dConstraintTipo::Billboard) return (c->bbYaw || c->bbPitch);
+    if (!c->showEdit && owner && owner == g_consObjEditing) return false;
+    if (!c->active) return false;
+    if (c->Weight() <= 0.0f) return false;
+    if (c->type == W3dConstraintType::Billboard) return (c->bbYaw || c->bbPitch);
     // Child Of: sin fuente (objeto) o sin ningun componente heredado no hace nada
-    if (c->tipo == W3dConstraintTipo::ChildOf)
-        return c->fuenteTipo == W3dConstraintFuente::Objeto && c->fuenteObj != NULL && (c->coLoc || c->coRot || c->coEsc);
+    if (c->type == W3dConstraintType::ChildOf)
+        return c->sourceType == W3dConstraintSource::Object && c->sourceObj != NULL && (c->coLoc || c->coRot || c->coEsc);
     // Copy Location / Copy Rotation: sin ejes no copia nada, y sin fuente tampoco
-    if (!c->ejeX && !c->ejeY && !c->ejeZ) return false;
-    return (c->fuenteTipo == W3dConstraintFuente::Vista || c->fuenteObj != NULL);
+    if (!c->axisX && !c->axisY && !c->axisZ) return false;
+    return (c->sourceType == W3dConstraintSource::View || c->sourceObj != NULL);
 }
 
 // la version publica del predicado (ver Objects.h): el editor pregunta por aca en vez de mirar
 // constraints.empty(), que dice "tiene" y no "hace algo".
-bool W3dObjTieneConstraintEfectivo(const Object* o){
+bool W3dObjHasConstraintEffective(const Object* o){
     if (!o) return false;
     for (size_t i = 0; i < o->constraints.size(); i++)
-        if (o->constraints[i] && W3dConEfectivo(o->constraints[i], o)) return true;
+        if (o->constraints[i] && W3dConstraintEffective(o->constraints[i], o)) return true;
     return false;
 }
 
 // ============================================================================
 //  CHILD OF: la matriz de la FUENTE (objeto, o hueso de un armature) en MUNDO
 // ============================================================================
-static float W3dLargoCol(const Matrix4& m, int c){
+static float W3dLengthCol(const Matrix4& m, int c){
     return sqrtf(m.m[c*4]*m.m[c*4] + m.m[c*4+1]*m.m[c*4+1] + m.m[c*4+2]*m.m[c*4+2]);
 }
 // el hueso por NOMBRE, con el indice cacheado (se revalida por nombre: renombrar/borrar huesos no
 // deja un indice colgado). -1 = no esta.
-static int W3dChildOfHueso(W3dConstraint* c, const Armature* a){
+static int W3dChildOfBone(W3dConstraint* c, const Armature* a){
     const int n = (int)a->bones.size();
-    if (c->huesoCache >= 0 && c->huesoCache < n && a->bones[c->huesoCache].name == c->hueso) return c->huesoCache;
-    c->huesoCache = -1;
-    for (int i = 0; i < n; i++) if (a->bones[i].name == c->hueso) { c->huesoCache = i; break; }
-    return c->huesoCache;
+    if (c->boneCache >= 0 && c->boneCache < n && a->bones[c->boneCache].name == c->bone) return c->boneCache;
+    c->boneCache = -1;
+    for (int i = 0; i < n; i++) if (a->bones[i].name == c->bone) { c->boneCache = i; break; }
+    return c->boneCache;
 }
 // Mt = mundo de la fuente (con el hueso si hay), con los componentes NO heredados sacados (Loc/Rot/Scale
 // como en Blender). 'Wf' = el mundo de la fuente si el que llama ya lo tiene (la fuente es el padre).
-static void W3dChildOfMatriz(W3dConstraint* c, const Matrix4* Wf, Matrix4& Mt){
-    Object* f = c->fuenteObj;
+static void W3dChildOfMatrix(W3dConstraint* c, const Matrix4* Wf, Matrix4& Mt){
+    Object* f = c->sourceObj;
     if (Wf) Mt = *Wf; else f->GetWorldMatrix(Mt);
-    if (!c->hueso.empty() && f->getType() == ObjectType::armature) {
+    if (!c->bone.empty() && f->getType() == ObjectType::armature) {
         Armature* a = (Armature*)f;
-        EvaluarPoseEsqueleto(a, CurrentFrame);          // cacheado por frame: gratis si ya se dibujo
-        const int h = W3dChildOfHueso(c, a);
+        EvaluatePoseSkeleton(a, CurrentFrame);          // cacheado por frame: gratis si ya se dibujo
+        const int h = W3dChildOfBone(c, a);
         if (h >= 0) Mt = Mt * a->bones[h].poseWorld;
     }
     if (c->coLoc && c->coRot && c->coEsc) return;       // lo normal: la matriz tal cual, sin cuentas
     Vector3 t(Mt.m[12], Mt.m[13], Mt.m[14]);
-    Vector3 e(W3dLargoCol(Mt, 0), W3dLargoCol(Mt, 1), W3dLargoCol(Mt, 2));
+    Vector3 e(W3dLengthCol(Mt, 0), W3dLengthCol(Mt, 1), W3dLengthCol(Mt, 2));
     Quaternion q;
-    if (!W3dQuatDeMatriz(Mt, q)) q = Quaternion();
+    if (!W3dMatrixQuat(Mt, q)) q = Quaternion();
     Mt = W3dLocalTRS(c->coLoc ? t : Vector3(0, 0, 0), c->coRot ? q : Quaternion(), c->coEsc ? e : Vector3(1, 1, 1));
 }
 
 bool W3dChildOfSetInverse(Object* o, W3dConstraint* c){
-    if (!o || !c || c->tipo != W3dConstraintTipo::ChildOf || !c->fuenteObj) return false;
+    if (!o || !c || c->type != W3dConstraintType::ChildOf || !c->sourceObj) return false;
     // que el objeto quede donde esta: fuente * inversa * local = padre * local -> inversa = fuente^-1 * padre
     Matrix4 Mt, Wp, iMt;
-    W3dChildOfMatriz(c, NULL, Mt);
+    W3dChildOfMatrix(c, NULL, Mt);
     if (o->Parent) o->Parent->GetWorldMatrix(Wp); else Wp.Identity();
-    if (!Matrix4::InvertirAfin(Mt, iMt)) return false;
-    c->inversa = iMt * Wp;
+    if (!Matrix4::InvertAffine(Mt, iMt)) return false;
+    c->inverse = iMt * Wp;
     return true;
 }
 
@@ -950,10 +950,10 @@ bool W3dChildOfSetInverse(Object* o, W3dConstraint* c){
 // el pre-pase y realmente hicieron cuentas). No lo lee nadie del motor; existe para que un test
 // pueda afirmar que una consulta sobre una cadena de N objetos con constraint cuesta O(N) y no
 // O(2^N), que es lo que costaba cuando cada eslabon volvia a pedir el mundo de su padre.
-unsigned long g_consEvalCorridas = 0;
+unsigned long g_consEvalRuns = 0;
 
 // ============================================================================
-//  W3dEvaluarConstraints: EL CORAZON (contrato completo en Objects.h)
+//  W3dEvaluateConstraints: EL CORAZON (contrato completo en Objects.h)
 //
 //  Todo el trabajo se hace en MUNDO, porque ahi es donde estan la fuente y la camara:
 //  se sube la transform del objeto al espacio de mundo, se corre el stack, y se baja de
@@ -975,56 +975,56 @@ static bool W3dEvalCons(const Object* o, const Matrix4* WpIn, Vector3& posOut, Q
     // ---- 2. EL PRE-PASE BARATO ----
     // si NO hay ningun constraint efectivo se sale ACA, antes de tocar la matriz del padre.
     // Esto es lo que hace que "apagado" o "influencia 0" devuelva la transform base BIT A BIT
-    // incluso con padre: sin el pre-pase habria una ida mundo -> InvertirAfin -> local que
+    // incluso con padre: sin el pre-pase habria una ida mundo -> InvertAffine -> local que
     // ensucia el ultimo decimal, y apagar un constraint moveria el objeto un epsilon.
-    bool hayAlguno = false;
+    bool hasAny = false;
     for (size_t i = 0; i < o->constraints.size(); i++)
-        if (W3dConEfectivo(o->constraints[i], o)) { hayAlguno = true; break; }
-    if (!hayAlguno) return false;
+        if (W3dConstraintEffective(o->constraints[i], o)) { hasAny = true; break; }
+    if (!hasAny) return false;
 
     // ---- 3. de aca en adelante hay UN SOLO punto de salida (el consEval = false del final) ----
     o->consEval = true;
-    g_consEvalCorridas++;        // solo diagnostico (ver arriba)
+    g_consEvalRuns++;        // solo diagnostico (ver arriba)
 
     // ---- 4. el espacio del PADRE ----
-    const bool tienePadre = (o->Parent != NULL);
+    const bool hasParent = (o->Parent != NULL);
     Matrix4 Wp;
     Quaternion qWp;              // identidad por su propio ctor
     bool baseOk = true;          // false = el padre esta espejado: no hay rotacion que componer
-    if (tienePadre) {
+    if (hasParent) {
         // si el que llama viene BAJANDO la cadena ya lo tiene calculado y lo pasa: eso es lo que
         // hace que la cuenta sea lineal. El que entra suelto (GetMatrix de un objeto cualquiera)
         // lo pide una sola vez, que ya es lo mismo que hacia antes.
         if (WpIn) Wp = *WpIn;
         else      o->Parent->GetWorldMatrix(Wp);   // recursivo: el padre llega con SUS constraints
-        baseOk = W3dQuatDeMatriz(Wp, qWp);
-        if (!baseOk && !gAvisoBaseEspejada) {
-            gAvisoBaseEspejada = true;
+        baseOk = W3dMatrixQuat(Wp, qWp);
+        if (!baseOk && !gNoticeBaseMirrored) {
+            gNoticeBaseMirrored = true;
             w3dLogfW("constraints: '%s' cuelga de una base espejada o de escala cero; sus constraints de ROTACION se saltean (la posicion se aplica igual)",
                      o->name.c_str());
         }
     }
 
     // ---- 5. la transform del objeto, llevada a MUNDO ----
-    Vector3    pw = tienePadre ? (Wp * o->pos)      : o->pos;
-    Quaternion qw = tienePadre ? (qWp * o->Rot())   : o->Rot();
+    Vector3    pw = hasParent ? (Wp * o->pos)      : o->pos;
+    Quaternion qw = hasParent ? (qWp * o->Rot())   : o->Rot();
     // ESCALA en mundo: solo la toca el Child Of. Mientras no la toque se devuelve o->scale BIT A BIT.
-    const Vector3 ep = tienePadre ? Vector3(W3dLargoCol(Wp, 0), W3dLargoCol(Wp, 1), W3dLargoCol(Wp, 2)) : Vector3(1, 1, 1);
+    const Vector3 ep = hasParent ? Vector3(W3dLengthCol(Wp, 0), W3dLengthCol(Wp, 1), W3dLengthCol(Wp, 2)) : Vector3(1, 1, 1);
     Vector3    sw(o->scale.x * ep.x, o->scale.y * ep.y, o->scale.z * ep.z);
-    bool       tocoEscala = false;
+    bool       touchedScale = false;
 
     // ---- 6. EL STACK, en orden (como los modificadores de la malla) ----
     for (size_t i = 0; i < o->constraints.size(); i++) {
         W3dConstraint* c = o->constraints[i];
-        if (!W3dConEfectivo(c, o)) continue;
-        const float t = c->Peso();
+        if (!W3dConstraintEffective(c, o)) continue;
+        const float t = c->Weight();
 
         // el que necesita la vista y no la tiene usa el default (mirando al -Z) y avisa: "no
         // hay camara" no es lo mismo que "la camara mira para alla", y sin el aviso el juego
         // que se olvido de bindear ve el billboard clavado y no tiene por donde empezar.
-        if (!g_vistaBindeada && !gAvisoSinVista &&
-            (c->tipo == W3dConstraintTipo::Billboard || c->fuenteTipo == W3dConstraintFuente::Vista)) {
-            gAvisoSinVista = true;
+        if (!g_viewBound && !gNoticeNoView &&
+            (c->type == W3dConstraintType::Billboard || c->sourceType == W3dConstraintSource::View)) {
+            gNoticeNoView = true;
             w3dLogfW("constraints: nadie llamo a W3dVistaBind todavia; '%s' usa la vista por defecto (mirando al -Z)",
                      o->name.c_str());
         }
@@ -1032,40 +1032,40 @@ static bool W3dEvalCons(const Object* o, const Matrix4* WpIn, Vector3& posOut, Q
         // la fuente esta a mitad de SU propia evaluacion, o sea que se llego hasta aca desde
         // ella: hay un ciclo. La guardia de arriba ya hace que esto TERMINE, pero hay que
         // decirlo, y una sola vez por constraint: esto corre por vista y por frame. El flag lo
-        // resetea el panel al elegir otra fuente (AccionConFuenteElegida, ui/ViewPorts/
+        // resetea el panel al elegir otra fuente (ActionConstraintPickedSource, ui/ViewPorts/
         // Properties.cpp), asi que romper el ciclo y volver a armarlo vuelve a avisar.
-        if (c->fuenteObj && c->fuenteObj->consEval && !c->avisoCiclo) {
-            c->avisoCiclo = true;
+        if (c->sourceObj && c->sourceObj->consEval && !c->noticeCycle) {
+            c->noticeCycle = true;
             w3dLogfW("constraints: ciclo entre '%s' y '%s' (constraint '%s'); se usa la transform base del otro",
-                     o->name.c_str(), c->fuenteObj->name.c_str(), c->nombre.c_str());
+                     o->name.c_str(), c->sourceObj->name.c_str(), c->name.c_str());
         }
 
-        if (c->tipo == W3dConstraintTipo::CopyLocation) {
+        if (c->type == W3dConstraintType::CopyLocation) {
             // ---- COPY LOCATION: LERP en MUNDO ----
             // lerp y no otra cosa: la posicion vive en un espacio AFIN y ahi el camino recto
             // ES el correcto (al reves que la rotacion, que va por el arco).
-            const Vector3 fw = (c->fuenteTipo == W3dConstraintFuente::Vista)
-                             ? g_renderCamPos : c->fuenteObj->GetGlobalPosition();
+            const Vector3 fw = (c->sourceType == W3dConstraintSource::View)
+                             ? g_renderCamPos : c->sourceObj->GetGlobalPosition();
             Vector3 obj = pw;
-            if (c->ejeX) obj.x = fw.x;
-            if (c->ejeY) obj.y = fw.y;
-            if (c->ejeZ) obj.z = fw.z;
+            if (c->axisX) obj.x = fw.x;
+            if (c->axisY) obj.y = fw.y;
+            if (c->axisZ) obj.z = fw.z;
             pw = (t >= 1.0f) ? obj : (pw + (obj - pw) * t);   // con t=1 ASIGNA, no interpola
         }
-        else if (c->tipo == W3dConstraintTipo::CopyRotation) {
+        else if (c->type == W3dConstraintType::CopyRotation) {
             if (!baseOk) continue;                      // padre espejado: ya se aviso arriba
             Quaternion qf;
-            if (c->fuenteTipo == W3dConstraintFuente::Vista) qf = g_renderCamRot;
-            else if (!W3dQuatMundoDe(c->fuenteObj, qf))  continue;   // la fuente esta espejada
+            if (c->sourceType == W3dConstraintSource::View) qf = g_renderCamRot;
+            else if (!W3dQuatWorldOf(c->sourceObj, qf))  continue;   // la fuente esta espejada
             Quaternion qObj;
-            if (c->ejeX && c->ejeY && c->ejeZ) {
+            if (c->axisX && c->axisY && c->axisZ) {
                 qObj = qf;   // ATAJO de los 3 ejes: es "la misma orientacion", sin ida y vuelta por euler
             } else {
                 // la MASCARA por eje solo existe en euler: "copiar la X" ES un angulo.
                 Vector3 e = qw.ToEulerXYZ(), ef = qf.ToEulerXYZ();
-                if (c->ejeX) e.x = ef.x;
-                if (c->ejeY) e.y = ef.y;
-                if (c->ejeZ) e.z = ef.z;
+                if (c->axisX) e.x = ef.x;
+                if (c->axisY) e.y = ef.y;
+                if (c->axisZ) e.z = ef.z;
                 qObj = Quaternion::FromEulerXYZ(e.x, e.y, e.z);
             }
             // la INFLUENCIA se mezcla en QUATERNION: arco corto y extremos exactos.
@@ -1073,27 +1073,27 @@ static bool W3dEvalCons(const Object* o, const Matrix4* WpIn, Vector3& posOut, Q
             // no 175, porque un quaternion codifica una ORIENTACION, no vueltas.
             qw = Quaternion::Slerp(qw, qObj, t);
         }
-        else if (c->tipo == W3dConstraintTipo::ChildOf) {
+        else if (c->type == W3dConstraintType::ChildOf) {
             // ---- CHILD OF: mundo = fuente * inversa * LOCAL (la fuente REEMPLAZA al padre) ----
             // el local es el del objeto con lo que los constraints de arriba ya le hicieron
             Matrix4 Mt;
-            W3dChildOfMatriz(c, (tienePadre && c->fuenteObj == o->Parent) ? &Wp : NULL, Mt);
+            W3dChildOfMatrix(c, (hasParent && c->sourceObj == o->Parent) ? &Wp : NULL, Mt);
             Matrix4 L = W3dLocalTRS(pw, qw, sw);                 // en MUNDO...
-            if (tienePadre) { Matrix4 iWp; Matrix4::InvertirAfin(Wp, iWp); L = iWp * L; } // ...al espacio del padre
-            const Matrix4 W = Mt * c->inversa * L;
+            if (hasParent) { Matrix4 iWp; Matrix4::InvertAffine(Wp, iWp); L = iWp * L; } // ...al espacio del padre
+            const Matrix4 W = Mt * c->inverse * L;
             Quaternion qn;
-            if (!W3dQuatDeMatriz(W, qn)) continue;               // fuente espejada / escala cero
+            if (!W3dMatrixQuat(W, qn)) continue;               // fuente espejada / escala cero
             const Vector3 pn(W.m[12], W.m[13], W.m[14]);
-            const Vector3 sn(W3dLargoCol(W, 0), W3dLargoCol(W, 1), W3dLargoCol(W, 2));
+            const Vector3 sn(W3dLengthCol(W, 0), W3dLengthCol(W, 1), W3dLengthCol(W, 2));
             if (t >= 1.0f) { pw = pn; qw = qn; sw = sn; }        // con t=1 ASIGNA, no interpola
             else {
                 pw = pw + (pn - pw) * t;
                 qw = Quaternion::Slerp(qw, qn, t);
                 sw = sw + (sn - sw) * t;
             }
-            tocoEscala = true;
+            touchedScale = true;
         }
-        else if (c->tipo == W3dConstraintTipo::Billboard) {
+        else if (c->type == W3dConstraintType::Billboard) {
             if (!baseOk) continue;                      // padre espejado: ya se aviso arriba
             // el billboard se alinea con el PLANO de la camara (NO apunta a su posicion): es
             // lo que hacia el objeto Constraint viejo, o sea el look que ya tiene la demo.
@@ -1131,27 +1131,27 @@ static bool W3dEvalCons(const Object* o, const Matrix4* WpIn, Vector3& posOut, Q
                 // CONDUCTA CONOCIDA Y ACEPTADA (ver W3dConstraint.h): cuando esa diferencia
                 // cruza los 180 grados el destino se da vuelta y el objeto pega un giro.
                 const Vector3 e = qw.ToEulerYXZ();      // (pitch, yaw, roll)
-                const float p = e.x + W3dDifAngCorta(-pitchObj, e.x) * t;
-                const float y = e.y + W3dDifAngCorta( yawObj,   e.y) * t;
-                const float r = e.z + W3dDifAngCorta( 0.0f,     e.z) * t;
+                const float p = e.x + W3dShortDifAng(-pitchObj, e.x) * t;
+                const float y = e.y + W3dShortDifAng( yawObj,   e.y) * t;
+                const float r = e.z + W3dShortDifAng( 0.0f,     e.z) * t;
                 qw = Quaternion::FromEulerYXZ(p, y, r);
             }
         }
     }
 
     // ---- 7. de vuelta al espacio del PADRE ----
-    if (tienePadre) {
+    if (hasParent) {
         Matrix4 iWp;
-        // si Wp fuera singular InvertirAfin deja iWp = Wp: una matriz usable en vez de basura
+        // si Wp fuera singular InvertAffine deja iWp = Wp: una matriz usable en vez de basura
         // (y con escala cero no hay local que devuelva esa posicion de mundo, de todas formas).
-        Matrix4::InvertirAfin(Wp, iWp);
+        Matrix4::InvertAffine(Wp, iWp);
         posOut = iWp * pw;
-        rotOut = qWp.Inverted() * qw;   // qWp sale de W3dQuatDeMatriz: unitario -> inversa = conjugado
+        rotOut = qWp.Inverted() * qw;   // qWp sale de W3dMatrixQuat: unitario -> inversa = conjugado
     } else {
         posOut = pw;
         rotOut = qw;
     }
-    if (escOut) *escOut = !tocoEscala ? o->scale
+    if (escOut) *escOut = !touchedScale ? o->scale
         : Vector3(ep.x > 1e-8f ? sw.x / ep.x : sw.x, ep.y > 1e-8f ? sw.y / ep.y : sw.y, ep.z > 1e-8f ? sw.z / ep.z : sw.z);
 
     o->consEval = false;
@@ -1159,7 +1159,7 @@ static bool W3dEvalCons(const Object* o, const Matrix4* WpIn, Vector3& posOut, Q
 }
 
 // la puerta publica (contrato en Objects.h): el que pregunta suelto no tiene el mundo del padre.
-bool W3dEvaluarConstraints(const Object* o, Vector3& posOut, Quaternion& rotOut){
+bool W3dEvaluateConstraints(const Object* o, Vector3& posOut, Quaternion& rotOut){
     return W3dEvalCons(o, NULL, posOut, rotOut);
 }
 
@@ -1167,7 +1167,7 @@ bool W3dEvaluarConstraints(const Object* o, Vector3& posOut, Quaternion& rotOut)
 // o si el que llama no lo tiene). Es GetMatrix() con ese dato de mas: los dos early-outs son
 // IDENTICOS a los de GetMatrix a proposito, para que "objeto sin constraints" pese lo mismo se
 // entre por donde se entre.
-static void W3dLocalEfectiva(const Object* o, const Matrix4* Wp, Matrix4& out){
+static void W3dEffectiveLocal(const Object* o, const Matrix4* Wp, Matrix4& out){
     if (o->constraints.empty()) { o->GetMatrixBase(out); return; }
     Vector3 p, e;
     Quaternion q;
@@ -1194,13 +1194,13 @@ void Object::GetMatrixBase(Matrix4& out) const {
 //  los constraints.
 //  Los DOS early-outs (lista vacia / el evaluador dice que no aplico nada) devuelven
 //  exactamente la misma expresion que GetMatrixBase: el 99% de los objetos no paga ni
-//  una cuenta, y "constraint apagado" da la base BIT A BIT (ver W3dEvaluarConstraints).
+//  una cuenta, y "constraint apagado" da la base BIT A BIT (ver W3dEvaluateConstraints).
 // ============================================================================
 void Object::GetMatrix(Matrix4& out) const {
     // NULL = "no te traigo el mundo del padre": el que entra por aca no lo tiene, asi que si hace
     // falta el evaluador lo pide una vez. El que SI lo tiene (GetWorldMatrix, bajando la cadena)
-    // llama derecho a W3dLocalEfectiva y por eso no paga la cuenta exponencial.
-    W3dLocalEfectiva(this, NULL, out);
+    // llama derecho a W3dEffectiveLocal y por eso no paga la cuenta exponencial.
+    W3dEffectiveLocal(this, NULL, out);
 }
 
 void Object::RotateLocal(float pitch, float yaw, float roll){
@@ -1213,7 +1213,7 @@ void Object::RotateLocal(float pitch, float yaw, float roll){
 }
 
 // matriz de MUNDO del objeto: su matriz LOCAL (T*R*S) por toda la cadena de
-// padres. Fuente UNICA de la transform de mundo (foco, LocalAMundo, color-pick).
+// padres. Fuente UNICA de la transform de mundo (foco, LocalToWorld, color-pick).
 //
 //  *** POR QUE ESTO BAJA Y NO SUBE ***
 //  La version obvia (subir con un while(Parent) pidiendo GetMatrix de cada eslabon) es
@@ -1232,7 +1232,7 @@ void Object::GetWorldMatrix(Matrix4& out) const {
     Matrix4 Wp;
     Parent->GetWorldMatrix(Wp);     // recursion de profundidad = la cadena, una vez cada uno
     Matrix4 L;
-    W3dLocalEfectiva(this, &Wp, L); // ...y aca se le PASA, en vez de que lo vuelva a pedir
+    W3dEffectiveLocal(this, &Wp, L); // ...y aca se le PASA, en vez de que lo vuelva a pedir
     out = Wp * L;
 }
 
@@ -1268,14 +1268,14 @@ Vector3 Object::GetGlobalPositionBase() const {
 
 // transforma un punto LOCAL a MUNDO usando la matriz de mundo completa
 // (Matrix4::operator*(Vector3) es exactamente mundo = M * (local, 1), con M column-major)
-Vector3 Object::LocalAMundo(const Vector3& local) const {
+Vector3 Object::LocalToWorld(const Vector3& local) const {
     Matrix4 M;
     GetWorldMatrix(M);
     return M * local;
 }
 
 // idem con la matriz de mundo BASE: es la que usa el que EXPORTA vertices (ver Objects.h)
-Vector3 Object::LocalAMundoBase(const Vector3& local) const {
+Vector3 Object::LocalToWorldBase(const Vector3& local) const {
     Matrix4 M;
     GetWorldMatrixBase(M);
     return M * local;
@@ -1290,10 +1290,10 @@ Matrix4 Object::BuildMatrix(const Vector3& pos, const Quaternion& rot, const Vec
 void Object::RenderObject(){}
 
 // algun hijo visible dibuja algo (el mismo o alguno de los suyos)
-static bool HijosDibujan(Object* o) {
+static bool ChildrenDraw(Object* o) {
     for (size_t c = 0; c < o->Childrens.size(); c++) {
         Object* h = o->Childrens[c];
-        if (h->visible && (h->DibujaAlgo() || HijosDibujan(h))) return true;
+        if (h->visible && (h->DrawsSomething() || ChildrenDraw(h))) return true;
     }
     return false;
 }
@@ -1302,25 +1302,25 @@ static bool HijosDibujan(Object* o) {
 void Object::Render(){
     if (!visible) return;
 #ifndef W3D_SYMBIAN
-    if (w3dEngine::g_trazaGLSec) printf("      [glsec] -- %s\n", name.c_str());   // (harness) la traza en orden: de quien es cada llamada
+    if (w3dEngine::g_traceGLSec) printf("      [glsec] -- %s\n", name.c_str());   // (harness) la traza en orden: de quien es cada llamada
 #endif
     // LOCAL VIEW: si un viewport esta aislando, solo se traversa/dibuja lo que esta en el set (seleccion +
-    // descendencia). Los PADRES de lo aislado (g_localViewPaso) se atraviesan para ALCANZAR a los seleccionados con su
+    // descendencia). Los PADRES de lo aislado (g_localViewStep) se atraviesan para ALCANZAR a los seleccionados con su
     // matriz, pero no se dibujan: el armature de una malla elegida no tiene que aparecer. Fuera del editor: false -> gratis.
     // (las RUTINAS son pasos del render -limpiar la pantalla, la camara, la niebla-, no cosas de la escena: siguen)
-    if (g_localViewActivo && !sinTransformacion && W3dVistaLocalOculta(this)) return;
-    const bool soloPaso = g_localViewActivo && !sinTransformacion && W3dVistaLocalSoloPaso(this);
+    if (g_localViewActive && !noTransform && W3dViewLocalHidden(this)) return;
+    const bool onlyStep = g_localViewActive && !noTransform && W3dViewLocalOnlyStep(this);
     // nada que dibujar en todo el subarbol visible (los vacios que mueve un script y que dibuja una rutina, o con todo lo
     // de adentro oculto): ni push, ni mult, ni pop
-    if ((soloPaso || !DibujaAlgo()) && !HijosDibujan(this)) return;
+    if ((onlyStep || !DrawsSomething()) && !ChildrenDraw(this)) return;
     // sin transformacion propia (la Rutina): ni push, ni mult, ni pop (3 llamadas GL menos por objeto)
-    if (sinTransformacion) {
+    if (noTransform) {
         // (el CONSTRUCTOR ya corrido en modo solo-juego: su estado se repuso. Lo que cuelga de el tambien es de UNA vez
         //  -su estado ya esta en la foto-: no se recorre. Lo de cada cuadro, como limpiar la pantalla, va afuera)
-        if (SaltarEsteCuadro()) return;
+        if (SkipThisFrame()) return;
         RenderObject();
-        if (!DibujaSusHijos()) RenderHijos();
-        DespuesDeRender();
+        if (!DrawsItsChildren()) RenderChildren();
+        AfterRender();
         return;
     }
     // Guardar la matriz actual (por la abstraccion: glPushMatrix en desktop, stack propio en ES2/WebGL)
@@ -1343,24 +1343,24 @@ void Object::Render(){
     // El winding es estado GLOBAL de GL (no hay pila), asi que se lleva la cuenta de
     // cuantos espejos hay ABIERTOS: anidar dos vuelve al winding normal, que es lo
     // que corresponde (dos reflexiones son una rotacion).
-    static int gEspejosAbiertos = 0;
+    static int gOpenMirrors = 0;
     const bool espeja = (scale.x * scale.y * scale.z) < 0.0f;
-    if (espeja) { gEspejosAbiertos++; w3dEngine::FrontFace((gEspejosAbiertos & 1) == 0); }
+    if (espeja) { gOpenMirrors++; w3dEngine::FrontFace((gOpenMirrors & 1) == 0); }
 
     // Si es visible y no es un mesh, lo dibuja (el padre de lo aislado en la vista local, no)
-    if (!soloPaso) RenderObject();
+    if (!onlyStep) RenderObject();
 
     // Procesar cada hijo (virtual: LOD/Culling deciden cuales y en que orden)
-    RenderHijos();
+    RenderChildren();
 
-    if (espeja) { gEspejosAbiertos--; w3dEngine::FrontFace((gEspejosAbiertos & 1) == 0); }
+    if (espeja) { gOpenMirrors--; w3dEngine::FrontFace((gOpenMirrors & 1) == 0); }
 
     // Restaurar la matriz previa
     w3dEngine::PopMatrix();
 }
 
 // default del traversal: TODOS los hijos, en su orden del arbol
-void Object::RenderHijos(){
+void Object::RenderChildren(){
     for (size_t c = 0; c < Childrens.size(); c++) {
         Childrens[c]->Render();
     }
@@ -1368,45 +1368,45 @@ void Object::RenderHijos(){
 
 // nombre LEGIBLE del tipo (ver Objects.h). Un switch a proposito (sin tabla indexada por el enum):
 // si manana se agrega un ObjectType, el compilador avisa del caso faltante en vez de devolver basura.
-const char* W3dNombreTipo(ObjectType t){
+const char* W3dTypeName(ObjectType t){
     switch (t.v){
-        case ObjectType::scene:      return "escena";
+        case ObjectType::scene:      return "scene";
         case ObjectType::mesh:       return "mesh";
-        case ObjectType::camera:     return "camara";
-        case ObjectType::light:      return "luz";
-        case ObjectType::empty:      return "vacio";
-        case ObjectType::armature:   return "esqueleto";
-        case ObjectType::curve:      return "curva";
-        case ObjectType::collection: return "coleccion";
-        case ObjectType::baseObject: return "objeto";
-        case ObjectType::mirror:     return "espejo";
+        case ObjectType::camera:     return "camera";
+        case ObjectType::light:      return "light";
+        case ObjectType::empty:      return "empty";
+        case ObjectType::armature:   return "armature";
+        case ObjectType::curve:      return "curve";
+        case ObjectType::collection: return "collection";
+        case ObjectType::baseObject: return "object";
+        case ObjectType::mirror:     return "mirror";
         case ObjectType::script:     return "script";
-        case ObjectType::instance:   return "instancia";
+        case ObjectType::instance:   return "instance";
         case ObjectType::ui:         return "ui";
-        case ObjectType::texto2d:    return "texto";
-        case ObjectType::imagen2d:   return "imagen";
+        case ObjectType::text2d:    return "text";
+        case ObjectType::image2d:   return "image";
         case ObjectType::rect2d:     return "rect";
-        case ObjectType::cont2d:     return "contenedor";
+        case ObjectType::cont2d:     return "container";
         case ObjectType::slice9:     return "slice9";
-        case ObjectType::boton2d:    return "boton";
-        case ObjectType::expandir2d: return "expandir";
+        case ObjectType::button2d:    return "button";
+        case ObjectType::expand2d: return "expand";
         case ObjectType::video2d:    return "video";
         case ObjectType::lod:        return "lod";
         case ObjectType::culling:    return "culling";
-        case ObjectType::particulas: return "particulas";
-        case ObjectType::niebla:     return "niebla";
-        case ObjectType::limpiarz:   return "limpiarz";
-        case ObjectType::recorte:    return "recorte";
+        case ObjectType::particles: return "particles";
+        case ObjectType::fog:     return "fog";
+        case ObjectType::clearz:   return "clearz";
+        case ObjectType::clip:    return "clip";
         case ObjectType::hitbox:     return "hitbox";
         case ObjectType::prefab:     return "prefab";
         case ObjectType::proxy:      return "proxy";
-        case ObjectType::rutina:     return "rutina";
-        case ObjectType::sonido:     return "sonido";
-        case ObjectType::postproceso: return "postproceso";
+        case ObjectType::routine:     return "routine";
+        case ObjectType::sound:     return "sound";
+        case ObjectType::postProcess: return "postProcess";
         case ObjectType::sondaluz:   return "sondaluz";
-        case ObjectType::sondareflejo: return "sondareflejo";
+        case ObjectType::sondareflejo: return "reflectionprobe";
     }
-    return "objeto";
+    return "object";
 }
 
 Object* FindObjectByName(Object* node, const std::string& name){
@@ -1430,8 +1430,8 @@ Object* FindObjectByName(Object* node, const std::string& name){
 #include "Armature.h" // Pose Mode: seleccionar/deseleccionar huesos
 #ifndef W3D_SYMBIAN
 // La clase base NO depende de los subtipos del editor: esos includes (Target, Scene,
-// Collection, Instance, Mirror, ObjetoScript, Curve, Camera) estaban MUERTOS. Solo usa
-// Light (ApagarLucesHijas) + el core-bound Mesh.
+// Collection, Instance, Mirror, ObjectScript, Curve, Camera) estaban MUERTOS. Solo usa
+// Light (TurnOffChildLights) + el core-bound Mesh.
 #include "Light.h"
 #include "Mesh.h"
 #endif
@@ -1466,10 +1466,10 @@ bool DetectLoop(Object* node,
 // ROTACION GLOBAL: la acumulada por la cadena de padres (ver Objects.h). Vino de
 // main/objects/ObjectMode.cpp cuando el runtime de un juego -que no linkea el modo
 // objeto del editor- empezo a necesitarla por el importador.
-Quaternion RotGlobalDe(Object* o) {
+Quaternion RotGlobalOf(Object* o) {
     if (!o) return Quaternion(1, 0, 0, 0);
     if (!o->Parent) return o->Rot();
-    return RotGlobalDe(o->Parent) * o->Rot();
+    return RotGlobalOf(o->Parent) * o->Rot();
 }
 
 void SearchLoop(){
@@ -1503,7 +1503,7 @@ Object* GetDeepestDFS(Object* node){
 // lectura correcta del vinculo: si no declara padre pero no es la raiz, su padre es la
 // raiz. (Arreglar el ctor tocaria la vida de todos los objetos; esto arregla la
 // NAVEGACION, que es lo que estaba roto.)
-static Object* PadreEnArbol(Object* o) {
+static Object* ParentInTree(Object* o) {
     if (!o || o == SceneCollection) return NULL;
     return o->Parent ? o->Parent : SceneCollection;
 }
@@ -1511,7 +1511,7 @@ static Object* PadreEnArbol(Object* o) {
 Object* GetPrevDFS(Object* current){
     if (!current) return NULL;
 
-    Object* parent = PadreEnArbol(current);
+    Object* parent = ParentInTree(current);
 
     // --- Caso especial: current es el primer hijo del root ---
     if (parent == SceneCollection){
@@ -1565,7 +1565,7 @@ Object* GetNextDFS(Object* current) {
     Object* node = current;
 
     while (node) {
-        Object* parent = PadreEnArbol(node);
+        Object* parent = ParentInTree(node);
 
         // --------------------------------------------------------
         // Caso especial: node es la raíz (SceneCollection)
@@ -1577,7 +1577,7 @@ Object* GetNextDFS(Object* current) {
                 return NULL;  // fin total del DFS
             } else {
                 std::cout << "[ERROR] Root inesperado diferente a SceneCollection " << parent << "\n";
-                std::cout << "Objeto: " << node->name << "\n";
+                std::cout << "Object: " << node->name << "\n";
                 return NULL;
             }
         }
@@ -1604,18 +1604,18 @@ Object* GetNextDFS(Object* current) {
     return NULL;
 }
 
-bool IsSelectable(Object* obj, bool IncluirColecciones) {
+bool IsSelectable(Object* obj, bool IncludeCollections) {
     if (!obj) return false;
 
     // La RAIZ nunca: no es una fila del outliner y no se selecciona a mano. Con
-    // IncluirColecciones=true pasaba el filtro (reporta tipo collection) y GetPrevDFS
+    // IncludeCollections=true pasaba el filtro (reporta tipo collection) y GetPrevDFS
     // la devuelve al subir desde el primer hijo -> la flecha "arriba" se clavaba ahi.
     if (obj == SceneCollection) return false;
 
     const ObjectType t = obj->getType();
 
     // Si NO queremos incluir colecciones → bloquearlas
-    if (!IncluirColecciones) {
+    if (!IncludeCollections) {
         if (t == ObjectType::collection)
             return false;
     }
@@ -1630,7 +1630,7 @@ bool IsSelectable(Object* obj, bool IncluirColecciones) {
     // de 91, el highlight se iba adentro de ramas plegadas y parecia que la flecha
     // "no hacia nada". Un objeto adentro de una rama plegada no es navegable.
     for (Object* p = obj->Parent; p; p = p->Parent)
-        if (!p->desplegado) return false;
+        if (!p->expanded) return false;
     // (la raiz no entra: su 'desplegado' no se dibuja ni se puede togglear)
 
     return true;
@@ -1642,28 +1642,28 @@ Object* GetFirstDFS(){
     return SceneCollection->Childrens[0];
 }
 
-void changeSelect(SelectMode mode, bool IncluirColecciones){
+void changeSelect(SelectMode mode, bool IncludeCollections){
     if (InteractionMode != ObjectMode) return;
-    if (estado != editNavegacion) return;
+    if (state != editNavigation) return;
     if (SceneCollection->Childrens.empty()) return;
 
-    //std::cout << "changeSelect " << ObjActivo << std::endl;
+    //std::cout << "changeSelect " << ActiveObj << std::endl;
     //std::cout << "Seleccionados: " << ObjSelects.size() << std::endl;
-    //std::cout << "IncluirColecciones: " << IncluirColecciones << std::endl;
+    //std::cout << "IncludeCollections: " << IncludeCollections << std::endl;
 
     // Si no hay activo → elegir el primero DFS
-    if (!ObjActivo){
+    if (!ActiveObj){
         if (SceneCollection->Childrens.empty()){
             std::cout << "no hay objetos para seleccionar" << std::endl;
             return;
         }
         Object* it = SceneCollection->Childrens[0];
 
-        while(it && !IsSelectable(it, IncluirColecciones))
+        while(it && !IsSelectable(it, IncludeCollections))
             it = GetNextDFS(it);
 
         if (it){
-            it->Seleccionar();
+            it->Select();
         }
         else {
             std::cout << "los objetos no eran seleccionables" << std::endl;
@@ -1675,19 +1675,19 @@ void changeSelect(SelectMode mode, bool IncluirColecciones){
 
     // elegir next o previous según modo
     if (mode == SelectMode::NextSingle || mode == SelectMode::NextAdd){
-        next = GetNextDFS(ObjActivo);
+        next = GetNextDFS(ActiveObj);
     }
     else if (mode == SelectMode::PrevSingle || mode == SelectMode::PrevAdd){
-        next = GetPrevDFS(ObjActivo);
+        next = GetPrevDFS(ActiveObj);
     }
 
-    const bool haciaAtras = (mode == SelectMode::PrevSingle || mode == SelectMode::PrevAdd);
+    const bool towardsBack = (mode == SelectMode::PrevSingle || mode == SelectMode::PrevAdd);
 
     if (!next) {
         // Llegamos a la punta del DFS → wrap. Hacia ADELANTE se vuelve al primero;
         // hacia ATRAS se va al ULTIMO (el nodo mas profundo de la ultima rama). Antes
         // el wrap era SIEMPRE GetFirstDFS(): con la flecha arriba en el tope no se movia.
-        next = haciaAtras ? GetDeepestDFS(SceneCollection->Childrens.back()) : GetFirstDFS();
+        next = towardsBack ? GetDeepestDFS(SceneCollection->Childrens.back()) : GetFirstDFS();
         if (!next) return;
     }
 
@@ -1698,11 +1698,11 @@ void changeSelect(SelectMode mode, bool IncluirColecciones){
     // raiz vuelve al ultimo), asi que si no hubiera ni un objeto navegable -todo plegado-
     // este while no terminaria nunca.
     Object* it = next;
-    int vueltas = 0;
-    const int tope = 100000;
-    while(it && !IsSelectable(it, IncluirColecciones)){
-        if (++vueltas > tope) return;
-        it = haciaAtras ? GetPrevDFS(it) : GetNextDFS(it);
+    int turns = 0;
+    const int limit = 100000;
+    while(it && !IsSelectable(it, IncludeCollections)){
+        if (++turns > limit) return;
+        it = towardsBack ? GetPrevDFS(it) : GetNextDFS(it);
         if (it == next) return;   // dio la vuelta entera sin encontrar nada
     }
 
@@ -1712,135 +1712,135 @@ void changeSelect(SelectMode mode, bool IncluirColecciones){
     // Aplicar modo de selección
     // ------------------------
     if (mode == SelectMode::NextSingle || mode == SelectMode::PrevSingle){
-        ObjActivo->Deseleccionar();
+        ActiveObj->Deselect();
     }
 
-    it->Seleccionar();
+    it->Select();
 }
 
-void ApagarLucesHijas(Object* obj){
+void TurnOffChildLights(Object* obj){
 #ifndef W3D_SYMBIAN
     // (Light.h todavia no esta portado al dialecto C++03; cuando lo este,
     // esta guarda vuela y Symbian apaga luces igual que PC)
     //si es una luz. la apaga
     if (obj->getType() == ObjectType::light) {
-        Light* luz = dynamic_cast<Light*>(obj);
-        if (luz) {
-            w3dEngine::SetLightEnabled(luz->LightID, false);
+        Light* light = dynamic_cast<Light*>(obj);
+        if (light) {
+            w3dEngine::SetLightEnabled(light->LightID, false);
         }
     }
 #endif
     //lo mismo con los hijos
     for(size_t o=0; o < obj->Childrens.size(); o++){
-        ApagarLucesHijas(obj->Childrens[o]);
+        TurnOffChildLights(obj->Childrens[o]);
     }
 }
 
-void SetDesplegado(bool desplegado){
-    if (SceneCollection && ObjActivo){
-        ObjActivo->desplegado = desplegado;
+void SetExpanded(bool expanded){
+    if (SceneCollection && ActiveObj){
+        ActiveObj->expanded = expanded;
     }
 }
 
 void ChangeVisibilityObj(){
-    if (InteractionMode == ObjectMode && estado == editNavegacion && SceneCollection && ObjActivo){
-        ObjActivo->visible = !ObjActivo->visible;
+    if (InteractionMode == ObjectMode && state == editNavigation && SceneCollection && ActiveObj){
+        ActiveObj->visible = !ActiveObj->visible;
         //apagar luces en caso de que era una luz o sus hijas eran luces
-        if (!ObjActivo->visible && w3dRenderLuces) ApagarLucesHijas(ObjActivo);
+        if (!ActiveObj->visible && w3dRenderLights) TurnOffChildLights(ActiveObj);
     }
 }
 
 // visibilidad de RENDER del objeto activo (distinta de 'visible', que oculta en el EDITOR): tecla '3' del
 // outliner en el N95. Mismo gate que ChangeVisibilityObj (object mode, navegando).
-void ChangeRenderizableObj(){
-    if (InteractionMode == ObjectMode && estado == editNavegacion && SceneCollection && ObjActivo){
-        ObjActivo->renderizable = !ObjActivo->renderizable;
+void ChangeRenderableObj(){
+    if (InteractionMode == ObjectMode && state == editNavigation && SceneCollection && ActiveObj){
+        ActiveObj->renderable = !ActiveObj->renderable;
     }
 }
 
 // FLECHA IZQUIERDA en el outliner: si el activo esta desplegado y tiene hijos, lo pliega; si YA esta plegado
 // (o es hoja) y tiene padre, pliega al PADRE y lo selecciona (sube un nivel). Antes solo hacia desplegado=false,
 // asi que re-apretar izquierda sobre un hijo ya plegado no hacia nada.
-void OutlinerColapsarIzquierda(){
-    if (!(SceneCollection && ObjActivo)) return;
-    if (ObjActivo->desplegado && !ObjActivo->Childrens.empty()){
-        ObjActivo->desplegado = false;
+void OutlinerCollapseLeft(){
+    if (!(SceneCollection && ActiveObj)) return;
+    if (ActiveObj->expanded && !ActiveObj->Childrens.empty()){
+        ActiveObj->expanded = false;
         return;
     }
-    Object* p = ObjActivo->Parent;
+    Object* p = ActiveObj->Parent;
     if (p && p != SceneCollection){
-        p->desplegado = false;
-        DeseleccionarTodo();
-        p->Seleccionar();
+        p->expanded = false;
+        DeselectAll();
+        p->Select();
     }
 }
 
-void DeseleccionarTodo(bool IncluirColecciones){
-	// NO cambiar la seleccion durante un transform: estadoObjetos apunta a los
+void DeselectAll(bool IncludeCollections){
+	// NO cambiar la seleccion durante un transform: objectState apunta a los
 	// seleccionados y si cambia mientras se transforma, crashea.
-	if (estado != editNavegacion) return;
+	if (state != editNavigation) return;
 	if (InteractionMode == EditMode && g_editMesh){
-        g_editMesh->EditSeleccionarTodo(false); // edit: deseleccionar todos los sub-elementos
-	} else if (InteractionMode == PoseMode && ObjActivo && ObjActivo->getType() == ObjectType::armature){
-        Armature* a = (Armature*)ObjActivo; // Pose Mode: None deselecciona TODOS los huesos (+ sin hueso activo)
+        g_editMesh->EditSelectAll(false); // edit: deseleccionar todos los sub-elementos
+	} else if (InteractionMode == PoseMode && ActiveObj && ActiveObj->getType() == ObjectType::armature){
+        Armature* a = (Armature*)ActiveObj; // Pose Mode: None deselecciona TODOS los huesos (+ sin hueso activo)
         for (size_t b = 0; b < a->bones.size(); b++) a->bones[b].select = false;
-        a->boneActivo = -1; // sino el hueso activo seguia resaltado (parecia seleccionado)
+        a->activeBone = -1; // sino el hueso activo seguia resaltado (parecia seleccionado)
 	} else if (InteractionMode == ObjectMode && SceneCollection){
         ObjSelects.clear();
-        SceneCollection->DeseleccionarCompleto(IncluirColecciones);
+        SceneCollection->DeselectComplete(IncludeCollections);
 	}
 }
 
-void SeleccionarTodo(bool IncluirColecciones){
+void SelectAll(bool IncludeCollections){
     //recorre las colecciones y selecciona todo. si llega a encontrar algo hace lo contrario. deselecciona todo
-	if (estado != editNavegacion) return; // no durante un transform
+	if (state != editNavigation) return; // no durante un transform
 	if (InteractionMode == EditMode && g_editMesh){
-        g_editMesh->EditSeleccionarTodo(true); // edit: seleccionar todos los sub-elementos
+        g_editMesh->EditSelectAll(true); // edit: seleccionar todos los sub-elementos
         return;
     }
 	if (InteractionMode == ObjectMode && SceneCollection){
         ObjSelects.clear();
         //habia algo seleccionado... asi que hacemos lo contrario. deseleccionar todo
-        if (SceneCollection->SeleccionarCompleto(IncluirColecciones)){
+        if (SceneCollection->SelectComplete(IncludeCollections)){
             //std::cout << "habia algo seleccionado! se deselecciona todo\n";
-            DeseleccionarTodo(IncluirColecciones);
+            DeselectAll(IncludeCollections);
             return;
         }
         //std::cout << "Todos los objetos seleccionados\n";
     }
 }
 
-// selecciona TODO siempre (a diferencia de SeleccionarTodo que togglea): primero
-// deselecciona, asi SeleccionarCompleto no corta por "ya habia algo seleccionado"
-void SeleccionarTodoForzado(bool IncluirColecciones){
-    if (estado != editNavegacion) return; // no durante un transform
+// selecciona TODO siempre (a diferencia de SelectAll que togglea): primero
+// deselecciona, asi SelectComplete no corta por "ya habia algo seleccionado"
+void SelectAllForced(bool IncludeCollections){
+    if (state != editNavigation) return; // no durante un transform
     if (InteractionMode == EditMode && g_editMesh){
-        g_editMesh->EditSeleccionarTodo(true); // edit: seleccionar todos los sub-elementos
-    } else if (InteractionMode == PoseMode && ObjActivo && ObjActivo->getType() == ObjectType::armature){
-        Armature* a = (Armature*)ObjActivo; // Pose Mode: A selecciona TODOS los huesos (antes no hacia nada)
+        g_editMesh->EditSelectAll(true); // edit: seleccionar todos los sub-elementos
+    } else if (InteractionMode == PoseMode && ActiveObj && ActiveObj->getType() == ObjectType::armature){
+        Armature* a = (Armature*)ActiveObj; // Pose Mode: A selecciona TODOS los huesos (antes no hacia nada)
         for (size_t b = 0; b < a->bones.size(); b++) a->bones[b].select = true;
     } else if (InteractionMode == ObjectMode && SceneCollection){
-        DeseleccionarTodo(IncluirColecciones);
-        SceneCollection->SeleccionarCompleto(IncluirColecciones);
+        DeselectAll(IncludeCollections);
+        SceneCollection->SelectComplete(IncludeCollections);
     }
 }
 
 // invierte la seleccion: lo seleccionado pasa a no, lo no seleccionado pasa a si
-void InvertirSeleccion(bool IncluirColecciones){
-    if (estado != editNavegacion) return; // no durante un transform
+void InvertSelection(bool IncludeCollections){
+    if (state != editNavigation) return; // no durante un transform
     if (InteractionMode == EditMode && g_editMesh){
-        g_editMesh->EditInvertir(); // edit: invertir la seleccion de sub-elementos
-    } else if (InteractionMode == PoseMode && ObjActivo && ObjActivo->getType() == ObjectType::armature){
-        Armature* a = (Armature*)ObjActivo; // Pose Mode: Invert togglea el select de cada hueso
+        g_editMesh->EditInvert(); // edit: invertir la seleccion de sub-elementos
+    } else if (InteractionMode == PoseMode && ActiveObj && ActiveObj->getType() == ObjectType::armature){
+        Armature* a = (Armature*)ActiveObj; // Pose Mode: Invert togglea el select de cada hueso
         for (size_t b = 0; b < a->bones.size(); b++) a->bones[b].select = !a->bones[b].select;
-        if (a->boneActivo >= 0 && a->boneActivo < (int)a->bones.size() && !a->bones[a->boneActivo].select) a->boneActivo = -1; // el activo quedo deseleccionado
+        if (a->activeBone >= 0 && a->activeBone < (int)a->bones.size() && !a->bones[a->activeBone].select) a->activeBone = -1; // el activo quedo deseleccionado
     } else if (InteractionMode == ObjectMode && SceneCollection){
         ObjSelects.clear();
-        SceneCollection->InvertirSeleccionCompleto(IncluirColecciones);
+        SceneCollection->InvertCompleteSelection(IncludeCollections);
     }
 }
 
 //si hay objetos seleccionados, devuelve true
-bool HayObjetosSeleccionados(bool IncluirColecciones){
-    return SceneCollection && SceneCollection->EstaSeleccionado(IncluirColecciones);
+bool HasObjectsSelected(bool IncludeCollections){
+    return SceneCollection && SceneCollection->IsSelected(IncludeCollections);
 }

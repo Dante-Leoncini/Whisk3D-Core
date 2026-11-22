@@ -14,7 +14,7 @@ namespace w3dEngine {
 class W3dVideo;
 
 W3dVideo* W3dVideoOpenBackend(const char* path, bool loop);
-W3dVideo* W3dVideoOpenMemoryBackend(const void* bytes, size_t len, const char* mime, bool loop, bool conSonido);
+W3dVideo* W3dVideoOpenMemoryBackend(const void* bytes, size_t len, const char* mime, bool loop, bool withSound);
 void      W3dVideoUnlockBackend();
 
 } // namespace w3dEngine

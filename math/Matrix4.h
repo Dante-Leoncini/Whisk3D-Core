@@ -33,7 +33,7 @@ class Matrix4 {
         // y en ese caso deja out = in (el que llama sigue con una matriz usable en vez de basura).
         // Existe APARTE de Inverse() porque casi toda matriz del engine es afin y esta cuesta ~1/4 de
         // los flops: el N95 no tiene que pagar los cofactores de una 4x4 general para deshacer un T*R*S.
-        static bool InvertirAfin(const Matrix4& in, Matrix4& out);
+        static bool InvertAffine(const Matrix4& in, Matrix4& out);
 };
 
 #endif

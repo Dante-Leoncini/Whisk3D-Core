@@ -18,37 +18,37 @@ inline int A255(float v) {
 }
 
 // un flujo: sus datos en la RAM principal, por donde va y cuando termina
-struct Flujo {
+struct Flow {
     snd_stream_hnd_t hnd;
-    const uint8_t* datos;
+    const uint8_t* data;
     uint32_t bytes, pos;
-    bool lazo, sonando;
-    uint64_t fin_us;   // (sin lazo: cuando termina de sonar lo ultimo que se le paso)
+    bool loop, playing;
+    uint64_t end_us;   // (sin lazo: cuando termina de sonar lo ultimo que se le paso)
 };
-Flujo gFlujos[FLUJOS];
-bool gIniciado = false;
+Flow gFlows[FLOWS];
+bool gStarted = false;
 // el hilo que atiende los flujos y lo que comparte con el juego
 mutex_t gMutex = MUTEX_INITIALIZER;
-kthread_t* gHilo = 0;
-volatile bool gSeguir = false;
+kthread_t* gThread = 0;
+volatile bool gContinue = false;
 
 // los efectos cargados (el handle de KallistiOS y su frecuencia, para el tono); Efecto = indice + 1
-enum { EFECTOS = 256 };
-struct Cargado { sfxhnd_t hnd; uint32_t hz; };
-Cargado gEfectos[EFECTOS];
+enum { EFFECTS = 256 };
+struct Loaded { sfxhnd_t hnd; uint32_t hz; };
+Loaded gEffects[EFFECTS];
 
 // el AICA pide 'pedidos' bytes (de los dos canales juntos si es estereo): se le da lo que sigue, sin pasar el final
 // (lo que falte lo pide en la vuelta siguiente: con lazo, desde el principio)
-void* PedirDatos(snd_stream_hnd_t hnd, int pedidos, int* dados) {
-    for (Flujo& f : gFlujos) {
-        if (f.hnd != hnd || !f.datos) continue;
+void* RequestData(snd_stream_hnd_t hnd, int requests, int* dados) {
+    for (Flow& f : gFlows) {
+        if (f.hnd != hnd || !f.data) continue;
         if (f.pos >= f.bytes) {
-            if (!f.lazo) { *dados = 0; return 0; }
+            if (!f.loop) { *dados = 0; return 0; }
             f.pos = 0;
         }
         uint32_t n = f.bytes - f.pos;
-        if (n > (uint32_t)pedidos) n = (uint32_t)pedidos;
-        const uint8_t* p = f.datos + f.pos;
+        if (n > (uint32_t)requests) n = (uint32_t)requests;
+        const uint8_t* p = f.data + f.pos;
         f.pos += n;
         *dados = (int)n;
         return (void*)p;
@@ -57,14 +57,14 @@ void* PedirDatos(snd_stream_hnd_t hnd, int pedidos, int* dados) {
     return 0;
 }
 
-void AtenderFlujos();
+void HandleFlows();
 
 // el hilo: cada 50 ms, los flujos (si espera un DMA, espera el: el juego sigue). Mas seguido no hace falta (el buffer
 // de un flujo dura mas de un segundo) y cuesta: cada vuelta lee la posicion de los canales por el bus del AICA
-void* Hilo(void*) {
-    while (gSeguir) {
+void* Thread(void*) {
+    while (gContinue) {
         mutex_lock(&gMutex);
-        AtenderFlujos();
+        HandleFlows();
         mutex_unlock(&gMutex);
         thd_sleep(50);
     }
@@ -72,119 +72,119 @@ void* Hilo(void*) {
 }
 }
 
-bool Iniciar() {
-    if (gIniciado) return true;
+bool Start() {
+    if (gStarted) return true;
     if (snd_stream_init() < 0) return false;   // (arranca el programa del AICA: snd_init)
-    for (Cargado& c : gEfectos) c.hnd = SFXHND_INVALID;
-    for (Flujo& f : gFlujos) {
+    for (Loaded& c : gEffects) c.hnd = SFXHND_INVALID;
+    for (Flow& f : gFlows) {
         memset(&f, 0, sizeof(f));
-        f.hnd = snd_stream_alloc(PedirDatos, SND_STREAM_BUFFER_MAX_ADPCM);
+        f.hnd = snd_stream_alloc(RequestData, SND_STREAM_BUFFER_MAX_ADPCM);
     }
-    gIniciado = true;
-    gSeguir = true;
-    gHilo = thd_create(false, Hilo, 0);
+    gStarted = true;
+    gContinue = true;
+    gThread = thd_create(false, Thread, 0);
     return true;
 }
 
-void Terminar() {
-    if (!gIniciado) return;
-    if (gHilo) {
-        gSeguir = false;
-        thd_join(gHilo, 0);
-        gHilo = 0;
+void Finish() {
+    if (!gStarted) return;
+    if (gThread) {
+        gContinue = false;
+        thd_join(gThread, 0);
+        gThread = 0;
     }
-    for (Flujo& f : gFlujos) {
+    for (Flow& f : gFlows) {
         if (f.hnd == SND_STREAM_INVALID) continue;
-        if (f.sonando) snd_stream_stop(f.hnd);
+        if (f.playing) snd_stream_stop(f.hnd);
         snd_stream_destroy(f.hnd);
     }
-    for (Cargado& c : gEfectos) c.hnd = SFXHND_INVALID;
+    for (Loaded& c : gEffects) c.hnd = SFXHND_INVALID;
     snd_sfx_unload_all();
     snd_stream_shutdown();
-    gIniciado = false;
+    gStarted = false;
 }
 
 // ------------------------------------------------------------------------------------------------- efectos
-Efecto CargarEfecto(const void* datos, uint32_t bytes, uint32_t hz, Formato formato) {
-    if (!gIniciado || !datos || !bytes) return 0;
-    for (int i = 0; i < EFECTOS; i++) {
-        if (gEfectos[i].hnd != SFXHND_INVALID) continue;
-        gEfectos[i].hnd = snd_sfx_load_raw_buf((char*)datos, bytes, hz, (uint16_t)formato, 1);
-        if (gEfectos[i].hnd == SFXHND_INVALID) return 0;
-        gEfectos[i].hz = hz;
-        return (Efecto)(i + 1);
+Effect LoadEffect(const void* data, uint32_t bytes, uint32_t hz, Format format) {
+    if (!gStarted || !data || !bytes) return 0;
+    for (int i = 0; i < EFFECTS; i++) {
+        if (gEffects[i].hnd != SFXHND_INVALID) continue;
+        gEffects[i].hnd = snd_sfx_load_raw_buf((char*)data, bytes, hz, (uint16_t)format, 1);
+        if (gEffects[i].hnd == SFXHND_INVALID) return 0;
+        gEffects[i].hz = hz;
+        return (Effect)(i + 1);
     }
     return 0;
 }
 
-void SoltarEfecto(Efecto e) {
-    if (e < 1 || e > EFECTOS || gEfectos[e - 1].hnd == SFXHND_INVALID) return;
-    snd_sfx_unload(gEfectos[e - 1].hnd);
-    gEfectos[e - 1].hnd = SFXHND_INVALID;
+void ReleaseEffect(Effect e) {
+    if (e < 1 || e > EFFECTS || gEffects[e - 1].hnd == SFXHND_INVALID) return;
+    snd_sfx_unload(gEffects[e - 1].hnd);
+    gEffects[e - 1].hnd = SFXHND_INVALID;
 }
 
-int MemoriaLibre() { return (int)snd_mem_available(); }
+int FreeMemory() { return (int)snd_mem_available(); }
 
-int Tocar(Efecto e, float vol, float pan, float tono, bool lazo) {
-    if (!gIniciado || e < 1 || e > EFECTOS || gEfectos[e - 1].hnd == SFXHND_INVALID) return -1;
-    const Cargado& c = gEfectos[e - 1];
+int Touch(Effect e, float vol, float pan, float tone, bool loop) {
+    if (!gStarted || e < 1 || e > EFFECTS || gEffects[e - 1].hnd == SFXHND_INVALID) return -1;
+    const Loaded& c = gEffects[e - 1];
     sfx_play_data_t d;
     memset(&d, 0, sizeof(d));
     d.chn = -1;   // (el que sigue de los libres: si estan todos, el mas viejo)
     d.idx = c.hnd;
     d.vol = A255(vol);
     d.pan = A255((pan + 1.0f) * 0.5f);
-    d.loop = lazo ? 1 : 0;
+    d.loop = loop ? 1 : 0;
     // el tono: el AICA toca a la frecuencia que se le diga
-    d.freq = tono == 1.0f ? 0 : (int)(c.hz * tono + 0.5f);
-    const int canal = snd_sfx_play_ex(&d);
-    return canal >= 0 ? canal : -1;
+    d.freq = tone == 1.0f ? 0 : (int)(c.hz * tone + 0.5f);
+    const int channel = snd_sfx_play_ex(&d);
+    return channel >= 0 ? channel : -1;
 }
 
-void Parar(int canal) {
-    if (gIniciado && canal >= 0) snd_sfx_stop(canal);
+void Stop(int channel) {
+    if (gStarted && channel >= 0) snd_sfx_stop(channel);
 }
 
 // ------------------------------------------------------------------------------------------------- flujos
-int TocarFlujo(const void* adpcm, uint32_t bytes, uint32_t hz, int canales, float vol, bool lazo) {
-    if (!gIniciado || !adpcm || !bytes) return -1;
+int TouchFlow(const void* adpcm, uint32_t bytes, uint32_t hz, int channels, float vol, bool loop) {
+    if (!gStarted || !adpcm || !bytes) return -1;
     mutex_lock(&gMutex);
-    int elegido = -1;
-    for (int i = 0; i < FLUJOS && elegido < 0; i++) {
-        Flujo& f = gFlujos[i];
-        if (f.sonando || f.hnd == SND_STREAM_INVALID) continue;
-        f.datos = (const uint8_t*)adpcm;
+    int picked = -1;
+    for (int i = 0; i < FLOWS && picked < 0; i++) {
+        Flow& f = gFlows[i];
+        if (f.playing || f.hnd == SND_STREAM_INVALID) continue;
+        f.data  = (const uint8_t*)adpcm;
         f.bytes = bytes;
         f.pos = 0;
-        f.lazo = lazo;
-        f.sonando = true;
+        f.loop = loop;
+        f.playing = true;
         // (dos muestras por byte y canal)
-        const uint64_t muestras = (uint64_t)bytes * 2 / (canales > 1 ? 2 : 1);
-        f.fin_us = timer_us_gettime64() + muestras * 1000000ULL / hz;
+        const uint64_t samples = (uint64_t)bytes * 2 / (channels > 1 ? 2 : 1);
+        f.end_us = timer_us_gettime64() + samples * 1000000ULL / hz;
         snd_stream_volume(f.hnd, A255(vol));
-        snd_stream_start_adpcm(f.hnd, hz, canales > 1 ? 1 : 0);
-        elegido = i;
+        snd_stream_start_adpcm(f.hnd, hz, channels > 1 ? 1 : 0);
+        picked = i;
     }
     mutex_unlock(&gMutex);
-    return elegido;
+    return picked;
 }
 
 namespace {
-void Parar(Flujo& f) {
-    if (!f.sonando) return;
+void Stop(Flow& f) {
+    if (!f.playing) return;
     snd_stream_stop(f.hnd);
-    f.sonando = false;
-    f.datos = 0;
+    f.playing = false;
+    f.data = 0;
 }
 
 // los que suenan piden lo que sigue; uno sin lazo que ya sono entero se suelta (lo ultimo que se le paso estaba en el
 // buffer del AICA). (Con el mutex tomado)
-void AtenderFlujos() {
-    const uint64_t ahora = timer_us_gettime64();
-    for (Flujo& f : gFlujos) {
-        if (!f.sonando) continue;
-        if (!f.lazo && ahora > f.fin_us + 100000) {
-            Parar(f);
+void HandleFlows() {
+    const uint64_t now = timer_us_gettime64();
+    for (Flow& f : gFlows) {
+        if (!f.playing) continue;
+        if (!f.loop && now > f.end_us + 100000) {
+            Stop(f);
             continue;
         }
         snd_stream_poll(f.hnd);
@@ -192,26 +192,26 @@ void AtenderFlujos() {
 }
 }
 
-void PararFlujo(int i) {
-    if (i < 0 || i >= FLUJOS) return;
+void StopFlow(int i) {
+    if (i < 0 || i >= FLOWS) return;
     mutex_lock(&gMutex);
-    Parar(gFlujos[i]);
+    Stop(gFlows[i]);
     mutex_unlock(&gMutex);
 }
 
-bool FlujoSonando(int i) {
-    return i >= 0 && i < FLUJOS && gFlujos[i].sonando;
+bool FlowPlaying(int i) {
+    return i >= 0 && i < FLOWS && gFlows[i].playing;
 }
 
-void VolumenFlujo(int i, float vol) {
+void VolumeFlow(int i, float vol) {
     mutex_lock(&gMutex);
-    if (i >= 0 && i < FLUJOS && gFlujos[i].sonando) snd_stream_volume(gFlujos[i].hnd, A255(vol));
+    if (i >= 0 && i < FLOWS && gFlows[i].playing) snd_stream_volume(gFlows[i].hnd, A255(vol));
     mutex_unlock(&gMutex);
 }
 
-void Actualizar() {
-    if (!gIniciado || gHilo) return;
-    AtenderFlujos();
+void Update() {
+    if (!gStarted || gThread) return;
+    HandleFlows();
 }
 
 }

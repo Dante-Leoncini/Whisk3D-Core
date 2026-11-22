@@ -3,10 +3,10 @@
 #  el que se usa se elige al ARRANCAR: ver graphics/w3dBackend.h).
 #
 #  Lee las funciones de w3dEngine (graphics/w3dGraphics.h y graphics/w3dTexture.h) que implementan TODOS los backends y genera:
-#    graphics/w3dBackendTabla.h    la tabla de punteros (una entrada por funcion)
-#    graphics/w3dBackendLlenar.inc lo que cada backend incluye al final: llena la tabla con SUS funciones
-#    graphics/w3dDespacho.inc      w3dEngine::Foo(...) -> el backend activo (lo incluye graphics/w3dGraphicsDespacho.cpp)
-#  y marca esas declaraciones en los headers con W3D_BACKEND_ABRIR / CERRAR: en el .cpp de un backend se declaran en
+#    graphics/w3dBackendTable.h    la tabla de punteros (una entrada por funcion)
+#    graphics/w3dBackendFill.inc lo que cada backend incluye al final: llena la tabla con SUS funciones
+#    graphics/w3dDispatch.inc      w3dEngine::Foo(...) -> el backend activo (lo incluye graphics/w3dGraphicsDispatch.cpp)
+#  y marca esas declaraciones en los headers con W3D_BACKEND_OPEN / CLOSE: en el .cpp de un backend se declaran en
 #  SU namespace (w3dEngine::gl::Foo). Si viera tambien w3dEngine::Foo, la busqueda por argumento (ADL: un parametro de
 #  un tipo de w3dEngine) encontraria las dos y la llamada seria ambigua. Los tipos y los globales quedan en w3dEngine.
 #  Correr de nuevo cuando se agregue una funcion a los backends (desde libs/Whisk3DCore):
@@ -19,7 +19,7 @@ def escribir(p, s):
     q = os.path.join(raiz, p)
     if os.path.exists(q) and open(q, encoding='utf-8').read() == s: return
     open(q, 'w', encoding='utf-8', newline='\n').write(s)
-MARCAS = ('W3D_BACKEND_ABRIR', 'W3D_BACKEND_CERRAR')
+MARCAS = ('W3D_BACKEND_OPEN', 'W3D_BACKEND_CLOSE')
 def sinMarcas(s): return '\n'.join(l for l in s.split('\n') if l.strip() not in MARCAS)
 # (cada header: hasta donde llega lo suyo de w3dEngine)
 HEADERS = [('graphics/w3dGraphics.h', 'extern bool w3dRenderWireframe'), ('graphics/w3dTexture.h', None)]
@@ -71,20 +71,20 @@ def params(ps):
         else: n = 'a%d' % k; out.append(p + ' ' + n); nom.append(n)
     return out, nom
 
-lt = ['// GENERADO por tools/generar_despacho.py: no editar a mano.', '#ifndef W3D_BACKEND_TABLA_H', '#define W3D_BACKEND_TABLA_H',
-      '#include "w3dGraphics.h"', '#include "w3dTexture.h"', 'namespace w3dEngine {', 'struct W3dBackendTabla {']
+lt = ['// GENERADO por tools/generar_despacho.py: no editar a mano.', '#ifndef W3D_BACKEND_TABLE_H', '#define W3D_BACKEND_TABLE_H',
+      '#include "w3dGraphics.h"', '#include "w3dTexture.h"', 'namespace w3dEngine {', 'struct W3dBackendTable {']
 ll = ['// GENERADO por tools/generar_despacho.py: no editar a mano. Lo incluye cada backend al FINAL (con W3D_BACKEND_NS).',
-      'void W3D_BACKEND_LLENAR(W3dBackendTabla& t) {']
-ld = ['// GENERADO por tools/generar_despacho.py: no editar a mano. Lo incluye graphics/w3dGraphicsDespacho.cpp.']
+      'void W3D_BACKEND_FILL(W3dBackendTable& t) {']
+ld = ['// GENERADO por tools/generar_despacho.py: no editar a mano. Lo incluye graphics/w3dGraphicsDispatch.cpp.']
 for ret, nom, ps in tabla:
     tp, ns = params(ps)
     lt.append('    %s (*%s)(%s);' % (ret, nom, ', '.join(tp)))
     ll.append('    t.%s = &w3dEngine::W3D_BACKEND_NS::%s;' % (nom, nom))
-    ld.append('%s %s(%s) { %sW3D_TABLA()->%s(%s); }' % (ret, nom, ', '.join(tp), '' if ret == 'void' else 'return ', nom, ', '.join(ns)))
+    ld.append('%s %s(%s) { %sW3D_TABLE()->%s(%s); }' % (ret, nom, ', '.join(tp), '' if ret == 'void' else 'return ', nom, ', '.join(ns)))
 lt += ['};', '}', '#endif']; ll += ['}']
-escribir('graphics/w3dBackendTabla.h', '\n'.join(lt) + '\n')
-escribir('graphics/w3dBackendLlenar.inc', '\n'.join(ll) + '\n')
-escribir('graphics/w3dDespacho.inc', '\n'.join(ld) + '\n')
+escribir('graphics/w3dBackendTable.h', '\n'.join(lt) + '\n')
+escribir('graphics/w3dBackendFill.inc', '\n'.join(ll) + '\n')
+escribir('graphics/w3dDispatch.inc', '\n'.join(ld) + '\n')
 
 # ---- las MARCAS en los headers (alrededor de cada tanda de declaraciones de la tabla; y del struct StatScope, que
 #      es inline y las llama) ----
@@ -100,13 +100,13 @@ for hp_, fin_ in HEADERS:
         if bloque:
             es = True
             if l.strip() == '};': bloque = False
-        if es and not dentro: out.append('W3D_BACKEND_ABRIR'); dentro = True
-        if not es and dentro: out.append('W3D_BACKEND_CERRAR'); dentro = False
+        if es and not dentro: out.append('W3D_BACKEND_OPEN'); dentro = True
+        if not es and dentro: out.append('W3D_BACKEND_CLOSE'); dentro = False
         out.append(l)
-    if dentro: out.append('W3D_BACKEND_CERRAR')
+    if dentro: out.append('W3D_BACKEND_CLOSE')
     s2 = '\n'.join(out)
     if '#include "w3dBackend.h"' not in s2:
-        s2 = s2.replace('namespace w3dEngine {', '#include "w3dBackend.h"   // (W3D_BACKEND_ABRIR / CERRAR: varios backends en un ejecutable)\nnamespace w3dEngine {', 1)
+        s2 = s2.replace('namespace w3dEngine {', '#include "w3dBackend.h"   // (W3D_BACKEND_OPEN / CLOSE: varios backends en un ejecutable)\nnamespace w3dEngine {', 1)
     escribir(hp_, s2)
 solo = sorted(n for n in (defs[1] - defs[0]) if n in todas)
 print('funciones en la tabla: %d (las que tiene un solo backend: %s)' % (len(tabla), solo))

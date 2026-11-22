@@ -38,7 +38,7 @@ extern Vector3 g_renderCamPos;
 // medias-extensiones (x, y). {0, 0, 1, 1} = todo el viewport. Mirando por una camara con encuadre (passepartout /
 // barras) es el cuadro de la IMAGEN: lo que miden en fracciones los objetos que dibujan en una parte de la pantalla
 // (Recorte) para coincidir con la UI, que se encaja a ese mismo cuadro. Lo publica la proyeccion de la escena.
-extern float g_renderMarco[4];
+extern float g_renderFrame[4];
 
 // base (ejes) de la camara en MUNDO: right/up/forward. Tambien la setea el viewport. El MATCAP por software
 // (sphere-map del N95, sin glTexGen) la necesita para llevar pos/normal a espacio de OJO. Right=+X, Up=+Y,
@@ -54,7 +54,7 @@ extern Quaternion g_renderCamRot;
 
 // LENTE de la vista que se esta renderizando (fov vertical en grados, near/far y aspect
 // del frustum REAL con el que se dibuja). La setea el viewport ANTES de recorrer la
-// escena, junto con W3dVistaBind. La necesita el que arma el frustum en CPU (el objeto
+// escena, junto con W3dViewBind. La necesita el que arma el frustum en CPU (el objeto
 // Culling): pos/rot solos no alcanzan para los 6 planos. Defaults = los de CameraBase.
 extern float g_renderCamFov;
 extern float g_renderCamNear;
@@ -63,25 +63,25 @@ extern float g_renderCamAspect;
 // true = la vista se dibuja en ORTOGRAFICA: el fov de arriba no describe el volumen
 // visible. El Culling en ese caso NO corta (dibuja todo): mentir un frustum en
 // perspectiva cortaria cosas que SI se ven.
-extern bool g_renderCamOrto;
+extern bool g_renderCamOrtho;
 // alto en PIXELES REALES de la imagen 3D que se esta dibujando (el encuadre adentro del viewport): para
 // decidir detalle por tamaño en pantalla (un LOD que en una ventana de 1080 px se ve como en la de 384 del
 // arcade). 0 = todavia no se dibujo nada.
-extern float g_renderImagenAltoPx;
+extern float g_renderImageHeightPx;
 
-// false = todavia nadie llamo a W3dVistaBind en este proceso, o sea que los globales de arriba son el
+// false = todavia nadie llamo a W3dViewBind en este proceso, o sea que los globales de arriba son el
 // default y NO la vista de nadie. El que dependa de la vista tiene que poder distinguir "la camara mira
 // para alla" de "no hay camara": con esto avisa UNA vez y usa el default en vez de dibujar cualquier cosa.
-extern bool g_vistaBindeada;
+extern bool g_viewBound;
 
-// UNICO camino para publicar la vista al Core: setea pos/rot/right/up/forward y prende g_vistaBindeada.
+// UNICO camino para publicar la vista al Core: setea pos/rot/right/up/forward y prende g_viewBound.
 // TODO el que va a dibujar (o a preguntar "como se ve desde aca") bindea SU vista antes; sino lee la del
 // viewport que dibujo ultimo. Sale de las 4 asignaciones a mano que tenia el viewport del editor, que
 // eran la unica copia de esta cuenta y no las veia ni el runtime del juego.
 // NO normaliza cam.rot: la vista viene de un quaternion UNITARIO (viewRot se normaliza en cada orbita) y
 // asi la base que le llega al chrome/matcap es BIT A BIT la de siempre. Con un rot sin normalizar la base
 // deja de ser ortonormal y el que la use lo va a notar.
-void W3dVistaBind(const CameraBase& cam);
+void W3dViewBind(const CameraBase& cam);
 
 // POSICION (en MUNDO) de la luz principal de la escena: la setea el viewport antes de renderizar. La usa el
 // NORMAL MAPPING (N.L por vertice) para que el relieve responda a la luz real (no a la camara). 0,0,0 = sin luz.

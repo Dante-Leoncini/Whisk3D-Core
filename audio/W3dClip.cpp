@@ -9,7 +9,7 @@
 //  RESTO: es un sonido del mixer PCM del Core (W3dAudio.h).
 // ============================================================================
 #include "W3dClip.h"
-#include "W3dVolumen.h"
+#include "W3dVolume.h"
 
 #ifdef __EMSCRIPTEN__
     #include <emscripten.h>
@@ -34,9 +34,9 @@ EM_JS(int, w3dClipJS_Load, (const unsigned char* ptr, int len, const char* mimeP
     if (!ctx) return -1;
     var i = Module.__w3dClips.length;
     Module.__w3dClips.push({ buf: null });
-    var datos = HEAPU8.slice(ptr, ptr + len).buffer;      // copia propia: decodeAudioData la consume
+    var data = HEAPU8.slice(ptr, ptr + len).buffer;      // copia propia: decodeAudioData la consume
     try {
-        ctx.decodeAudioData(datos,
+        ctx.decodeAudioData(data,
             function (b) { Module.__w3dClips[i].buf = b; },
             function ()  { });                            // formato no soportado: queda mudo
     } catch (e) {}
@@ -66,19 +66,19 @@ EM_JS(void, w3dClipJS_Free, (int h), {
 
 // Enganche del PRIMER gesto: es lo unico que corre DENTRO del toque del usuario (los eventos
 // del motor se procesan despues, en el frame, y para iOS eso ya no cuenta como gesto).
-EM_JS(void, w3dClipJS_Desbloqueo, (), {
-    if (Module.__w3dUnlockInstalado) return;
-    Module.__w3dUnlockInstalado = true;
-    var gesto = function () {
-        Module.__w3dGestoOk = true;
+EM_JS(void, w3dClipJS_Unlock, (), {
+    if (Module.__w3dInstalledUnlock) return;
+    Module.__w3dInstalledUnlock = true;
+    var gesture = function () {
+        Module.__w3dGestureOk = true;
         // estrena tambien el <audio> de la MUSICA (lo registra el backend de musica): un elemento
         // ya estrenado puede cambiar de src y sonar despues SIN gesto, que es lo que hace falta
         // cuando la musica todavia se esta descargando.
-        try { if (Module.__w3dPrimeMusica) Module.__w3dPrimeMusica(); } catch (e) {}
+        try { if (Module.__w3dPrimeMusic) Module.__w3dPrimeMusic(); } catch (e) {}
         try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
         // DESPERTAR LA SESION DE AUDIO (iOS): mientras la pagina no haya reproducido ningun
         // medio, iOS no le activa la sesion y todo suena mudo aunque el AudioContext diga
-        // 'running'. Se estrena EL ELEMENTO DE LA MUSICA (arriba, __w3dPrimeMusica): NO otro
+        // 'running'. Se estrena EL ELEMENTO DE LA MUSICA (arriba, __w3dPrimeMusic): NO otro
         // aparte. iOS deja sonar UN solo <audio> a la vez, asi que un elemento silencioso propio
         // le ganaba la carrera al de la musica y la musica no sonaba hasta que algo mas (un
         // video) volvia a activar la sesion.
@@ -101,7 +101,7 @@ EM_JS(void, w3dClipJS_Desbloqueo, (), {
     };
     var evs = ['touchstart', 'touchend', 'pointerdown', 'mousedown', 'click', 'keydown'];
     for (var k = 0; k < evs.length; k++)
-        document.addEventListener(evs[k], gesto, { capture: true, passive: true });
+        document.addEventListener(evs[k], gesture, { capture: true, passive: true });
 });
 
 namespace w3dEngine {
@@ -116,10 +116,10 @@ W3dClip* W3dClipLoad(const void* bytes, size_t len, const char* mime) {
     W3dClip* c = new W3dClip(); c->h = h; return c;
 }
 void W3dClipPlay(W3dClip* c, float vol) {
-    if (c) w3dClipJS_Play(c->h, vol * VolumenGanancia());
+    if (c) w3dClipJS_Play(c->h, vol * VolumeGain());
 }
 void W3dClipFree(W3dClip* c) { if (c) { w3dClipJS_Free(c->h); delete c; } }
-void W3dClipInstalarDesbloqueo() { w3dClipJS_Ctx(); w3dClipJS_Desbloqueo(); }
+void W3dClipInstallUnlock() { w3dClipJS_Ctx(); w3dClipJS_Unlock(); }
 
 } // namespace w3dEngine
 
@@ -137,10 +137,10 @@ W3dClip* W3dClipLoad(const void* bytes, size_t len, const char* /*mime*/) {
     W3dClip* c = new W3dClip(); c->s = s; return c;
 }
 void W3dClipPlay(W3dClip* c, float vol) {
-    if (c && c->s) W3dSoundPlay(c->s, vol * VolumenGanancia(), false);
+    if (c && c->s) W3dSoundPlay(c->s, vol * VolumeGain(), false);
 }
 void W3dClipFree(W3dClip* c) { if (c) { W3dSoundFree(c->s); delete c; } }
-void W3dClipInstalarDesbloqueo() {}   // sin navegador no hay nada que desbloquear
+void W3dClipInstallUnlock() {}   // sin navegador no hay nada que desbloquear
 
 } // namespace w3dEngine
 

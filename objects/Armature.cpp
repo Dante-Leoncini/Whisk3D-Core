@@ -5,7 +5,7 @@
 // El Armature en el CORE es SOLO datos (huesos + jerarquia). El dibujo del esqueleto (lineas azules por encima de
 // todo) es un EXTRA del editor: se hace en una pasada aparte DESPUES de renderizar la escena, para que las lineas
 // queden encima del mesh hijo (si se dibujara aca, durante el recorrido del arbol, el mesh hijo -que se renderiza
-// despues- las taparia). Ver RenderArmaturasEncima() en el editor.
+// despues- las taparia). Ver RenderArmaturesOnTop() en el editor.
 void Armature::RenderObject() {}
 
 Armature::~Armature() {
@@ -13,7 +13,7 @@ Armature::~Armature() {
     extern int ActiveAnimKind; extern Armature* ActiveAnimArm;
     if (ActiveAnimArm == this) { ActiveAnimArm = NULL; ActiveAnimKind = 0; }
     // clips de un ANIMSET compartido: son del recurso (los usan otros armatures) -> solo se suelta la referencia
-    if (animsRec) { W3dArmatureAnimsSoltar(this); return; }
+    if (animsRec) { W3dArmatureAnimsRelease(this); return; }
     for (size_t i = 0; i < animations.size(); i++) delete animations[i];
 }
 
@@ -29,13 +29,13 @@ static bool BonesBBoxLocal(const std::vector<W3dBone>& bones, Vector3& mn, Vecto
     }
     return true;
 }
-Vector3 Armature::PuntoFoco() const {
+Vector3 Armature::PointFocus() const {
     Vector3 mn, mx;
     if (!BonesBBoxLocal(bones, mn, mx)) return GetGlobalPosition();
     Matrix4 W; GetWorldMatrix(W);
     return W * ((mn + mx) * 0.5f); // centro de los huesos en MUNDO
 }
-float Armature::RadioFoco() const {
+float Armature::FocusRadius() const {
     Vector3 mn, mx;
     if (!BonesBBoxLocal(bones, mn, mx)) return 0.0f;
     Matrix4 W; GetWorldMatrix(W);

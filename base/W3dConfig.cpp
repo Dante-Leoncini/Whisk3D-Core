@@ -34,93 +34,93 @@ EM_JS(char*, w3dCfgJS_Get, (const char* k), {
 
 namespace w3dEngine {
 
-struct Entrada { char k[W3D_CFG_KEY]; char v[W3D_CFG_VAL]; };
+struct Entry { char k[W3D_CFG_KEY]; char v[W3D_CFG_VAL]; };
 
-static Entrada gTab[W3D_CFG_MAX];
+static Entry gTab[W3D_CFG_MAX];
 static int     gN = 0;
-static char    gNombre[32] = "w3dconfig";
-static bool    gMudo = false;   // mute global (ver ConfigSetMudo/ConfigMudo)
+static char    gName[32] = "w3dconfig";
+static bool    gMute = false;   // mute global (ver ConfigSetMute/ConfigMute)
 
-static void copiar(char* dst, int max, const char* src) {
+static void copy(char* dst, int max, const char* src) {
     int i = 0;
     if (src) { for (; src[i] && i < max - 1; i++) dst[i] = src[i]; }
     dst[i] = 0;
 }
 
-static int buscar(const char* clave) {
-    for (int i = 0; i < gN; i++) if (strcmp(gTab[i].k, clave) == 0) return i;
+static int find(const char* key) {
+    for (int i = 0; i < gN; i++) if (strcmp(gTab[i].k, key) == 0) return i;
     return -1;
 }
 
 #ifndef __EMSCRIPTEN__
 // Arma en 'out' la ruta del archivo de config. Normalmente ABSOLUTA:
-// "<carpeta escribible>/<gNombre>.txt" (GetUserDataDir da esa carpeta en Android/desktop; en
+// "<carpeta escribible>/<gName>.txt" (GetUserDataDir da esa carpeta en Android/desktop; en
 // Android el CWD es "/" y no es escribible, por eso hay que anteponerla). En Symbian
-// GetUserDataDir viene VACIO -> se cae a la ruta RELATIVA vieja "<gNombre>.txt" (no rompe ese port).
-static void rutaCfg(char* out, int max) {
+// GetUserDataDir viene VACIO -> se cae a la ruta RELATIVA vieja "<gName>.txt" (no rompe ese port).
+static void pathCfg(char* out, int max) {
     const std::string& dir = w3dFileSystem::GetUserDataDir();
-    if (dir.empty()) { snprintf(out, (size_t)max, "%s.txt", gNombre); return; }
+    if (dir.empty()) { snprintf(out, (size_t)max, "%s.txt", gName); return; }
     const char* d = dir.c_str();
     int n = 0;
     while (d[n] && n < max - 1) { out[n] = d[n]; n++; }             // copia la carpeta (buffer transitorio)
     if (n > 0 && out[n - 1] != '/' && n < max - 1) out[n++] = '/';  // separador si no lo trae
     out[n] = 0;
-    snprintf(out + n, (size_t)(max - n), "%s.txt", gNombre);        // agrega "<nombre>.txt"
+    snprintf(out + n, (size_t)(max - n), "%s.txt", gName);        // agrega "<nombre>.txt"
 }
 #endif
 
-void ConfigSetNombre(const char* nombre) { copiar(gNombre, (int)sizeof(gNombre), nombre); }
+void ConfigSetName(const char* name) { copy(gName, (int)sizeof(gName), name); }
 void ConfigClear() { gN = 0; }
 
 // MUTE GLOBAL: el beep() del motor lo consulta antes de sonar (ver W3dScript.cpp).
-void ConfigSetMudo(bool mudo) { gMudo = mudo; }
-bool ConfigMudo() { return gMudo; }
+void ConfigSetMute(bool mute) { gMute = mute; }
+bool ConfigMute() { return gMute; }
 
-void ConfigSetStr(const char* clave, const char* valor) {
-    if (!clave || !*clave) return;
-    int i = buscar(clave);
+void ConfigSetStr(const char* key, const char* value) {
+    if (!key || !*key) return;
+    int i = find(key);
     if (i < 0) {
         if (gN >= W3D_CFG_MAX) return;          // tabla llena: se ignora (no rompe)
         i = gN++;
-        copiar(gTab[i].k, W3D_CFG_KEY, clave);
+        copy(gTab[i].k, W3D_CFG_KEY, key);
     }
-    copiar(gTab[i].v, W3D_CFG_VAL, valor);
+    copy(gTab[i].v, W3D_CFG_VAL, value);
 }
-void ConfigSetFloat(const char* clave, float valor) {
-    char b[32]; sprintf(b, "%.6g", (double)valor); ConfigSetStr(clave, b);
+void ConfigSetFloat(const char* key, float value) {
+    char b[32]; sprintf(b, "%.6g", (double)value); ConfigSetStr(key, b);
 }
-void ConfigSetInt(const char* clave, int valor) {
-    char b[24]; sprintf(b, "%d", valor); ConfigSetStr(clave, b);
+void ConfigSetInt(const char* key, int value) {
+    char b[24]; sprintf(b, "%d", value); ConfigSetStr(key, b);
 }
 
-const char* ConfigGetStr(const char* clave, const char* porDefecto) {
-    int i = clave ? buscar(clave) : -1;
-    return (i >= 0) ? gTab[i].v : porDefecto;
+const char* ConfigGetStr(const char* key, const char* defaultValue) {
+    int i = key ? find(key) : -1;
+    return (i >= 0) ? gTab[i].v : defaultValue;
 }
-float ConfigGetFloat(const char* clave, float porDefecto) {
-    const char* s = ConfigGetStr(clave, 0);
-    return s ? (float)atof(s) : porDefecto;
+float ConfigGetFloat(const char* key, float defaultValue) {
+    const char* s = ConfigGetStr(key, 0);
+    return s ? (float)atof(s) : defaultValue;
 }
-int ConfigGetInt(const char* clave, int porDefecto) {
-    const char* s = ConfigGetStr(clave, 0);
-    return s ? atoi(s) : porDefecto;
+int ConfigGetInt(const char* key, int defaultValue) {
+    const char* s = ConfigGetStr(key, 0);
+    return s ? atoi(s) : defaultValue;
 }
 
 // --- serializacion: lineas "clave=valor" ------------------------------------
-static void desdeTexto(const char* txt) {
+static void fromText(const char* txt) {
     gN = 0;
     if (!txt) return;
     char k[W3D_CFG_KEY], v[W3D_CFG_VAL];
-    int ki = 0, vi = 0, enValor = 0;
+    int ki = 0, vi = 0, inValue = 0;
     for (const char* p = txt; ; p++) {
         char c = *p;
         if (c == '\n' || c == '\r' || c == 0) {
             if (ki > 0) { k[ki] = 0; v[vi] = 0; ConfigSetStr(k, v); }
-            ki = vi = 0; enValor = 0;
+            ki = vi = 0; inValue = 0;
             if (c == 0) break;
-        } else if (!enValor && c == '=') {
-            enValor = 1;
-        } else if (enValor) {
+        } else if (!inValue && c == '=') {
+            inValue = 1;
+        } else if (inValue) {
             if (vi < W3D_CFG_VAL - 1) v[vi++] = c;
         } else {
             if (ki < W3D_CFG_KEY - 1) k[ki++] = c;
@@ -128,7 +128,7 @@ static void desdeTexto(const char* txt) {
     }
 }
 
-static int aTexto(char* out, int max) {
+static int aText(char* out, int max) {
     int n = 0;
     for (int i = 0; i < gN; i++) {
         int m = snprintf(out + n, (size_t)(max - n), "%s=%s\n", gTab[i].k, gTab[i].v);
@@ -141,41 +141,41 @@ static int aTexto(char* out, int max) {
 
 bool ConfigLoad() {
 #ifdef __EMSCRIPTEN__
-    char* s = w3dCfgJS_Get(gNombre);
+    char* s = w3dCfgJS_Get(gName);
     if (!s) return false;
-    desdeTexto(s);
+    fromText(s);
     free(s);
-    gMudo = (ConfigGetInt("mute", 0) != 0);   // restaura el mute global desde lo guardado
+    gMute = (ConfigGetInt("mute", 0) != 0);   // restaura el mute global desde lo guardado
     return true;
 #else
-    char ruta[512]; rutaCfg(ruta, sizeof(ruta));
-    FILE* f = fopen(ruta, "rb");
+    char path[512]; pathCfg(path, sizeof(path));
+    FILE* f = fopen(path, "rb");
     if (!f) return false;
     static char buf[W3D_CFG_MAX * (W3D_CFG_KEY + W3D_CFG_VAL) + 16];
     size_t n = fread(buf, 1, sizeof(buf) - 1, f);
     fclose(f);
     buf[n] = 0;
-    desdeTexto(buf);
-    gMudo = (ConfigGetInt("mute", 0) != 0);   // restaura el mute global desde lo guardado
+    fromText(buf);
+    gMute = (ConfigGetInt("mute", 0) != 0);   // restaura el mute global desde lo guardado
     return true;
 #endif
 }
 
 bool ConfigSave() {
     static char buf[W3D_CFG_MAX * (W3D_CFG_KEY + W3D_CFG_VAL) + 16];
-    aTexto(buf, (int)sizeof(buf));
+    aText(buf, (int)sizeof(buf));
 #ifdef __EMSCRIPTEN__
-    w3dCfgJS_Set(gNombre, buf);
+    w3dCfgJS_Set(gName, buf);
     return true;
 #else
-    char ruta[512]; rutaCfg(ruta, sizeof(ruta));
-    FILE* f = fopen(ruta, "wb");
+    char path[512]; pathCfg(path, sizeof(path));
+    FILE* f = fopen(path, "wb");
     if (!f) return false;
     size_t n = strlen(buf);
     size_t wr = fwrite(buf, 1, n, f);
     // fclose es el flush: sin chequearlo se devolvia true con el config truncado (disco lleno)
-    bool cerro = (fclose(f) == 0);
-    return cerro && wr == n;
+    bool closed = (fclose(f) == 0);
+    return closed && wr == n;
 #endif
 }
 

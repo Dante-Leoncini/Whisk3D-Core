@@ -7,7 +7,7 @@
 //  GLdc es un pipeline fijo como el de GL 1.x / GLES 1.1, pero sin: buffer objects, glBlendEquation, texgen, planos de
 //  recorte, el combiner de texturas (GL_COMBINE), parte del estencil y las consultas de estado de los arreglos. Las
 //  funciones de aca son VACIAS para que el backend compile; el backend no las usa en la Dreamcast porque declara esas
-//  capacidades como ausentes (VBOSoportado / PlanosRecorteMax / MezclaTexturasSoportada / TieneTexGen = no) y el
+//  capacidades como ausentes (VBOSupported / PlanesClipMax / MixTexturesSupported / HasTexGen = no) y el
 //  editor toma el camino de siempre para eso (arreglos en RAM, varias pasadas, reflejo por software).
 // ============================================================================
 #ifdef W3D_DREAMCAST
@@ -63,7 +63,7 @@
 #define GL_TEXTURE_COORD_ARRAY_POINTER  0x8092
 #endif
 
-// buffer objects: no hay (VBOSoportado() = false en la Dreamcast)
+// buffer objects: no hay (VBOSupported() = false en la Dreamcast)
 static inline void glGenBuffers(GLsizei, GLuint* b) { if (b) *b = 0; }
 static inline void glDeleteBuffers(GLsizei, const GLuint*) {}
 static inline void glBindBuffer(GLenum, GLuint) {}

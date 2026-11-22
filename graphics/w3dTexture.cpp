@@ -36,7 +36,7 @@
     #endif
     #include "stb/stb_image.h"
 #endif
-#include "graphics/vulkan/w3dGLDesvio.h"   // (con el backend Vulkan no hay contexto de GL: las texturas van por el suyo, ver ahi)
+#include "graphics/vulkan/w3dGLDeviation.h"   // (con el backend Vulkan no hay contexto de GL: las texturas van por el suyo, ver ahi)
 #include <vector>
 // el JPG del render a archivo (EncodeJPG / SaveJPG): solo el codificador, sin su stdio (cada plataforma escribe el
 // archivo: stdio en la PC, RFile en Symbian)
@@ -72,17 +72,17 @@ extern "C" GL_API void GL_APIENTRY glGenerateMipmap(GLenum target);
 #define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
 #endif
 static void w3dAnisotropico() {
-    static float maximo = -1.0f;
-    if (maximo < 0.0f) {
-        maximo = 0.0f;
+    static float max = -1.0f;
+    if (max < 0.0f) {
+        max = 0.0f;
         const char* ext = (const char*)glGetString(GL_EXTENSIONS);
         if (ext && strstr(ext, "GL_EXT_texture_filter_anisotropic")) {
             GLfloat m = 0.0f;
             glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &m);
-            maximo = m < 8.0f ? m : 8.0f;
+            max = m < 8.0f ? m : 8.0f;
         }
     }
-    if (maximo > 1.0f) glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, maximo);
+    if (max > 1.0f) glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, max);
 }
 #else
 static void w3dAnisotropico() {}
@@ -91,8 +91,8 @@ static void w3dAnisotropico() {}
 #include "w3dBackend.h"
 // la GPU de escritorio arma MIPMAPS de una textura NPOT? La capa de Vulkan si (la piramide sale de cualquier tamano);
 // GL desde el 2.0, o el 1.x con ARB_texture_non_power_of_two (si no, NPOT va sin piramide, como siempre)
-static bool NpotConMipmaps() {
-    if (w3dEngine::BackendActivo() == w3dEngine::BackendVulkan) return true;
+static bool NpotWithMipmaps() {
+    if (w3dEngine::ActiveBackend() == w3dEngine::BackendVulkan) return true;
     const char* v = (const char*)glGetString(GL_VERSION);
     if (v && v[0] >= '2' && v[0] <= '9') return true;
     const char* ext = (const char*)glGetString(GL_EXTENSIONS);
@@ -119,15 +119,15 @@ static bool NpotConMipmaps() {
 #endif
 
 namespace w3dEngine {
-// (las texturas GL creadas menos las borradas: TexturasVivas)
-static int g_texturasVivas = 0;
+// (las texturas GL creadas menos las borradas: LiveTextures)
+static int g_liveTextures = 0;
 
 // PIXELADO GLOBAL de la escena 3D (ver w3dGraphics.h). Vive ACA y no en el
 // backend porque los dos backends (pipeline fijo y GLES2) comparten este
 // archivo: asi hay UNA sola definicion para todas las plataformas.
-static bool g_pixeladoGlobal = false;
-bool PixeladoGlobal()          { return g_pixeladoGlobal; }
-void SetPixeladoGlobal(bool on){ g_pixeladoGlobal = on; }
+static bool g_pixelatedGlobal = false;
+bool PixelatedGlobal()          { return g_pixelatedGlobal; }
+void SetPixelatedGlobal(bool on){ g_pixelatedGlobal = on; }
 
 // MIPMAPPING GLOBAL (pedido del dueno: "este proyecto tiene que tener mipmapping").
 // Default true; el proyecto lo puede apagar con `mipmaps: false` en la cabecera del
@@ -140,30 +140,30 @@ void SetMipmapsGlobal(bool on){ g_mipmapsGlobal = on; }
 // (en el N95 el trilineal cuesta caro en el MBX: ~2,4 ms por cuadro en una escena de GH3; el bilineal entre niveles
 // no se distingue en sus 320x240)
 #if defined(W3D_SYMBIAN)
-static bool g_mipmapsTrilineal = false;
+static bool g_mipmapsTrilinear = false;
 #else
-static bool g_mipmapsTrilineal = true;
+static bool g_mipmapsTrilinear = true;
 #endif
-bool MipmapsTrilineal()          { return g_mipmapsTrilineal; }
-void SetMipmapsTrilineal(bool on){ g_mipmapsTrilineal = on; }
+bool MipmapsTrilinear()          { return g_mipmapsTrilinear; }
+void SetTrilinearMipmaps(bool on){ g_mipmapsTrilinear = on; }
 
 // que texturas subieron PIRAMIDE: pedirle un min-filter mipmap a una textura sin
 // piramide la vuelve INCOMPLETA (negra), asi que TexFilter consulta aca antes.
 // (por id en un vector: GL da ids chicos y seguidos y esto se pregunta en cada bind; un id enorme -raro- va al set)
-static const unsigned int kTexIdsDirectos = 65536;
-static std::vector<unsigned char> g_texConMipsVec;
-static std::set<unsigned int> g_texConMips;
-bool TexTieneMips(unsigned int id) {
-    if (id < kTexIdsDirectos) return id < g_texConMipsVec.size() && g_texConMipsVec[id] != 0;
-    return g_texConMips.count(id) != 0;
+static const unsigned int kDirectTexIds = 65536;
+static std::vector<unsigned char> g_texWithMipsVec;
+static std::set<unsigned int> g_texWithMips;
+bool TexHasMips(unsigned int id) {
+    if (id < kDirectTexIds) return id < g_texWithMipsVec.size() && g_texWithMipsVec[id] != 0;
+    return g_texWithMips.count(id) != 0;
 }
-static void TexMipsRegistrar(unsigned int id, bool con) {
-    if (id < kTexIdsDirectos) {
-        if (id >= g_texConMipsVec.size()) { if (!con) return; g_texConMipsVec.resize(id + 1, 0); }
-        g_texConMipsVec[id] = con ? 1 : 0;
+static void TexMipsRegister(unsigned int id, bool with) {
+    if (id < kDirectTexIds) {
+        if (id >= g_texWithMipsVec.size()) { if (!with) return; g_texWithMipsVec.resize(id + 1, 0); }
+        g_texWithMipsVec[id] = with ? 1 : 0;
         return;
     }
-    if (con) g_texConMips.insert(id); else g_texConMips.erase(id);
+    if (with) g_texWithMips.insert(id); else g_texWithMips.erase(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -177,70 +177,70 @@ static void TexMipsRegistrar(unsigned int id, bool con) {
 //  DeleteTexture OLVIDA la entrada: GL recicla los ids y una textura nueva no
 //  puede heredar la firma de la borrada.
 // ---------------------------------------------------------------------------
-struct TexParamEstado {
-    signed char filtro, wrap;
-    TexParamEstado() : filtro(-1), wrap(-1) {}
+struct TexParamState {
+    signed char filter, wrap;
+    TexParamState() : filter(-1), wrap(-1) {}
 };
-static std::vector<TexParamEstado> g_texParamsVec;           // (por id, como g_texConMipsVec)
-static std::map<unsigned int, TexParamEstado> g_texParams;   // los ids enormes
-static TexParamEstado& TexParams(unsigned int id) {
-    if (id < kTexIdsDirectos) {
+static std::vector<TexParamState> g_texParamsVec;           // (por id, como g_texWithMipsVec)
+static std::map<unsigned int, TexParamState> g_texParams;   // los ids enormes
+static TexParamState& TexParams(unsigned int id) {
+    if (id < kDirectTexIds) {
         if (id >= g_texParamsVec.size()) g_texParamsVec.resize(id + 1);
         return g_texParamsVec[id];
     }
     return g_texParams[id];
 }
 
-bool TexFiltroCambia(unsigned int id, int firma) {
-    TexParamEstado& e = TexParams(id);
-    if (e.filtro == (signed char)firma) return false;
-    e.filtro = (signed char)firma;
+bool TexFilterChanges(unsigned int id, int signature) {
+    TexParamState& e = TexParams(id);
+    if (e.filter == (signed char)signature) return false;
+    e.filter = (signed char)signature;
     return true;
 }
-bool TexWrapCambia(unsigned int id, int firma) {
-    TexParamEstado& e = TexParams(id);
-    if (e.wrap == (signed char)firma) return false;
-    e.wrap = (signed char)firma;
+bool TexWrapChanges(unsigned int id, int signature) {
+    TexParamState& e = TexParams(id);
+    if (e.wrap == (signed char)signature) return false;
+    e.wrap = (signed char)signature;
     return true;
 }
-void TexParamsRegistrar(unsigned int id, int firmaFiltro, int firmaWrap) {
-    TexParamEstado& e = TexParams(id);
-    e.filtro = (signed char)firmaFiltro;
-    e.wrap = (signed char)firmaWrap;
+void TexParamsRegister(unsigned int id, int signatureFilter, int signatureWrap) {
+    TexParamState& e = TexParams(id);
+    e.filter = (signed char)signatureFilter;
+    e.wrap = (signed char)signatureWrap;
 }
-void TexParamsOlvidar(unsigned int id) {
-    if (id < kTexIdsDirectos) { if (id < g_texParamsVec.size()) g_texParamsVec[id] = TexParamEstado(); }
+void TexParamsForget(unsigned int id) {
+    if (id < kDirectTexIds) { if (id < g_texParamsVec.size()) g_texParamsVec[id] = TexParamState(); }
     else g_texParams.erase(id);
 }
 
 // dimensiones de cada textura subida (id GL -> w,h). Lo llena UploadRGBA, por la que pasan TODOS los
 // uploads (PC stb + Symbian ICL + procedural) -> el UV editor lee el aspect ratio sin tocar la struct Texture.
 static std::map<unsigned int, std::pair<int,int> > g_texSizes;
-// la MEMORIA de cada textura subida (bytes con mips) y si es de 16 bits: TexturasMemoria
-struct TexMem { long bytes, bytes32, bytesPot; bool de16; };
+// la MEMORIA de cada textura subida (bytes con mips) y si es de 16 bits: TexturesMemory
+struct TexMem { long bytes, bytes32, bytesPot; bool from16; };
 static std::map<unsigned int, TexMem> g_texMem;
-static int PotSig(int v) { int p = 1; while (p < v && p < 1024) p <<= 1; return p; }
+static int NextPot(int v) { int p = 1; while (p < v && p < 1024) p <<= 1; return p; }
 // 'mipsPot': si en el N95 llevaria piramide (ahi todas quedan potencia de dos: los materiales si, la UI 2D no)
-static void TexMemAnotar(unsigned int id, int w, int h, int bpp, bool mips, bool mipsPot) {
+static void TexMemAnnotate(unsigned int id, int w, int h, int bpp, bool mips, bool mipsPot) {
     long b = (long)w * h * bpp, b32 = (long)w * h * 4;
     // como en el N95: cada textura remuestreada a la POTENCIA DE DOS siguiente (tope 1024)
-    long bp = (long)PotSig(w) * PotSig(h) * bpp;
+    long bp = (long)NextPot(w) * NextPot(h) * bpp;
     if (mips) { b += b / 3; b32 += b32 / 3; }
     if (mipsPot) bp += bp / 3;
-    TexMem m; m.bytes = b; m.bytes32 = b32; m.bytesPot = bp; m.de16 = (bpp == 2);
+    TexMem m; m.bytes = b; m.bytes32 = b32; m.bytesPot = bp; m.from16 = (bpp == 2);
     g_texMem[id] = m;
 }
-bool TexturaMemoriaDe(unsigned int id, long& bytes, long& bytesPot, bool& de16) {
+bool TextureMemoryOf(unsigned int id, long& bytes, long& bytesPot, bool& from16) {
     std::map<unsigned int, TexMem>::const_iterator it = g_texMem.find(id);
     if (it == g_texMem.end()) return false;
-    bytes = it->second.bytes; bytesPot = it->second.bytesPot; de16 = it->second.de16;
+    bytes = it->second.bytes; bytesPot = it->second.bytesPot; from16 = it->second.from16;
     return true;
 }
-MemoriaTexturas TexturasMemoria() {
-    MemoriaTexturas r; r.bytes = 0; r.bytes32 = 0; r.bytesPot = 0; r.cantidad = 0; r.de16 = 0;
+TextureMemory TexturesMemory() {
+    TextureMemory r; r.bytes = 0; r.bytes32 = 0; r.bytesPot = 0; r.count = 0; r.from16 = 0;
     for (std::map<unsigned int, TexMem>::const_iterator it = g_texMem.begin(); it != g_texMem.end(); ++it) {
         r.bytes += it->second.bytes; r.bytes32 += it->second.bytes32; r.bytesPot += it->second.bytesPot;
-        r.cantidad++; if (it->second.de16) r.de16++;
+        r.count++; if (it->second.from16) r.from16++;
     }
     return r;
 }
@@ -248,31 +248,31 @@ MemoriaTexturas TexturasMemoria() {
 // de su valor (la imagen ya era de pocos niveles: las texturas de la ROM, de 15 bits; la UI de colores planos) se
 // empaca. Opaca -> 565; alfa de un bit (0 o 255) -> 5551 (el color de un texel transparente no se mira). Devuelve el
 // tipo GL (0 = no entra: se sube RGBA de 8 bits) y el formato (GL_RGB / GL_RGBA)
-static inline bool Canal(int v, int bits, int& q) {
+static inline bool Channel(int v, int bits, int& q) {
     const int maxq = (1 << bits) - 1;
     q = (v * maxq + 127) / 255;
     const int back = (q * 255 + maxq / 2) / maxq;
     const int d = back - v;
     return d <= 2 && d >= -2;
 }
-static bool g_tex16Siempre = false;
-bool Texturas16Siempre() { return g_tex16Siempre; }
-void SetTexturas16Siempre(bool on) { g_tex16Siempre = on; }
-static bool g_tex16Movil = false;
-bool Texturas16Movil() { return g_tex16Movil; }
-void SetTexturas16Movil(bool on) { g_tex16Movil = on; }
+static bool g_tex16Always = false;
+bool Textures16Always() { return g_tex16Always; }
+void SetTextures16Always(bool on) { g_tex16Always = on; }
+static bool g_tex16Mobile = false;
+bool Textures16Mobile() { return g_tex16Mobile; }
+void SetTextures16Mobile(bool on) { g_tex16Mobile = on; }
 
-static int g_texMitadDesde = 0;
-int TexturasMitadDesde() { return g_texMitadDesde; }
-void SetTexturasMitadDesde(int lado) { g_texMitadDesde = lado > 0 ? lado : 0; }
+static int g_texHalfFrom = 0;
+int TexturesHalfFrom() { return g_texHalfFrom; }
+void SetTexturesHalfFrom(int side) { g_texHalfFrom = side > 0 ? side : 0; }
 // promedio de cada 2x2 (un lado impar repite su ultima fila/columna). El COLOR pesado por el alfa: un texel
 // transparente (su color no se ve: suele ser negro) no oscurece el borde. Si el alfa era de un bit (0 / 255) sigue de
 // un bit (corte en la mitad, como el alfa test): asi entra en 5551 y no pasa a 8 bits por los bordes promediados
-unsigned char* ReducirMitadRGBA(const unsigned char* rgba, int w, int h, int& ow, int& oh) {
+unsigned char* ReduceHalfRGBA(const unsigned char* rgba, int w, int h, int& ow, int& oh) {
     if (!rgba || w <= 0 || h <= 0) return NULL;
     ow = (w + 1) / 2; oh = (h + 1) / 2;
-    bool alfaBit = true;
-    for (size_t i = 0, n = (size_t)w * h; i < n && alfaBit; i++) alfaBit = rgba[i * 4 + 3] == 0 || rgba[i * 4 + 3] == 255;
+    bool alphaBit = true;
+    for (size_t i = 0, n = (size_t)w * h; i < n && alphaBit; i++) alphaBit = rgba[i * 4 + 3] == 0 || rgba[i * 4 + 3] == 255;
     unsigned char* out = new unsigned char[(size_t)ow * oh * 4];
     if (!out) return NULL;
     for (int y = 0; y < oh; y++) {
@@ -290,40 +290,40 @@ unsigned char* ReducirMitadRGBA(const unsigned char* rgba, int w, int h, int& ow
                 o[1] = (unsigned char)((q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4);
                 o[2] = (unsigned char)((q[0][2] + q[1][2] + q[2][2] + q[3][2]) / 4);
             }
-            o[3] = alfaBit ? (unsigned char)(a >= 2 * 255 ? 255 : 0) : (unsigned char)((a + 2) / 4);
+            o[3] = alphaBit ? (unsigned char)(a >= 2 * 255 ? 255 : 0) : (unsigned char)((a + 2) / 4);
         }
     }
     return out;
 }
-static GLenum Empacar16(const unsigned char* rgba, int w, int h, std::vector<unsigned short>& out, GLenum& formato) {
+static GLenum Pack16(const unsigned char* rgba, int w, int h, std::vector<unsigned short>& out, GLenum& format) {
 #ifdef W3D_SYMBIAN
-    const bool siempre = g_tex16Siempre || g_tex16Movil;   // (el proyecto acepta el error de cuantizar)
+    const bool always = g_tex16Always || g_tex16Mobile;   // (el proyecto acepta el error de cuantizar)
 #else
-    const bool siempre = g_tex16Siempre;   // (el proyecto acepta el error de cuantizar)
+    const bool always = g_tex16Always;   // (el proyecto acepta el error de cuantizar)
 #endif
     const size_t n = (size_t)w * h;
-    bool opaca = true;
+    bool opaque = true;
     for (size_t i = 0; i < n; i++) {
         const int a = rgba[i * 4 + 3];
-        if (a != 255) { opaca = false; if (a != 0) return 0; }
+        if (a != 255) { opaque = false; if (a != 0) return 0; }
     }
     out.resize(n);
     int r, g, b;
     for (size_t i = 0; i < n; i++) {
         const unsigned char* p = rgba + i * 4;
-        if (opaca) {
-            const bool ok = Canal(p[0], 5, r) & Canal(p[1], 6, g) & Canal(p[2], 5, b);
-            if (!ok && !siempre) return 0;
+        if (opaque) {
+            const bool ok = Channel(p[0], 5, r) & Channel(p[1], 6, g) & Channel(p[2], 5, b);
+            if (!ok && !always) return 0;
             out[i] = (unsigned short)((r << 11) | (g << 5) | b);
         } else {
             const bool ve = p[3] != 0;
-            const bool ok = Canal(p[0], 5, r) & Canal(p[1], 5, g) & Canal(p[2], 5, b);
-            if (!ok && ve && !siempre) return 0;
+            const bool ok = Channel(p[0], 5, r) & Channel(p[1], 5, g) & Channel(p[2], 5, b);
+            if (!ok && ve && !always) return 0;
             out[i] = (unsigned short)((r << 11) | (g << 6) | (b << 1) | (ve ? 1 : 0));
         }
     }
-    formato = opaca ? GL_RGB : GL_RGBA;
-    return opaca ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_SHORT_5_5_5_1;
+    format = opaque ? GL_RGB : GL_RGBA;
+    return opaque ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_SHORT_5_5_5_1;
 }
 bool TextureSize(unsigned int id, int& w, int& h) {
     std::map<unsigned int, std::pair<int,int> >::iterator it = g_texSizes.find(id);
@@ -343,49 +343,49 @@ bool TextureSize(unsigned int id, int& w, int& h) {
 #define W3D_TEX_POT_RGBA 1
 #endif
 
-// EL ALFA QUE ES UN DATO (TexAlfaDescartar): mientras esta prendido, lo que se sube va OPACO
-static bool g_texAlfaDescartar = false;
-void TexAlfaDescartar(bool on) { g_texAlfaDescartar = on; }
-unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, bool conMips, bool forzarPOT,
-                        bool permitir16) {
+// EL ALFA QUE ES UN DATO (TexAlphaDiscard): mientras esta prendido, lo que se sube va OPACO
+static bool g_texAlphaDiscard = false;
+void TexAlphaDiscard(bool on) { g_texAlphaDiscard = on; }
+unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtered, bool withMips, bool forcePOT,
+                        bool allow16) {
     if (!rgba || w <= 0 || h <= 0) {
         return 0;
     }
-    static std::vector<unsigned char> opaca;
-    if (g_texAlfaDescartar) {   // (una copia con el alfa en 255: entra en 565 donde el alfa no se usa)
-        opaca.assign(rgba, rgba + (size_t)w * h * 4);
-        for (size_t i = 3; i < opaca.size(); i += 4) opaca[i] = 255;
-        rgba = &opaca[0];
+    static std::vector<unsigned char> opaque;
+    if (g_texAlphaDiscard) {   // (una copia con el alfa en 255: entra en 565 donde el alfa no se usa)
+        opaque.assign(rgba, rgba + (size_t)w * h * 4);
+        for (size_t i = 3; i < opaque.size(); i += 4) opaque[i] = 255;
+        rgba = &opaque[0];
     }
 #if defined(W3D_SYMBIAN) || defined(W3D_TEX_POT_RGBA)
 #ifdef W3D_TEX_POT_RGBA
-    forzarPOT = true;      // ni la PVR de la Dreamcast ni la PICA de la 3DS aceptan NPOT (ni mas de 1024): al POT siguiente
-    permitir16 = false;    // el 5551/565 empacado del editor no: va en RGBA y cada backend lo pasa a 16 bits si conviene
-    conMips = false;       // GLdc solo hace mipmaps en texturas twiddled (y en la 3DS todavia no se arman)
+    forcePOT = true;     // ni la PVR de la Dreamcast ni la PICA de la 3DS aceptan NPOT (ni mas de 1024): al POT siguiente
+    allow16 = false;     // el 5551/565 empacado del editor no: va en RGBA y cada backend lo pasa a 16 bits si conviene
+    withMips = false;    // GLdc solo hace mipmaps en texturas twiddled (y en la 3DS todavia no se arman)
 #endif
     // N95 (PowerVR MBX Lite, GLES 1.1): una textura NPOT se RECHAZA (glTexImage2D ->
     // INVALID_VALUE) y el quad sale SIN textura -- es el bug del fuego: sus atlas son NPOT
-    // (960x24, 1440x48). El camino de MATERIAL ya remuestrea a POT (w3dtexload ReescalarPOT);
-    // el de particulas/UI-2D (Textura2D -> aca) se lo saltaba. forzarPOT lo iguala: remuestreo
+    // (960x24, 1440x48). El camino de MATERIAL ya remuestrea a POT (w3dtexload RescalePOT);
+    // el de particulas/UI-2D (Textura2D -> aca) se lo saltaba. forcePOT lo iguala: remuestreo
     // por VECINO al POT siguiente (tope 1024), igual que el material. Los UV 0..1 no cambian.
     unsigned char* potBuf = 0;
 #ifdef W3D_TEX_POT_RGBA
-    const int ladoMin = 8;   // la PVR no acepta texturas de menos de 8x8 (un icono de 2x8 se rechazaba)
+    const int sideMin = 8;   // la PVR no acepta texturas de menos de 8x8 (un icono de 2x8 se rechazaba)
 #else
-    const int ladoMin = 1;
+    const int sideMin = 1;
 #endif
-    if (forzarPOT) {
-        const bool yaPot = ((w & (w - 1)) == 0) && ((h & (h - 1)) == 0) && w <= 1024 && h <= 1024 && w >= ladoMin && h >= ladoMin;
-        if (!yaPot) {
-            int pw = ladoMin; while (pw < w && pw < 1024) { pw <<= 1; }
-            int ph = ladoMin; while (ph < h && ph < 1024) { ph <<= 1; }
+    if (forcePOT) {
+        const bool alreadyPot = ((w & (w - 1)) == 0) && ((h & (h - 1)) == 0) && w <= 1024 && h <= 1024 && w >= sideMin && h >= sideMin;
+        if (!alreadyPot) {
+            int pw = sideMin; while (pw < w && pw < 1024) { pw <<= 1; }
+            int ph = sideMin; while (ph < h && ph < 1024) { ph <<= 1; }
             potBuf = new unsigned char[(size_t)pw * ph * 4];
             if (potBuf) {
                 for (int y = 0; y < ph; y++) {
-                    const unsigned char* fila = rgba + (size_t)(y * h / ph) * w * 4;
+                    const unsigned char* row = rgba + (size_t)(y * h / ph) * w * 4;
                     unsigned char* out = potBuf + (size_t)y * pw * 4;
                     for (int x = 0; x < pw; x++) {
-                        const unsigned char* p = fila + (size_t)(x * w / pw) * 4;
+                        const unsigned char* p = row + (size_t)(x * w / pw) * 4;
                         out[x*4] = p[0]; out[x*4+1] = p[1]; out[x*4+2] = p[2]; out[x*4+3] = p[3];
                     }
                 }
@@ -394,11 +394,11 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
         }
     }
 #else
-    (void)forzarPOT;
+    (void)forcePOT;
 #endif
     GLuint id = 0;
     glGenTextures(1, &id);
-    if (id) g_texturasVivas++;
+    if (id) g_liveTextures++;
     // OJO: bind por la ABSTRACCION, no glBindTexture crudo: el backend cachea la textura bindeada
     // y un bind por afuera lo deja mintiendo (la proxima BindTexture(id) se saltea y dibuja otra).
     w3dEngine::BindTexture(id);
@@ -411,54 +411,54 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
 
     // MIPMAPS (solo POT: NPOT + piramide es incompleta en ES1/WebGL1). Por aca pasan
     // TODAS las texturas del N95 (el ICL de Symbian decodifica y sube con UploadRGBA).
-    const bool mips = conMips && pot && MipmapsGlobal();
+    const bool mips = withMips && pot && MipmapsGlobal();
     // 16 bits (la mitad de memoria) si la imagen entra sin perdida visible
     static std::vector<unsigned short> px16;
-    GLenum formato = GL_RGBA, tipo = GL_UNSIGNED_BYTE;
-    const void* datos = rgba;
-    if (permitir16) {
+    GLenum format = GL_RGBA, type = GL_UNSIGNED_BYTE;
+    const void* data = rgba;
+    if (allow16) {
         GLenum f16 = GL_RGBA;
-        const GLenum t16 = Empacar16(rgba, w, h, px16, f16);
-        if (t16) { formato = f16; tipo = t16; datos = &px16[0]; }
+        const GLenum t16 = Pack16(rgba, w, h, px16, f16);
+        if (t16) { format = f16; type = t16; data = &px16[0]; }
     }
-    const bool de16 = (tipo != GL_UNSIGNED_BYTE);
-    if (de16) glPixelStorei(GL_UNPACK_ALIGNMENT, 2);   // (filas de 2 bytes por texel)
+    const bool from16 = (type != GL_UNSIGNED_BYTE);
+    if (from16) glPixelStorei(GL_UNPACK_ALIGNMENT, 2);   // (filas de 2 bytes por texel)
 #ifdef W3D_TEX_POT_RGBA
     // GLdc guarda GL_RGBA en ARGB4444 (4 bits por canal: bandas marcadas en una foto o en el trazado de rayos). Una
     // imagen sin transparencia va como GL_RGB, que GLdc guarda en RGB565 (y la 3DS tambien: graphics/citro3d/w3dGLc3d.cpp). Los datos
     // siguen en RGBA de 8 bits: el backend los convierte, tambien en las actualizaciones parciales (UpdateRGBA)
-    GLenum interno = formato;
+    GLenum internal = format;
     {
-        bool opaca = true;
-        for (size_t i = 3, n = (size_t)w * h * 4; i < n && opaca; i += 4) opaca = (rgba[i] == 255);
-        if (opaca) interno = GL_RGB;
+        bool opaque = true;
+        for (size_t i = 3, n = (size_t)w * h * 4; i < n && opaque; i += 4) opaque = (rgba[i] == 255);
+        if (opaque) internal = GL_RGB;
     }
-    glTexImage2D(GL_TEXTURE_2D, 0, interno, w, h, 0, formato, tipo, datos);
+    glTexImage2D(GL_TEXTURE_2D, 0, internal, w, h, 0, format, type, data);
 #elif defined(W3D_MIPS_ES2)
-    glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0, formato, tipo, datos);
+    glTexImage2D(GL_TEXTURE_2D, 0, format, w, h, 0, format, type, data);
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
 #else
     // PC (GL 1.4+) y Symbian (ES 1.1): la piramide la genera el driver al subir
     if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_TRUE);
-    glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0, formato, tipo, datos);
+    glTexImage2D(GL_TEXTURE_2D, 0, format, w, h, 0, format, type, data);
     if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_FALSE);
 #endif
-    if (de16) glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    TexMipsRegistrar(id, mips);
-    TexMemAnotar(id, w, h, de16 ? 2 : 4, mips, conMips && MipmapsGlobal());
+    if (from16) glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    TexMipsRegister(id, mips);
+    TexMemAnnotate(id, w, h, from16 ? 2 : 4, mips, withMips && MipmapsGlobal());
 
-    const GLint filtro = filtrado ? GL_LINEAR : GL_NEAREST;
-    const GLint filtroMin = !mips ? filtro
-                          : (filtrado ? (MipmapsTrilineal() ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST) : GL_NEAREST_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtro);
-    if (mips && filtrado) w3dAnisotropico();
+    const GLint filter = filtered ? GL_LINEAR : GL_NEAREST;
+    const GLint filterMin = !mips ? filter
+                          : (filtered ? (MipmapsTrilinear() ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST) : GL_NEAREST_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterMin);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+    if (mips && filtered) w3dAnisotropico();
     const GLint wrap = pot ? GL_REPEAT : GL_CLAMP_TO_EDGE;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
     // el cache de parametros arranca sabiendo lo que se acaba de poner (misma
     // firma que arma TexFilter/TexWrap): el primer frame ya no re-manda nada
-    TexParamsRegistrar(id, (filtrado ? 1 : 0) | (mips ? 2 : 0), pot ? 1 : 0);
+    TexParamsRegister(id, (filtered ? 1 : 0) | (mips ? 2 : 0), pot ? 1 : 0);
 
     w3dEngine::BindTexture(0);
     g_texSizes[id] = std::make_pair(w, h); // recordar el tamano para el aspect ratio del UV editor
@@ -471,31 +471,31 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtrado, 
 // ----------------------------------------------------------------------------
 // CAPTURA DE PANTALLA: una textura RGB vacia y la copia del framebuffer a ella (w3dTexture.h)
 // ----------------------------------------------------------------------------
-unsigned int ReservarPantalla(unsigned int id, int w, int h) {
+unsigned int ReserveScreen(unsigned int id, int w, int h) {
     if (w <= 0 || h <= 0) return id;
     GLuint t = id;
-    if (!t) { glGenTextures(1, &t); if (t) g_texturasVivas++; }
+    if (!t) { glGenTextures(1, &t); if (t) g_liveTextures++; }
     w3dEngine::BindTexture(t);
 #ifdef W3D_SYMBIAN
     // (el framebuffer del N95 es de 16 bits: en 565 ocupa la mitad y no se pierde nada)
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, NULL);
-    TexMemAnotar(t, w, h, 2, false, false);
+    TexMemAnnotate(t, w, h, 2, false, false);
 #else
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-    TexMemAnotar(t, w, h, 3, false, false);
+    TexMemAnnotate(t, w, h, 3, false, false);
 #endif
-    TexMipsRegistrar(t, false);
+    TexMipsRegister(t, false);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    TexParamsRegistrar(t, 1, 0);
+    TexParamsRegister(t, 1, 0);
     w3dEngine::BindTexture(0);
     g_texSizes[t] = std::make_pair(w, h);
     return t;
 }
 
-void CopiarPantalla(unsigned int id, int x, int y, int w, int h) {
+void CopyScreen(unsigned int id, int x, int y, int w, int h) {
     if (!id || w <= 0 || h <= 0) return;
 #ifdef W3D_TEX_POT_RGBA
     // la PVR arma el cuadro recien al cerrarlo: no hay pantalla para copiar a mitad de cuadro (y en GLdc
@@ -503,67 +503,67 @@ void CopiarPantalla(unsigned int id, int x, int y, int w, int h) {
     (void)x; (void)y;
     return;
 #endif
-    w3dEngine::DibujarPendiente();   // (la copia tiene que ver todo lo que ya se mando a dibujar)
+    w3dEngine::DrawPending();   // (la copia tiene que ver todo lo que ya se mando a dibujar)
     w3dEngine::BindTexture(id);
 #ifdef W3D_SYMBIAN
     // el MBX del N95 copia mal la ventana de EGL con glCopyTexSubImage2D (la imagen sale rota): se lee con
     // glReadPixels (RGBA 8888, lo unico que GLES 1.1 garantiza) y se sube a la textura de 565. Las filas quedan en el
     // mismo orden que con la copia (la de abajo primero)
-    static std::vector<unsigned char> leido;
-    leido.resize((size_t)w * h * 4);
+    static std::vector<unsigned char> read;
+    read.resize((size_t)w * h * 4);
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
-    glReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, &leido[0]);
-    unsigned short* p565 = (unsigned short*)&leido[0];
+    glReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, &read[0]);
+    unsigned short* p565 = (unsigned short*)&read[0];
     for (int i = 0; i < w * h; i++) {
-        const unsigned char* c = &leido[(size_t)i * 4];
+        const unsigned char* c = &read[(size_t)i * 4];
         p565[i] = (unsigned short)(((c[0] >> 3) << 11) | ((c[1] >> 2) << 5) | (c[2] >> 3));
     }
     glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, p565);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 #else
-    // (la fila que entiende este driver: el del Galaxy Ace cuenta desde arriba, ver CopiaPantallaFila)
-    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, CopiaPantallaFila(y, h), w, h);
+    // (la fila que entiende este driver: el del Galaxy Ace cuenta desde arriba, ver CopyScreenRow)
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, CopyScreenRow(y, h), w, h);
 #endif
 }
 
 // ----------------------------------------------------------------------------
 // TEXTURAS DE 16 BITS QUE SE REESCRIBEN (los cuadros de un video, w3dTexture.h)
 // ----------------------------------------------------------------------------
-unsigned int Reservar565(unsigned int id, int w, int h, const unsigned short* px) {
+unsigned int Reserve565(unsigned int id, int w, int h, const unsigned short* px) {
 #ifdef W3D_TEX_POT_RGBA
     (void)w; (void)h; (void)px;
     return id;
 #else
     if (w <= 0 || h <= 0) return id;
     GLuint t = id;
-    if (!t) { glGenTextures(1, &t); if (t) g_texturasVivas++; }
+    if (!t) { glGenTextures(1, &t); if (t) g_liveTextures++; }
     if (!t) return 0;
-    w3dEngine::DibujarPendiente();
+    w3dEngine::DrawPending();
     w3dEngine::BindTexture(t);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, px);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    TexMemAnotar(t, w, h, 2, false, false);
-    TexMipsRegistrar(t, false);
+    TexMemAnnotate(t, w, h, 2, false, false);
+    TexMipsRegister(t, false);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    TexParamsRegistrar(t, 1, 1);
+    TexParamsRegister(t, 1, 1);
     w3dEngine::BindTexture(0);
     g_texSizes[t] = std::make_pair(w, h);
     return t;
 #endif
 }
 
-bool Actualizar565(unsigned int id, int w, int h, const unsigned short* px) {
+bool Update565(unsigned int id, int w, int h, const unsigned short* px) {
 #ifdef W3D_TEX_POT_RGBA
     (void)id; (void)w; (void)h; (void)px;
     return false;
 #else
     if (!id || !px || w <= 0 || h <= 0) return false;
-    w3dEngine::DibujarPendiente();
+    w3dEngine::DrawPending();
     w3dEngine::BindTexture(id);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, px);
@@ -581,19 +581,19 @@ void FreeImage(unsigned char* rgba) {
 }
 
 // cuantas texturas GL hay creadas y no borradas (para ver que cargar y descargar mapas no pierde nada)
-int TexturasVivas() { return g_texturasVivas; }
+int LiveTextures() { return g_liveTextures; }
 
 // borra una textura GL (las miniaturas del browser la usan para liberar al cambiar carpeta / cerrar).
 void DeleteTexture(unsigned int id) {
     if (!id) return;
     GLuint g = (GLuint)id;
-    w3dEngine::DibujarPendiente();   // (lo juntado que la usa, antes de que deje de existir)
+    w3dEngine::DrawPending();   // (lo juntado que la usa, antes de que deje de existir)
     glDeleteTextures(1, &g);
-    if (g_texturasVivas > 0) g_texturasVivas--;
+    if (g_liveTextures > 0) g_liveTextures--;
     w3dEngine::BindTexture(0);   // GL desbindea lo borrado; el cache del motor tiene que saberlo
-    w3dEngine::MezclaTexturaBorrada(id);   // (idem la unidad 1)
-    TexMipsRegistrar(id, false); // GL recicla ids: que el nuevo no herede "tiene mips"
-    TexParamsOlvidar(id);        // idem su firma de filtro/wrap
+    w3dEngine::MixDeletedTexture(id);   // (idem la unidad 1)
+    TexMipsRegister(id, false); // GL recicla ids: que el nuevo no herede "tiene mips"
+    TexParamsForget(id);        // idem su firma de filtro/wrap
     g_texSizes.erase(id);
     g_texMem.erase(id);
 }
@@ -616,22 +616,22 @@ void DeleteTexture(unsigned int id) {
 #define GL_UNSIGNED_SHORT_4_4_4_4 0x8033
 #endif
 namespace {
-struct W3dtCab { int formato, w, h, niveles; };
+struct W3dtCab { int format, w, h, levels; };
 inline unsigned short W3dtU16(const unsigned char* p) { return (unsigned short)(p[0] | (p[1] << 8)); }
-int W3dtBpp(int formato) { return formato <= 3 ? 2 : (formato == 4 ? 3 : 4); }
-bool W3dtCabecera(const unsigned char* d, size_t largo, W3dtCab& c) {
-    if (!d || largo < 16 || memcmp(d, "W3DT", 4) != 0 || W3dtU16(&d[4]) != 1) return false;
-    c.formato = W3dtU16(&d[6]); c.w = W3dtU16(&d[8]); c.h = W3dtU16(&d[10]); c.niveles = d[12];
-    return c.formato >= 1 && c.formato <= 5 && c.w > 0 && c.h > 0 && c.niveles >= 1;
+int W3dtBpp(int format) { return format <= 3 ? 2 : (format == 4 ? 3 : 4); }
+bool W3dtHeader(const unsigned char* d, size_t length, W3dtCab& c) {
+    if (!d || length < 16 || memcmp(d, "W3DT", 4) != 0 || W3dtU16(&d[4]) != 1) return false;
+    c.format = W3dtU16(&d[6]); c.w = W3dtU16(&d[8]); c.h = W3dtU16(&d[10]); c.levels = d[12];
+    return c.format >= 1 && c.format <= 5 && c.w > 0 && c.h > 0 && c.levels >= 1;
 }
 // el offset de cada nivel (y su tamano); false si el archivo no los trae enteros
-bool W3dtNiveles(size_t largo, const W3dtCab& c, std::vector<size_t>& off) {
+bool W3dtLevels(size_t length, const W3dtCab& c, std::vector<size_t>& off) {
     off.clear();
     size_t p = 16;
     int w = c.w, h = c.h;
-    for (int k = 0; k < c.niveles; k++) {
-        const size_t n = (size_t)w * h * W3dtBpp(c.formato);
-        if (p > largo || largo - p < n) return false;
+    for (int k = 0; k < c.levels; k++) {
+        const size_t n = (size_t)w * h * W3dtBpp(c.format);
+        if (p > length || length - p < n) return false;
         off.push_back(p);
         p = (p + n + 3) & ~(size_t)3;
         w = w > 1 ? w / 2 : 1; h = h > 1 ? h / 2 : 1;
@@ -639,23 +639,23 @@ bool W3dtNiveles(size_t largo, const W3dtCab& c, std::vector<size_t>& off) {
     return true;
 }
 // un nivel a RGBA 8888 (para el editor: miniaturas, el pintor de texturas, lo que pide pixeles)
-void W3dtARGBA(const unsigned char* s, int formato, int n, unsigned char* o) {
+void W3dtARGBA(const unsigned char* s, int format, int n, unsigned char* o) {
     for (int i = 0; i < n; i++, o += 4) {
-        if (formato <= 3) {
+        if (format <= 3) {
             const unsigned v = s[i * 2] | (s[i * 2 + 1] << 8);
-            if (formato == 1) { o[0] = (unsigned char)(((v >> 11) & 31) * 255 / 31); o[1] = (unsigned char)(((v >> 5) & 63) * 255 / 63);
+            if (format == 1) { o[0] = (unsigned char)(((v >> 11) & 31) * 255 / 31); o[1] = (unsigned char)(((v >> 5) & 63) * 255 / 63);
                                 o[2] = (unsigned char)((v & 31) * 255 / 31); o[3] = 255; }
-            else if (formato == 2) { o[0] = (unsigned char)(((v >> 11) & 31) * 255 / 31); o[1] = (unsigned char)(((v >> 6) & 31) * 255 / 31);
+            else if (format == 2) { o[0] = (unsigned char)(((v >> 11) & 31) * 255 / 31); o[1] = (unsigned char)(((v >> 6) & 31) * 255 / 31);
                                      o[2] = (unsigned char)(((v >> 1) & 31) * 255 / 31); o[3] = (v & 1) ? 255 : 0; }
             else { o[0] = (unsigned char)(((v >> 12) & 15) * 17); o[1] = (unsigned char)(((v >> 8) & 15) * 17);
                    o[2] = (unsigned char)(((v >> 4) & 15) * 17); o[3] = (unsigned char)((v & 15) * 17); }
-        } else if (formato == 4) { o[0] = s[i * 3]; o[1] = s[i * 3 + 1]; o[2] = s[i * 3 + 2]; o[3] = 255; }
+        } else if (format == 4) { o[0] = s[i * 3]; o[1] = s[i * 3 + 1]; o[2] = s[i * 3 + 2]; o[3] = 255; }
         else { o[0] = s[i * 4]; o[1] = s[i * 4 + 1]; o[2] = s[i * 4 + 2]; o[3] = s[i * 4 + 3]; }
     }
 }
 } // namespace
 
-bool EsW3dt(const char* path) {
+bool IsW3dt(const char* path) {
     if (!path) return false;
     const size_t n = strlen(path);
     if (n < 5) return false;
@@ -665,75 +665,75 @@ bool EsW3dt(const char* path) {
 
 // un .w3dt que ya esta en memoria (un paquete de texturas de un juego): 'nombre' solo para el log. Lo mismo que
 // LoadTextureW3dt, que lee el archivo y llama a esta
-bool LoadTextureW3dtMemoria(const unsigned char* datos, size_t largo, unsigned int& outId, int* outW, int* outH,
-                            const char* nombre) {
-    const char* path = nombre ? nombre : "(memoria)";
+bool LoadTextureW3dtMemory(const unsigned char* data, size_t length, unsigned int& outId, int* outW, int* outH,
+                            const char* name) {
+    const char* path = name ? name : "(memoria)";
 #ifdef W3D_TEX_POT_RGBA
     {   // GLdc no toma los 16 bits del archivo (5551/4444 en ese orden): se decodifica a RGBA y sube como cualquier otra
         unsigned char* rgba = 0; int w = 0, h = 0;
-        if (!DecodeW3dtMemoria(datos, largo, 1024, &rgba, &w, &h) || !rgba) return false;
-        outId = UploadRGBA(rgba, w, h, !PixeladoGlobal(), false, true, false);
+        if (!DecodeW3dtMemory(data, length, 1024, &rgba, &w, &h) || !rgba) return false;
+        outId = UploadRGBA(rgba, w, h, !PixelatedGlobal(), false, true, false);
         delete[] rgba;
         if (outW) *outW = w;
         if (outH) *outH = h;
         return outId != 0;
     }
 #endif
-    const unsigned char* d = datos;
+    const unsigned char* d = data;
     W3dtCab c;
     std::vector<size_t> off;
-    if (!W3dtCabecera(d, largo, c) || !W3dtNiveles(largo, c, off)) {
+    if (!W3dtHeader(d, length, c) || !W3dtLevels(length, c, off)) {
         w3dLogfE("[textura] %s no es un .w3dt que este Whisk3D pueda leer", path);
         return false;
     }
     const bool pot = ((c.w & (c.w - 1)) == 0) && ((c.h & (c.h - 1)) == 0);
-    int primero = 0;
+    int first = 0;
 #ifdef W3D_SYMBIAN
     if (!pot || c.w > 1024 || c.h > 1024) {
         w3dLogfE("[textura] %s: %dx%d no es potencia de dos (el N95 no la acepta)", path, c.w, c.h);
         return false;
     }
     // la MITAD en el telefono (texturasMitadDesde): el nivel 1 ya es la mitad
-    const int mitad = TexturasMitadDesde();
-    while (mitad > 0 && primero + 1 < c.niveles && ((c.w >> primero) > mitad || (c.h >> primero) > mitad)) primero++;
+    const int half = TexturesHalfFrom();
+    while (half > 0 && first + 1 < c.levels && ((c.w >> first) > half || (c.h >> first) > half)) first++;
 #endif
-    GLenum formato = GL_RGBA, tipo = GL_UNSIGNED_BYTE;
-    switch (c.formato) {
-        case 1: formato = GL_RGB;  tipo = GL_UNSIGNED_SHORT_5_6_5; break;
-        case 2: formato = GL_RGBA; tipo = GL_UNSIGNED_SHORT_5_5_5_1; break;
-        case 3: formato = GL_RGBA; tipo = GL_UNSIGNED_SHORT_4_4_4_4; break;
-        case 4: formato = GL_RGB;  tipo = GL_UNSIGNED_BYTE; break;
+    GLenum format = GL_RGBA, type = GL_UNSIGNED_BYTE;
+    switch (c.format) {
+        case 1: format = GL_RGB;  type = GL_UNSIGNED_SHORT_5_6_5; break;
+        case 2: format = GL_RGBA; type = GL_UNSIGNED_SHORT_5_5_5_1; break;
+        case 3: format = GL_RGBA; type = GL_UNSIGNED_SHORT_4_4_4_4; break;
+        case 4: format = GL_RGB;  type = GL_UNSIGNED_BYTE; break;
         default: break;
     }
-    const int bpp = W3dtBpp(c.formato);
+    const int bpp = W3dtBpp(c.format);
     // la piramide del archivo, si el proyecto quiere mipmaps (y la textura es POT: NPOT + piramide es incompleta)
-    const bool mips = pot && MipmapsGlobal() && c.niveles - primero > 1;
+    const bool mips = pot && MipmapsGlobal() && c.levels - first > 1;
     GLuint id = 0;
     glGenTextures(1, &id);
-    if (id) g_texturasVivas++;
+    if (id) g_liveTextures++;
     BindTexture(id);
     glPixelStorei(GL_UNPACK_ALIGNMENT, bpp == 4 ? 4 : (bpp == 2 ? 2 : 1));
-    const int hasta = mips ? c.niveles : primero + 1;
-    for (int k = primero; k < hasta; k++) {
+    const int until = mips ? c.levels : first + 1;
+    for (int k = first; k < until; k++) {
         const int w = c.w >> k ? c.w >> k : 1, h = c.h >> k ? c.h >> k : 1;
-        glTexImage2D(GL_TEXTURE_2D, k - primero, formato, w, h, 0, formato, tipo, &d[off[k]]);
+        glTexImage2D(GL_TEXTURE_2D, k - first, format, w, h, 0, format, type, &d[off[k]]);
     }
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    const bool pix = PixeladoGlobal();
-    const GLint filtro = pix ? GL_NEAREST : GL_LINEAR;
-    const GLint filtroMin = !mips ? filtro : (pix ? GL_NEAREST_MIPMAP_LINEAR : (MipmapsTrilineal() ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST));
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtro);
+    const bool pix = PixelatedGlobal();
+    const GLint filter = pix ? GL_NEAREST : GL_LINEAR;
+    const GLint filterMin = !mips ? filter : (pix ? GL_NEAREST_MIPMAP_LINEAR : (MipmapsTrilinear() ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterMin);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
     if (mips && !pix) w3dAnisotropico();
     const GLint wrap = pot ? GL_REPEAT : GL_CLAMP_TO_EDGE;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
-    TexParamsRegistrar(id, (pix ? 0 : 1) | (mips ? 2 : 0), pot ? 1 : 0);
-    TexMipsRegistrar(id, mips);
+    TexParamsRegister(id, (pix ? 0 : 1) | (mips ? 2 : 0), pot ? 1 : 0);
+    TexMipsRegister(id, mips);
     BindTexture(0);
-    const int w0 = c.w >> primero ? c.w >> primero : 1, h0 = c.h >> primero ? c.h >> primero : 1;
+    const int w0 = c.w >> first ? c.w >> first : 1, h0 = c.h >> first ? c.h >> first : 1;
     g_texSizes[id] = std::make_pair(w0, h0);
-    TexMemAnotar(id, w0, h0, bpp, mips, mips);
+    TexMemAnnotate(id, w0, h0, bpp, mips, mips);
     outId = id;
     if (outW) *outW = c.w;
     if (outH) *outH = c.h;
@@ -746,40 +746,40 @@ bool LoadTextureW3dt(const char* path, unsigned int& outId, int* outW, int* outH
         w3dLogfE("[textura] %s no es un .w3dt que este Whisk3D pueda leer", path ? path : "");
         return false;
     }
-    return LoadTextureW3dtMemoria(&d[0], d.size(), outId, outW, outH, path);
+    return LoadTextureW3dtMemory(&d[0], d.size(), outId, outW, outH, path);
 }
 
-bool DecodeW3dt(const char* path, int maxLado, unsigned char** outRGBA, int* outW, int* outH) {
+bool DecodeW3dt(const char* path, int maxSide, unsigned char** outRGBA, int* outW, int* outH) {
     std::vector<unsigned char> d;
     if (!outRGBA || !w3dFileSystem::ReadFileBytes(path ? path : "", d) || d.empty()) return false;
-    return DecodeW3dtMemoria(&d[0], d.size(), maxLado, outRGBA, outW, outH);
+    return DecodeW3dtMemory(&d[0], d.size(), maxSide, outRGBA, outW, outH);
 }
-bool DecodeW3dtMemoria(const unsigned char* d, size_t largo, int maxLado, unsigned char** outRGBA, int* outW, int* outH) {
+bool DecodeW3dtMemory(const unsigned char* d, size_t length, int maxSide, unsigned char** outRGBA, int* outW, int* outH) {
     W3dtCab c;
     std::vector<size_t> off;
-    if (!outRGBA || !W3dtCabecera(d, largo, c) || !W3dtNiveles(largo, c, off)) return false;
+    if (!outRGBA || !W3dtHeader(d, length, c) || !W3dtLevels(length, c, off)) return false;
     // (una miniatura sale del nivel que ya entra: la piramide esta hecha)
     int k = 0;
-    while (maxLado > 0 && k + 1 < c.niveles && ((c.w >> k) > maxLado || (c.h >> k) > maxLado)) k++;
+    while (maxSide > 0 && k + 1 < c.levels && ((c.w >> k) > maxSide || (c.h >> k) > maxSide)) k++;
     const int w = c.w >> k ? c.w >> k : 1, h = c.h >> k ? c.h >> k : 1;
     unsigned char* buf = new unsigned char[(size_t)w * h * 4];
-    W3dtARGBA(&d[off[k]], c.formato, w * h, buf);
+    W3dtARGBA(&d[off[k]], c.format, w * h, buf);
     *outRGBA = buf;
     if (outW) *outW = w;
     if (outH) *outH = h;
     return true;
 }
 
-// stb + su consumidor (CargarPixeles/DecodeImage/DecodeThumbnail) NO existe en Symbian: el N95 decodifica
+// stb + su consumidor (LoadPixels/DecodeImage/DecodeThumbnail) NO existe en Symbian: el N95 decodifica
 // con ICL en platform/symbian/src/w3dtexload.cpp. Ademas su toolchain es C++03 (sin nullptr / vector::data).
 #ifndef W3D_SYMBIAN
 // Decodifica una imagen a pixeles con stb. La LECTURA la hace la abstraccion del
 // Core (w3dFileSystem::ReadFileBytes): un SOLO camino para todas las plataformas
 // (en Android resuelve solo si es asset del APK o archivo real del /storage). SIN SDL.
-static stbi_uc* CargarPixeles(const char* path, int* w, int* h, int* canales, int reqComp) {
+static stbi_uc* LoadPixels(const char* path, int* w, int* h, int* channels, int reqComp) {
     std::vector<unsigned char> bytes;
     if (!w3dFileSystem::ReadFileBytes(path ? path : "", bytes) || bytes.empty()) return 0;
-    return stbi_load_from_memory(&bytes[0], (int)bytes.size(), w, h, canales, reqComp);
+    return stbi_load_from_memory(&bytes[0], (int)bytes.size(), w, h, channels, reqComp);
 }
 
 // ----------------------------------------------------------------------------
@@ -791,9 +791,9 @@ bool DecodeImage(const char* path, unsigned char** outRGBA, int* outW, int* outH
     if (!outRGBA) {
         return false;
     }
-    if (EsW3dt(path)) return DecodeW3dt(path, 0, outRGBA, outW, outH);
-    int w = 0, h = 0, canales = 0;
-    stbi_uc* data = CargarPixeles(path, &w, &h, &canales, STBI_rgb_alpha);
+    if (IsW3dt(path)) return DecodeW3dt(path, 0, outRGBA, outW, outH);
+    int w = 0, h = 0, channels = 0;
+    stbi_uc* data = LoadPixels(path, &w, &h, &channels, STBI_rgb_alpha);
     if (!data) {
         return false;
     }
@@ -811,9 +811,9 @@ bool DecodeImage(const char* path, unsigned char** outRGBA, int* outW, int* outH
 // solo queda la mini. Asi una foto de 5MP no se queda entera en RAM: clave para no reventar la memoria (N95).
 bool DecodeThumbnail(const char* path, int maxSize, unsigned char** outRGBA, int* outW, int* outH) {
     if (!outRGBA || maxSize < 1) return false;
-    if (EsW3dt(path)) return DecodeW3dt(path, maxSize, outRGBA, outW, outH);   // (el nivel de mipmap que entra)
-    int w = 0, h = 0, canales = 0;
-    stbi_uc* full = CargarPixeles(path, &w, &h, &canales, STBI_rgb_alpha);
+    if (IsW3dt(path)) return DecodeW3dt(path, maxSize, outRGBA, outW, outH);   // (el nivel de mipmap que entra)
+    int w = 0, h = 0, channels = 0;
+    stbi_uc* full = LoadPixels(path, &w, &h, &channels, STBI_rgb_alpha);
     if (!full) return false;
     if (w < 1 || h < 1) { stbi_image_free(full); return false; }
     int tw, th; // destino con aspecto, lado mayor = maxSize
@@ -852,17 +852,17 @@ bool DecodeThumbnail(const char* path, int maxSize, unsigned char** outRGBA, int
 // ----------------------------------------------------------------------------
 #ifndef W3D_SYMBIAN
 bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
-    if (EsW3dt(path)) return LoadTextureW3dt(path, outId, outW, outH);   // (lista para la GPU: nada que decodificar)
-    int w = 0, h = 0, canales = 0;
+    if (IsW3dt(path)) return LoadTextureW3dt(path, outId, outW, outH);   // (lista para la GPU: nada que decodificar)
+    int w = 0, h = 0, channels = 0;
     // SIEMPRE a RGBA: con canales reales (req=0) una imagen en escala de grises entrega 1-2 bytes
     // por pixel y subirla como GL_RGB sobre-lee el heap. Pedir 4 canales lo resuelve de raiz.
-    stbi_uc* data = CargarPixeles(path, &w, &h, &canales, 4);
+    stbi_uc* data = LoadPixels(path, &w, &h, &channels, 4);
     if (!data) {
         return false;
     }
 #ifdef W3D_TEX_POT_RGBA
     {   // la PVR: potencia de dos, RGBA (GLdc la pasa a 16 bits) y sin mipmaps: lo resuelve UploadRGBA
-        outId = UploadRGBA(data, w, h, !w3dEngine::PixeladoGlobal(), false, true, false);
+        outId = UploadRGBA(data, w, h, !w3dEngine::PixelatedGlobal(), false, true, false);
         stbi_image_free(data);
         if (outW) *outW = w;
         if (outH) *outH = h;
@@ -873,94 +873,94 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
     // RE-EMPACA el buffer ya-RGBA a RGB apretado y se sube GL_RGB -> 25% menos de
     // memoria de GPU en las texturas opacas (idea del dueno: atlas opaco 8,8,8).
     // OJO: NO pedir reqComp=0 (una imagen gris entrega 1-2 bpp y GL_RGB sobre-lee).
-    GLenum formato = GL_RGBA, tipo = GL_UNSIGNED_BYTE;
+    GLenum format = GL_RGBA, type = GL_UNSIGNED_BYTE;
     // 16 BITS si entra sin perdida visible (lo mismo que sube el N95 por UploadRGBA: el editor ve lo que vera el
     // telefono y la memoria se mide igual)
     static std::vector<unsigned short> px16;
     {
         GLenum f16 = GL_RGBA;
-        const GLenum t16 = Empacar16(data, w, h, px16, f16);
-        if (t16) { formato = f16; tipo = t16; }
+        const GLenum t16 = Pack16(data, w, h, px16, f16);
+        if (t16) { format = f16; type = t16; }
     }
-    if (tipo == GL_UNSIGNED_BYTE && canales > 0 && canales <= 3) {
+    if (type == GL_UNSIGNED_BYTE && channels > 0 && channels <= 3) {
         stbi_uc* p = data;                              // in-place: RGB queda adelante
         for (int i = 0; i < w * h; i++) {
             p[i*3]   = p[i*4];
             p[i*3+1] = p[i*4+1];
             p[i*3+2] = p[i*4+2];
         }
-        formato = GL_RGB;
+        format = GL_RGB;
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);          // filas RGB no-multiplo-de-4
     }
 
     GLuint id = 0;
     glGenTextures(1, &id);
-    if (id) g_texturasVivas++;
+    if (id) g_liveTextures++;
     w3dEngine::BindTexture(id);   // por la abstraccion: el cache del backend queda al dia
 
     // PIXELADO GLOBAL (pedido del dueno): NEAREST en min y mag. MIPMAPS: piramide
     // segun MipmapsGlobal() (default ON; el .w3d lo apaga con `mipmaps: false`).
     // Con pixelado + mips el min-filter va NEAREST_MIPMAP_LINEAR: pixel perfect de
     // cerca, niveles chicos de lejos (TexFilter respeta esto en cada material).
-    const bool pix = w3dEngine::PixeladoGlobal();
+    const bool pix = w3dEngine::PixelatedGlobal();
     const bool pot = ((w & (w - 1)) == 0) && ((h & (h - 1)) == 0);
 #ifdef W3D_MULTIBACKEND
     // PC: la piramide tambien en las NPOT (una de 800x800 sin mipmaps CENTELLEA de lejos: cada pixel de la pantalla
     // toma un texel suelto del normal map o de la rugosidad, y al orbitar cambia cual)
-    const bool mips = w3dEngine::MipmapsGlobal() && (pot || NpotConMipmaps());
+    const bool mips = w3dEngine::MipmapsGlobal() && (pot || NpotWithMipmaps());
 #else
     const bool mips = pot && w3dEngine::MipmapsGlobal();
 #endif
-    const GLint filtroPix = pix ? GL_NEAREST : GL_LINEAR;
-    const GLint filtroMin = !mips ? filtroPix
-                          : (pix ? GL_NEAREST_MIPMAP_LINEAR : (MipmapsTrilineal() ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST));
+    const GLint filterPix = pix ? GL_NEAREST : GL_LINEAR;
+    const GLint filterMin = !mips ? filterPix
+                          : (pix ? GL_NEAREST_MIPMAP_LINEAR : (MipmapsTrilinear() ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST));
 #ifdef __ANDROID__
-    if (tipo != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+    if (type != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
 #ifdef W3D_GLES1
     if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_TRUE);   // (ES 1.1: la arma el driver al subir)
 #endif
-    glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0,
-                 formato, tipo, tipo != GL_UNSIGNED_BYTE ? (const void*)&px16[0] : (const void*)data);
-    if (tipo != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, format, w, h, 0,
+                 format, type, type != GL_UNSIGNED_BYTE ? (const void*)&px16[0] : (const void*)data);
+    if (type != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 #ifdef W3D_GLES1
     if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_FALSE);
 #else
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
 #endif
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtroPix);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterMin);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filterPix);
 #elif defined(__EMSCRIPTEN__)
     // WebGL: POT -> piramide con glGenerateMipmap; NPOT -> sin mips + CLAMP (WebGL1
     // pide POT para mipmaps/REPEAT).
-    if (tipo != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
-    glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0,
-                 formato, tipo, tipo != GL_UNSIGNED_BYTE ? (const void*)&px16[0] : (const void*)data);
-    if (tipo != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    if (type != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+    glTexImage2D(GL_TEXTURE_2D, 0, format, w, h, 0,
+                 format, type, type != GL_UNSIGNED_BYTE ? (const void*)&px16[0] : (const void*)data);
+    if (type != GL_UNSIGNED_BYTE) glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtroPix);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterMin);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filterPix);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 #else
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtroMin);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtroPix);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterMin);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filterPix);
     if (mips && !pix) w3dAnisotropico();
-    if (tipo != GL_UNSIGNED_BYTE) {
+    if (type != GL_UNSIGNED_BYTE) {
         // 16 bits: la piramide la arma el driver (GL 1.4+), como en UploadRGBA
         glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
         if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_TRUE);
-        glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0, formato, tipo, &px16[0]);
+        glTexImage2D(GL_TEXTURE_2D, 0, format, w, h, 0, format, type, &px16[0]);
         if (mips) glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_FALSE);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     } else if (mips) {
-        gluBuild2DMipmaps(GL_TEXTURE_2D, formato, w, h,
-                          formato, GL_UNSIGNED_BYTE, data);
+        gluBuild2DMipmaps(GL_TEXTURE_2D, format, w, h,
+                          format, GL_UNSIGNED_BYTE, data);
     } else {
-        glTexImage2D(GL_TEXTURE_2D, 0, formato, w, h, 0,
-                     formato, GL_UNSIGNED_BYTE, data);
+        glTexImage2D(GL_TEXTURE_2D, 0, format, w, h, 0,
+                     format, GL_UNSIGNED_BYTE, data);
     }
 #endif
-    TexMipsRegistrar(id, mips);
+    TexMipsRegister(id, mips);
 
     w3dEngine::BindTexture(0);
     stbi_image_free(data);
@@ -969,7 +969,7 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
     // (devolvia false) para TODA textura de material en PC -> no habia forma de
     // contar la memoria de texturas del proyecto. Ahora tambien pasa por aca.
     g_texSizes[id] = std::make_pair(w, h);
-    TexMemAnotar(id, w, h, tipo != GL_UNSIGNED_BYTE ? 2 : (formato == GL_RGB ? 3 : 4), mips, w3dEngine::MipmapsGlobal());
+    TexMemAnnotate(id, w, h, type != GL_UNSIGNED_BYTE ? 2 : (format == GL_RGB ? 3 : 4), mips, w3dEngine::MipmapsGlobal());
 
     outId = id;
     if (outW) { *outW = w; }
@@ -1003,31 +1003,31 @@ static unsigned int w3dAdler32(const unsigned char* d, int n){
     for (int i = 0; i < n; i++){ a = (a + d[i]) % 65521u; b = (b + a) % 65521u; }
     return (b << 16) | a;
 }
-// escribe un chunk PNG en el buffer 'out' avanzando p: len(BE) + tipo(4) + datos + crc(BE).
-static void w3dPngChunkMem(unsigned char* out, int& p, const char* tipo, const unsigned char* data, int len){
+// escribe un chunk PNG en el buffer 'out' avanzando p: len(BE) + type(4) + datos + crc(BE).
+static void w3dPngChunkMem(unsigned char* out, int& p, const char* type, const unsigned char* data, int len){
     out[p++]=(len>>24)&255; out[p++]=(len>>16)&255; out[p++]=(len>>8)&255; out[p++]=len&255;
-    out[p++]=(unsigned char)tipo[0]; out[p++]=(unsigned char)tipo[1];
-    out[p++]=(unsigned char)tipo[2]; out[p++]=(unsigned char)tipo[3];
+    out[p++]=(unsigned char)type[0]; out[p++]=(unsigned char)type[1];
+    out[p++]=(unsigned char)type[2]; out[p++]=(unsigned char)type[3];
     for (int i = 0; i < len; i++) out[p++] = data[i];
     unsigned int crc = 0xFFFFFFFFu;
-    crc = w3dCrcUpdate(crc, (const unsigned char*)tipo, 4);
+    crc = w3dCrcUpdate(crc, (const unsigned char*)type, 4);
     if (len) crc = w3dCrcUpdate(crc, data, len);
     crc ^= 0xFFFFFFFFu;
     out[p++]=(crc>>24)&255; out[p++]=(crc>>16)&255; out[p++]=(crc>>8)&255; out[p++]=crc&255;
 }
 
 // arma el PNG en un buffer del heap (new[]). El que llama libera con delete[] (o FreeImage).
-static unsigned char* w3dEncodePNGImpl(const unsigned char* rgba, int w, int h, bool flipY, int* outLen, bool conAlpha){
+static unsigned char* w3dEncodePNGImpl(const unsigned char* rgba, int w, int h, bool flipY, int* outLen, bool withAlpha){
     if (outLen) *outLen = 0;
     if (!rgba || w <= 0 || h <= 0) return 0;
-    const int bpp = conAlpha ? 4 : 3;   // conAlpha: PNG RGBA (texturas generadas con canal alpha)
+    const int bpp = withAlpha ? 4 : 3;   // withAlpha: PNG RGBA (texturas generadas con canal alpha)
 
     // El render se exporta como RGB (sin alpha): un material con alpha (pelo, hojas) ya queda
     // compuesto sobre el fondo en el COLOR; guardar el alpha del framebuffer hace "huecos" en el
     // visor donde deberia ser solido. Entrada = RGBA (glReadPixels), salida = RGB (se descarta
     // el 4to byte de cada pixel). scanlines: 1 byte de filtro (0 = None) + RGB de la fila.
     const int srcRow   = w * 4;   // fila de la entrada (RGBA)
-    const int rowbytes = w * bpp; // fila del PNG (RGB, o RGBA si conAlpha)
+    const int rowbytes = w * bpp; // fila del PNG (RGB, o RGBA si withAlpha)
     const int rawlen = h * (1 + rowbytes);
     unsigned char* raw = new unsigned char[rawlen];
     for (int y = 0; y < h; y++){
@@ -1038,7 +1038,7 @@ static unsigned char* w3dEncodePNGImpl(const unsigned char* rgba, int w, int h, 
         unsigned char* d = dst + 1;
         for (int x = 0; x < w; x++){
             d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; // RGB (se saltea s[3] = alpha)...
-            if (conAlpha) d[3] = s[3];             // ...salvo que se pida el alpha
+            if (withAlpha) d[3] = s[3];            // ...salvo que se pida el alpha
             d += bpp; s += 4;
         }
     }
@@ -1052,8 +1052,8 @@ static unsigned char* w3dEncodePNGImpl(const unsigned char* rgba, int w, int h, 
     int off = 0;
     while (off < rawlen){
         int n = rawlen - off; if (n > 65535) n = 65535;
-        int ultimo = (off + n >= rawlen) ? 1 : 0;
-        idat[ip++] = (unsigned char)ultimo;           // BFINAL + BTYPE=00 (stored)
+        int last   = (off + n >= rawlen) ? 1 : 0;
+        idat[ip++] = (unsigned char)last;           // BFINAL + BTYPE=00 (stored)
         idat[ip++] = n & 255; idat[ip++] = (n >> 8) & 255;         // LEN (LE)
         unsigned int nn = (~(unsigned int)n) & 0xFFFF;
         idat[ip++] = nn & 255; idat[ip++] = (nn >> 8) & 255;       // NLEN (LE)
@@ -1067,12 +1067,12 @@ static unsigned char* w3dEncodePNGImpl(const unsigned char* rgba, int w, int h, 
     unsigned char ihdr[13];
     ihdr[0]=(w>>24)&255; ihdr[1]=(w>>16)&255; ihdr[2]=(w>>8)&255; ihdr[3]=w&255;
     ihdr[4]=(h>>24)&255; ihdr[5]=(h>>16)&255; ihdr[6]=(h>>8)&255; ihdr[7]=h&255;
-    ihdr[8]=8; ihdr[9]=(unsigned char)(conAlpha ? 6 : 2); ihdr[10]=0; ihdr[11]=0; ihdr[12]=0; // 8bit, RGB (6 = RGBA), sin interlace
+    ihdr[8]=8; ihdr[9]=(unsigned char)(withAlpha ? 6 : 2); ihdr[10]=0; ihdr[11]=0; ihdr[12]=0; // 8bit, RGB (6 = RGBA), sin interlace
     int total = 8 + (12 + 13) + (12 + idatlen) + 12;
     unsigned char* png = new unsigned char[total];
     int p = 0;
-    static const unsigned char firma[8] = {137,80,78,71,13,10,26,10};
-    for (int i = 0; i < 8; i++) png[p++] = firma[i];
+    static const unsigned char signature[8] = {137,80,78,71,13,10,26,10};
+    for (int i = 0; i < 8; i++) png[p++] = signature[i];
     w3dPngChunkMem(png, p, "IHDR", ihdr, 13);
     w3dPngChunkMem(png, p, "IDAT", idat, idatlen);
     w3dPngChunkMem(png, p, "IEND", 0, 0);
@@ -1082,81 +1082,81 @@ static unsigned char* w3dEncodePNGImpl(const unsigned char* rgba, int w, int h, 
     return png;
 }
 // ---- PNG POR FRANJAS (ver w3dTexture.h) ----
-static bool w3dPngChunkArchivo(FILE* f, const char* tipo, const unsigned char* data, unsigned int len){
+static bool w3dPngChunkFile(FILE* f, const char* type, const unsigned char* data, unsigned int len){
     unsigned char c[8] = { (unsigned char)(len >> 24), (unsigned char)(len >> 16), (unsigned char)(len >> 8), (unsigned char)len,
-                           (unsigned char)tipo[0], (unsigned char)tipo[1], (unsigned char)tipo[2], (unsigned char)tipo[3] };
-    unsigned int crc = w3dCrcUpdate(0xFFFFFFFFu, (const unsigned char*)tipo, 4);
+                           (unsigned char)type[0], (unsigned char)type[1], (unsigned char)type[2], (unsigned char)type[3] };
+    unsigned int crc = w3dCrcUpdate(0xFFFFFFFFu, (const unsigned char*)type, 4);
     if (len) crc = w3dCrcUpdate(crc, data, (int)len);
     crc ^= 0xFFFFFFFFu;
     const unsigned char k[4] = { (unsigned char)(crc >> 24), (unsigned char)(crc >> 16), (unsigned char)(crc >> 8), (unsigned char)crc };
     return fwrite(c, 1, 8, f) == 8 && (len == 0 || fwrite(data, 1, len, f) == len) && fwrite(k, 1, 4, f) == 4;
 }
-bool PNGFranjasAbrir(PNGFranjas& p, const char* path, int w, int h, bool alfa){
-    p.f = 0; p.w = w; p.h = h; p.filas = 0; p.alfa = alfa; p.ok = false; p.adler = 1;
+bool PNGStripesOpen(PNGStripes& p, const char* path, int w, int h, bool alpha){
+    p.f = 0; p.w = w; p.h = h; p.rows = 0; p.alpha = alpha; p.ok = false; p.adler = 1;
     if (!path || w <= 0 || h <= 0) return false;
     FILE* f = fopen(path, "wb");
     if (!f) { w3dLogfE("PNGFranjas: fopen FALLO path='%s' errno=%d (%s)", path, errno, strerror(errno)); return false; }
     p.f = f;
-    static const unsigned char firma[8] = {137,80,78,71,13,10,26,10};
+    static const unsigned char signature[8] = {137,80,78,71,13,10,26,10};
     unsigned char ihdr[13];
     ihdr[0]=(w>>24)&255; ihdr[1]=(w>>16)&255; ihdr[2]=(w>>8)&255; ihdr[3]=w&255;
     ihdr[4]=(h>>24)&255; ihdr[5]=(h>>16)&255; ihdr[6]=(h>>8)&255; ihdr[7]=h&255;
-    ihdr[8]=8; ihdr[9]=(unsigned char)(alfa ? 6 : 2); ihdr[10]=0; ihdr[11]=0; ihdr[12]=0;
-    p.ok = fwrite(firma, 1, 8, f) == 8 && w3dPngChunkArchivo(f, "IHDR", ihdr, 13);
+    ihdr[8]=8; ihdr[9]=(unsigned char)(alpha ? 6 : 2); ihdr[10]=0; ihdr[11]=0; ihdr[12]=0;
+    p.ok = fwrite(signature, 1, 8, f) == 8 && w3dPngChunkFile(f, "IHDR", ihdr, 13);
     return p.ok;
 }
-bool PNGFranjasFilas(PNGFranjas& p, const unsigned char* rgba, int n){
+bool PNGStripesRows(PNGStripes& p, const unsigned char* rgba, int n){
     if (!p.f || !p.ok || !rgba || n <= 0) return p.ok;
-    if (p.filas + n > p.h) n = p.h - p.filas;
+    if (p.rows + n > p.h) n = p.h - p.rows;
     if (n <= 0) return p.ok;
-    const int bpp = p.alfa ? 4 : 3;
-    const size_t fila = (size_t)1 + (size_t)p.w * bpp;
-    const size_t crudo = fila * n;
-    const bool primero = (p.filas == 0), ultimo = (p.filas + n == p.h);
+    const int bpp = p.alpha ? 4 : 3;
+    const size_t row = (size_t)1 + (size_t)p.w * bpp;
+    const size_t rawRow = row * n;
+    const bool first    = (p.rows == 0), last = (p.rows + n == p.h);
     // el zlib de esta franja: (el encabezado, si es la primera) + bloques "stored" de hasta 65535 + (el adler, al final)
-    const size_t bloques = (crudo + 65534) / 65535;
+    const size_t blocks = (rawRow + 65534) / 65535;
     std::vector<unsigned char> d;
-    d.reserve((primero ? 2 : 0) + crudo + bloques * 5 + (ultimo ? 4 : 0));
-    if (primero) { d.push_back(0x78); d.push_back(0x01); }
-    std::vector<unsigned char> raw(crudo);
+    d.reserve((first ? 2 : 0) + rawRow + blocks * 5 + (last ? 4 : 0));
+    if (first) { d.push_back(0x78); d.push_back(0x01); }
+    std::vector<unsigned char> raw(rawRow);
     for (int y = 0; y < n; y++) {
-        unsigned char* o = &raw[(size_t)y * fila];
+        unsigned char* o = &raw[(size_t)y * row];
         const unsigned char* s = rgba + (size_t)y * p.w * 4;
         *o++ = 0;   // (filtro None)
-        for (int x = 0; x < p.w; x++, s += 4) { *o++ = s[0]; *o++ = s[1]; *o++ = s[2]; if (p.alfa) *o++ = s[3]; }
+        for (int x = 0; x < p.w; x++, s += 4) { *o++ = s[0]; *o++ = s[1]; *o++ = s[2]; if (p.alpha) *o++ = s[3]; }
     }
     unsigned int a = p.adler & 0xFFFFu, b = p.adler >> 16;
-    for (size_t i = 0; i < crudo; i++) { a = (a + raw[i]) % 65521u; b = (b + a) % 65521u; }
+    for (size_t i = 0; i < rawRow; i++) { a = (a + raw[i]) % 65521u; b = (b + a) % 65521u; }
     p.adler = (b << 16) | a;
-    for (size_t off = 0; off < crudo; ) {
-        size_t k = crudo - off; if (k > 65535) k = 65535;
-        const bool fin = ultimo && off + k >= crudo;
-        d.push_back((unsigned char)(fin ? 1 : 0));
+    for (size_t off = 0; off < rawRow; ) {
+        size_t k = rawRow - off; if (k > 65535) k = 65535;
+        const bool end = last && off + k >= rawRow;
+        d.push_back((unsigned char)(end ? 1 : 0));
         d.push_back((unsigned char)(k & 255)); d.push_back((unsigned char)(k >> 8));
         const unsigned int nk = (~(unsigned int)k) & 0xFFFFu;
         d.push_back((unsigned char)(nk & 255)); d.push_back((unsigned char)(nk >> 8));
         d.insert(d.end(), raw.begin() + (long)off, raw.begin() + (long)(off + k));
         off += k;
     }
-    if (ultimo) { d.push_back((unsigned char)(p.adler >> 24)); d.push_back((unsigned char)(p.adler >> 16)); d.push_back((unsigned char)(p.adler >> 8)); d.push_back((unsigned char)p.adler); }
-    if (!w3dPngChunkArchivo((FILE*)p.f, "IDAT", &d[0], (unsigned int)d.size())) { p.ok = false; w3dLogfE("PNGFranjas: escritura corta (disco lleno?)"); }
-    p.filas += n;
+    if (last) { d.push_back((unsigned char)(p.adler >> 24)); d.push_back((unsigned char)(p.adler >> 16)); d.push_back((unsigned char)(p.adler >> 8)); d.push_back((unsigned char)p.adler); }
+    if (!w3dPngChunkFile((FILE*)p.f, "IDAT", &d[0], (unsigned int)d.size())) { p.ok = false; w3dLogfE("PNGFranjas: escritura corta (disco lleno?)"); }
+    p.rows += n;
     return p.ok;
 }
-bool PNGFranjasCerrar(PNGFranjas& p){
+bool PNGStripesClose(PNGStripes& p){
     if (!p.f) return false;
-    bool ok = p.ok && p.filas == p.h && w3dPngChunkArchivo((FILE*)p.f, "IEND", 0, 0);
+    bool ok = p.ok && p.rows == p.h && w3dPngChunkFile((FILE*)p.f, "IEND", 0, 0);
     if (fclose((FILE*)p.f) != 0) ok = false;
     p.f = 0;
     return ok;
 }
 
 // actualiza un RECTANGULO de una textura ya subida (pintura en vivo): 'rgbaRect' = w*h pixeles del rect
-bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect, bool regenerarMips) {
+bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char* rgbaRect, bool regenerateMips) {
     if (!id || !rgbaRect || w <= 0 || h <= 0) return false;
-    w3dEngine::DibujarPendiente();   // (lo juntado que la usa, con lo que tenia)
+    w3dEngine::DrawPending();   // (lo juntado que la usa, con lo que tenia)
     w3dEngine::BindTexture(id);
-    const bool mips = regenerarMips && TexTieneMips(id);
+    const bool mips = regenerateMips && TexHasMips(id);
 #if defined(W3D_MIPS_ES2)
     glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgbaRect);
     if (mips) glGenerateMipmap(GL_TEXTURE_2D);
@@ -1168,9 +1168,9 @@ bool UpdateRGBA(unsigned int id, int x, int y, int w, int h, const unsigned char
     w3dEngine::BindTexture(0);
     return true;
 }
-void RegenerarMips(unsigned int id, int x, int y, const unsigned char* px1) {
-    if (!id || !px1 || !TexTieneMips(id)) return;
-    w3dEngine::DibujarPendiente();
+void RegenerateMips(unsigned int id, int x, int y, const unsigned char* px1) {
+    if (!id || !px1 || !TexHasMips(id)) return;
+    w3dEngine::DrawPending();
     w3dEngine::BindTexture(id);
 #if defined(W3D_MIPS_ES2)
     (void)x; (void)y;
@@ -1188,52 +1188,52 @@ unsigned char* EncodePNGRGBA(const unsigned char* rgba, int w, int h, bool flipY
 #ifndef W3D_SYMBIAN
 // PC/Web: encode + escritura con stdio. En Symbian SavePNG lo implementa
 // platform/symbian/w3dtexload.cpp (mismo EncodePNG + RFile).
-static bool SavePNGImpl(const char* path, const unsigned char* rgba, int w, int h, bool flipY, bool conAlpha){
+static bool SavePNGImpl(const char* path, const unsigned char* rgba, int w, int h, bool flipY, bool withAlpha){
     if (!path) return false;
     int len = 0;
-    unsigned char* png = conAlpha ? EncodePNGRGBA(rgba, w, h, flipY, &len) : EncodePNG(rgba, w, h, flipY, &len);
+    unsigned char* png = withAlpha ? EncodePNGRGBA(rgba, w, h, flipY, &len) : EncodePNG(rgba, w, h, flipY, &len);
     if (!png) return false;
     FILE* f = fopen(path, "wb");
     if (!f) { w3dLogfE("SavePNG: fopen FALLO path='%s' errno=%d (%s)", path, errno, strerror(errno)); delete[] png; return false; }
     size_t wr = fwrite(png, 1, len, f);
-    bool cerro = (fclose(f) == 0);   // el flush pasa ACA: sin chequearlo, un PNG chico "guardaba bien"
+    bool closed = (fclose(f) == 0);   // el flush pasa ACA: sin chequearlo, un PNG chico "guardaba bien"
     delete[] png;
-    if (!cerro || wr != (size_t)len) { w3dLogfE("SavePNG: escritura corta en '%s' (disco lleno?)", path); return false; }
+    if (!closed || wr != (size_t)len) { w3dLogfE("SavePNG: escritura corta en '%s' (disco lleno?)", path); return false; }
     return true;
 }
 bool SavePNG(const char* path, const unsigned char* rgba, int w, int h, bool flipY){ return SavePNGImpl(path, rgba, w, h, flipY, false); }
 bool SavePNGRGBA(const char* path, const unsigned char* rgba, int w, int h, bool flipY){ return SavePNGImpl(path, rgba, w, h, flipY, true); }
 
-bool SaveJPG(const char* path, const unsigned char* rgba, int w, int h, int calidad, bool flipY){
+bool SaveJPG(const char* path, const unsigned char* rgba, int w, int h, int quality, bool flipY){
     if (!path) return false;
     std::vector<unsigned char> jpg;
-    if (!EncodeJPG(rgba, w, h, calidad, flipY, jpg)) return false;
+    if (!EncodeJPG(rgba, w, h, quality, flipY, jpg)) return false;
     FILE* f = fopen(path, "wb");
     if (!f) { w3dLogfE("SaveJPG: fopen FALLO path='%s' errno=%d (%s)", path, errno, strerror(errno)); return false; }
     const size_t wr = fwrite(&jpg[0], 1, jpg.size(), f);
-    const bool cerro = (fclose(f) == 0);
-    if (wr != jpg.size() || !cerro) { w3dLogfE("SaveJPG: no se pudo escribir '%s' (disco lleno?)", path); return false; }
+    const bool closed = (fclose(f) == 0);
+    if (wr != jpg.size() || !closed) { w3dLogfE("SaveJPG: no se pudo escribir '%s' (disco lleno?)", path); return false; }
     return true;
 }
 #endif
 
 // JPG con el codificador de stb_image_write (dominio publico), a MEMORIA: lo usan SaveJPG (stdio) y el de Symbian (RFile)
-static void W3dJpgAMemoria(void* ctx, void* data, int n) {
+static void W3dJpgToMemory(void* ctx, void* data, int n) {
     std::vector<unsigned char>* v = (std::vector<unsigned char>*)ctx;
     if (n > 0) v->insert(v->end(), (unsigned char*)data, (unsigned char*)data + n);
 }
-bool EncodeJPG(const unsigned char* rgba, int w, int h, int calidad, bool flipY, std::vector<unsigned char>& out){
+bool EncodeJPG(const unsigned char* rgba, int w, int h, int quality, bool flipY, std::vector<unsigned char>& out){
     out.clear();
     if (!rgba || w <= 0 || h <= 0) return false;
-    if (calidad < 1) calidad = 1; if (calidad > 100) calidad = 100;
-    std::vector<unsigned char> dado;   // (el JPG va de arriba hacia abajo; glReadPixels, de abajo hacia arriba)
+    if (quality < 1) quality = 1; if (quality > 100) quality = 100;
+    std::vector<unsigned char> given;   // (el JPG va de arriba hacia abajo; glReadPixels, de abajo hacia arriba)
     const unsigned char* px = rgba;
     if (flipY) {
-        dado.resize((size_t)w * h * 4);
-        for (int y = 0; y < h; y++) memcpy(&dado[(size_t)y * w * 4], rgba + (size_t)(h - 1 - y) * w * 4, (size_t)w * 4);
-        px = &dado[0];
+        given.resize((size_t)w * h * 4);
+        for (int y = 0; y < h; y++) memcpy(&given[(size_t)y * w * 4], rgba + (size_t)(h - 1 - y) * w * 4, (size_t)w * 4);
+        px = &given[0];
     }
-    const int r = stbi_write_jpg_to_func(W3dJpgAMemoria, &out, w, h, 4, px, calidad);
+    const int r = stbi_write_jpg_to_func(W3dJpgToMemory, &out, w, h, 4, px, quality);
     return r != 0 && !out.empty();
 }
 

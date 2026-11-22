@@ -55,12 +55,12 @@ void SafeRect(int w, int h, float* x, float* y, float* sw, float* sh);
 // MISMO encuadre con el que la dibuja el motor, la escena continua debajo de la barra y del notch.
 //   bytes/len/mime = la imagen (los mismos bytes que ya tenes del pack)
 //   w,h,x,y        = tamanio y posicion EN PIXELES CSS con que hay que pintarla (encuadre)
-void SafeAreaSetImagen(const void* bytes, int len, const char* mime,
+void SafeAreaSetImage(const void* bytes, int len, const char* mime,
                        float w, float h, float x, float y);
 
 // Igual pero con VARIOS colores (de arriba hacia abajo): la franja se pinta como un degradado
 // que continua mejor la escena que un color plano. 'n' colores, en un array r,g,b consecutivos.
-void SafeAreaSetDegradado(const unsigned char* rgb, int n);
+void SafeAreaSetGradient(const unsigned char* rgb, int n);
 
 } // namespace w3dEngine
 

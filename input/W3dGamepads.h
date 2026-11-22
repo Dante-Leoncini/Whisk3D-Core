@@ -1,0 +1,56 @@
+// ============================================================================
+//  W3dGamepads.h — los MANDOS (joysticks) de las plataformas que no los reciben por SDL.
+//
+//  Hasta 4, cada uno con sus sticks, gatillos y botones, y si esta conectado. Los botones y los ejes van en el orden
+//  de SDL_GameController (A B X Y Back Guia Start L3 R3 L1 R1 arriba abajo izquierda derecha; LX LY RX RY LT RT): el
+//  que los recibe los pone en el mismo lugar donde SDL pone los suyos y de ahi para adentro es todo igual. Con la
+//  disposicion de Xbox: A = el de abajo (la X de PlayStation), B = el de la derecha (el circulo), X = el de la
+//  izquierda (el cuadrado), Y = el de arriba (el triangulo).
+//
+//  QUE SE PUEDE, HOY:
+//   · Symbian (S60 3rd, 5th y Symbian^3): los joysticks de PS3 y PS4 (y los genericos que hablan como ellos) por el
+//     driver Bluetooth bthid-s60 (bthidhost.dll), cargado al arrancar: si el telefono no lo tiene instalado no hay
+//     mandos y todo anda igual. W3dGamepadsSymbian.cpp.
+//   · El resto: SDL (no usa esta unidad).
+//
+//  Uso, cada cuadro:
+//      GamepadState e;
+//      for (int i = 0; i < GamepadsMax; i++) if (GamepadRead(i, e)) ...   // false = no hay mando con ese numero
+//      GamepadVibrate(0, true);                                           // hasta que se apague
+//
+//  C++03 (Symbian).
+// ============================================================================
+#ifndef W3D_GAMEPADS_H
+#define W3D_GAMEPADS_H
+
+namespace w3dEngine {
+
+enum { GamepadsMax = 4 };
+enum GamepadButton {
+    GamepadA, GamepadB, GamepadX, GamepadY, GamepadSelect, GamepadGuide, GamepadStart, GamepadL3, GamepadR3, GamepadL1, GamepadR1,
+    GamepadUp, GamepadDown, GamepadLeft, GamepadRight,
+    GamepadButtons
+};
+enum GamepadAxis { GamepadLX, GamepadLY, GamepadRX, GamepadRY, GamepadLT, GamepadRT, GamepadAxes };
+enum GamepadType { GenericGamepad = 0, GamepadPS3 = 3, GamepadPS4 = 4, GamepadWii = 5 };
+
+struct GamepadState {
+    int type;                        // GamepadType
+    float axes[GamepadAxes];         // sticks -1..1 (Y positivo = hacia abajo, como SDL); gatillos 0..1
+    bool buttons[GamepadButtons];
+};
+
+// el mando i (0..3) esta conectado? -> su estado. Lo pide al driver: llamarlo una vez por cuadro y por mando
+bool GamepadRead(int i, GamepadState& e);
+// prender o apagar la vibracion del mando i
+void GamepadVibrate(int i, bool yes);
+// el acelerometro del mando i si es un Wiimote: g[0..2] = X Y Z en g, como los da el control (X a lo ancho, Y a lo
+// largo hacia la punta del infrarrojo, Z saliendo de la cara de los botones; quieto y boca arriba: Z = 1). false =
+// no es un Wiimote o no esta conectado
+bool GamepadAccelerometer(int i, float g[3]);
+// soltar el driver (al cerrar la app)
+void GamepadsClose();
+
+} // namespace w3dEngine
+
+#endif

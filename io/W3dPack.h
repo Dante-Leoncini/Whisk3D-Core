@@ -61,7 +61,7 @@ void W3dChaCha20(const unsigned char key[32], unsigned int counter,
 // Construye un .w3dpack (lado AUTOR). names/datas/lens son 'count' assets; se cifran
 // con 'key' y se escribe 'outPath'. false si no pudo escribir. La usa la herramienta.
 bool W3dPackBuild(const char* outPath, const char* const* names,
-                  const unsigned char* const* datas, const size_t* lens,
+                  const unsigned char* const* data, const size_t* lens,
                   int count, const unsigned char key[32]);
 
 } // namespace w3dEngine

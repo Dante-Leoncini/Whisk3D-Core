@@ -121,7 +121,7 @@ const unsigned char* W3dPack::Get(const char* name, size_t* outLen) const {
 }
 
 bool W3dPackBuild(const char* outPath, const char* const* names,
-                  const unsigned char* const* datas, const size_t* lens,
+                  const unsigned char* const* data, const size_t* lens,
                   int count, const unsigned char key[32]) {
     // validar los nombres ANTES de alocar nada: truncarlos haria que Get(nombre) falle en
     // silencio, y salir despues de los new[] (como antes) fugaba plain/offs/enc
@@ -136,7 +136,7 @@ bool W3dPackBuild(const char* outPath, const char* const* names,
     size_t off = 0;
     for (int i = 0; i < count; i++) {
         offs[i] = (u32)off;
-        memcpy(plain + off, datas[i], lens[i]);
+        memcpy(plain + off, data[i], lens[i]);
         off += lens[i];
     }
     unsigned char* enc = new unsigned char[blobLen ? blobLen : 1];

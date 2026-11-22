@@ -19,12 +19,12 @@
 
 #if W3D_DEV_LOG
 // NIVEL en tiempo de ejecucion: 3 = todo (default), 2 = avisos y errores, 1 = solo errores, 0 = nada
-extern int g_w3dLogNivel;
+extern int g_w3dLogLevel;
 void w3dLogReset();                   // trunca/abre el log (al iniciar la app)
-void w3dLogBajar();                   // baja al archivo lo que el log tenga juntado (Symbian: al salir)
+void w3dLogFlush();                   // baja al archivo lo que el log tenga juntado (Symbian: al salir)
 // el archivo del log (antes del primer mensaje): un juego compilado tiene el suyo y no pisa el del editor. Por
 // defecto e:\whisk3d.log en Symbian y whisk3d.log (la carpeta actual) en la PC
-void w3dLogRuta(const char* ruta);
+void w3dLogPath(const char* path);
 // Tres NIVELES. En desktop/Symbian van todas al archivo con su tag ([INFO]/[WARN]/[ERROR]);
 // en WebGL cada una llama a la funcion del browser: console.log / console.warn / console.error.
 void w3dLog(const char* aMsg);        // INFO
@@ -38,12 +38,12 @@ void w3dLogfE(const char* aFmt, ...); // ERROR
 // Espejo liviano de las ultimas lineas logueadas (con su tag [INFO]/[WARN]/[ERROR]
 // adelante). NO reemplaza al sink de archivo/consola: se llena en paralelo. Asi
 // el editor puede mostrar el log sin abrir el .log ni tocar stdout. C++03 puro.
-int          w3dLogRingCount();       // cuantas lineas hay guardadas (<= N)
-const char*  w3dLogRingLinea(int i);  // linea i (0 = la mas VIEJA); "" si i fuera de rango
+int          w3dLogRingCount();      // cuantas lineas hay guardadas (<= N)
+const char*  w3dLogRingLine(int i);  // linea i (0 = la mas VIEJA); "" si i fuera de rango
 
 // redirige std::cout/std::cerr AL LOG (no a la consola/terminal). Llamar UNA vez al arrancar (PC main() y Symbian
 // ConstructL). Cualquier cout/cerr olvidado en el codigo cae al log en vez de abrir/spamear una terminal.
-void w3dRedirigirCoutAlLog();
+void w3dRedirectCoutToLog();
 
 // reloj monotono en MILISEGUNDOS para medir fases (p.ej. cuanto tarda cargar un .w3d en el N95).
 // Symbian: tick del nanokernel; resto: clock(). Suficiente para medir fases de segundos.
@@ -52,13 +52,13 @@ unsigned long w3dTickMs();
 // MEMORIA en KB, lo que la plataforma sepa medir (-1 = no se mide aca). Symbian: el heap de la app (en uso y el
 // tamano de su chunk) y la RAM libre del telefono; glibc: el heap en uso y el reservado. NO reserva memoria: se
 // puede llamar con el heap agotado (el aviso de "sin memoria" del operator new de Symbian la usa).
-void w3dMemoriaKB(long& heapUsado, long& heapTam, long& ramLibre);
+void w3dMemoryKB(long& usedHeap, long& heapSize, long& freeRam);
 // una linea "[mem] <etiqueta>: ..." con esos numeros: los hitos de una carga grande (abrir, cada prefab)
-void w3dLogMemoria(const char* etiqueta);
+void w3dLogMemory(const char* label);
 #else
 inline void w3dLogReset() {}
-inline void w3dLogBajar() {}
-inline void w3dLogRuta(const char*) {}
+inline void w3dLogFlush() {}
+inline void w3dLogPath(const char*) {}
 inline void w3dLog(const char*) {}
 inline void w3dLogW(const char*) {}
 inline void w3dLogE(const char*) {}
@@ -66,9 +66,9 @@ inline void w3dLogf(const char*, ...) {}
 inline void w3dLogfW(const char*, ...) {}
 inline void w3dLogfE(const char*, ...) {}
 inline int         w3dLogRingCount() { return 0; }
-inline const char* w3dLogRingLinea(int) { return ""; }
-inline void        w3dRedirigirCoutAlLog() {}
+inline const char* w3dLogRingLine(int) { return ""; }
+inline void        w3dRedirectCoutToLog() {}
 inline unsigned long w3dTickMs() { return 0; }
-inline void w3dMemoriaKB(long& u, long& t, long& l) { u = t = l = -1; }
-inline void w3dLogMemoria(const char*) {}
+inline void w3dMemoryKB(long& u, long& t, long& l) { u = t = l = -1; }
+inline void w3dLogMemory(const char*) {}
 #endif

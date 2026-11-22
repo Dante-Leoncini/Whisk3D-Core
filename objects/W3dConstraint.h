@@ -27,8 +27,8 @@
 
 class Object;   // solo forward: la fuente es un Object*
 
-struct W3dConstraintTipo { enum Enum { CopyLocation = 0, CopyRotation = 1, Billboard = 2, ChildOf = 3 }; };
-struct W3dConstraintFuente { enum Enum { Objeto = 0, Vista = 1 }; };
+struct W3dConstraintType { enum Enum { CopyLocation = 0, CopyRotation = 1, Billboard = 2, ChildOf = 3 }; };
+struct W3dConstraintSource { enum Enum { Object = 0, View = 1 }; };
 
 // ============================================================================
 //  IDENTIDAD ESTABLE DE UN CONSTRAINT (calcado de W3dModSerial, main/edit/Modifier.h:36)
@@ -44,26 +44,26 @@ struct W3dConstraintFuente { enum Enum { Objeto = 0, Vista = 1 }; };
 //  numero seria justo el reciclaje que esto evita. Va en un tipo propio para que el
 //  copy-constructor IMPLICITO de W3dConstraint haga lo correcto solo.
 // ============================================================================
-struct W3dConSerial {
+struct W3dConstraintSerial {
     unsigned int v;
-    W3dConSerial();                     // v = el proximo del contador. Nunca es 0.
-    W3dConSerial(const W3dConSerial&);  // una COPIA es otro constraint -> numero NUEVO
-    W3dConSerial& operator=(const W3dConSerial&) { return *this; } // idem: no se pisa
+    W3dConstraintSerial();                            // v = el proximo del contador. Nunca es 0.
+    W3dConstraintSerial(const W3dConstraintSerial&);  // una COPIA es otro constraint -> numero NUEVO
+    W3dConstraintSerial& operator=(const W3dConstraintSerial&) { return *this; } // idem: no se pisa
 };
 
 // "Copy Location" / "Copy Rotation" / "Billboard" / "Child Of"
-// (gemelo de NombreTipoModificador, main/edit/Modifier.h:105). Se define en
+// (gemelo de ModifierTypeName, main/edit/Modifier.h:105). Se define en
 // libs/Whisk3DCore/objects/Objects.cpp: este header no tiene .cpp propio a proposito
 // (un .cpp nuevo hay que agregarlo a las 9 listas de fuentes del proyecto).
-const char* W3dNombreTipoConstraint(int tipo);
+const char* W3dConstraintTypeName(int type);
 
 class W3dConstraint {
     public:
-        W3dConSerial serial;    // identidad estable (ver arriba). 'serial.v' nunca es 0.
+        W3dConstraintSerial serial;    // identidad estable (ver arriba). 'serial.v' nunca es 0.
 
-        int          tipo;      // W3dConstraintTipo::Enum
-        std::string  nombre;    // lo que muestra la lista; regla de nombres unicos POR OBJETO
-        bool         activo;    // el "ojito" de la lista
+        int          type;      // W3dConstraintType::Enum
+        std::string  name;      // lo que muestra la lista; regla de nombres unicos POR OBJETO
+        bool         active;    // el "ojito" de la lista
 
         // ================================================================================
         //  VER EN MODO EDICION (lo pidio el dueno, textual: "si el constraint tiene tildado
@@ -74,40 +74,40 @@ class W3dConstraint {
         //  con billboard deja de perseguir a la camara mientras uno le mueve los vertices.
         //  Solo afecta al objeto EN EDICION, no a sus padres ni a sus hermanos: apagar el
         //  constraint de un padre moveria tambien a los otros hijos, que nadie pidio.
-        //  ARRANCA EN OFF, al reves que el 'mostrarEdit' de los modificadores (Modifier.h),
+        //  ARRANCA EN OFF, al reves que el 'showEdit' de los modificadores (Modifier.h),
         //  y a proposito: un modificador que no se ve en Edit Mode esconde geometria, pero un
         //  constraint que no se aplica en Edit Mode es justamente la comodidad que se pidio.
         // ================================================================================
-        bool         mostrarEdit;
+        bool         showEdit;
 
         // La influencia se guarda y se edita en 0..100 (el panel la muestra con "%"), no
         // en 0..1: PropFloat bindea un float* DIRECTO al campo, asi que un rango 0..1
         // obligaria al proxy global de Properties.cpp (que se rompe con dos paneles
         // abiertos). Rompe la convencion de Opacity (0..1) a proposito.
-        float        influencia;
+        float        influence;
         // 0..1 para las formulas. Los extremos son EXACTOS por CLAMP explicito: 'influencia'
         // viene de un campo editable y de un archivo, asi que 99.9998 no puede dar 1.0
         // (el objetivo se aplicaria "casi" y no se veria igual que el objeto viejo) y
         // 100.0001 no puede pasarse.
-        float Peso() const {
-            if (influencia <= 0.0f) return 0.0f;
-            if (influencia >= 100.0f) return 1.0f;
-            return influencia * 0.01f;
+        float Weight() const {
+            if (influence <= 0.0f) return 0.0f;
+            if (influence >= 100.0f) return 1.0f;
+            return influence * 0.01f;
         }
 
         // ---- FUENTE (Copy Location / Copy Rotation) ----
         // 'Vista' es la camara que esta dibujando, y es un tipo EXPLICITO: si "NULL
         // significa la vista", borrar el objeto fuente (que por diseno deja el puntero en
         // NULL) convertiria en silencio un Copy Location en un "seguir a la camara".
-        int          fuenteTipo;    // W3dConstraintFuente::Enum
+        int          sourceType;    // W3dConstraintSource::Enum
         // puntero VIVO, no se serializa. NULL => el constraint no hace nada.
-        // Lo enumera Object::RefsObjeto (Objects.h), asi que el destructor y el undo lo
+        // Lo enumera Object::RefsObject (Objects.h), asi que el destructor y el undo lo
         // sueltan solos cuando el apuntado se borra.
-        Object*      fuenteObj;
-        std::string  fuenteNombre;  // el vinculo POR NOMBRE: ESTO es lo que se guarda
+        Object*      sourceObj;
+        std::string  sourceName;  // el vinculo POR NOMBRE: ESTO es lo que se guarda
 
         // ---- EJES (Copy Location / Copy Rotation) ----
-        bool         ejeX, ejeY, ejeZ;
+        bool         axisX, axisY, axisZ;
 
         // ---- BILLBOARD ----
         bool         bbYaw;         // gira en horizontal
@@ -116,7 +116,7 @@ class W3dConstraint {
         // "mira a la vista" = bbYaw true,  bbPitch true
         // (!bbYaw && bbPitch) es legible del formato viejo y se evalua bien, pero NO es
         // alcanzable desde la UI. (!bbYaw && !bbPitch) NO EXISTE: un billboard que no hace
-        // nada no puede ser representable, lo arregla Normalizar().
+        // nada no puede ser representable, lo arregla Normalize().
         //
         // OJO, conducta conocida y ACEPTADA: con influencia intermedia (ej. 50%) el
         // billboard pega un giro de 180 grados cuando la diferencia de angulo con la
@@ -131,44 +131,44 @@ class W3dConstraint {
         // personaje entero) que ademas tiene Child Of a la mano la sigue sin transformarse dos veces.
         // Es la forma BARATA de pegar un objeto RIGIDO a un hueso: una matriz por frame y no un
         // skinning vertice por vertice (lo que importa en el N95).
-        std::string  hueso;         // nombre del hueso de la fuente armature ("" = el objeto entero)
-        int          huesoCache;    // indice resuelto de 'hueso' (runtime; se revalida por nombre)
+        std::string  bone;         // nombre del hueso de la fuente armature ("" = el objeto entero)
+        int          boneCache;    // indice resuelto de 'hueso' (runtime; se revalida por nombre)
         bool         coLoc, coRot, coEsc;   // que componentes de la fuente se heredan
         // "Set Inverse": inversa del mundo de la fuente (y del padre) al momento de fijarla, para que
         // el objeto quede donde estaba. Identidad = "Clear Inverse" (el local se lee en el espacio
         // del hueso). Se guarda en el .w3d.
-        Matrix4      inversa;
+        Matrix4      inverse;
 
         // aviso de ciclo (A copia de B y B de A): se prende al avisar para no inundar la
         // pantalla con una notificacion POR FRAME. Runtime puro, no se guarda. Significa
         // "ya avise para ESTA fuente": el panel lo vuelve a poner en false cada vez que se
-        // elige otra fuente (AccionConFuenteElegida), o sea que romper el ciclo y volver a
+        // elige otra fuente (ActionConstraintPickedSource), o sea que romper el ciclo y volver a
         // armarlo avisa de nuevo.
-        bool         avisoCiclo;
+        bool         noticeCycle;
 
         // C++03: nada de inicializadores en la clase, todo en la lista del ctor.
         explicit W3dConstraint(int t)
-            : tipo(t),
-              nombre(W3dNombreTipoConstraint(t)),
-              activo(true),
-              mostrarEdit(false),   // OFF: en Edit Mode el objeto se edita en su transform real
-              influencia(100.0f),
-              fuenteTipo(W3dConstraintFuente::Objeto),
-              fuenteObj(NULL),
-              fuenteNombre(),
-              ejeX(true), ejeY(true), ejeZ(true),
+            : type(t),
+              name(W3dConstraintTypeName(t)),
+              active(true),
+              showEdit(false),   // OFF: en Edit Mode el objeto se edita en su transform real
+              influence(100.0f),
+              sourceType(W3dConstraintSource::Object),
+              sourceObj(NULL),
+              sourceName(),
+              axisX(true), axisY(true), axisZ(true),
               bbYaw(true), bbPitch(false),
-              huesoCache(-1), coLoc(true), coRot(true), coEsc(true),
-              avisoCiclo(false) { inversa.Identity(); }
+              boneCache(-1), coLoc(true), coRot(true), coEsc(true),
+              noticeCycle(false) { inverse.Identity(); }
 
         // deja los campos en un estado que el evaluador y la UI puedan representar. La
         // llama el lector del .w3d, que es el unico que trae valores de afuera (un archivo
         // lo pudo editar cualquiera). El panel NO la llama y no la necesita: el desplegable
-        // de modo prende bbYaw a mano y el campo de influencia ya nace con SetRango(0,100).
-        void Normalizar() {
-            if (influencia < 0.0f)   influencia = 0.0f;
-            if (influencia > 100.0f) influencia = 100.0f;
-            if (tipo == W3dConstraintTipo::Billboard && !bbYaw && !bbPitch) bbYaw = true;
+        // de modo prende bbYaw a mano y el campo de influencia ya nace con SetRange(0,100).
+        void Normalize() {
+            if (influence < 0.0f)   influence = 0.0f;
+            if (influence > 100.0f) influence = 100.0f;
+            if (type == W3dConstraintType::Billboard && !bbYaw && !bbPitch) bbYaw = true;
         }
 };
 

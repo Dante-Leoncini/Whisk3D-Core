@@ -28,7 +28,7 @@ namespace w3dFileSystem {
     //  busca PRIMERO en el pak (por ruta relativa normalizada, ej "menu.w3dui"
     //  o "assets/pausa.png") y cae al filesystem real si no esta.
     //
-    //  FORMATO (lo escribe EscribirPak en main/io/CompilarJuego.cpp; mantener
+    //  FORMATO (lo escribe WritePak en main/io/CompileGame.cpp; mantener
     //  en sincronia):
     //    [0..7]   magia "W3DPAK1\n" (en claro)
     //    [8..11]  u32 LE semilla (en claro; derivada del nombre del juego)
@@ -43,21 +43,27 @@ namespace w3dFileSystem {
     //  'datos' debe seguir vivo mientras corra el juego (es el array estatico
     //  del pak.cpp generado). Un pak invalido se ignora con log (se cae al
     //  filesystem real, como si no hubiera pak).
-    void W3dPakRegistrar(const unsigned char* datos, unsigned tam);
+    void W3dPakRegister(const unsigned char* data, unsigned size);
 
     // Lee un archivo entero a memoria. Devuelve false si no se pudo abrir/leer.
     bool ReadFileBytes(const std::string& path, std::vector<unsigned char>& out);
     // 'n' bytes desde 'desde' del archivo (mismo orden de busqueda que ReadFileBytes). Del contenedor montado o de
     // una libreria: SOLO esos bytes (un fseek en el zip); del pak o del disco, el archivo entero y el recorte
-    bool ReadFileRange(const std::string& path, unsigned desde, unsigned n, std::vector<unsigned char>& out);
+    bool ReadFileRange(const std::string& path, unsigned from, unsigned n, std::vector<unsigned char>& out);
     // Lee un archivo de texto entero. 'ok' (opcional) queda en false si fallo.
     std::string ReadTextFile(const std::string& path, bool* ok = 0);
     // Escribe/crea un archivo de texto (trunca). false si no se pudo.
     bool WriteTextFile(const std::string& path, const std::string& data);
+    // REEMPLAZA 'dest' por 'tmp' (un archivo ya escrito entero, en la MISMA carpeta: el temporal de un guardado).
+    // En POSIX es un rename atomico que pisa el destino; Windows, Symbian y la 3DS no pisan un destino que ya existe:
+    // ahi el viejo se corre a <dest>.bak, entra el nuevo y recien entonces se borra el viejo (si el nuevo no entra,
+    // el viejo vuelve a su lugar). false = no se pudo: 'tmp' queda y lo borra quien llama.
+    bool ReplaceFile(const std::string& tmp, const std::string& dest);
 
     // Carpeta ESCRIBIBLE de datos del usuario (config/bookmarks). En Android el
     // GetResDir es el APK (solo lectura); la plataforma setea aca una ruta escribible
-    // (SDL_GetPrefPath). Si no se setea, cae en GetResDir (PC portable).
+    // (SDL_GetPrefPath). Si no se setea, cae en GetResDir (PC portable). Se guarda SIN la barra del final (la de
+    // SDL_GetPrefPath): quien la usa le suma "/config.ini", y "sdmc:/3ds/Whisk3D//config.ini" la 3DS no lo abre.
     void SetUserDataDir(const std::string& dir);
     const std::string& GetUserDataDir();
 

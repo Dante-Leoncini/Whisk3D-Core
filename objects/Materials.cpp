@@ -1,68 +1,68 @@
 #include "Materials.h"
-#include "W3dNombres.h"   // nombres unicos (misma regla que objetos/huesos/grupos)
-#include "w3dGraphics.h"  // w3dEngine::Mezcla*: los codigos de mezcla (W3dMaterialEsLuz)
+#include "W3dNames.h"     // nombres unicos (misma regla que objetos/huesos/grupos)
+#include "w3dGraphics.h"  // w3dEngine::Mezcla*: los codigos de mezcla (W3dMaterialIsLight)
 
-Material* MaterialDeFabrica(Material* m) {
-    if (m) m->porPixel = w3dEngine::SombreadoPorPixelSoportado();
+Material* FactoryMaterial(Material* m) {
+    if (m) m->perPixel = w3dEngine::ShadingPerPixelSupported();
     return m;
 }
 
 // Variables globales
 std::vector<Material*> Materials;
-Material* MaterialDefecto = NULL;
+Material* MaterialDefault = NULL;
 
 // ---- MARCA BASE del registro de materiales (ver el comentario de Materials.h) ----
 static size_t gMatBase = 0;
-static bool   gMatBaseFijada = false;
+static bool   gMatBaseFixed = false;
 
-void MaterialesFijarBase() {
-    if (gMatBaseFijada) return;   // una sola vez: la UI se carga en el arranque
+void MaterialsSetBase() {
+    if (gMatBaseFixed) return;   // una sola vez: la UI se carga en el arranque
     gMatBase = Materials.size();
-    gMatBaseFijada = true;
+    gMatBaseFixed = true;
 }
-int MaterialesBase() { return (int)gMatBase; }
+int MaterialsBase() { return (int)gMatBase; }
 
-// el CEMENTERIO de los materiales purgados (ver MaterialPurgar en el .h)
-static std::vector<Material*> gMatPurgados;
+// el CEMENTERIO de los materiales purgados (ver MaterialPurge en el .h)
+static std::vector<Material*> gPurgedMat;
 
-bool MaterialPurgar(Material* m) {
-    if (!m || m == MaterialDefecto) return false;
+bool MaterialPurge(Material* m) {
+    if (!m || m == MaterialDefault) return false;
     for (size_t i = gMatBase; i < Materials.size(); i++) {
         if (Materials[i] != m) continue;
         Materials.erase(Materials.begin() + (long)i);
-        gMatPurgados.push_back(m);
+        gPurgedMat.push_back(m);
         return true;
     }
     return false;   // de la UI (debajo de la marca) o ya purgado
 }
 
-bool MaterialRevivir(Material* m) {
-    for (size_t i = 0; i < gMatPurgados.size(); i++) {
-        if (gMatPurgados[i] != m) continue;
-        gMatPurgados.erase(gMatPurgados.begin() + (long)i);
+bool MaterialRevive(Material* m) {
+    for (size_t i = 0; i < gPurgedMat.size(); i++) {
+        if (gPurgedMat[i] != m) continue;
+        gPurgedMat.erase(gPurgedMat.begin() + (long)i);
         // mientras estuvo afuera alguien pudo tomar su nombre: vuelve con uno libre
-        m->name = MaterialNombreLibre(m->name, NULL);
+        m->name = MaterialFreeName(m->name, NULL);
         Materials.push_back(m);
         return true;
     }
     return false;
 }
 
-const std::vector<Material*>& MaterialesPurgados() { return gMatPurgados; }
+const std::vector<Material*>& MaterialsPurged() { return gPurgedMat; }
 
-int MaterialesLiberarEscena() {
+int MaterialsFreeScene() {
     int n = 0;
     while (Materials.size() > gMatBase) {
         Material* m = Materials.back();
         Materials.pop_back();
-        // MaterialDefecto no entra a la lista (ver el ctor), pero se chequea igual:
+        // MaterialDefault no entra a la lista (ver el ctor), pero se chequea igual:
         // liberarlo dejaria colgado al fallback de TODAS las mallas sin material.
-        if (m && m != MaterialDefecto) { delete m; n++; }
+        if (m && m != MaterialDefault) { delete m; n++; }
     }
     // los PURGADOS tambien son del proyecto (el undo que los podia nombrar ya se limpio)
-    for (size_t i = 0; i < gMatPurgados.size(); i++)
-        if (gMatPurgados[i] && gMatPurgados[i] != MaterialDefecto) { delete gMatPurgados[i]; n++; }
-    gMatPurgados.clear();
+    for (size_t i = 0; i < gPurgedMat.size(); i++)
+        if (gPurgedMat[i] && gPurgedMat[i] != MaterialDefault) { delete gPurgedMat[i]; n++; }
+    gPurgedMat.clear();
     // los materiales ANIMADOS apuntan a materiales del proyecto (targets): si
     // quedaran, su Update() escribiria sobre memoria liberada en el proyecto nuevo.
     for (size_t i = 0; i < AnimatedMaterials.size(); i++) delete AnimatedMaterials[i];
@@ -73,68 +73,68 @@ int MaterialesLiberarEscena() {
 // ===================================================
 // Implementación de Material
 // ===================================================
-Material::Material(const std::string& nombre, bool MaterialDefectoFlag, bool TieneVertexColor)
-    : textureOn(true), filtrado(true), transparent(false), vertexColor(false), lighting(true), repeat(true),
-      uv8bit(false), culling(true), depth_test(true), fondo(false),
-      depth_write(true), depth_bias(0.0f), sesgo_metros(0.0f), orden_pasada(0), mezcla(0), alphaTest(0.0f),
-      rtRugosidad(0.5f), rtMetalico(0.0f),
-      chrome(false), reflectMode(0), reflejoSonda(false),
-      normalMap(false), normalTexture(NULL), texturaB(NULL), mezclaB(0.0f), toon(0), contorno(0.0f),
-      porPixel(false), luzIndirecta(false), lineas(false), grosorLinea(1.0f),
-      interpolacion(0), texture(NULL), shininess(12.0f) { // interpolacion 0 = lineal (suave), 1 = closest (pixel); igual en TODOS los sistemas
+Material::Material(const std::string& newName, bool MaterialDefaultFlag, bool HasVertexColor)
+    : textureOn(true), filtered(true), transparent(false), vertexColor(false), lighting(true), repeat(true),
+      uv8bit(false), culling(true), depth_test(true), background(false),
+      depth_write(true), depth_bias(0.0f), bias_meters(0.0f), order_pass(0), mix(0), alphaTest(0.0f),
+      rtRoughness(0.5f), rtMetallic(0.0f),
+      chrome(false), reflectMode(0), reflectionProbe(false),
+      normalMap(false), normalTexture(NULL), textureB(NULL), mixB(0.0f), toon(0), outline(0.0f),
+      perPixel(false), lightIndirect(false), lines(false), thicknessLine(1.0f),
+      interpolation(0), texture(NULL), shininess(12.0f) { // interpolacion 0 = lineal (suave), 1 = closest (pixel); igual en TODOS los sistemas
     // defaults que eran inicializadores de clase (C++11)
     diffuse[0] = diffuse[1] = diffuse[2] = diffuse[3] = 1.0f;
     specular[0] = specular[1] = specular[2] = 0.3f; specular[3] = 1.0f;
     emission[0] = emission[1] = emission[2] = 0.0f; emission[3] = 1.0f;
     ambient[0] = ambient[1] = ambient[2] = 0.3f; ambient[3] = 1.0f; // gris (como el preview)
-    for (int k = 0; k < W3D_MAPAS; k++) { mapaTex[k] = NULL; mapaConTextura[k] = false; uvMapa[k] = 0; }
+    for (int k = 0; k < W3D_MAPS; k++) { mapTex[k] = NULL; mapWithTexture[k] = false; uvMap[k] = 0; }
     ior = 1.0f;   // (1 = sin refraccion: lo transparente deja ver lo de atras derecho; 1.33 agua, 1.5 vidrio)
-    transmision = 0.0f;
+    transmission = 0.0f;
     ssr = false;   // (los reflejos en pantalla: apagados)
-    shaderOn = false; shaderId = 0; shaderEstado = 0; shaderPantalla = false; shaderTiempo = false; shaderCPU = NULL;
-    if (!MaterialDefectoFlag){
+    shaderOn = false; shaderId = 0; shaderState = 0; shaderScreen = false; shaderTime = false; shaderCPU = NULL;
+    if (!MaterialDefaultFlag){
         // los materiales del proyecto son GLOBALES y unicos: el ctor es el unico
         // punto de alta (se auto-registra), asi que uniquificar aca cubre el
         // "New Material" del panel, los importadores y la carga de los .glb.
         // El material POR DEFECTO no entra a la lista -> no participa.
-        name = MaterialNombreLibre(nombre, NULL);
+        name = MaterialFreeName(newName, NULL);
         Materials.push_back(this);
     } else {
-        name = nombre;
+        name = newName;
     }
-    vertexColor = TieneVertexColor;
+    vertexColor = HasVertexColor;
     // interpolacion ya quedo en 'lineal' (0) por la lista de inicializacion, igual en todos los
     // sistemas. (Antes Symbian la ponia en 1 = closest y PC en 0 = lineal: quedaban distintas.)
 }
 
 Material::~Material() {}
 
-static const char* const kMapaClaves[W3D_MAPAS] = { "base", "normal", "emision", "rugosidad", "metalico", "alfa" };
-const char* W3dMatMapaClave(int m) { return (m >= 0 && m < W3D_MAPAS) ? kMapaClaves[m] : ""; }
-int W3dMatMapaDeClave(const std::string& c) {
-    for (int k = 0; k < W3D_MAPAS; k++) if (c == kMapaClaves[k]) return k;
+static const char* const kMapKeys[W3D_MAPS] = { "base", "normal", "emission", "roughness", "metallic", "alpha" };
+const char* W3dMatMapKey(int m) { return (m >= 0 && m < W3D_MAPS) ? kMapKeys[m] : ""; }
+int W3dMatMapByKey(const std::string& c) {
+    for (int k = 0; k < W3D_MAPS; k++) if (c == kMapKeys[k]) return k;
     return -1;
 }
-Texture** Material::RanuraDeMapa(int m) {
-    if (m == W3D_MAPA_BASE) return &texture;
-    if (m == W3D_MAPA_NORMAL) return &normalTexture;
-    if (m > W3D_MAPA_NORMAL && m < W3D_MAPAS) return &mapaTex[m];
+Texture** Material::MapSlot(int m) {
+    if (m == W3D_MAP_BASE) return &texture;
+    if (m == W3D_MAP_NORMAL) return &normalTexture;
+    if (m > W3D_MAP_NORMAL && m < W3D_MAPS) return &mapTex[m];
     return NULL;
 }
-Texture* Material::TexturaDeMapa(int m) const {
-    if (m == W3D_MAPA_BASE) return texture;
-    if (m == W3D_MAPA_NORMAL) return normalTexture;
-    if (m > W3D_MAPA_NORMAL && m < W3D_MAPAS) return mapaTex[m];
+Texture* Material::MapTexture(int m) const {
+    if (m == W3D_MAP_BASE) return texture;
+    if (m == W3D_MAP_NORMAL) return normalTexture;
+    if (m > W3D_MAP_NORMAL && m < W3D_MAPS) return mapTex[m];
     return NULL;
 }
 
-const char* W3dCapaMezclaNombre(int m) {
+const char* W3dLayerMixName(int m) {
     switch (m) {
-        case W3D_CAPA_MULTIPLY:   return "Multiply";
-        case W3D_CAPA_ADD:        return "Add";
-        case W3D_CAPA_MULTIPLY2X: return "Multiply 2x";
-        case W3D_CAPA_SUBTRACT:   return "Subtract";
-        case W3D_CAPA_SCREEN:     return "Screen";
+        case W3D_LAYER_MULTIPLY:   return "Multiply";
+        case W3D_LAYER_ADD:        return "Add";
+        case W3D_LAYER_MULTIPLY2X: return "Multiply 2x";
+        case W3D_LAYER_SUBTRACT:   return "Subtract";
+        case W3D_LAYER_SCREEN:     return "Screen";
         default:                  return "Mix";
     }
 }
@@ -144,20 +144,20 @@ const char* W3dCapaMezclaNombre(int m) {
 // ===================================================
 // ===== NOMBRES UNICOS de material (espacio GLOBAL de proyecto) =====
 // 'excepto' = el material que puede conservar su nombre (rename); NULL = ninguno.
-static bool MatNombreExiste(const std::string& n, void* ctx) {
-    const Material* excepto = (const Material*)ctx;
+static bool MatNameExists(const std::string& n, void* ctx) {
+    const Material* except = (const Material*)ctx;
     for (size_t i = 0; i < Materials.size(); ++i)
-        if (Materials[i] != excepto && Materials[i]->name == n) return true;
+        if (Materials[i] != except && Materials[i]->name == n) return true;
     return false;
 }
-std::string MaterialNombreLibre(const std::string& base, const Material* excepto) {
-    return W3dNombreUnico(base, "Material", MatNombreExiste, (void*)excepto);
+std::string MaterialFreeName(const std::string& base, const Material* except) {
+    return W3dUniqueName(base, "Material", MatNameExists, (void*)except);
 }
-void Material::SetName(const std::string& nombre) {
-    name = MaterialNombreLibre(nombre, this);
+void Material::SetName(const std::string& newName) {
+    name = MaterialFreeName(newName, this);
 }
 
-Material* BuscarMaterialPorNombre(const std::string& name) {
+Material* FindMaterialByName(const std::string& name) {
     for (size_t i = 0; i < Materials.size(); ++i){
         if (Materials[i]->name == name) return Materials[i];
     }
@@ -167,18 +167,18 @@ Material* BuscarMaterialPorNombre(const std::string& name) {
 // ===== MATERIAL "LUZ": MODULA EL FRAMEBUFFER, NO LO TAPA (ver Materials.h) =====
 // Se pregunta por la MEZCLA, no por el nombre del material: cualquier modo que
 // componga con lo que YA HAY (sumar, restar, multiplicar, screen) describe luz.
-// Quedan afuera a proposito el alfa comun (0 = default, y MezclaAlpha) y el alfa
+// Quedan afuera a proposito el alfa comun (0 = default, y MixAlpha) y el alfa
 // premultiplicado: esos dos REEMPLAZAN el fondo segun el alfa, o sea que si el
 // contenido es opaco tapan de verdad y su z sirve (el recorte de una hoja, una
 // reja, un cartel).
-bool W3dMaterialEsLuz(const Material* m) {
+bool W3dMaterialIsLight(const Material* m) {
     if (!m || !m->transparent) return false;
-    switch (m->mezcla) {
-        case w3dEngine::MezclaAdd:       // ONE, ONE                  (aclara)
-        case w3dEngine::MezclaAddAlpha:  // SRC_ALPHA, ONE            (aclara)
-        case w3dEngine::MezclaMultiply:  // DST_COLOR, ZERO           (oscurece)
-        case w3dEngine::MezclaScreen:    // ONE, ONE_MINUS_SRC_COLOR  (aclara)
-        case w3dEngine::MezclaSubtract:  // resta                     (oscurece)
+    switch (m->mix) {
+        case w3dEngine::MixAdd:       // ONE, ONE                  (aclara)
+        case w3dEngine::MixAddAlpha:  // SRC_ALPHA, ONE            (aclara)
+        case w3dEngine::MixMultiply:  // DST_COLOR, ZERO           (oscurece)
+        case w3dEngine::MixScreen:    // ONE, ONE_MINUS_SRC_COLOR  (aclara)
+        case w3dEngine::MixSubtract:  // resta                     (oscurece)
             return true;
         default:
             return false;
@@ -186,25 +186,25 @@ bool W3dMaterialEsLuz(const Material* m) {
 }
 
 // ===== LA RECETA DE LA CALCOMANIA (ver Materials.h) =====
-bool W3dMaterialEsDecal(const Material* m) {
-    return m && m->transparent && !m->depth_write && m->depth_bias < 0.0f && m->orden_pasada == 1;
+bool W3dMaterialIsDecal(const Material* m) {
+    return m && m->transparent && !m->depth_write && m->depth_bias < 0.0f && m->order_pass == 1;
 }
 
-void W3dMaterialAplicarDecal(Material* m, bool on, float unidades) {
+void W3dMaterialApplyDecal(Material* m, bool on, float units) {
     if (!m) return;
     if (on) {
-        if (unidades == 0.0f) unidades = -4.0f;
-        m->transparent  = true;    // el blob es negro con alpha: necesita blend
-        m->depth_write  = false;   // LA clave: no escribe z -> no pelea con el piso
-        m->depth_bias   = unidades;
-        m->orden_pasada = 1;       // opacos -> DECALS -> transparentes
-        m->lighting     = false;   // la sombra no se ilumina
+        if (units == 0.0f) units = -4.0f;
+        m->transparent = true;    // el blob es negro con alpha: necesita blend
+        m->depth_write = false;   // LA clave: no escribe z -> no pelea con el piso
+        m->depth_bias  = units;
+        m->order_pass  = 1;       // opacos -> DECALS -> transparentes
+        m->lighting    = false;   // la sombra no se ilumina
     } else {
         // se deshace SOLO la receta. La transparencia se deja como esta: puede ser un
         // alpha comun que el usuario quiere conservar, y adivinarlo seria peor.
-        m->depth_write  = true;
-        m->depth_bias   = 0.0f;
-        m->orden_pasada = 0;
+        m->depth_write = true;
+        m->depth_bias  = 0.0f;
+        m->order_pass  = 0;
     }
 }
 
@@ -223,12 +223,12 @@ void AnimatedMaterial::Update(float dtSeg) {
     if (tickCounter >= frameDurations[frameIndex]) {
         tickCounter = 0;
         frameIndex = (frameIndex + 1) % frameTextures.size();
-        // la RANURA base del material es duena de su referencia (Textures.h: TexturaPonerEn), tambien la del cuadro
+        // la RANURA base del material es duena de su referencia (Textures.h: TextureSetIn), tambien la del cuadro
         // que muestra: retiene el nuevo y suelta el anterior. Asi un undo o un desplegable que la cambian, o el
         // streaming que la duerme, sueltan algo suyo y nunca el cuadro del material animado
         for (size_t t = 0; t < targets.size(); t++) {
             if (targets[t])
-                TexturaPonerEn(targets[t]->texture, frameTextures[frameIndex]);
+                TextureSetIn(targets[t]->texture, frameTextures[frameIndex]);
         }
     }
 }
@@ -242,10 +242,10 @@ void UpdateAnimatedMaterials(float dtSeg) {
     }
 }
 
-bool HayAnimacionActiva() {
+bool HasAnimationActive() {
     // tambien cuentan las animaciones UV "tira de atlas" (Mesh.cpp): el loop
     // event-driven tiene que seguir redibujando mientras haya UVs moviendose.
-    extern bool HayUVAnims();
-    extern bool W3dShaderHayAnimados();   // (un shader escrito que usa w3d_tiempo se mueve solo)
-    return !AnimatedMaterials.empty() || HayUVAnims() || W3dShaderHayAnimados();
+    extern bool HasUVAnims();
+    extern bool W3dShaderHasAnimated();   // (un shader escrito que usa w3d_time se mueve solo)
+    return !AnimatedMaterials.empty() || HasUVAnims() || W3dShaderHasAnimated();
 }

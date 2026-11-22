@@ -54,7 +54,7 @@ Matrix4 Matrix4::Inverse() const {
 // Transform la usaban para pasar de mundo al espacio local de otro nodo. Subio al Core porque
 // deshacer el transform del padre es una cuenta del ENGINE, no de la UI, y aca la ve tambien
 // el runtime del juego.
-bool Matrix4::InvertirAfin(const Matrix4& in, Matrix4& out) {
+bool Matrix4::InvertAffine(const Matrix4& in, Matrix4& out) {
     const float* m = in.m;
     float a=m[0], b=m[4], c=m[8];   // A[fila][col] = m[col*4+fila]
     float d=m[1], e=m[5], f=m[9];

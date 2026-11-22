@@ -21,7 +21,7 @@
 
 using namespace w3dEngine;
 
-static bool leerArchivo(const char* path, std::vector<unsigned char>& out) {
+static bool readFile(const char* path, std::vector<unsigned char>& out) {
     FILE* f = fopen(path, "rb");
     if (!f) return false;
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
@@ -46,7 +46,7 @@ static bool hexAKey(const char* hex, unsigned char key[32]) {
 
 int main(int argc, char** argv) {
     if (argc < 4) {
-        fprintf(stderr, "uso: w3dpack salida.w3dpack --key <64hex> | --genkey  nombre=archivo [...]\n");
+        fprintf(stderr, "uso: w3dpack salida.w3dpack --key <64hex> | --genkey  name=archivo [...]\n");
         return 1;
     }
     const char* outPath = argv[1];
@@ -79,10 +79,10 @@ int main(int argc, char** argv) {
     std::vector<std::vector<unsigned char> > blobs;
     for (int i = firstAsset; i < argc; i++) {
         const char* eq = strchr(argv[i], '=');
-        if (!eq) { fprintf(stderr, "esperaba nombre=archivo: %s\n", argv[i]); return 1; }
+        if (!eq) { fprintf(stderr, "esperaba name=archivo: %s\n", argv[i]); return 1; }
         std::string name(argv[i], eq - argv[i]);
         std::vector<unsigned char> data;
-        if (!leerArchivo(eq + 1, data)) { fprintf(stderr, "no pude leer %s\n", eq + 1); return 1; }
+        if (!readFile(eq + 1, data)) { fprintf(stderr, "no pude leer %s\n", eq + 1); return 1; }
         names.push_back(name);
         blobs.push_back(data);
     }

@@ -28,13 +28,13 @@ class W3dSound {
 public:
     short* pcm;   // interleaved (L,R,L,R... si canales = 2)
     int    frames;
-    int    canales;   // 1 o 2
-    int    rate;      // Hz del sonido (la voz avanza rate / rate del mixer muestras por muestra de salida)
+    int    channels;   // 1 o 2
+    int    rate;       // Hz del sonido (la voz avanza rate / rate del mixer muestras por muestra de salida)
     // PUNTOS DE LOOP del WAV (chunk 'smpl', el estandar de los editores de audio y de los streams de consola):
-    // con loop, al pasar loopFin la voz vuelve a loopIni (la INTRO de una musica suena una sola vez). En frames
-    // del sonido; loopFin <= 0 = sin puntos (el loop es el archivo entero, como siempre).
-    int    loopIni, loopFin;
-    W3dSound() : pcm(0), frames(0), canales(2), rate(44100), loopIni(0), loopFin(0) {}
+    // con loop, al pasar loopEnd la voz vuelve a loopStart (la INTRO de una musica suena una sola vez). En frames
+    // del sonido; loopEnd <= 0 = sin puntos (el loop es el archivo entero, como siempre).
+    int    loopStart, loopEnd;
+    W3dSound() : pcm(0), frames(0), channels(2), rate(44100), loopStart(0), loopEnd(0) {}
     ~W3dSound() { delete[] pcm; }
 };
 
@@ -57,18 +57,18 @@ struct Voice {
     bool  active;
     int   id;
     // AGENDA en el reloj del mixer (frames mezclados desde que abrio): la voz arranca en la muestra 'inicio' y
-    // empieza su rampa de salida en la muestra 'finAbs' (0 = sin agenda). Un secuenciador de musica dispara las notas
+    // empieza su rampa de salida en la muestra 'endAbs' (0 = sin agenda). Un secuenciador de musica dispara las notas
     // con anticipacion y suenan en la muestra exacta, sin depender de cuando corre el frame del juego
-    unsigned long long inicio;
-    unsigned long long finAbs;
-    float fadeFin;  // paso de la rampa agendada
-    // ENVOLVENTE (W3dEnvolvente): etapa 0 = sin envolvente (la ganancia es 1 y no cuesta nada); 1 ataque, 2 decaimiento,
+    unsigned long long start;
+    unsigned long long endAbs;
+    float fadeEnd;  // paso de la rampa agendada
+    // ENVOLVENTE (W3dEnvelope): etapa 0 = sin envolvente (la ganancia es 1 y no cuesta nada); 1 ataque, 2 decaimiento,
     // 3 sostenido, 4 liberacion. El ataque SUMA por muestra; el resto MULTIPLICA (baja lineal en dB, como los chips)
-    unsigned char envEtapa;
-    float envNivel;
-    float envAtaque, envDecae, envSost, envCaida, envLibera;
-    unsigned long long envSoltar;   // muestra del reloj del mixer en que la nota se suelta sola (0 = no)
-    float envio;                    // lo que la voz manda a la reverb (0..1)
+    unsigned char envStage;
+    float envLevel;
+    float envAttack, envDecays, envSustain, envFall, envFrees;
+    unsigned long long envRelease;   // muestra del reloj del mixer en que la nota se suelta sola (0 = no)
+    float send;                      // lo que la voz manda a la reverb (0..1)
 };
 
 // 64: un secuenciador que imita una placa de sonido (Daytona USA: 2 MultiPCM x 28 slots = 56) suena entero; con 32
@@ -77,7 +77,7 @@ static const int MAX_VOICES = 64;
 static Voice s_voices[MAX_VOICES];
 static int   s_rate      = 44100;
 // muestras del sonido que avanza la voz por muestra de salida (su rate llevado al del mixer, por el pitch)
-static float PasoDe(const W3dSound* s, float pitch) { return pitch * (float)s->rate / (float)s_rate; }
+static float StepOf(const W3dSound* s, float pitch) { return pitch * (float)s->rate / (float)s_rate; }
 static float s_master    = 1.0f;
 static int   s_nextId    = 1;
 static bool  s_ready     = false;
@@ -86,10 +86,10 @@ static bool  s_ready     = false;
 static int*  s_acc       = 0;
 static int   s_accFrames = 0;
 static float s_limGain   = 1.0f;
-static bool  s_pausa     = false;   // W3dAudioPause: el mixer saca silencio sin avanzar las voces
-static unsigned long long s_reloj = 0;   // frames MEZCLADOS (sin contar la pausa): el reloj de las agendas
-static W3dAudioFuenteFn s_fuente = 0;    // W3dAudioFuente: lo que el juego genera por su cuenta (un stream)
-static void* s_fuenteUsuario = 0;
+static bool  s_pause     = false;   // W3dAudioPause: el mixer saca silencio sin avanzar las voces
+static unsigned long long s_clock = 0;   // frames MEZCLADOS (sin contar la pausa): el reloj de las agendas
+static W3dAudioSourceFn s_source = 0;    // W3dAudioSource: lo que el juego genera por su cuenta (un stream)
+static void* s_sourceUser = 0;
 
 // ---------------------------------------------------------------------------
 //  REVERB: una sala de Schroeder y Moorer (peines en paralelo con un pasa-bajos en la realimentacion -la cola pierde
@@ -98,21 +98,21 @@ static void* s_fuenteUsuario = 0;
 //  (estereo). Todo en ENTEROS (coeficientes Q15): sin denormales y barato en un ARM sin FPU rapida. Entra el ENVIO de
 //  cada voz (mono) y lo que sale se suma a la mezcla. nivel 0 = no se procesa
 // ---------------------------------------------------------------------------
-enum { REV_PEINES = 6, REV_PASATODOS = 2 };
-static const int kRevPeine[REV_PEINES] = { 1116, 1188, 1277, 1356, 1422, 1491 };
-static const int kRevPasa[REV_PASATODOS] = { 556, 441 };
-static const int kRevSeparacion = 23;
-struct RevPeine { int* buf; int largo, pos, filtro; };
-struct RevPasa  { int* buf; int largo, pos; };
-static RevPeine s_peine[2][REV_PEINES];
-static RevPasa  s_pasa[2][REV_PASATODOS];
-static bool s_revLista = false;      // buffers armados (al rate del mixer)
-static int  s_revRealim = 0;         // realimentacion de los peines (Q15)
+enum { REV_COMBS = 6, REV_PASATODOS = 2 };
+static const int kRevComb[REV_COMBS] = { 1116, 1188, 1277, 1356, 1422, 1491 };
+static const int kRevPasses[REV_PASATODOS] = { 556, 441 };
+static const int kRevSeparation = 23;
+struct RevComb { int* buf; int length, pos, filter; };
+struct RevPasses  { int* buf; int length, pos; };
+static RevComb s_comb[2][REV_COMBS];
+static RevPasses  s_passes[2][REV_PASATODOS];
+static bool s_revList = false;      // buffers armados (al rate del mixer)
+static int  s_revFeedback = 0;      // realimentacion de los peines (Q15)
 static int  s_revAm1 = 0, s_revAm2 = 32768;   // amortiguacion: filtro = salida * am2 + filtro * am1 (Q15)
-static int  s_revNivel = 0;          // lo que se suma (Q15, ya con la escala de la salida)
-static int  s_revReposo = 0;         // muestras seguidas sin envio: pasada la cola, no se procesa
-static int* s_envio = 0;             // el envio de las voces, mono (por frame del buffer)
-static int  s_envioFrames = 0;
+static int  s_revLevel = 0;         // lo que se suma (Q15, ya con la escala de la salida)
+static int  s_revRest = 0;          // muestras seguidas sin envio: pasada la cola, no se procesa
+static int* s_send = 0;             // el envio de las voces, mono (por frame del buffer)
+static int  s_sendFrames = 0;
 
 // ---------------------------------------------------------------------------
 //  WAV: parseo desde memoria -> PCM 16-bit con sus canales (mas de 2: los dos primeros) y su rate.
@@ -133,7 +133,7 @@ static W3dSound* decodeWav(const unsigned char* b, size_t len) {
     if (len < 44 || memcmp(b, "RIFF", 4) != 0 || memcmp(b + 8, "WAVE", 4) != 0) return 0;
     int channels = 0, srcRate = 0, bits = 0;
     const unsigned char* data = 0; size_t dataLen = 0;
-    long smplIni = -1, smplFin = -1;
+    long smplStart = -1, smplEnd = -1;
     size_t off = 12;
     while (off + 8 <= len) {
         const unsigned char* id = b + off;
@@ -146,8 +146,8 @@ static W3dSound* decodeWav(const unsigned char* b, size_t len) {
             bits     = (int)rdU16(body + 14);
         } else if (memcmp(id, "smpl", 4) == 0 && csz >= 60 && off + 8 + 60 <= len && rdU32(body + 28) >= 1) {
             // el primer loop: [36] cue id, [40] tipo, [44] inicio, [48] fin (INCLUSIVE), en muestras del archivo
-            smplIni = (long)rdU32(body + 44);
-            smplFin = (long)rdU32(body + 48);
+            smplStart = (long)rdU32(body + 44);
+            smplEnd   = (long)rdU32(body + 48);
         } else if (memcmp(id, "data", 4) == 0) {
             data = body; dataLen = csz;
             if (off + 8 + dataLen > len) dataLen = len - (off + 8); // tolerar tamano pasado
@@ -163,11 +163,11 @@ static W3dSound* decodeWav(const unsigned char* b, size_t len) {
     for (int i = 0; i < srcFrames; i++)
         for (int c = 0; c < can; c++) out[(size_t)i * can + c] = srcSample(data, srcFrames, channels, bits, i, c);
     W3dSound* s = new W3dSound();
-    s->pcm = out; s->frames = srcFrames; s->canales = can; s->rate = srcRate;
-    if (smplIni >= 0 && smplFin > smplIni && smplFin < srcFrames) {
-        s->loopIni = (int)smplIni;
-        s->loopFin = (int)(smplFin + 1);   // exclusivo
-        if (s->loopIni >= s->loopFin) { s->loopIni = 0; s->loopFin = 0; }
+    s->pcm = out; s->frames = srcFrames; s->channels = can; s->rate = srcRate;
+    if (smplStart >= 0 && smplEnd > smplStart && smplEnd < srcFrames) {
+        s->loopStart = (int)smplStart;
+        s->loopEnd   = (int)(smplEnd + 1);   // exclusivo
+        if (s->loopStart >= s->loopEnd) { s->loopStart = 0; s->loopEnd = 0; }
     }
     return s;
 }
@@ -182,7 +182,7 @@ bool W3dAudioInit(int sampleRate) {
     if (!s_acc) { s_accFrames = 8192; s_acc = new int[(size_t)s_accFrames * 2]; }
     s_limGain = 1.0f;
     s_ready = W3dAudioBackendInit(s_rate);
-    // QUE QUEDE DICHO: sin mixer abierto, sonido() ni siquiera intenta leer el .wav
+    // QUE QUEDE DICHO: sin mixer abierto, sound() ni siquiera intenta leer el .wav
     // (W3dSoundLoad corta en s_ready). Un juego mudo por esto no dejaba NINGUNA
     // pista en el log y parecia "faltan los sonidos en el paquete".
     if (s_ready) w3dLogf("[audio] mixer abierto a %d Hz", s_rate);
@@ -214,12 +214,12 @@ W3dSound* W3dSoundBeep(float freq, int ms, float vol) {
     if (frames < 1) frames = 1;
     W3dSound* s = new W3dSound();
     s->pcm = new short[frames];
-    s->frames = frames; s->canales = 1; s->rate = s_rate;
-    float periodo = (float)s_rate / freq;      // muestras por ciclo
+    s->frames = frames; s->channels = 1; s->rate = s_rate;
+    float period = (float)s_rate / freq;      // muestras por ciclo
     int fade = s_rate / 200; if (fade < 1) fade = 1;   // ~5 ms
     for (int i = 0; i < frames; i++) {
-        float fase = (float)i / periodo;
-        float sq = ((fase - (float)(int)fase) < 0.5f) ? 1.0f : -1.0f;   // onda cuadrada
+        float phase = (float)i / period;
+        float sq = ((phase - (float)(int)phase) < 0.5f) ? 1.0f : -1.0f;   // onda cuadrada
         float g = vol;
         if (i < fade) g *= (float)i / (float)fade;                       // fade in
         if (i > frames - fade) g *= (float)(frames - i) / (float)fade;   // fade out
@@ -237,12 +237,12 @@ W3dSound* W3dSoundLoad(const char* path) {
     // ADENTRO DEL APK, donde NO existe como archivo y el fopen falla siempre.
     // Era el motivo de que el juego de Android estuviera mudo con los .wav
     // perfectamente empaquetados adentro del APK.
-    std::vector<unsigned char> datos;
-    if (!w3dFileSystem::ReadFileBytes(std::string(path), datos) || datos.empty()) {
+    std::vector<unsigned char> data;
+    if (!w3dFileSystem::ReadFileBytes(std::string(path), data) || data.empty()) {
         w3dLogfW("[audio] no pude leer '%s' (no esta ni en el disco, ni en el pak, ni en los assets)", path);
         return 0;
     }
-    return decodeWav(&datos[0], datos.size());
+    return decodeWav(&data[0], data.size());
 }
 
 void W3dSoundFree(W3dSound* s) {
@@ -268,43 +268,43 @@ int W3dSoundPlayPitchPan(W3dSound* s, float volume, bool loop, float pitch, floa
     return W3dSoundPlayAt(s, volume, loop, pitch, pan, -1.0);
 }
 
-double W3dAudioReloj() {
+double W3dAudioClock() {
     if (!s_ready) return 0.0;
     W3dAudioBackendLock();
-    const double t = (double)s_reloj / (double)s_rate;
+    const double t = (double)s_clock / (double)s_rate;
     W3dAudioBackendUnlock();
     return t;
 }
 
-int W3dSoundPlayAt(W3dSound* s, float volume, bool loop, float pitch, float pan, double enSeg) {
-    return W3dSoundPlayEnv(s, volume, loop, pitch, pan, enSeg, 0, 0.0f);
+int W3dSoundPlayAt(W3dSound* s, float volume, bool loop, float pitch, float pan, double inSeg) {
+    return W3dSoundPlayEnv(s, volume, loop, pitch, pan, inSeg, 0, 0.0f);
 }
 
 // los pasos por muestra de una envolvente (los pow se hacen aca, al disparar; el mixer solo suma y multiplica)
-static void ArmarEnvolvente(Voice& v, const W3dEnvolvente* e) {
-    v.envEtapa = 0; v.envNivel = 1.0f; v.envSoltar = 0;
-    v.envAtaque = 0.0f; v.envDecae = 0.0f; v.envSost = 1.0f; v.envCaida = 1.0f; v.envLibera = 0.0f;
+static void BuildEnvelope(Voice& v, const W3dEnvelope* e) {
+    v.envStage = 0; v.envLevel = 1.0f; v.envRelease = 0;
+    v.envAttack = 0.0f; v.envDecays = 0.0f; v.envSustain = 1.0f; v.envFall = 1.0f; v.envFrees = 0.0f;
     if (!e) return;
     const double r = (double)s_rate;
-    float sost = e->sostenido; if (sost < 0.0f) sost = 0.0f; if (sost > 1.0f) sost = 1.0f;
-    v.envSost = sost;
-    if (e->ataque > 0.0f) v.envAtaque = (float)(1.0 / ((double)e->ataque * r));
-    if (e->decaimiento > 0.0f && sost < 1.0f)
-        v.envDecae = (float)pow(sost > 0.001f ? (double)sost : 0.001, 1.0 / ((double)e->decaimiento * r));
-    if (e->caida > 0.0f) v.envCaida = (float)pow(0.001, 1.0 / ((double)e->caida * r));
-    v.envLibera = (float)pow(0.001, 1.0 / ((double)(e->liberacion > 0.0f ? e->liberacion : 0.005f) * r));
-    if (e->duracion > 0.0f) {
-        const unsigned long long desde = v.inicio > s_reloj ? v.inicio : s_reloj;
-        v.envSoltar = desde + (unsigned long long)((double)e->duracion * r + 0.5);
-        if (v.envSoltar < 1) v.envSoltar = 1;
+    float sustain = e->held; if (sustain < 0.0f) sustain = 0.0f; if (sustain > 1.0f) sustain = 1.0f;
+    v.envSustain = sustain;
+    if (e->attack > 0.0f) v.envAttack = (float)(1.0 / ((double)e->attack * r));
+    if (e->decay > 0.0f && sustain < 1.0f)
+        v.envDecays = (float)pow(sustain > 0.001f ? (double)sustain : 0.001, 1.0 / ((double)e->decay * r));
+    if (e->fall > 0.0f) v.envFall = (float)pow(0.001, 1.0 / ((double)e->fall * r));
+    v.envFrees = (float)pow(0.001, 1.0 / ((double)(e->release > 0.0f ? e->release : 0.005f) * r));
+    if (e->duration > 0.0f) {
+        const unsigned long long from = v.start > s_clock ? v.start : s_clock;
+        v.envRelease = from + (unsigned long long)((double)e->duration * r + 0.5);
+        if (v.envRelease < 1) v.envRelease = 1;
     }
-    if (v.envAtaque > 0.0f)     { v.envEtapa = 1; v.envNivel = 0.0f; }
-    else if (v.envDecae > 0.0f) { v.envEtapa = 2; v.envNivel = 1.0f; }
-    else                        { v.envEtapa = 3; v.envNivel = sost; }
+    if (v.envAttack > 0.0f)     { v.envStage = 1; v.envLevel = 0.0f; }
+    else if (v.envDecays > 0.0f) { v.envStage = 2; v.envLevel = 1.0f; }
+    else                        { v.envStage = 3; v.envLevel = sustain; }
 }
 
-int W3dSoundPlayEnv(W3dSound* s, float volume, bool loop, float pitch, float pan, double enSeg,
-                    const W3dEnvolvente* env, float envioReverb) {
+int W3dSoundPlayEnv(W3dSound* s, float volume, bool loop, float pitch, float pan, double inSeg,
+                    const W3dEnvelope* env, float sendReverb) {
     if (!s_ready || !s) return 0;
     if (pitch < 0.05f) pitch = 0.05f; if (pitch > 8.0f) pitch = 8.0f;   // limites sanos
     if (pan < -1.0f) pan = -1.0f; if (pan > 1.0f) pan = 1.0f;
@@ -313,16 +313,16 @@ int W3dSoundPlayEnv(W3dSound* s, float volume, bool loop, float pitch, float pan
     for (int i = 0; i < MAX_VOICES; i++) {
         if (!s_voices[i].active) {
             Voice& v = s_voices[i];
-            v.s = s; v.pos = 0.0f; v.step = PasoDe(s, pitch); v.vol = volume; v.loop = loop; v.active = true;
+            v.s = s; v.pos = 0.0f; v.step = StepOf(s, pitch); v.vol = volume; v.loop = loop; v.active = true;
             v.fadeGain = 1.0f; v.fadeStep = 0.0f;   // sin rampa: la voz suena a su volumen
             v.gL = pan > 0.0f ? 1.0f - pan : 1.0f;  // el lado fuerte a 1, el otro atenuado
             v.gR = pan < 0.0f ? 1.0f + pan : 1.0f;
             v.id = id = s_nextId++;
             if (s_nextId <= 0) s_nextId = 1;
-            v.inicio = (enSeg > 0.0) ? (unsigned long long)(enSeg * (double)s_rate + 0.5) : 0;
-            v.finAbs = 0; v.fadeFin = 0.0f;
-            ArmarEnvolvente(v, env);
-            v.envio = envioReverb < 0.0f ? 0.0f : (envioReverb > 1.0f ? 1.0f : envioReverb);
+            v.start  = (inSeg > 0.0) ? (unsigned long long)(inSeg * (double)s_rate + 0.5) : 0;
+            v.endAbs = 0; v.fadeEnd = 0.0f;
+            BuildEnvelope(v, env);
+            v.send = sendReverb < 0.0f ? 0.0f : (sendReverb > 1.0f ? 1.0f : sendReverb);
             break;
         }
     }
@@ -346,95 +346,95 @@ void W3dSoundStopFade(int voice, float fadeSeg) {
     W3dSoundStopFadeAt(voice, fadeSeg, -1.0);
 }
 
-// la rampa de salida AGENDADA en el reloj del mixer (enSeg <= 0: ya). Una voz agendada que todavia no arranco y se
+// la rampa de salida AGENDADA en el reloj del mixer (inSeg <= 0: ya). Una voz agendada que todavia no arranco y se
 // corta ya, no suena nunca.
-void W3dSoundStopFadeAt(int voice, float fadeSeg, double enSeg) {
+void W3dSoundStopFadeAt(int voice, float fadeSeg, double inSeg) {
     if (!s_ready || voice <= 0) return;
     if (fadeSeg <= 0.0f) fadeSeg = 0.005f;
     W3dAudioBackendLock();
     for (int i = 0; i < MAX_VOICES; i++)
         if (s_voices[i].active && s_voices[i].id == voice) {
             Voice& v = s_voices[i];
-            if (enSeg > 0.0) {
+            if (inSeg > 0.0) {
                 float frames = fadeSeg * (float)s_rate;
                 if (frames < 1.0f) frames = 1.0f;
-                v.finAbs = (unsigned long long)(enSeg * (double)s_rate + 0.5);
-                if (v.finAbs < 1) v.finAbs = 1;
-                v.fadeFin = 1.0f / frames;
+                v.endAbs = (unsigned long long)(inSeg * (double)s_rate + 0.5);
+                if (v.endAbs < 1) v.endAbs = 1;
+                v.fadeEnd = 1.0f / frames;
                 continue;
             }
-            if (v.inicio > s_reloj) { v.active = false; continue; }
+            if (v.start > s_clock) { v.active = false; continue; }
             float frames = fadeSeg * (float)s_rate;
             if (frames < 1.0f) frames = 1.0f;
-            float paso = v.fadeGain / frames;   // llega a 0 en fadeSeg desde el gain actual
-            if (paso > v.fadeStep) v.fadeStep = paso;   // un fade MAS corto que el que ya corre, manda
-            if (v.fadeStep <= 0.0f) v.fadeStep = paso;
+            float step = v.fadeGain / frames;   // llega a 0 en fadeSeg desde el gain actual
+            if (step > v.fadeStep) v.fadeStep = step;   // un fade MAS corto que el que ya corre, manda
+            if (v.fadeStep <= 0.0f) v.fadeStep = step;
         }
     W3dAudioBackendUnlock();
 }
 
 // soltar la nota: la envolvente pasa a su liberacion. Sin envolvente, la rampa corta de siempre
-void W3dSoundSoltar(int voice) {
+void W3dSoundRelease(int voice) {
     if (!s_ready || voice <= 0) return;
-    bool sinEnvolvente = false;
+    bool noEnvelope = false;
     W3dAudioBackendLock();
     for (int i = 0; i < MAX_VOICES; i++)
         if (s_voices[i].active && s_voices[i].id == voice) {
-            if (s_voices[i].envEtapa) { s_voices[i].envEtapa = 4; s_voices[i].envSoltar = 0; }
-            else sinEnvolvente = true;
+            if (s_voices[i].envStage) { s_voices[i].envStage = 4; s_voices[i].envRelease = 0; }
+            else noEnvelope = true;
         }
     W3dAudioBackendUnlock();
-    if (sinEnvolvente) W3dSoundStopFade(voice, 0.005f);
+    if (noEnvelope) W3dSoundStopFade(voice, 0.005f);
 }
 
-void W3dSoundSetEnvio(int voice, float envio) {
+void W3dSoundSetSend(int voice, float send) {
     if (!s_ready || voice <= 0) return;
-    if (envio < 0.0f) envio = 0.0f; if (envio > 1.0f) envio = 1.0f;
+    if (send < 0.0f) send = 0.0f; if (send > 1.0f) send = 1.0f;
     W3dAudioBackendLock();
     for (int i = 0; i < MAX_VOICES; i++)
-        if (s_voices[i].active && s_voices[i].id == voice) s_voices[i].envio = envio;
+        if (s_voices[i].active && s_voices[i].id == voice) s_voices[i].send = send;
     W3dAudioBackendUnlock();
 }
 
 // arma los buffers de la reverb (una vez, al rate del mixer) y fija la sala. Los buffers se piden aca (hilo del juego)
 // y se cuelgan bajo el lock: el hilo de audio nunca reserva memoria
-void W3dAudioReverb(float sala, float amortiguacion, float nivel) {
+void W3dAudioReverb(float room, float damping, float level) {
     if (!s_ready) return;
-    if (sala < 0.0f) sala = 0.0f; if (sala > 1.0f) sala = 1.0f;
-    if (amortiguacion < 0.0f) amortiguacion = 0.0f; if (amortiguacion > 1.0f) amortiguacion = 1.0f;
-    if (nivel < 0.0f) nivel = 0.0f; if (nivel > 1.0f) nivel = 1.0f;
-    if (!s_revLista && nivel > 0.0f) {
-        RevPeine pe[2][REV_PEINES];
-        RevPasa pa[2][REV_PASATODOS];
+    if (room < 0.0f) room = 0.0f; if (room > 1.0f) room = 1.0f;
+    if (damping < 0.0f) damping = 0.0f; if (damping > 1.0f) damping = 1.0f;
+    if (level < 0.0f) level = 0.0f; if (level > 1.0f) level = 1.0f;
+    if (!s_revList && level > 0.0f) {
+        RevComb pe[2][REV_COMBS];
+        RevPasses pa[2][REV_PASATODOS];
         for (int c = 0; c < 2; c++) {
-            for (int k = 0; k < REV_PEINES; k++) {
-                int n = (int)((long)(kRevPeine[k] + c * kRevSeparacion) * s_rate / 44100); if (n < 8) n = 8;
+            for (int k = 0; k < REV_COMBS; k++) {
+                int n = (int)((long)(kRevComb[k] + c * kRevSeparation) * s_rate / 44100); if (n < 8) n = 8;
                 pe[c][k].buf = new int[n]; memset(pe[c][k].buf, 0, sizeof(int) * (size_t)n);
-                pe[c][k].largo = n; pe[c][k].pos = 0; pe[c][k].filtro = 0;
+                pe[c][k].length = n; pe[c][k].pos = 0; pe[c][k].filter = 0;
             }
             for (int k = 0; k < REV_PASATODOS; k++) {
-                int n = (int)((long)(kRevPasa[k] + c * kRevSeparacion) * s_rate / 44100); if (n < 4) n = 4;
+                int n = (int)((long)(kRevPasses[k] + c * kRevSeparation) * s_rate / 44100); if (n < 4) n = 4;
                 pa[c][k].buf = new int[n]; memset(pa[c][k].buf, 0, sizeof(int) * (size_t)n);
-                pa[c][k].largo = n; pa[c][k].pos = 0;
+                pa[c][k].length = n; pa[c][k].pos = 0;
             }
         }
         W3dAudioBackendLock();
-        memcpy(s_peine, pe, sizeof(pe));
-        memcpy(s_pasa, pa, sizeof(pa));
-        s_revLista = true;
+        memcpy(s_comb, pe, sizeof(pe));
+        memcpy(s_passes, pa, sizeof(pa));
+        s_revList = true;
         W3dAudioBackendUnlock();
     }
     // los valores de Freeverb: realimentacion 0.7..0.98, amortiguacion hasta 0.4; la entrada entra a 0.02 (6 peines).
     // La salida va por 9: con nivel 1 la cola de un sonido de banda ancha suena tan fuerte como lo que se le mando
     // (medido con ruido: con 3, la de Freeverb, quedaba 10 dB abajo). Asi un envio de -15 dB (el de un anillo en la
     // Dreamcast) se oye a -15 dB, como con el DSP del chip
-    const float realim = 0.7f + 0.28f * sala;
-    const float am = 0.4f * amortiguacion;
+    const float feedback = 0.7f + 0.28f * room;
+    const float am = 0.4f * damping;
     W3dAudioBackendLock();
-    s_revRealim = (int)(realim * 32768.0f);
+    s_revFeedback = (int)(feedback * 32768.0f);
     s_revAm1 = (int)(am * 32768.0f);
     s_revAm2 = 32768 - s_revAm1;
-    s_revNivel = (int)(nivel * 9.0f * 32768.0f);
+    s_revLevel = (int)(level * 9.0f * 32768.0f);
     W3dAudioBackendUnlock();
 }
 
@@ -447,13 +447,13 @@ void W3dSoundStopAll() {
     W3dAudioBackendUnlock();
 }
 
-void W3dAudioPause(bool pausa) {
+void W3dAudioPause(bool pause) {
     if (!s_ready) return;
     W3dAudioBackendLock();
-    s_pausa = pausa;
+    s_pause = pause;
     W3dAudioBackendUnlock();
 }
-bool W3dAudioPaused() { return s_pausa; }
+bool W3dAudioPaused() { return s_pause; }
 
 void W3dSoundSetVolume(int voice, float volume) {
     if (!s_ready || voice <= 0) return;
@@ -468,7 +468,7 @@ void W3dSoundSetPitch(int voice, float pitch) {
     if (pitch < 0.05f) pitch = 0.05f; if (pitch > 8.0f) pitch = 8.0f;
     W3dAudioBackendLock();
     for (int i = 0; i < MAX_VOICES; i++)
-        if (s_voices[i].active && s_voices[i].id == voice) s_voices[i].step = PasoDe(s_voices[i].s, pitch);
+        if (s_voices[i].active && s_voices[i].id == voice) s_voices[i].step = StepOf(s_voices[i].s, pitch);
     W3dAudioBackendUnlock();
 }
 
@@ -486,9 +486,9 @@ float W3dSoundPos(int voice) {
 
 void W3dSoundSetPan(int voice, float pan) {
     if (pan < -1.0f) pan = -1.0f; if (pan > 1.0f) pan = 1.0f;
-    W3dSoundSetGanancias(voice, pan > 0.0f ? 1.0f - pan : 1.0f, pan < 0.0f ? 1.0f + pan : 1.0f);
+    W3dSoundSetGains(voice, pan > 0.0f ? 1.0f - pan : 1.0f, pan < 0.0f ? 1.0f + pan : 1.0f);
 }
-void W3dSoundSetGanancias(int voice, float gL, float gR) {
+void W3dSoundSetGains(int voice, float gL, float gR) {
     if (!s_ready || voice <= 0) return;
     if (gL < 0.0f) gL = 0.0f; if (gL > 1.0f) gL = 1.0f; if (gR < 0.0f) gR = 0.0f; if (gR > 1.0f) gR = 1.0f;
     W3dAudioBackendLock();
@@ -496,30 +496,30 @@ void W3dSoundSetGanancias(int voice, float gL, float gR) {
         if (s_voices[i].active && s_voices[i].id == voice) { s_voices[i].gL = gL; s_voices[i].gR = gR; }
     W3dAudioBackendUnlock();
 }
-float W3dSoundDuracion(const W3dSound* s) {
+float W3dSoundDuration(const W3dSound* s) {
     return (s && s->rate > 0) ? (float)s->frames / (float)s->rate : 0.0f;
 }
-W3dSound* W3dSoundRecortar(const W3dSound* s, float desde, float hasta) {
+W3dSound* W3dSoundCrop(const W3dSound* s, float from, float until) {
     if (!s || !s->pcm || s->frames <= 0 || s->rate <= 0) return 0;
-    int a = (int)(desde * (float)s->rate), b = (hasta > 0.0f) ? (int)(hasta * (float)s->rate) : s->frames;
+    int a = (int)(from * (float)s->rate), b = (until > 0.0f) ? (int)(until * (float)s->rate) : s->frames;
     if (a < 0) a = 0; if (b > s->frames) b = s->frames;
     if (b - a < 1) return 0;
     W3dSound* r = new W3dSound();
-    r->frames = b - a; r->canales = s->canales; r->rate = s->rate;
-    r->pcm = new short[(size_t)r->frames * r->canales];
-    memcpy(r->pcm, s->pcm + (size_t)a * s->canales, (size_t)r->frames * r->canales * sizeof(short));
+    r->frames = b - a; r->channels = s->channels; r->rate = s->rate;
+    r->pcm = new short[(size_t)r->frames * r->channels];
+    memcpy(r->pcm, s->pcm + (size_t)a * s->channels, (size_t)r->frames * r->channels * sizeof(short));
     return r;
 }
-void W3dSoundPicos(const W3dSound* s, int n, float* picos) {
-    if (!picos || n <= 0) return;
-    for (int i = 0; i < n; i++) picos[i] = 0.0f;
+void W3dSoundPeaks(const W3dSound* s, int n, float* peaks) {
+    if (!peaks || n <= 0) return;
+    for (int i = 0; i < n; i++) peaks[i] = 0.0f;
     if (!s || !s->pcm || s->frames <= 0) return;
     for (int i = 0; i < n; i++) {
         const long a = (long)((double)i * s->frames / n), b = (long)((double)(i + 1) * s->frames / n);
         int m = 0;
         for (long f = a; f < b && f < s->frames; f++)
-            for (int c = 0; c < s->canales; c++) { int v = s->pcm[(size_t)f * s->canales + c]; if (v < 0) v = -v; if (v > m) m = v; }
-        picos[i] = (float)m / 32767.0f;
+            for (int c = 0; c < s->channels; c++) { int v = s->pcm[(size_t)f * s->channels + c]; if (v < 0) v = -v; if (v > m) m = v; }
+        peaks[i] = (float)m / 32767.0f;
     }
 }
 void W3dSoundSetPos(int voice, float seg) {
@@ -533,10 +533,10 @@ void W3dSoundSetPos(int voice, float seg) {
 
 void W3dAudioMasterVolume(float v) { s_master = v < 0 ? 0 : (v > 1 ? 1 : v); }
 
-// volumen del JUEGO (0..1): un SEGUNDO escalar, independiente del master de usuario, para que el aplicar() del
+// volumen del JUEGO (0..1): un SEGUNDO escalar, independiente del master de usuario, para que el apply() del
 // volumen de usuario no lo pise. Lo setea la tarjeta Juego (0..100 -> /100) y se aplica al abrir el .w3d.
-static float s_juego = 1.0f;
-void W3dAudioJuegoVolume(float v) { s_juego = v < 0 ? 0 : (v > 1 ? 1 : v); }
+static float s_game = 1.0f;
+void W3dAudioGameVolume(float v) { s_game = v < 0 ? 0 : (v > 1 ? 1 : v); }
 
 // un producto Q15 REDONDEADO al mas cercano: con '>> 15' solo (hacia abajo) la realimentacion de los peines junta un
 // sesgo negativo y la cola termina en una continua que no se apaga nunca
@@ -547,56 +547,56 @@ static inline int Q15(long long x) { return (int)((x + 16384) >> 15); }
 enum { REV_FRAC = 8 };
 
 // la REVERB sobre el envio de este buffer, sumada a la mezcla (ver arriba). Pasada la cola sin envio no se procesa
-static void ReverbMezclar(int* acc, const int* envio, int frames) {
-    bool hayEnvio = false;
-    for (int i = 0; i < frames && !hayEnvio; i++) hayEnvio = envio[i] != 0;
-    if (hayEnvio) s_revReposo = 0;
+static void ReverbMix(int* acc, const int* send, int frames) {
+    bool hasSend = false;
+    for (int i = 0; i < frames && !hasSend; i++) hasSend = send[i] != 0;
+    if (hasSend) s_revRest = 0;
     else {
-        if (s_revReposo > s_rate * 8) return;   // la cola ya se apago (8 s alcanzan para la sala mas larga)
-        s_revReposo += frames;
+        if (s_revRest > s_rate * 8) return;   // la cola ya se apago (8 s alcanzan para la sala mas larga)
+        s_revRest += frames;
     }
     for (int i = 0; i < frames; i++) {
-        const int ent = Q15((long long)envio[i] * (655 << REV_FRAC));   // 0.02, con la fraccion
+        const int ent = Q15((long long)send[i] * (655 << REV_FRAC));   // 0.02, con la fraccion
         for (int c = 0; c < 2; c++) {
             int sal = 0;
-            for (int k = 0; k < REV_PEINES; k++) {
-                RevPeine& p = s_peine[c][k];
+            for (int k = 0; k < REV_COMBS; k++) {
+                RevComb& p  = s_comb[c][k];
                 const int o = p.buf[p.pos];
-                p.filtro = Q15((long long)o * s_revAm2 + (long long)p.filtro * s_revAm1);
-                p.buf[p.pos] = ent + Q15((long long)p.filtro * s_revRealim);
-                if (++p.pos >= p.largo) p.pos = 0;
+                p.filter = Q15((long long)o * s_revAm2 + (long long)p.filter * s_revAm1);
+                p.buf[p.pos] = ent + Q15((long long)p.filter * s_revFeedback);
+                if (++p.pos >= p.length) p.pos = 0;
                 sal += o;
             }
             for (int k = 0; k < REV_PASATODOS; k++) {
-                RevPasa& a = s_pasa[c][k];
+                RevPasses& a = s_passes[c][k];
                 const int bo = a.buf[a.pos];
                 a.buf[a.pos] = sal + bo / 2;   // (division: simetrica, sin sesgo)
                 sal = bo - sal;
-                if (++a.pos >= a.largo) a.pos = 0;
+                if (++a.pos >= a.length) a.pos = 0;
             }
-            acc[i * 2 + c] += (int)(((long long)sal * s_revNivel + (1LL << (14 + REV_FRAC))) >> (15 + REV_FRAC));
+            acc[i * 2 + c] += (int)(((long long)sal * s_revLevel + (1LL << (14 + REV_FRAC))) >> (15 + REV_FRAC));
         }
     }
 }
 
-#ifndef W3D_MEZCLA_FLOAT
+#ifndef W3D_MIX_FLOAT
 // LA VOZ COMUN (sin envolvente ni envio a la reverb: los efectos y las notas de un juego), en ENTEROS: la posicion en
 // 16.16, la interpolacion lineal en Q15 y la ganancia en Q14, por tramos de hasta 32 muestras (la rampa de salida se
 // interpola dentro del tramo). Lo que en el camino general se mira en cada muestra (el fin de la vuelta, la rampa
 // agendada, el fin de la rampa) aca se mira una vez por tramo: el tramo termina justo antes. Suena igual que el camino
 // general (que sigue para las voces con envolvente o reverb); en el N95 el VFP convertia float <-> int varias veces por
 // muestra y voz, y el hilo del sonido se comia un cuarto de la CPU. (-DW3D_MEZCLA_FLOAT: todo por el camino general)
-static void MezclarVozEntera(Voice& v, int* acc, int i0, int frames, float g) {
+static void MixWholeVoice(Voice& v, int* acc, int i0, int frames, float g) {
     const short* p = v.s->pcm;
-    const bool mono = v.s->canales == 1;
+    const bool mono = v.s->channels == 1;
     const int fr = v.s->frames;
-    const bool conPuntos = v.loop && v.s->loopFin > 0;
-    const int finVuelta = conPuntos ? v.s->loopFin : fr;
-    const int iniVuelta = conPuntos ? v.s->loopIni : 0;
-    const bool lazo = v.loop && fr > 0;
+    const bool withPoints = v.loop && v.s->loopEnd > 0;
+    const int endTurn   = withPoints ? v.s->loopEnd : fr;
+    const int startTurn = withPoints ? v.s->loopStart : 0;
+    const bool loop = v.loop && fr > 0;
     int pos = (int)v.pos;
     unsigned frac = (unsigned)((v.pos - (float)pos) * 65536.0f) & 0xFFFFu;
-    const unsigned paso = (unsigned)(v.step * 65536.0f + 0.5f);
+    const unsigned step = (unsigned)(v.step * 65536.0f + 0.5f);
     // (la ganancia en Q14: 4 = el tope sin desbordar 32 bits con una muestra de 16)
     float gl = g * v.gL, gr = g * v.gR;
     if (gl > 3.99f) gl = 3.99f;
@@ -606,37 +606,37 @@ static void MezclarVozEntera(Voice& v, int* acc, int i0, int frames, float g) {
         int n = frames - i;
         if (n > 32) n = 32;
         // la rampa agendada: empieza en su muestra
-        if (v.finAbs) {
-            const unsigned long long ahora = s_reloj + (unsigned long long)i;
-            if (ahora >= v.finAbs) {
-                if (v.fadeStep <= 0.0f || v.fadeFin > v.fadeStep) v.fadeStep = v.fadeFin * v.fadeGain;
-                v.finAbs = 0;
-            } else if (v.finAbs - ahora < (unsigned long long)n) n = (int)(v.finAbs - ahora);
+        if (v.endAbs) {
+            const unsigned long long now = s_clock + (unsigned long long)i;
+            if (now >= v.endAbs) {
+                if (v.fadeStep <= 0.0f || v.fadeEnd > v.fadeStep) v.fadeStep = v.fadeEnd * v.fadeGain;
+                v.endAbs = 0;
+            } else if (v.endAbs - now < (unsigned long long)n) n = (int)(v.endAbs - now);
         }
         // el fin de la vuelta (o del sonido)
-        if (pos >= finVuelta) {
-            if (lazo) {
-                pos -= finVuelta - iniVuelta;
-                if (pos < 0 || pos >= fr) { pos = iniVuelta; frac = 0; }
+        if (pos >= endTurn) {
+            if (loop) {
+                pos -= endTurn - startTurn;
+                if (pos < 0 || pos >= fr) { pos = startTurn; frac = 0; }
             } else { v.active = false; break; }
         }
         // las muestras en que la siguiente (la de interpolar) todavia es pos + 1; la del borde va sola
-        bool borde = false;
-        if (pos + 1 >= finVuelta) { n = 1; borde = true; }
-        else if (paso > 0) {
-            const long long falta = ((long long)(finVuelta - 1 - pos) << 16) - (long long)frac;
-            const long long k = (falta + paso - 1) / paso;
+        bool border = false;
+        if (pos + 1 >= endTurn) { n = 1; border = true; }
+        else if (step > 0) {
+            const long long missing = ((long long)(endTurn - 1 - pos) << 16) - (long long)frac;
+            const long long k = (missing + step - 1) / step;
             if (k < n) n = (int)k;
         }
         // la rampa de salida: termina la voz en este tramo?
         const float fg0 = v.fadeGain;
-        bool termina = false;
+        bool finishes = false;
         if (v.fadeStep > 0.0f && fg0 - v.fadeStep * (float)n <= 0.0f) {
             int m = (int)(fg0 / v.fadeStep);
             if (fg0 - v.fadeStep * (float)m > 0.0f) m++;
             if (m < 1) m = 1;
             if (m < n) n = m;
-            termina = true;
+            finishes = true;
         }
         int gL0 = (int)(gl * fg0 * 16384.0f), gR0 = (int)(gr * fg0 * 16384.0f);
         const int dL = v.fadeStep > 0.0f ? (int)(gl * v.fadeStep * 16384.0f) : 0;
@@ -645,119 +645,119 @@ static void MezclarVozEntera(Voice& v, int* acc, int i0, int frames, float g) {
         if (mono) {
             for (int j = 0; j < n; j++) {
                 const int s0 = p[pos];
-                const int s1 = borde ? p[lazo ? iniVuelta : pos] : p[pos + 1];
+                const int s1 = border ? p[loop ? startTurn : pos] : p[pos + 1];
                 const int s = s0 + (((s1 - s0) * (int)(frac >> 1)) >> 15);
                 a[0] += (s * gL0) >> 14;
                 a[1] += (s * gR0) >> 14;
                 a += 2;
                 gL0 -= dL; gR0 -= dR;
-                frac += paso; pos += (int)(frac >> 16); frac &= 0xFFFFu;
+                frac += step; pos += (int)(frac >> 16); frac &= 0xFFFFu;
             }
         } else {
             for (int j = 0; j < n; j++) {
-                const int q1 = borde ? (lazo ? iniVuelta : pos) : pos + 1;
+                const int q1 = border ? (loop ? startTurn : pos) : pos + 1;
                 const int l0 = p[pos * 2], l1 = p[q1 * 2], r0 = p[pos * 2 + 1], r1 = p[q1 * 2 + 1];
                 const int f = (int)(frac >> 1);
                 a[0] += ((l0 + (((l1 - l0) * f) >> 15)) * gL0) >> 14;
                 a[1] += ((r0 + (((r1 - r0) * f) >> 15)) * gR0) >> 14;
                 a += 2;
                 gL0 -= dL; gR0 -= dR;
-                frac += paso; pos += (int)(frac >> 16); frac &= 0xFFFFu;
+                frac += step; pos += (int)(frac >> 16); frac &= 0xFFFFu;
             }
         }
         if (v.fadeStep > 0.0f) v.fadeGain = fg0 - v.fadeStep * (float)n;
         i += n;
-        if (termina) { v.active = false; break; }
+        if (finishes) { v.active = false; break; }
     }
     v.pos = (float)pos + (float)frac / 65536.0f;
 }
 #endif
 
-// La MEZCLA (corre en el hilo de audio, bajo la exclusion del backend; W3dAudioGrabar la llama igual):
+// La MEZCLA (corre en el hilo de audio, bajo la exclusion del backend; W3dAudioRecord la llama igual):
 // 1) cada voz se suma a un acumulador de 32 bits (sin recortar por voz) leyendo el PCM con interpolacion LINEAL entre
 //    la muestra actual y la siguiente (pitch fraccional limpio), por su volumen, su rampa de salida, su ENVOLVENTE y
 //    su paneo; lo que manda a la reverb (su ENVIO) va a otro acumulador, mono;
 // 2) la REVERB procesa ese envio y lo suma;
 // 3) la suma pasa por un LIMITADOR de picos: si un frame supera el rango de 16 bits, la ganancia baja en el acto a lo
 //    justo y despues se recupera en ~0.3 s. Muchas voces a la vez (musica secuenciada) no saturan ni distorsionan.
-static void Mezclar(short* out, int frames) {
+static void Mix(short* out, int frames) {
     if (frames > s_accFrames || !s_acc) {
         delete[] s_acc; s_accFrames = frames; s_acc = new int[(size_t)frames * 2];
     }
-    if (frames > s_envioFrames || !s_envio) {
-        delete[] s_envio; s_envioFrames = frames; s_envio = new int[(size_t)frames];
+    if (frames > s_sendFrames || !s_send) {
+        delete[] s_send; s_sendFrames = frames; s_send = new int[(size_t)frames];
     }
     int* acc = s_acc;
-    int* envio = s_envio;
+    int* send = s_send;
     for (int i = 0; i < frames * 2; i++) acc[i] = 0;
-    for (int i = 0; i < frames; i++) envio[i] = 0;
-    const bool conReverb = s_revLista && s_revNivel > 0;
+    for (int i = 0; i < frames; i++) send[i] = 0;
+    const bool withReverb = s_revList && s_revLevel > 0;
     for (int vi = 0; vi < MAX_VOICES; vi++) {
         Voice& v = s_voices[vi];
         if (!v.active) continue;
-        float g = v.vol * s_master * s_juego;
+        float g = v.vol * s_master * s_game;
         const short* p = v.s->pcm;
-        const bool mono = v.s->canales == 1;
+        const bool mono = v.s->channels == 1;
         int fr = v.s->frames;
-        // con puntos de loop (smpl): la voz en loop termina su vuelta en loopFin y vuelve a loopIni
-        const bool conPuntos = v.loop && v.s->loopFin > 0;
-        const int finVuelta = conPuntos ? v.s->loopFin : fr;
-        const int iniVuelta = conPuntos ? v.s->loopIni : 0;
-        const bool manda = conReverb && v.envio > 0.0f;
+        // con puntos de loop (smpl): la voz en loop termina su vuelta en loopEnd y vuelve a loopStart
+        const bool withPoints = v.loop && v.s->loopEnd > 0;
+        const int endTurn   = withPoints ? v.s->loopEnd : fr;
+        const int startTurn = withPoints ? v.s->loopStart : 0;
+        const bool rules = withReverb && v.send > 0.0f;
         float fpos = v.pos;
         int i0 = 0;
-        if (v.inicio > s_reloj) {
-            const unsigned long long falta = v.inicio - s_reloj;
-            if (falta >= (unsigned long long)frames) continue;      // arranca en otro buffer
-            i0 = (int)falta;
+        if (v.start > s_clock) {
+            const unsigned long long missing = v.start - s_clock;
+            if (missing >= (unsigned long long)frames) continue;      // arranca en otro buffer
+            i0 = (int)missing;
         }
-#ifndef W3D_MEZCLA_FLOAT
-        if (!v.envEtapa && !manda) { MezclarVozEntera(v, acc, i0, frames, g); continue; }
+#ifndef W3D_MIX_FLOAT
+        if (!v.envStage && !rules) { MixWholeVoice(v, acc, i0, frames, g); continue; }
 #endif
         for (int i = i0; i < frames; i++) {
-            if (v.finAbs && s_reloj + (unsigned long long)i >= v.finAbs) {   // la rampa agendada empieza en esta muestra
-                if (v.fadeStep <= 0.0f || v.fadeFin > v.fadeStep) v.fadeStep = v.fadeFin * v.fadeGain;
-                v.finAbs = 0;
+            if (v.endAbs && s_clock + (unsigned long long)i >= v.endAbs) {   // la rampa agendada empieza en esta muestra
+                if (v.fadeStep <= 0.0f || v.fadeEnd > v.fadeStep) v.fadeStep = v.fadeEnd * v.fadeGain;
+                v.endAbs = 0;
             }
             int pos = (int)fpos;
-            if (pos >= finVuelta) {
+            if (pos >= endTurn) {
                 if (v.loop && fr > 0) {
-                    fpos -= (float)(finVuelta - iniVuelta); pos = (int)fpos;
-                    if (pos < 0 || pos >= fr) { fpos = (float)iniVuelta; pos = iniVuelta; }
+                    fpos -= (float)(endTurn - startTurn); pos = (int)fpos;
+                    if (pos < 0 || pos >= fr) { fpos = (float)startTurn; pos = startTurn; }
                 }
                 else                  { v.active = false; break; }
             }
             // la muestra siguiente para interpolar: en loop, pasado el final de la vuelta sigue el inicio
             int pos1 = pos + 1;
-            if (pos1 >= finVuelta) pos1 = v.loop ? iniVuelta : pos;
+            if (pos1 >= endTurn) pos1 = v.loop ? startTurn : pos;
             const float fr1 = fpos - (float)pos;
             // ganancia = volumen * master * la RAMPA de salida (W3dSoundStopFade) * la ENVOLVENTE * el paneo. La rampa
             // y la envolvente avanzan POR MUESTRA: sin click aunque el buffer del backend sea grande. Sin rampa ni
             // envolvente pedidas, valen 1
             float gg = g * v.fadeGain;
-            if (v.envEtapa) {
-                if (v.envSoltar && s_reloj + (unsigned long long)i >= v.envSoltar) { v.envEtapa = 4; v.envSoltar = 0; }
-                switch (v.envEtapa) {
+            if (v.envStage) {
+                if (v.envRelease && s_clock + (unsigned long long)i >= v.envRelease) { v.envStage = 4; v.envRelease = 0; }
+                switch (v.envStage) {
                 case 1:
-                    v.envNivel += v.envAtaque;
-                    if (v.envNivel >= 1.0f) {
-                        v.envNivel = 1.0f;
-                        if (v.envDecae > 0.0f) v.envEtapa = 2;
-                        else { v.envEtapa = 3; v.envNivel = v.envSost; }
+                    v.envLevel += v.envAttack;
+                    if (v.envLevel >= 1.0f) {
+                        v.envLevel = 1.0f;
+                        if (v.envDecays > 0.0f) v.envStage = 2;
+                        else { v.envStage = 3; v.envLevel = v.envSustain; }
                     }
                     break;
                 case 2:
-                    v.envNivel *= v.envDecae;
-                    if (v.envNivel <= v.envSost || v.envNivel < 0.001f) {
-                        if (v.envNivel < v.envSost) v.envNivel = v.envSost;
-                        v.envEtapa = 3;
+                    v.envLevel *= v.envDecays;
+                    if (v.envLevel <= v.envSustain || v.envLevel < 0.001f) {
+                        if (v.envLevel < v.envSustain) v.envLevel = v.envSustain;
+                        v.envStage = 3;
                     }
                     break;
-                case 3: v.envNivel *= v.envCaida; break;
-                default: v.envNivel *= v.envLibera; break;
+                case 3: v.envLevel *= v.envFall; break;
+                default: v.envLevel *= v.envFrees; break;
                 }
-                if (v.envEtapa >= 3 && v.envNivel < 0.001f) { v.active = false; break; }   // bajo -60 dB: voz libre
-                gg *= v.envNivel;
+                if (v.envStage >= 3 && v.envLevel < 0.001f) { v.active = false; break; }   // bajo -60 dB: voz libre
+                gg *= v.envLevel;
             }
             float l0, l1, r0, r1;
             if (mono) { l0 = r0 = (float)p[pos]; l1 = r1 = (float)p[pos1]; }
@@ -769,7 +769,7 @@ static void Mezclar(short* out, int frames) {
             const float r = (r0 + (r1 - r0) * fr1) * gg * v.gR;
             acc[i * 2]     += (int)l;
             acc[i * 2 + 1] += (int)r;
-            if (manda) envio[i] += (int)((l + r) * 0.5f * v.envio);
+            if (rules) send[i] += (int)((l + r) * 0.5f * v.send);
             fpos += v.step;   // paso fraccional = pitch (1.0 en W3dSoundPlay clasico)
             if (v.fadeStep > 0.0f) {
                 v.fadeGain -= v.fadeStep;
@@ -778,18 +778,18 @@ static void Mezclar(short* out, int frames) {
         }
         v.pos = fpos;
     }
-    if (s_fuente) s_fuente(acc, frames, s_fuenteUsuario);
-    s_reloj += (unsigned long long)frames;
-    if (conReverb) ReverbMezclar(acc, envio, frames);
+    if (s_source) s_source(acc, frames, s_sourceUser);
+    s_clock += (unsigned long long)frames;
+    if (withReverb) ReverbMix(acc, send, frames);
     // el limitador: ataque instantaneo (nunca recorta en escalon), recuperacion exponencial ~0.3 s
     const float recup = 1.0f / (0.3f * (float)s_rate);
     for (int i = 0; i < frames; i++) {
         int l = acc[i * 2], r = acc[i * 2 + 1];
-        int pico = l < 0 ? -l : l;
+        int peak = l < 0 ? -l : l;
         const int ar = r < 0 ? -r : r;
-        if (ar > pico) pico = ar;
-        if (pico > 32767) {
-            const float nec = 32767.0f / (float)pico;
+        if (ar > peak) peak = ar;
+        if (peak > 32767) {
+            const float nec = 32767.0f / (float)peak;
             if (nec < s_limGain) s_limGain = nec;
         }
         if (s_limGain < 1.0f) {
@@ -804,23 +804,23 @@ static void Mezclar(short* out, int frames) {
     }
 }
 
-void W3dAudioFuente(W3dAudioFuenteFn fn, void* usuario) {
+void W3dAudioSource(W3dAudioSourceFn fn, void* user) {
     W3dAudioBackendLock();
-    s_fuente = fn;
-    s_fuenteUsuario = usuario;
+    s_source = fn;
+    s_sourceUser = user;
     W3dAudioBackendUnlock();
 }
 
 void W3dAudioMix(short* out, int frames) {
     if (frames <= 0) return;
-    if (s_pausa) { for (int i = 0; i < frames * 2; i++) out[i] = 0; return; }   // pausa: silencio, nada avanza
-    Mezclar(out, frames);
+    if (s_pause) { for (int i = 0; i < frames * 2; i++) out[i] = 0; return; }   // pausa: silencio, nada avanza
+    Mix(out, frames);
 }
 
-bool W3dAudioGrabar(short* out, int frames) {
+bool W3dAudioRecord(short* out, int frames) {
     if (!s_ready || frames <= 0) return false;
     W3dAudioBackendLock();
-    Mezclar(out, frames);
+    Mix(out, frames);
     W3dAudioBackendUnlock();
     return true;
 }
@@ -840,14 +840,14 @@ void W3dSoundStop(int) {}
 void W3dSoundStopFade(int, float) {}
 void W3dSoundStopFadeAt(int, float, double) {}
 int  W3dSoundPlayAt(W3dSound*, float, bool, float, float, double) { return 0; }
-double W3dAudioReloj() { return 0.0; }
+double W3dAudioClock() { return 0.0; }
 void W3dSoundStopAll() {}
-int  W3dSoundPlayEnv(W3dSound*, float, bool, float, float, double, const W3dEnvolvente*, float) { return 0; }
-void W3dSoundSoltar(int) {}
-void W3dSoundSetEnvio(int, float) {}
+int  W3dSoundPlayEnv(W3dSound*, float, bool, float, float, double, const W3dEnvelope*, float) { return 0; }
+void W3dSoundRelease(int) {}
+void W3dSoundSetSend(int, float) {}
 void W3dAudioReverb(float, float, float) {}
 int  W3dAudioRate() { return 0; }
-bool W3dAudioGrabar(short*, int) { return false; }
+bool W3dAudioRecord(short*, int) { return false; }
 void W3dAudioPause(bool) {}
 bool W3dAudioPaused() { return false; }
 void W3dSoundSetVolume(int, float) {}
@@ -855,14 +855,14 @@ void W3dSoundSetPitch(int, float) {}
 float W3dSoundPos(int) { return -1.0f; }
 void W3dSoundSetPos(int, float) {}
 void W3dSoundSetPan(int, float) {}
-void W3dSoundSetGanancias(int, float, float) {}
-float W3dSoundDuracion(const W3dSound*) { return 0.0f; }
-W3dSound* W3dSoundRecortar(const W3dSound*, float, float) { return 0; }
-void W3dSoundPicos(const W3dSound*, int n, float* picos) { for (int i = 0; i < n; i++) picos[i] = 0.0f; }
+void W3dSoundSetGains(int, float, float) {}
+float W3dSoundDuration(const W3dSound*) { return 0.0f; }
+W3dSound* W3dSoundCrop(const W3dSound*, float, float) { return 0; }
+void W3dSoundPeaks(const W3dSound*, int n, float* peaks) { for (int i = 0; i < n; i++) peaks[i] = 0.0f; }
 void W3dAudioMasterVolume(float) {}
-void W3dAudioJuegoVolume(float) {}
+void W3dAudioGameVolume(float) {}
 void W3dAudioMix(short*, int) {}
-void W3dAudioFuente(W3dAudioFuenteFn, void*) {}
+void W3dAudioSource(W3dAudioSourceFn, void*) {}
 
 #endif
 

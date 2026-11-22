@@ -28,9 +28,9 @@
 //   2) playsinline (y el webkit- viejo) o intenta abrir el reproductor a pantalla completa,
 //   3) el <video> tiene que estar EN EL DOM: fuera del documento iOS no decodifica.
 //      Lo metemos de 1x1 px, invisible y sin eventos: no se ve ni se puede tocar.
-EM_JS(void, w3dVideoJS_Prep, (int idx, int conSonido), {
+EM_JS(void, w3dVideoJS_Prep, (int idx, int withSound), {
     var v = Module.__w3dVideos[idx].video;
-    if (!conSonido) { v.setAttribute('muted', ''); v.muted = true; }
+    if (!withSound) { v.setAttribute('muted', ''); v.muted = true; }
     else             { v.removeAttribute('muted'); v.muted = false; v.volume = 1.0; }
     v.setAttribute('playsinline', '');
     v.setAttribute('webkit-playsinline', '');
@@ -73,7 +73,7 @@ EM_JS(int, w3dVideoJS_OpenUrl, (const char* pathPtr, int loop, unsigned int texI
 });
 
 // desde BYTES en memoria: Blob interno + <video> fuera del DOM + revoke al cargar.
-EM_JS(int, w3dVideoJS_OpenMem, (const unsigned char* ptr, int len, const char* mimePtr, int loop, unsigned int texId, int conSonido), {
+EM_JS(int, w3dVideoJS_OpenMem, (const unsigned char* ptr, int len, const char* mimePtr, int loop, unsigned int texId, int withSound), {
     if (!Module.__w3dVideos) Module.__w3dVideos = [];
     var bytes = HEAPU8.slice(ptr, ptr + len);              // copia a un buffer JS (los del wasm pueden moverse)
     var blob = new Blob([bytes], { type: UTF8ToString(mimePtr) });
@@ -81,7 +81,7 @@ EM_JS(int, w3dVideoJS_OpenMem, (const unsigned char* ptr, int len, const char* m
     var v = Module.__w3dVideoPrimed || document.createElement('video');   // si hay uno ESTRENADO, lo reuso
     Module.__w3dVideoPrimed = null;
     v.src = url;
-    v.loop = !!loop; v.muted = !conSonido; v.autoplay = true; v.playsInline = true;
+    v.loop = !!loop; v.muted = !withSound; v.autoplay = true; v.playsInline = true;
     v.volume = 1.0;
     v.addEventListener('loadeddata', function(){ URL.revokeObjectURL(url); }); // el blob deja de resolverse por URL
     var tryPlay = function(){ var p = v.play(); if (p && p.catch) p.catch(function(){}); };
@@ -124,7 +124,7 @@ EM_JS(void, w3dVideoJS_Close, (int h), {
     Module.__w3dVideos[h] = null;
 });
 
-EM_JS(int, w3dVideoJS_Fin, (int h), {
+EM_JS(int, w3dVideoJS_End, (int h), {
     var r = Module.__w3dVideos && Module.__w3dVideos[h];
     return (r && r.video && r.video.ended) ? 1 : 0;
 });
@@ -147,8 +147,8 @@ public:
         return changed != 0;
     }
     unsigned int Texture() const { return tex; }
-    bool Terminado() const { return handle >= 0 && w3dVideoJS_Fin(handle) != 0; }
-    bool Premultiplicado() const { return true; }
+    bool Finished() const { return handle >= 0 && w3dVideoJS_End(handle) != 0; }
+    bool Premultiplied() const { return true; }
     int  Width()    const { return w; }
     int  Height()   const { return h; }
     bool HasAlpha() const { return true; } // el WebM puede traer alpha; el blend del motor lo respeta
@@ -168,10 +168,10 @@ W3dVideo* W3dVideoOpenBackend(const char* path, bool loop) {
     return new W3dVideoWeb(hnd, tex);
 }
 
-W3dVideo* W3dVideoOpenMemoryBackend(const void* bytes, size_t len, const char* mime, bool loop, bool conSonido) {
+W3dVideo* W3dVideoOpenMemoryBackend(const void* bytes, size_t len, const char* mime, bool loop, bool withSound) {
     unsigned int tex = 0; glGenTextures(1, &tex);
-    int hnd = w3dVideoJS_OpenMem((const unsigned char*)bytes, (int)len, mime, loop ? 1 : 0, tex, conSonido ? 1 : 0);
-    if (hnd >= 0) w3dVideoJS_Prep(hnd, conSonido ? 1 : 0);
+    int hnd = w3dVideoJS_OpenMem((const unsigned char*)bytes, (int)len, mime, loop ? 1 : 0, tex, withSound ? 1 : 0);
+    if (hnd >= 0) w3dVideoJS_Prep(hnd, withSound ? 1 : 0);
     return new W3dVideoWeb(hnd, tex);
 }
 

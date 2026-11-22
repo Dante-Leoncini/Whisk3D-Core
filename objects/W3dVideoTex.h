@@ -30,7 +30,7 @@
 //  visible: el PowerVR del N95 dibuja un cuadro mientras se arma el siguiente,
 //  y reescribir la textura que todavia usa lo obliga a esperar o a copiarla.
 //
-//  EL RELOJ lo pone quien lo usa (Ir(segundos)): el de la escena que suena con
+//  EL RELOJ lo pone quien lo usa (Go(segundos)): el de la escena que suena con
 //  el video, asi la imagen va con el audio aunque el juego vaya a 20 o a 60
 //  cuadros por segundo. A 15 cuadros de video y 30 de juego se sube uno cada
 //  dos cuadros del juego. Si nadie lo mira no hay que llamarlo: al volver a
@@ -50,49 +50,49 @@ public:
 
     // abre el .w3dv: lee la cabecera y la tabla y crea las dos texturas (con el primer cuadro). false si no esta o no
     // es un video que se entienda
-    bool Abrir(const char* ruta);
-    void Cerrar();
-    bool Abierto() const { return archivo != 0; }
+    bool Open(const char* path);
+    void Close();
+    bool IsOpen() const { return file != 0; }
 
     // la textura con el cuadro del segundo 't' (el reloj de quien lo usa; mas alla del final, el ultimo; < 0 el
     // primero): decodifica lo que falte y, si cambio de cuadro, lo sube a la otra textura, que pasa a ser la visible.
     // Devuelve el id de la textura visible (0 si no hay video)
-    unsigned int Ir(float t);
+    unsigned int Go(float t);
     // lo mismo por el numero de cuadro
-    unsigned int IrCuadro(int cuadro);
+    unsigned int GoFrame(int frame);
     unsigned int Id() const { return ids[visible]; }
 
-    int Ancho() const { return ancho; }
-    int Alto() const { return alto; }
-    int Cuadros() const { return cuadros; }
+    int Width() const { return width; }
+    int Height() const { return height; }
+    int Frames() const { return frames; }
     float Fps() const { return fps; }
-    float Duracion() const { return fps > 0.0f ? (float)cuadros / fps : 0.0f; }
-    int CuadroActual() const { return actual; }
+    float Duration() const { return fps > 0.0f ? (float)frames / fps : 0.0f; }
+    int CurrentFrame() const { return current; }
 
     // (las medidas) cuantos cuadros se decodificaron y se subieron desde que se abrio, y los bytes leidos del disco
-    int Decodificados() const { return nDecod; }
-    int Subidos() const { return nSubidos; }
-    long BytesLeidos() const { return bytesLeidos; }
+    int Decoded() const { return nDecode; }
+    int Uploaded() const { return nUploaded; }
+    long BytesRead() const { return readBytes; }
 
 private:
     W3dVideoTex(const W3dVideoTex&);
     W3dVideoTex& operator=(const W3dVideoTex&);
-    bool Decodificar(int k);     // el cuadro k sobre 'px' (que tiene el k - 1 si es una diferencia)
+    bool Decode(int k);     // el cuadro k sobre 'px' (que tiene el k - 1 si es una diferencia)
 
-    FILE* archivo;
-    int ancho, alto, clave, cuadros;
+    FILE* file;
+    int width, height, key, frames;
     float fps;
-    unsigned int* tabla;         // cuadros + 1 desplazamientos
-    unsigned short* px;          // el ultimo cuadro decodificado
-    unsigned short* tmp;         // la diferencia descomprimida
-    unsigned char* leido;        // el cuadro comprimido tal como esta en el disco
-    int leidoMax;
-    int decod;                   // el cuadro que esta en 'px' (-1: ninguno)
-    int actual;                  // el que se ve
+    unsigned int* table;        // cuadros + 1 desplazamientos
+    unsigned short* px;         // el ultimo cuadro decodificado
+    unsigned short* tmp;        // la diferencia descomprimida
+    unsigned char* read;        // el cuadro comprimido tal como esta en el disco
+    int readMax;
+    int decode;                   // el cuadro que esta en 'px' (-1: ninguno)
+    int current;                  // el que se ve
     unsigned int ids[2];
     int visible;
-    int nDecod, nSubidos;
-    long bytesLeidos;
+    int nDecode, nUploaded;
+    long readBytes;
 };
 
 }

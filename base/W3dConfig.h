@@ -35,27 +35,27 @@ bool ConfigLoad();
 bool ConfigSave();
 
 // Lectura con valor POR DEFECTO (lo que devuelve si la clave no existe).
-const char* ConfigGetStr(const char* clave, const char* porDefecto);
-float       ConfigGetFloat(const char* clave, float porDefecto);
-int         ConfigGetInt(const char* clave, int porDefecto);
+const char* ConfigGetStr(const char* key, const char* defaultValue);
+float       ConfigGetFloat(const char* key, float defaultValue);
+int         ConfigGetInt(const char* key, int defaultValue);
 
 // Escritura EN MEMORIA (no guarda sola: llama ConfigSave cuando corresponda).
-void ConfigSetStr(const char* clave, const char* valor);
-void ConfigSetFloat(const char* clave, float valor);
-void ConfigSetInt(const char* clave, int valor);
+void ConfigSetStr(const char* key, const char* value);
+void ConfigSetFloat(const char* key, float value);
+void ConfigSetInt(const char* key, int value);
 
 // Borra todo (en memoria). Util para un "restablecer ajustes".
 void ConfigClear();
 
 // Cambia el nombre del archivo/entrada donde se guarda (por defecto "w3dconfig").
 // Llamalo ANTES de ConfigLoad si tu app quiere su propio archivo.
-void ConfigSetNombre(const char* nombre);
+void ConfigSetName(const char* name);
 
 // MUTE GLOBAL: flag simple que el beep() del motor respeta (si esta mudo, no suena). Asi el
 // juego silencia TODOS los sonidos sin envolver beep() a mano. Se guarda en la clave "mute"
 // al hacer ConfigSave y se restaura en ConfigLoad (o sea, sobrevive a cerrar la app).
-void ConfigSetMudo(bool mudo);
-bool ConfigMudo();
+void ConfigSetMute(bool mute);
+bool ConfigMute();
 
 } // namespace w3dEngine
 

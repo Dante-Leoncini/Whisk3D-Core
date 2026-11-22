@@ -42,16 +42,16 @@ struct W3dBone {
     int     rotOrder;  // orden de rotacion euler (0 = XYZ, el mas comun)
     bool    hasRest;   // true si restT/R/S vienen del FBX (FK valido); false = armature manual (se dibuja bind)
     // SKINNING: matriz de skin del hueso en el frame actual = skinA * animWorldNode * skinInvBind. Deforma los
-    // vertices (en espacio bind) a la pose animada. skinA/skinInvBind se precomputan al importar (ver PrepararSkin).
+    // vertices (en espacio bind) a la pose animada. skinA/skinInvBind se precomputan al importar (ver PrepareSkin).
     Matrix4 bind;      // TransformLink (bind global del hueso, espacio escena Y-up del FBX)
     Matrix4 clusterTransform; // matriz 'Transform' del cluster FBX (transform de la geometria al bindear). En rigs
                               // normales (banana) es ~identidad; en otros (LISA) codifica el swap de ejes/orientacion.
     Matrix4 tlNode;    // TransformLink convertido al espacio NODO del FK (= NyInv * bind); bind real para el skinning
-    Matrix4 skinA;     // = bind * inversa(restWorldNode)  (precomputada)
-    Matrix4 skinInvBind; // = inversa(bind)                (precomputada)
+    Matrix4 skinA;     // = bind * inverse(restWorldNode)  (precomputada)
+    Matrix4 skinInvBind; // = inverse(bind)                (precomputada)
     Matrix4 skinMatrix;  // resultado por-frame (identidad en rest)
     // MUNDO del hueso en la pose actual, en el espacio del OBJETO armature (el mismo en que se dibujan
-    // poseHead/poseTail: Y-up de escena, ya con NodeToYup en los rigs FBX). Lo llena EvaluarPoseEsqueleto
+    // poseHead/poseTail: Y-up de escena, ya con NodeToYup en los rigs FBX). Lo llena EvaluatePoseSkeleton
     // por frame; lo lee el constraint Child Of para colgar un objeto rigido (arma, cuchillo) de un hueso.
     Matrix4 poseWorld;
     bool    hasSkin;  // true si bind/skinA/skinInvBind estan listos
@@ -66,8 +66,8 @@ struct W3dBone {
     // padre: el hueso sigue emparentado (linea punteada al separarlo) pero la punta queda libre.
     // Se guarda en el .w3d ("suelto": true solo cuando esta apagado con padre) -> los archivos
     // viejos (sin el campo) cargan con el comportamiento posicional de siempre.
-    bool    conectado;
-    W3dBone() : parent(-1), restS(1,1,1), poseS(1,1,1), rotOrder(0), hasRest(false), hasSkin(false), select(false), selHead(false), selTail(false), conectado(true) {
+    bool    connected;
+    W3dBone() : parent(-1), restS(1,1,1), poseS(1,1,1), rotOrder(0), hasRest(false), hasSkin(false), select(false), selHead(false), selTail(false), connected(true) {
         bind.Identity(); clusterTransform.Identity(); skinA.Identity(); skinInvBind.Identity(); skinMatrix.Identity();
         poseWorld.Identity();
     }
@@ -75,7 +75,7 @@ struct W3dBone {
 
 class SkeletalAnimation; // animation/SkeletalAnimation.h (clips de animacion)
 
-#include "animation/W3dCapaAnim.h"  // una capa del MIX de animaciones (Armature::capas)
+#include "animation/W3dLayerAnim.h"  // una capa del MIX de animaciones (Armature::capas)
 
 class Armature : public Object {
     public:
@@ -83,72 +83,72 @@ class Armature : public Object {
         // CLIPS de animacion de esqueleto (cada uno = un "take"/AnimStack de FBX). Se listan/crean/borran en el
         // panel de propiedades (pestania Animation). Las CURVAS (posicion/rotacion/escala por hueso) viven dentro.
         std::vector<SkeletalAnimation*> animations;
-        int animActiva;    // clip activo (-1 = ninguno)
+        int activeAnim;    // clip activo (-1 = ninguno)
         // ANIMSET COMPARTIDO (animation/W3dAnimSet.h): con animsRec != NULL los punteros de 'animations'
         // apuntan ADENTRO de un recurso del almacen (los mismos clips para todos los armatures que lo usan):
         // NO son de este armature, no se borran ni se editan. Antes de modificar un clip hay que llamar a
-        // W3dArmatureAnimsPropias (copy-on-write). animsVar = la variante reindexada si el esqueleto no calza.
-        void* animsRec;    // W3dRecurso* (tipo W3DREC_ANIMSET) o NULL = clips PROPIOS
-        void* animsVar;    // W3dAnimSetVariante* o NULL = los clips canonicos del animset
-        std::string animSetNombre;  // de que animset vinieron los clips (sobrevive a la copia: pista del guardado)
-        std::string animSetNoCargo; // el animset que no se pudo leer al abrir: FRENA el guardado (no se pisa)
-        bool skinUsaBind;  // true = usar el TransformLink real del FBX como bind (rigs estandar); false = FK-rest (LISA: TL en cero)
-        bool skinReconstruirFK; // true = el Lcl-FK es DEGENERADO (restT ~0 -> se colapsa; biped 3ds Max nani/barney): el
+        // W3dOwnArmatureAnims (copy-on-write). animsVar = la variante reindexada si el esqueleto no calza.
+        void* animsRec;    // W3dResource* (tipo W3DREC_ANIMSET) o NULL = clips PROPIOS
+        void* animsVar;    // W3dAnimSetVariant* o NULL = los clips canonicos del animset
+        std::string animSetName;      // de que animset vinieron los clips (sobrevive a la copia: pista del guardado)
+        std::string animSetNotLoaded; // el animset que no se pudo leer al abrir: FRENA el guardado (no se pisa)
+        bool skinUsesBind;  // true = usar el TransformLink real del FBX como bind (rigs estandar); false = FK-rest (LISA: TL en cero)
+        bool skinRebuildFK; // true = el Lcl-FK es DEGENERADO (restT ~0 -> se colapsa; biped 3ds Max nani/barney): el
                            // rest local se reconstruye del TransformLink (inv(tlNode_padre)*tlNode) y la animacion se
                            // aplica como DELTA del Lcl. Sin esto el FK sale ~100x chico y la malla se rompe al animar.
         bool skinGltf;     // true = esqueleto importado de glTF: FK ESTANDAR en Y-up con skinInvBind = inverseBindMatrix
                            // dada (sin NodeToYup, sin reconstruccion). El modelo de glTF es limpio -> skinMatrix = world*IBM.
-        bool skinAutorado; // true = rig AUTORADO en el editor (PrepararSkinAutorado): el rest sale de head/tail
+        bool skinAuthored; // true = rig AUTORADO en el editor (PrepareAuthoredSkin): el rest sale de head/tail
                            // (restT = head - head del padre, sin rotacion de rest), FK estandar Y-up (skinGltf=true)
                            // y bind = T(head). El TAIL es DATA del usuario -> la pose lo transforma con el hueso
                            // (no se deriva del primer hijo como en FBX). Un armature "2D" es uno autorado con Z=0.
         bool poseDirty;    // true = la pose fue editada a mano (posando) -> re-evaluar FK sin refrescar desde la curva
-        int boneActivo;    // hueso seleccionado/activo en Pose Mode (-1 = ninguno); indice en bones[]
+        int activeBone;    // hueso seleccionado/activo en Pose Mode (-1 = ninguno); indice en bones[]
         float lastPoseFrameF; // jugando: el frame CONTINUO de la ultima pose (se interpola entre frames del clip)
         int lastPoseFrame; // cache de pose: NO se recalcula la deformacion si el frame (y el clip) no cambiaron
         int lastPoseAnim;
-        float figureScale; // (biped skinReconstruirFK) escala del FIGURE bakeada en el TL, con la que se NORMALIZO el
-                           // tlNode en PrepararSkin (skeleton a escala de la malla). 1 = sin escala. Solo diagnostico.
-        unsigned poseSerial; // sube cada vez que EvaluarPoseEsqueleto RECALCULA la pose (frame nuevo, clip nuevo, o posar
+        float figureScale; // (biped skinRebuildFK) escala del FIGURE bakeada en el TL, con la que se NORMALIZO el
+                           // tlNode en PrepareSkin (skeleton a escala de la malla). 1 = sin escala. Solo diagnostico.
+        unsigned poseSerial; // sube cada vez que EvaluatePoseSkeleton RECALCULA la pose (frame nuevo, clip nuevo, o posar
                            // a mano). La malla re-skinnea y re-sube su VBO cuando cambia -> se ve al toque aunque el FRAME
                            // no cambie (antes: cache por # de frame -> posar/elegir clip en el mismo frame no refrescaba).
 
         // ---- REPRODUCCION EN EL JUEGO (ActiveAnimKind 2): cada armature tiene SU cabezal ----
         // En el editor manda el timeline global (un solo armature activo). Jugando, cada esqueleto reproduce
-        // su clip 'animActiva' con su propio reloj: lo avanza W3dArmaturesJuegoTick y lo manejan los scripts
+        // su clip 'activeAnim' con su propio reloj: lo avanza W3dArmaturesGameTick y lo manejan los scripts
         // (animClip / animFrame / animTermino). Runtime puro: no se guarda en el .w3d.
-        // CAPAS DEL MIX (ver W3dCapaAnim). Vacio = el armature reproduce su clip activo como siempre.
-        std::vector<W3dCapaAnim> capas;
-        int capaActiva;        // la capa elegida en la lista del Mix (-1 = ninguna)
-        unsigned mixFirma;     // cache: firma del estado de las capas de la ultima pose calculada
+        // CAPAS DEL MIX (ver W3dLayerAnim). Vacio = el armature reproduce su clip activo como siempre.
+        std::vector<W3dLayerAnim> layers;
+        int activeLayer;           // la capa elegida en la lista del Mix (-1 = ninguna)
+        unsigned mixSignature;     // cache: firma del estado de las capas de la ultima pose calculada
         // TRANSICION (el crossfade de pose de los juegos): al cambiar de animacion la pose NUEVA se funde desde la
         // pose CONGELADA del momento del cambio durante transTotal segundos (animTransicion de lua). Runtime.
-        float transRestante, transTotal;
+        float remainingTrans, transTotal;
         std::vector<Vector3> transT, transS;
         std::vector<Quaternion> transQ;
-        float juegoFrame;  // frames transcurridos desde el inicio del clip (0 = startFrame)
-        float juegoVel;    // multiplicador de velocidad (1 = el FrameRate del clip)
-        bool  juegoLoop;   // true = vuelve a empezar al terminar; false = se queda en el ultimo frame
-        bool  juegoTermino;// el clip sin loop llego al final (lo lee animTermino)
+        float gameFrame;  // frames transcurridos desde el inicio del clip (0 = startFrame)
+        float gameVel;    // multiplicador de velocidad (1 = el FrameRate del clip)
+        bool  gameLoop;   // true = vuelve a empezar al terminar; false = se queda en el ultimo frame
+        bool  gameEnded;// el clip sin loop llego al final (lo lee animTermino)
         // RETARGET (W3dArmatureRetarget, SkeletalAnimation.h): 0 completo (el clip tal cual) / 1 solo rotaciones
-        // + el movimiento de las raices escalado por tamano. retargetClip/retargetEscala: la escala calculada
+        // + el movimiento de las raices escalado por tamano. retargetClip/retargetScale: la escala calculada
         // para el ultimo clip (se recalcula si cambia el clip). Runtime: no se guarda en el .w3d.
         int   retarget;
         const void* retargetClip;
-        float retargetEscala;
+        float retargetScale;
 
         Armature(Object* parent = NULL, Vector3 pos = Vector3(0, 0, 0))
-            : Object(parent, "Armature", pos), animActiva(-1), animsRec(NULL), animsVar(NULL), skinUsaBind(false), skinReconstruirFK(false), skinGltf(false), skinAutorado(false), poseDirty(false), boneActivo(-1), lastPoseFrameF(-999999.0f), lastPoseFrame(-999999), lastPoseAnim(-999), figureScale(1.0f), poseSerial(1),
-              capaActiva(-1), mixFirma(0), transRestante(0.0f), transTotal(0.0f), juegoFrame(0.0f), juegoVel(1.0f), juegoLoop(true), juegoTermino(false),
-              retarget(0), retargetClip(NULL), retargetEscala(1.0f) {}
+            : Object(parent, "Armature", pos), activeAnim(-1), animsRec(NULL), animsVar(NULL), skinUsesBind(false), skinRebuildFK(false), skinGltf(false), skinAuthored(false), poseDirty(false), activeBone(-1), lastPoseFrameF(-999999.0f), lastPoseFrame(-999999), lastPoseAnim(-999), figureScale(1.0f), poseSerial(1),
+              activeLayer(-1), mixSignature(0), remainingTrans(0.0f), transTotal(0.0f), gameFrame(0.0f), gameVel(1.0f), gameLoop(true), gameEnded(false),
+              retarget(0), retargetClip(NULL), retargetScale(1.0f) {}
         ~Armature() W3D_OVERRIDE; // libera los clips PROPIOS (los de un animset compartido solo se sueltan)
 
         ObjectType getType() W3D_OVERRIDE { return ObjectType::armature; }
         void RenderObject() W3D_OVERRIDE; // huesos como lineas AZULES, siempre encima (sin z-test)
-        bool DibujaAlgo() W3D_OVERRIDE { return false; }   // (RenderObject no dibuja: lo suyo son los hijos)
+        bool DrawsSomething() W3D_OVERRIDE { return false; }   // (RenderObject no dibuja: lo suyo son los hijos)
         // encuadre ('.'/frame selected): envuelve TODOS los huesos (poseHead/poseTail), no solo el origen
-        Vector3 PuntoFoco() const W3D_OVERRIDE;
-        float   RadioFoco() const W3D_OVERRIDE;
+        Vector3 PointFocus() const W3D_OVERRIDE;
+        float   FocusRadius() const W3D_OVERRIDE;
 };
 
 #endif // ARMATURE_H

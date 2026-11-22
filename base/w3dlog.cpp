@@ -11,25 +11,25 @@
 #ifndef W3D_SYMBIAN
 #include <time.h>     // clock()/CLOCKS_PER_SEC (w3dTickMs en no-Symbian; Symbian usa User::NTickCount)
 #endif
-#include <iostream>   // std::cout/std::cerr (para w3dRedirigirCoutAlLog)
+#include <iostream>   // std::cout/std::cerr (para w3dRedirectCoutToLog)
 #include <string>
 
 // nivel: 0 = INFO, 1 = WARN, 2 = ERROR
 #ifdef W3D_SYMBIAN
-static char gRutaLog[128] = "e:\\whisk3d.log";
+static char gPathLog[128] = "e:\\whisk3d.log";
 #else
-static char gRutaLog[128] = "whisk3d.log";
+static char gPathLog[128] = "whisk3d.log";
 #endif
 
-static bool gRutaPuesta = false;   // la fijo w3dLogRuta (las consolas: sino, la carpeta del editor)
-void w3dLogRuta(const char* ruta) {
-    if (!ruta || !*ruta) return;
-    strncpy(gRutaLog, ruta, sizeof(gRutaLog) - 1);
-    gRutaLog[sizeof(gRutaLog) - 1] = 0;
-    gRutaPuesta = true;
+static bool gPathPlaced = false;   // la fijo w3dLogPath (las consolas: sino, la carpeta del editor)
+void w3dLogPath(const char* path) {
+    if (!path || !*path) return;
+    strncpy(gPathLog, path, sizeof(gPathLog) - 1);
+    gPathLog[sizeof(gPathLog) - 1] = 0;
+    gPathPlaced = true;
 }
 
-static const char* NivelTag(int nivel) { return nivel == 2 ? "ERROR" : (nivel == 1 ? "WARN" : "INFO"); }
+static const char* LevelTag(int level) { return level == 2 ? "ERROR" : (level == 1 ? "WARN" : "INFO"); }
 
 // ---------------------------------------------------------------------------
 //  RING BUFFER en memoria: espejo de las ultimas lineas del log para la UI (el
@@ -39,35 +39,35 @@ static const char* NivelTag(int nivel) { return nivel == 2 ? "ERROR" : (nivel ==
 // ---------------------------------------------------------------------------
 enum { W3D_LOG_RING_MAX = 200, W3D_LOG_RING_LEN = 240 };
 static char gRing[W3D_LOG_RING_MAX][W3D_LOG_RING_LEN];
-static int  gRingCabeza = 0;   // indice donde se escribe la PROXIMA linea
-static int  gRingCant   = 0;   // cuantas lineas validas hay (<= MAX)
+static int  gRingHead  = 0;   // indice donde se escribe la PROXIMA linea
+static int  gRingCount = 0;   // cuantas lineas validas hay (<= MAX)
 
 // NIVEL en tiempo de ejecucion (el editor lo cambia desde Properties > Logs): 3 = todo, 2 = avisos y errores,
 // 1 = solo errores, 0 = nada. Se mira ANTES de formatear: apagado, un log no cuesta ni el vsnprintf.
-int g_w3dLogNivel = 3;
-static inline bool LogNivelOk(int nivel) { return g_w3dLogNivel > 2 - nivel; }   // INFO=0 WARN=1 ERROR=2
+int g_w3dLogLevel = 3;
+static inline bool LogLevelOk(int level) { return g_w3dLogLevel > 2 - level; }   // INFO=0 WARN=1 ERROR=2
 
-static void RingPush(int nivel, const char* aMsg) {
-    char* dst = gRing[gRingCabeza];
+static void RingPush(int level, const char* aMsg) {
+    char* dst = gRing[gRingHead];
     int n = 0;
     // formato "[TAG] mensaje", recortado al largo del slot
     dst[n++] = '[';
-    const char* tag = NivelTag(nivel);
+    const char* tag = LevelTag(level);
     for (int i = 0; tag[i] && n < W3D_LOG_RING_LEN - 3; i++) dst[n++] = tag[i];
     dst[n++] = ']';
     dst[n++] = ' ';
     if (aMsg) { for (int i = 0; aMsg[i] && n < W3D_LOG_RING_LEN - 1; i++) dst[n++] = aMsg[i]; }
     dst[n] = 0;
-    gRingCabeza = (gRingCabeza + 1) % W3D_LOG_RING_MAX;
-    if (gRingCant < W3D_LOG_RING_MAX) gRingCant++;
+    gRingHead = (gRingHead + 1) % W3D_LOG_RING_MAX;
+    if (gRingCount < W3D_LOG_RING_MAX) gRingCount++;
 }
 
-int w3dLogRingCount() { return gRingCant; }
-const char* w3dLogRingLinea(int i) {
-    if (i < 0 || i >= gRingCant) return "";
+int w3dLogRingCount() { return gRingCount; }
+const char* w3dLogRingLine(int i) {
+    if (i < 0 || i >= gRingCount) return "";
     // i=0 = la mas vieja: esta en (cabeza - cant) modulo MAX
-    int inicio = (gRingCabeza - gRingCant + W3D_LOG_RING_MAX * 2) % W3D_LOG_RING_MAX;
-    return gRing[(inicio + i) % W3D_LOG_RING_MAX];
+    int start = (gRingHead - gRingCount + W3D_LOG_RING_MAX * 2) % W3D_LOG_RING_MAX;
+    return gRing[(start + i) % W3D_LOG_RING_MAX];
 }
 
 #ifdef W3D_SYMBIAN
@@ -85,59 +85,59 @@ const char* w3dLogRingLinea(int i) {
 //   INFO       se junta y baja al archivo cuando hay ~3 KB (o con el proximo WARN / ERROR);
 //   WARN       baja YA (lo de antes incluido);
 //   ERROR      baja YA y se fuerza a disco (Flush): si lo que sigue es un cuelgue, queda escrito.
-// w3dLogBajar() baja lo que haya (al salir de la app, antes de leer el log desde la PC).
+// w3dLogFlush() baja lo que haya (al salir de la app, antes de leer el log desde la PC).
 static RFs   gLogFs;
-static RFile gLogArchivo;
-static bool  gLogAbierto = false;
+static RFile gLogFile;
+static bool  gLogOpen = false;
 static TBuf8<4096> gLogBuf;
-static bool LogAbrir(bool aTruncar) {
-    if (gLogAbierto && !aTruncar) return true;
-    if (gLogAbierto) { gLogArchivo.Close(); FsCloseCompat(gLogFs); gLogAbierto = false; }
+static bool LogOpen(bool aTruncate) {
+    if (gLogOpen && !aTruncate) return true;
+    if (gLogOpen) { gLogFile.Close(); FsCloseCompat(gLogFs); gLogOpen = false; }
     if (gLogFs.Connect() != KErrNone) return false;   // sin tarjeta E: u otro problema: no hay log, pero no molesta
-    TBuf<128> ruta;
-    ruta.Copy(TPtrC8((const TUint8*)gRutaLog));
+    TBuf<128> path;
+    path.Copy(TPtrC8((const TUint8*)gPathLog));
     TInt err;
-    if (aTruncar) err = gLogArchivo.Replace(gLogFs, ruta, EFileWrite | EFileShareAny);
+    if (aTruncate) err = gLogFile.Replace(gLogFs, path, EFileWrite | EFileShareAny);
     else {
-        err = gLogArchivo.Open(gLogFs, ruta, EFileWrite | EFileShareAny);
-        if (err == KErrNotFound) err = gLogArchivo.Create(gLogFs, ruta, EFileWrite | EFileShareAny);
+        err = gLogFile.Open(gLogFs, path, EFileWrite | EFileShareAny);
+        if (err == KErrNotFound) err = gLogFile.Create(gLogFs, path, EFileWrite | EFileShareAny);
     }
     if (err != KErrNone) { FsCloseCompat(gLogFs); return false; }
     TInt pos = 0;
-    gLogArchivo.Seek(ESeekEnd, pos);
-    gLogAbierto = true;
+    gLogFile.Seek(ESeekEnd, pos);
+    gLogOpen = true;
     return true;
 }
-static void LogBajar(bool aADisco) {
-    if (!gLogAbierto || gLogBuf.Length() == 0) return;
-    gLogArchivo.Write(gLogBuf);
+static void LogFlush(bool aADisk) {
+    if (!gLogOpen || gLogBuf.Length() == 0) return;
+    gLogFile.Write(gLogBuf);
     gLogBuf.Zero();
-    if (aADisco) gLogArchivo.Flush();
+    if (aADisk) gLogFile.Flush();
 }
-void w3dLogBajar() { LogBajar(true); }
-static void EscribirSymbian(int nivel, const char* aMsg, bool aTruncar) {
-    RingPush(nivel, aMsg); // espejo en memoria para la UI
-    if (aTruncar) gLogBuf.Zero();
-    if (!LogAbrir(aTruncar)) return;
+void w3dLogFlush() { LogFlush(true); }
+static void WriteSymbian(int level, const char* aMsg, bool aTruncate) {
+    RingPush(level, aMsg); // espejo en memoria para la UI
+    if (aTruncate) gLogBuf.Zero();
+    if (!LogOpen(aTruncate)) return;
     TBuf8<280> line;
     line.AppendNum((TUint)User::NTickCount()); // timestamp en ms
     line.Append(_L8(" ["));
-    line.Append(TPtrC8((const TUint8*)NivelTag(nivel))); // [INFO]/[WARN]/[ERROR]
+    line.Append(TPtrC8((const TUint8*)LevelTag(level))); // [INFO]/[WARN]/[ERROR]
     line.Append(_L8("] "));
     TPtrC8 m((const TUint8*)(aMsg ? aMsg : ""));
     line.Append(m.Left(200));
     line.Append(_L8("\r\n"));
-    if (gLogBuf.Length() + line.Length() > gLogBuf.MaxLength()) LogBajar(false);
+    if (gLogBuf.Length() + line.Length() > gLogBuf.MaxLength()) LogFlush(false);
     gLogBuf.Append(line);
-    if (nivel >= 1 || aTruncar || gLogBuf.Length() > 3072) LogBajar(nivel >= 2 || aTruncar);
+    if (level >= 1 || aTruncate || gLogBuf.Length() > 3072) LogFlush(level >= 2 || aTruncate);
 }
-void w3dLogReset() { EscribirSymbian(0, "=== Whisk3D DEV LOG: inicio de sesion ===", true); }
-void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirSymbian(0, aMsg, false); }
-void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirSymbian(1, aMsg, false); }
-void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirSymbian(2, aMsg, false); }
+void w3dLogReset() { WriteSymbian(0, "=== Whisk3D DEV LOG: inicio de sesion ===", true); }
+void w3dLog(const char* aMsg)  { if (!LogLevelOk(0)) return; WriteSymbian(0, aMsg, false); }
+void w3dLogW(const char* aMsg) { if (!LogLevelOk(1)) return; WriteSymbian(1, aMsg, false); }
+void w3dLogE(const char* aMsg) { if (!LogLevelOk(2)) return; WriteSymbian(2, aMsg, false); }
 
 #else
-void w3dLogBajar() {}
+void w3dLogFlush() {}
 #endif
 #if defined(W3D_SYMBIAN)
 #elif defined(__ANDROID__)
@@ -148,51 +148,51 @@ void w3dLogBajar() {}
 // ---------------------------------------------------------------------------
 #include <android/log.h>
 
-static void EscribirAndroid(int nivel, const char* aMsg) {
-    RingPush(nivel, aMsg); // espejo en memoria para la UI
-    int pri = (nivel == 2) ? ANDROID_LOG_ERROR : (nivel == 1 ? ANDROID_LOG_WARN : ANDROID_LOG_INFO);
+static void WriteAndroid(int level, const char* aMsg) {
+    RingPush(level, aMsg); // espejo en memoria para la UI
+    int pri = (level == 2) ? ANDROID_LOG_ERROR : (level == 1 ? ANDROID_LOG_WARN : ANDROID_LOG_INFO);
     __android_log_write(pri, "Whisk3D", aMsg ? aMsg : "");
 }
-void w3dLogReset() { EscribirAndroid(0, "=== Whisk3D DEV LOG ==="); }
-void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirAndroid(0, aMsg); }
-void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirAndroid(1, aMsg); }
-void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirAndroid(2, aMsg); }
+void w3dLogReset() { WriteAndroid(0, "=== Whisk3D DEV LOG ==="); }
+void w3dLog(const char* aMsg)  { if (!LogLevelOk(0)) return; WriteAndroid(0, aMsg); }
+void w3dLogW(const char* aMsg) { if (!LogLevelOk(1)) return; WriteAndroid(1, aMsg); }
+void w3dLogE(const char* aMsg) { if (!LogLevelOk(2)) return; WriteAndroid(2, aMsg); }
 
 #elif defined(W3D_DREAMCAST)
 // ---------------------------------------------------------------------------
 //  Backend Dreamcast: a la salida estandar, que KallistiOS manda por el puerto serie (dbgio). Se ve con dc-tool en la
 //  consola real y en Flycast con la consola serie prendida. La consola no tiene un disco escribible para un archivo.
 // ---------------------------------------------------------------------------
-static void EscribirDC(int nivel, const char* aMsg) {
-    RingPush(nivel, aMsg); // espejo en memoria para la UI
-    printf("[%s] %s\n", NivelTag(nivel), aMsg ? aMsg : "");
+static void WriteDC(int level, const char* aMsg) {
+    RingPush(level, aMsg); // espejo en memoria para la UI
+    printf("[%s] %s\n", LevelTag(level), aMsg ? aMsg : "");
     fflush(stdout);
 }
-void w3dLogReset() { EscribirDC(0, "=== Whisk3D DEV LOG ==="); }
-void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirDC(0, aMsg); }
-void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirDC(1, aMsg); }
-void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirDC(2, aMsg); }
+void w3dLogReset() { WriteDC(0, "=== Whisk3D DEV LOG ==="); }
+void w3dLog(const char* aMsg)  { if (!LogLevelOk(0)) return; WriteDC(0, aMsg); }
+void w3dLogW(const char* aMsg) { if (!LogLevelOk(1)) return; WriteDC(1, aMsg); }
+void w3dLogE(const char* aMsg) { if (!LogLevelOk(2)) return; WriteDC(2, aMsg); }
 
 #elif defined(W3D_3DS)
 // ---------------------------------------------------------------------------
 //  Backend 3DS: svcOutputDebugString, que sale en el log del emulador (Azahar/Citra) y en un depurador por la red con
 //  la consola real, y a la tarjeta SD (sdmc:/3ds/Whisk3D/whisk3d.log, se pisa en cada sesion; un juego, en la suya con
-//  w3dLogRuta): en la consola de verdad es lo que queda para ver que paso. Cada linea se escribe en el momento (si la
+//  w3dLogPath): en la consola de verdad es lo que queda para ver que paso. Cada linea se escribe en el momento (si la
 //  consola se cuelga, ya esta en la SD).
 //  La pantalla no se usa: las dos son del editor.
 // ---------------------------------------------------------------------------
 #include <3ds.h>
 #include <sys/stat.h>
-static void Escribir3ds(int nivel, const char* aMsg) {
-    RingPush(nivel, aMsg); // espejo en memoria para la UI
+static void Write3ds(int level, const char* aMsg) {
+    RingPush(level, aMsg); // espejo en memoria para la UI
     char buf[300];
-    const int n = snprintf(buf, sizeof(buf), "[%s] %s", NivelTag(nivel), aMsg ? aMsg : "");
+    const int n = snprintf(buf, sizeof(buf), "[%s] %s", LevelTag(level), aMsg ? aMsg : "");
     svcOutputDebugString(buf, n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1);
     static FILE* f = NULL;
-    static bool probado = false;
-    if (!probado) {
-        probado = true;
-        if (gRutaPuesta) f = fopen(gRutaLog, "w");
+    static bool tested = false;
+    if (!tested) {
+        tested = true;
+        if (gPathPlaced) f = fopen(gPathLog, "w");
         else {
             mkdir("sdmc:/3ds", 0777);
             mkdir("sdmc:/3ds/Whisk3D", 0777);
@@ -201,39 +201,39 @@ static void Escribir3ds(int nivel, const char* aMsg) {
     }
     if (f) { fputs(buf, f); fputc('\n', f); fflush(f); }
 }
-void w3dLogReset() { Escribir3ds(0, "=== Whisk3D DEV LOG ==="); }
-void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; Escribir3ds(0, aMsg); }
-void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; Escribir3ds(1, aMsg); }
-void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; Escribir3ds(2, aMsg); }
+void w3dLogReset() { Write3ds(0, "=== Whisk3D DEV LOG ==="); }
+void w3dLog(const char* aMsg)  { if (!LogLevelOk(0)) return; Write3ds(0, aMsg); }
+void w3dLogW(const char* aMsg) { if (!LogLevelOk(1)) return; Write3ds(1, aMsg); }
+void w3dLogE(const char* aMsg) { if (!LogLevelOk(2)) return; Write3ds(2, aMsg); }
 
 #elif defined(W3D_VITA)
 // ---------------------------------------------------------------------------
 //  Backend PS Vita: sceClibPrintf, que sale en el log del emulador (Vita3K) y por la consola de depuracion con la Vita
 //  de verdad, y a un archivo (ux0:data/Whisk3D/whisk3d.log, se pisa en cada sesion; un juego, en la suya con
-//  w3dLogRuta), como en la 3DS. Cada linea se
+//  w3dLogPath), como en la 3DS. Cada linea se
 //  escribe en el momento (si la consola se cuelga, ya esta en el archivo).
 // ---------------------------------------------------------------------------
 #include <psp2/kernel/clib.h>
 #include <sys/stat.h>
-static void EscribirVita(int nivel, const char* aMsg) {
-    RingPush(nivel, aMsg); // espejo en memoria para la UI
-    sceClibPrintf("[%s] %s\n", NivelTag(nivel), aMsg ? aMsg : "");
+static void WriteVita(int level, const char* aMsg) {
+    RingPush(level, aMsg); // espejo en memoria para la UI
+    sceClibPrintf("[%s] %s\n", LevelTag(level), aMsg ? aMsg : "");
     static FILE* f = NULL;
-    static bool probado = false;
-    if (!probado) {
-        probado = true;
-        if (gRutaPuesta) f = fopen(gRutaLog, "w");
+    static bool tested = false;
+    if (!tested) {
+        tested = true;
+        if (gPathPlaced) f = fopen(gPathLog, "w");
         else {
             mkdir("ux0:data/Whisk3D", 0777);
             f = fopen("ux0:data/Whisk3D/whisk3d.log", "w");
         }
     }
-    if (f) { fprintf(f, "[%s] %s\n", NivelTag(nivel), aMsg ? aMsg : ""); fflush(f); }
+    if (f) { fprintf(f, "[%s] %s\n", LevelTag(level), aMsg ? aMsg : ""); fflush(f); }
 }
-void w3dLogReset() { EscribirVita(0, "=== Whisk3D DEV LOG ==="); }
-void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirVita(0, aMsg); }
-void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirVita(1, aMsg); }
-void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirVita(2, aMsg); }
+void w3dLogReset() { WriteVita(0, "=== Whisk3D DEV LOG ==="); }
+void w3dLog(const char* aMsg)  { if (!LogLevelOk(0)) return; WriteVita(0, aMsg); }
+void w3dLogW(const char* aMsg) { if (!LogLevelOk(1)) return; WriteVita(1, aMsg); }
+void w3dLogE(const char* aMsg) { if (!LogLevelOk(2)) return; WriteVita(2, aMsg); }
 
 #elif defined(W3D_PSP)
 // ---------------------------------------------------------------------------
@@ -241,18 +241,18 @@ void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirVita(2, aMs
 //  un archivo al lado del EBOOT.PBP (whisk3d.log en la carpeta actual: ms0:/PSP/GAME/Whisk3D, se pisa en cada sesion),
 //  como en la 3DS y la Vita. Cada linea se escribe en el momento (si la consola se cuelga, ya esta en el archivo).
 // ---------------------------------------------------------------------------
-static void EscribirPSP(int nivel, const char* aMsg) {
-    RingPush(nivel, aMsg); // espejo en memoria para la UI
-    printf("[%s] %s\n", NivelTag(nivel), aMsg ? aMsg : "");
+static void WritePSP(int level, const char* aMsg) {
+    RingPush(level, aMsg); // espejo en memoria para la UI
+    printf("[%s] %s\n", LevelTag(level), aMsg ? aMsg : "");
     static FILE* f = NULL;
-    static bool probado = false;
-    if (!probado) { probado = true; f = fopen(gRutaLog, "w"); }   // (whisk3d.log, o el de w3dLogRuta)
-    if (f) { fprintf(f, "[%s] %s\n", NivelTag(nivel), aMsg ? aMsg : ""); fflush(f); }
+    static bool tested = false;
+    if (!tested) { tested = true; f = fopen(gPathLog, "w"); }   // (whisk3d.log, o el de w3dLogPath)
+    if (f) { fprintf(f, "[%s] %s\n", LevelTag(level), aMsg ? aMsg : ""); fflush(f); }
 }
-void w3dLogReset() { EscribirPSP(0, "=== Whisk3D DEV LOG ==="); }
-void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirPSP(0, aMsg); }
-void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirPSP(1, aMsg); }
-void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirPSP(2, aMsg); }
+void w3dLogReset() { WritePSP(0, "=== Whisk3D DEV LOG ==="); }
+void w3dLog(const char* aMsg)  { if (!LogLevelOk(0)) return; WritePSP(0, aMsg); }
+void w3dLogW(const char* aMsg) { if (!LogLevelOk(1)) return; WritePSP(1, aMsg); }
+void w3dLogE(const char* aMsg) { if (!LogLevelOk(2)) return; WritePSP(2, aMsg); }
 
 #elif defined(__EMSCRIPTEN__)
 // ---------------------------------------------------------------------------
@@ -262,18 +262,18 @@ void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirPSP(2, aMsg
 // ---------------------------------------------------------------------------
 #include <emscripten/console.h>
 
-static void EscribirWeb(int nivel, const char* aMsg) {
-    RingPush(nivel, aMsg); // espejo en memoria para la UI
+static void WriteWeb(int level, const char* aMsg) {
+    RingPush(level, aMsg); // espejo en memoria para la UI
     char buf[280];
     snprintf(buf, sizeof(buf), "[Whisk3D] %s", aMsg ? aMsg : "");
-    if      (nivel == 2) emscripten_console_error(buf);
-    else if (nivel == 1) emscripten_console_warn(buf);
+    if      (level == 2) emscripten_console_error(buf);
+    else if (level == 1) emscripten_console_warn(buf);
     else                 emscripten_console_log(buf);
 }
-void w3dLogReset() { EscribirWeb(0, "=== Whisk3D DEV LOG ==="); }
-void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirWeb(0, aMsg); }
-void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirWeb(1, aMsg); }
-void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirWeb(2, aMsg); }
+void w3dLogReset() { WriteWeb(0, "=== Whisk3D DEV LOG ==="); }
+void w3dLog(const char* aMsg)  { if (!LogLevelOk(0)) return; WriteWeb(0, aMsg); }
+void w3dLogW(const char* aMsg) { if (!LogLevelOk(1)) return; WriteWeb(1, aMsg); }
+void w3dLogE(const char* aMsg) { if (!LogLevelOk(2)) return; WriteWeb(2, aMsg); }
 
 #else
 // ---------------------------------------------------------------------------
@@ -283,19 +283,19 @@ void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirWeb(2, aMsg
 // ---------------------------------------------------------------------------
 #include <time.h>
 
-static void EscribirStdio(int nivel, const char* aMsg, bool aTruncar) {
-    RingPush(nivel, aMsg); // espejo en memoria para la UI
-    FILE* f = fopen(gRutaLog, aTruncar ? "w" : "a");
+static void WriteStdio(int level, const char* aMsg, bool aTruncate) {
+    RingPush(level, aMsg); // espejo en memoria para la UI
+    FILE* f = fopen(gPathLog, aTruncate ? "w" : "a");
     if (!f) return;
     unsigned long ms = (unsigned long)(clock() * 1000.0 / CLOCKS_PER_SEC);
-    fprintf(f, "%lu [%s] %s\r\n", ms, NivelTag(nivel), aMsg ? aMsg : "");
+    fprintf(f, "%lu [%s] %s\r\n", ms, LevelTag(level), aMsg ? aMsg : "");
     fflush(f);
     fclose(f);
 }
-void w3dLogReset() { EscribirStdio(0, "=== Whisk3D DEV LOG: inicio de sesion ===", true); }
-void w3dLog(const char* aMsg)  { if (!LogNivelOk(0)) return; EscribirStdio(0, aMsg, false); }
-void w3dLogW(const char* aMsg) { if (!LogNivelOk(1)) return; EscribirStdio(1, aMsg, false); }
-void w3dLogE(const char* aMsg) { if (!LogNivelOk(2)) return; EscribirStdio(2, aMsg, false); }
+void w3dLogReset() { WriteStdio(0, "=== Whisk3D DEV LOG: inicio de sesion ===", true); }
+void w3dLog(const char* aMsg)  { if (!LogLevelOk(0)) return; WriteStdio(0, aMsg, false); }
+void w3dLogW(const char* aMsg) { if (!LogLevelOk(1)) return; WriteStdio(1, aMsg, false); }
+void w3dLogE(const char* aMsg) { if (!LogLevelOk(2)) return; WriteStdio(2, aMsg, false); }
 
 #endif
 
@@ -305,9 +305,9 @@ static void w3dLogfImpl(void (*sink)(const char*), const char* aFmt, va_list ap)
     vsnprintf(buf, sizeof(buf), aFmt ? aFmt : "", ap);
     sink(buf);
 }
-void w3dLogf(const char* aFmt, ...)  { if (!LogNivelOk(0)) return; va_list ap; va_start(ap, aFmt); w3dLogfImpl(w3dLog,  aFmt, ap); va_end(ap); }
-void w3dLogfW(const char* aFmt, ...) { if (!LogNivelOk(1)) return; va_list ap; va_start(ap, aFmt); w3dLogfImpl(w3dLogW, aFmt, ap); va_end(ap); }
-void w3dLogfE(const char* aFmt, ...) { if (!LogNivelOk(2)) return; va_list ap; va_start(ap, aFmt); w3dLogfImpl(w3dLogE, aFmt, ap); va_end(ap); }
+void w3dLogf(const char* aFmt, ...)  { if (!LogLevelOk(0)) return; va_list ap; va_start(ap, aFmt); w3dLogfImpl(w3dLog,  aFmt, ap); va_end(ap); }
+void w3dLogfW(const char* aFmt, ...) { if (!LogLevelOk(1)) return; va_list ap; va_start(ap, aFmt); w3dLogfImpl(w3dLogW, aFmt, ap); va_end(ap); }
+void w3dLogfE(const char* aFmt, ...) { if (!LogLevelOk(2)) return; va_list ap; va_start(ap, aFmt); w3dLogfImpl(w3dLogE, aFmt, ap); va_end(ap); }
 
 // ---- redirigir std::cout/std::cerr AL LOG (no la consola/terminal) ---------------------------------------
 // LogCoutBuf junta caracteres hasta el '\n' y emite UNA entrada de log (w3dLogf/w3dLogfW). Se instala al arrancar
@@ -315,32 +315,32 @@ void w3dLogfE(const char* aFmt, ...) { if (!LogNivelOk(2)) return; va_list ap; v
 // una terminal. Los buffers son static: viven toda la app.
 namespace {
     class LogCoutBuf : public std::streambuf {
-        std::string linea; bool esErr;
+        std::string line; bool isErr;
     public:
-        explicit LogCoutBuf(bool err) : esErr(err) {}
+        explicit LogCoutBuf(bool err) : isErr(err) {}
     protected:
         virtual int overflow(int c) {
             if (c == '\n') {
-                if (!linea.empty()) { if (esErr) w3dLogfW("%s", linea.c_str()); else w3dLogf("%s", linea.c_str()); linea.clear(); }
+                if (!line.empty()) { if (isErr) w3dLogfW("%s", line.c_str()); else w3dLogf("%s", line.c_str()); line.clear(); }
             } else if (c != EOF && c != '\r') {
-                linea += (char)c;
+                line += (char)c;
             }
             return c;
         }
     };
 }
-// Se puede llamar muchas veces (AbrirW3D la llama en CADA apertura, por el caso Symbian de un arranque
+// Se puede llamar muchas veces (OpenW3D la llama en CADA apertura, por el caso Symbian de un arranque
 // que no la instalo), pero solo toma el stream si sigue en su buffer ORIGINAL (la consola). Si
 // alguien le puso OTRO a proposito (el harness que captura lo que se loguea durante una apertura, una app
 // que embebe el motor) se respeta: antes cada apertura se lo robaba y esa captura quedaba siempre vacia.
-void w3dRedirigirCoutAlLog() {
+void w3dRedirectCoutToLog() {
     static LogCoutBuf sOut(false);
     static LogCoutBuf sErr(true);
     static std::streambuf* sOrigOut = 0;   // los buffers de la consola, vistos en la PRIMERA llamada
     static std::streambuf* sOrigErr = 0;
-    static bool primera = true;
-    if (primera) {
-        primera = false;
+    static bool first = true;
+    if (first) {
+        first = false;
         sOrigOut = std::cout.rdbuf();
         sOrigErr = std::cerr.rdbuf();
         std::cout.rdbuf(&sOut);
@@ -369,28 +369,28 @@ unsigned long w3dTickMs() {
 #include <malloc.h>   // mallinfo2: el heap EN USO (no lo que el allocator retiene)
 #define W3D_LOG_MALLINFO2 1
 #endif
-void w3dMemoriaKB(long& heapUsado, long& heapTam, long& ramLibre) {
-    heapUsado = heapTam = ramLibre = -1;
+void w3dMemoryKB(long& usedHeap, long& heapSize, long& freeRam) {
+    usedHeap = heapSize = freeRam = -1;
 #if defined(W3D_SYMBIAN)
     TInt total = 0;
     User::AllocSize(total);                          // lo pedido y no devuelto en el heap de la app
-    heapUsado = (long)(total / 1024);
-    heapTam = (long)(User::Heap().Size() / 1024);    // lo que el chunk del heap ya tomo del telefono
-    TInt libre = 0;
-    if (HAL::Get(HALData::EMemoryRAMFree, libre) == KErrNone) ramLibre = (long)(libre / 1024);
+    usedHeap = (long)(total / 1024);
+    heapSize = (long)(User::Heap().Size() / 1024);    // lo que el chunk del heap ya tomo del telefono
+    TInt free = 0;
+    if (HAL::Get(HALData::EMemoryRAMFree, free) == KErrNone) freeRam = (long)(free / 1024);
 #elif defined(W3D_LOG_MALLINFO2)
     const struct mallinfo2 mi = mallinfo2();
-    heapUsado = (long)((mi.uordblks + mi.hblkhd) / 1024u);
-    heapTam = (long)((mi.arena + mi.hblkhd) / 1024u);
+    usedHeap = (long)((mi.uordblks + mi.hblkhd) / 1024u);
+    heapSize = (long)((mi.arena + mi.hblkhd) / 1024u);
 #endif
 }
-void w3dLogMemoria(const char* etiqueta) {
-    if (!LogNivelOk(0)) return;
+void w3dLogMemory(const char* label) {
+    if (!LogLevelOk(0)) return;
     long u, t, l;
-    w3dMemoriaKB(u, t, l);
+    w3dMemoryKB(u, t, l);
     if (u < 0) return;   // (la plataforma no lo mide: no hay nada que decir)
-    if (l >= 0) w3dLogf("[mem] %s: heap %ld KB en uso (%ld KB tomados), RAM libre %ld KB", etiqueta ? etiqueta : "", u, t, l);
-    else        w3dLogf("[mem] %s: heap %ld KB en uso (%ld KB tomados)", etiqueta ? etiqueta : "", u, t);
+    if (l >= 0) w3dLogf("[mem] %s: heap %ld KB en uso (%ld KB tomados), RAM libre %ld KB", label ? label : "", u, t, l);
+    else        w3dLogf("[mem] %s: heap %ld KB en uso (%ld KB tomados)", label ? label : "", u, t);
 }
 
 #endif // W3D_DEV_LOG

@@ -10,7 +10,7 @@
 #include <cstdlib>  // strtod/strtol: parseo de los cuadros sin sscanf (reinicia el locale por linea en Symbian)
 #include <iostream> // std::cout/cerr (en RVCT no llega transitivo)
 #include "base/w3dlog.h" // log PROPIO: nunca std::cout (abria la consola blanca al cargar frames de vertex-anim)
-#include "io/W3dRecursos.h"  // frames compartidos entre instancias (tipo ANIM)
+#include "io/W3dResources.h"  // frames compartidos entre instancias (tipo ANIM)
 
 
 // Normal (-1..1) -> byte con signo (C++03: sin lambdas, el Core compila en Symbian).
@@ -89,17 +89,17 @@ static GLbyte* BuildVertexNormals(
     return out;
 }
 
-VertexAnimation::VertexAnimation(Mesh* tgt, const std::string& animName, bool useNormals, float Speed, bool Repeat, int ProximaAnimacion):
-      frameCount(0), proximaAnimacion(ProximaAnimacion), speed(Speed),
+VertexAnimation::VertexAnimation(Mesh* tgt, const std::string& animName, bool useNormals, float Speed, bool Repeat, int NextAnimation):
+      frameCount(0), nextAnimation(NextAnimation), speed(Speed),
       padding(0), repeat(Repeat), target(tgt), UseNormals(useNormals), UseUV(false), vcount(0),
-      noCargo(false), startFrame(1), endFrame(250), fps(30) {
+      notLoaded(false), startFrame(1), endFrame(250), fps(30) {
     name = animName;
-    datosRec = 0;   // frames propios hasta que LoadFrames los comparta
+    dataRec = 0;   // frames propios hasta que LoadFrames los comparta
 }
 
 // ===========================================================================
-//  FRAMES COMPARTIDOS (io/W3dRecursos.h, tipo ANIM). El equivalente de
-//  MallaDatos para las vertex anims: N objetos que declaran la MISMA
+//  FRAMES COMPARTIDOS (io/W3dResources.h, tipo ANIM). El equivalente de
+//  MeshData para las vertex anims: N objetos que declaran la MISMA
 //  Animation { basePath } cargaban N juegos completos de frames (cada frame
 //  es la malla entera: es el dato mas pesado del proyecto despues de las
 //  texturas). Ahora la primera carga registra sus frames en el almacen y las
@@ -107,13 +107,13 @@ VertexAnimation::VertexAnimation(Mesh* tgt, const std::string& animName, bool us
 //  La identidad incluye todo lo que cambia el resultado de LoadFrames:
 //  basePath|frameCount|padding|startFrame|UseNormals.
 // ===========================================================================
-struct AnimDatos {
+struct AnimData {
     std::vector<VertexFrame*> frames;   // duenio de los frames y sus buffers
     int vcount;
-    // las capas que traen los frames (las adopta quien los comparte por CLAVE: VertexAnimAdoptarClave)
+    // las capas que traen los frames (las adopta quien los comparte por CLAVE: VertexAnimAdoptKey)
     bool useNormals, useUV;
-    AnimDatos() : vcount(0), useNormals(false), useUV(false) {}
-    ~AnimDatos() {
+    AnimData() : vcount(0), useNormals(false), useUV(false) {}
+    ~AnimData() {
         for (size_t i = 0; i < frames.size(); ++i) {
             if (!frames[i]) continue;
             delete[] frames[i]->positions;
@@ -138,48 +138,48 @@ struct AnimDatos {
 
 static bool gAnimCacheOn = true;
 static int  gAnimDesinst = 0;
-void AnimsCacheActivo(bool on) { gAnimCacheOn = on; }
-bool AnimsCacheEstaActivo()    { return gAnimCacheOn; }
-int  AnimsDesinstanciadas()    { return gAnimDesinst; }
+void ActiveAnimsCache(bool on) { gAnimCacheOn = on; }
+bool AnimsCacheIsActive()    { return gAnimCacheOn; }
+int  AnimsUninstantiated()    { return gAnimDesinst; }
 
-static bool OpLiberarAnim(void* dato) { delete (AnimDatos*)dato; return true; }
-static void AsegurarOpsAnim() {
-    static bool listo = false;
-    if (listo) return;
-    W3dRecursoOps ops;              // Cargar NULL: los frames los produce LoadFrames
-    ops.Liberar = OpLiberarAnim;
-    W3dRecursosRegistrarTipo(W3DREC_ANIM, ops);
-    listo = true;
+static bool OpFreeAnim(void* data) { delete (AnimData*)data; return true; }
+static void EnsureOpsAnim() {
+    static bool ready = false;
+    if (ready) return;
+    W3dResourceOps ops;              // Cargar NULL: los frames los produce LoadFrames
+    ops.Free = OpFreeAnim;
+    W3dResourcesRegisterType(W3DREC_ANIM, ops);
+    ready = true;
 }
 
-static std::string AnimIdCompartido(const VertexAnimation& a) {
+static std::string AnimIdShared(const VertexAnimation& a) {
     std::ostringstream id;
     id << a.basePath << "|" << a.frameCount << "|" << a.padding
        << "|" << a.startFrame << "|" << (a.UseNormals ? 1 : 0);
     return id.str();
 }
 
-void VertexAnimation::DesinstanciarFrames() {
-    if (!datosRec) return;
+void VertexAnimation::UninstantiateFrames() {
+    if (!dataRec) return;
     // copia profunda de TODOS los frames (los compartidos no se tocan)
     const size_t nF = (size_t)(vcount > 0 ? vcount : 0) * 3;
     const size_t nU = (size_t)(vcount > 0 ? vcount : 0) * 2;
-    std::vector<VertexFrame*> propios;
-    propios.reserve(frames.size());
+    std::vector<VertexFrame*> own;
+    own.reserve(frames.size());
     for (size_t k = 0; k < frames.size(); ++k) {
         const VertexFrame* f = frames[k];
-        if (!f) { propios.push_back(0); continue; }
+        if (!f) { own.push_back(0); continue; }
         VertexFrame* n = new VertexFrame();
         n->frame = f->frame; n->interp = f->interp; n->handleType = f->handleType;
         n->inDF = f->inDF; n->inDV = f->inDV; n->outDF = f->outDF; n->outDV = f->outDV;
         if (f->positions && nF) { GLfloat* p = new GLfloat[nF]; std::memcpy(p, f->positions, nF * sizeof(GLfloat)); n->positions = p; }
         if (f->normals   && nF) { GLbyte*  p = new GLbyte[nF];  std::memcpy(p, f->normals,   nF); n->normals = p; }
         if (f->uvs       && nU) { GLfloat* p = new GLfloat[nU]; std::memcpy(p, f->uvs, nU * sizeof(GLfloat)); n->uvs = p; }
-        propios.push_back(n);
+        own.push_back(n);
     }
-    frames.swap(propios);
-    W3dRecursoSoltar((W3dRecurso*)datosRec, W3DREC_PERMANENTE);
-    datosRec = 0;
+    frames.swap(own);
+    W3dResourceRelease((W3dResource*)dataRec, W3DREC_PERMANENT);
+    dataRec = 0;
     gAnimDesinst++;
 }
 
@@ -187,10 +187,10 @@ void VertexAnimation::DesinstanciarFrames() {
 // VertexFrame es DUENIO de sus tres buffers (~VertexAnimation los borra con delete[]), asi
 // que una copia plana daria dos anims apuntando a la misma memoria y un doble free. Los
 // buffers miden vcount*3 (posiciones/normales) y vcount*2 (uv), igual que en el serializador.
-VertexAnimation* VertexAnimClonar(const VertexAnimation* src, Mesh* nuevoTarget) {
+VertexAnimation* VertexAnimClone(const VertexAnimation* src, Mesh* newTarget) {
     if (!src) return NULL;
-    VertexAnimation* d = new VertexAnimation(nuevoTarget, src->name, src->UseNormals,
-                                             src->speed, src->repeat, src->proximaAnimacion);
+    VertexAnimation* d = new VertexAnimation(newTarget, src->name, src->UseNormals,
+                                             src->speed, src->repeat, src->nextAnimation);
     d->basePath   = src->basePath;
     d->frameCount = src->frameCount;
     d->padding    = src->padding;
@@ -199,8 +199,8 @@ VertexAnimation* VertexAnimClonar(const VertexAnimation* src, Mesh* nuevoTarget)
     d->fps        = src->fps;
     d->UseUV      = src->UseUV;
     d->vcount     = src->vcount;
-    d->noCargo    = src->noCargo;   // una anim rota se copia rota: la copia tampoco se guarda encima
-    d->curvas     = src->curvas;
+    d->notLoaded  = src->notLoaded;   // una anim rota se copia rota: la copia tampoco se guarda encima
+    d->curves     = src->curves;
     const size_t nF = (size_t)(src->vcount > 0 ? src->vcount : 0) * 3;
     const size_t nU = (size_t)(src->vcount > 0 ? src->vcount : 0) * 2;
     for (size_t k = 0; k < src->frames.size(); k++) {
@@ -219,75 +219,75 @@ VertexAnimation* VertexAnimClonar(const VertexAnimation* src, Mesh* nuevoTarget)
 
 // ===========================================================================
 //  FRAMES COMPARTIDOS POR CLAVE / CON OTRA ANIM (ver el .h). Mismo modelo que los de
-//  LoadFrames: el AnimDatos del almacen es el duenio, cada anim que los usa tiene UNA ref
-//  y cualquier edicion de keyframes pasa antes por DesinstanciarFrames (COW).
+//  LoadFrames: el AnimData del almacen es el duenio, cada anim que los usa tiene UNA ref
+//  y cualquier edicion de keyframes pasa antes por UninstantiateFrames (COW).
 // ===========================================================================
 // los frames PROPIOS de 'anim' pasan a ser el dato del almacen bajo 'id' (la anim se queda con la ref
 // que deja el registro). false = no habia nada que registrar o el id ya existe
-static bool RegistrarFramesPropios(VertexAnimation& anim, const std::string& id) {
-    if (anim.datosRec || anim.frames.empty() || id.empty()) return false;
-    AsegurarOpsAnim();
-    if (W3dRecursoBuscar(W3DREC_ANIM, id)) return false;
-    AnimDatos* d = new AnimDatos();
+static bool RegisterFramesOwn(VertexAnimation& anim, const std::string& id) {
+    if (anim.dataRec || anim.frames.empty() || id.empty()) return false;
+    EnsureOpsAnim();
+    if (W3dResourceFind(W3DREC_ANIM, id)) return false;
+    AnimData* d = new AnimData();
     d->frames = anim.frames;
     d->vcount = anim.vcount;
     d->useNormals = anim.UseNormals;
     d->useUV = anim.UseUV;
-    W3dRecurso* r = W3dRecursoRegistrarExterno(W3DREC_ANIM, id, d, d->Bytes());
+    W3dResource* r = W3dResourceRegisterExternal(W3DREC_ANIM, id, d, d->Bytes());
     if (!r) { d->frames.clear(); delete d; return false; }
-    anim.datosRec = r;
+    anim.dataRec = r;
     return true;
 }
 // 'anim' toma los frames de 'r' (+1 ref): los mismos punteros, con sus capas y su conteo de vertices
-static void AdoptarDe(VertexAnimation& anim, W3dRecurso* r) {
-    AnimDatos* d = (AnimDatos*)r->dato;
-    anim.LiberarFrames();
+static void AdoptFrom(VertexAnimation& anim, W3dResource* r) {
+    AnimData* d = (AnimData*)r->data;
+    anim.FreeFrames();
     anim.frames = d->frames;
     anim.vcount = d->vcount;
     anim.UseNormals = d->useNormals;
     anim.UseUV = d->useUV;
     anim.frameCount = (int)d->frames.size();
-    anim.datosRec = r;
-    W3dRecursoRetener(r, W3DREC_PERMANENTE);
+    anim.dataRec = r;
+    W3dResourceRetain(r, W3DREC_PERMANENT);
 }
 
-bool VertexAnimAdoptarClave(VertexAnimation& anim, const std::string& clave, int vcountMalla) {
-    if (!gAnimCacheOn || clave.empty()) return false;
-    AsegurarOpsAnim();
-    W3dRecurso* r = W3dRecursoBuscar(W3DREC_ANIM, clave);
-    if (!r || r->estado != W3DREC_LISTO || !r->dato) return false;
-    const AnimDatos* d = (const AnimDatos*)r->dato;
-    if (d->frames.empty() || d->vcount != vcountMalla) return false;   // (armados para otra malla: que lea los suyos)
-    AdoptarDe(anim, r);
+bool VertexAnimAdoptKey(VertexAnimation& anim, const std::string& key, int vcountMesh) {
+    if (!gAnimCacheOn || key.empty()) return false;
+    EnsureOpsAnim();
+    W3dResource* r = W3dResourceFind(W3DREC_ANIM, key);
+    if (!r || r->state != W3DREC_READY || !r->data) return false;
+    const AnimData* d = (const AnimData*)r->data;
+    if (d->frames.empty() || d->vcount != vcountMesh) return false;   // (armados para otra malla: que lea los suyos)
+    AdoptFrom(anim, r);
     return true;
 }
 
-void VertexAnimRegistrarClave(VertexAnimation& anim, const std::string& clave) {
+void VertexAnimRegisterKey(VertexAnimation& anim, const std::string& key) {
     if (!gAnimCacheOn) return;
-    RegistrarFramesPropios(anim, clave);
+    RegisterFramesOwn(anim, key);
 }
 
-VertexAnimation* VertexAnimCompartir(VertexAnimation* src, Mesh* nuevoTarget) {
+VertexAnimation* VertexAnimShare(VertexAnimation* src, Mesh* newTarget) {
     if (!src) return NULL;
-    if (!gAnimCacheOn || src->frames.empty()) return VertexAnimClonar(src, nuevoTarget);
-    if (!src->datosRec) {
+    if (!gAnimCacheOn || src->frames.empty()) return VertexAnimClone(src, newTarget);
+    if (!src->dataRec) {
         // sus frames eran PROPIOS (una anim sin guardar): pasan al almacen con un id de memoria, unico
-        static unsigned sProx = 1;
+        static unsigned sNext = 1;
         std::ostringstream id;
-        id << "mem:" << sProx++;
-        if (!RegistrarFramesPropios(*src, id.str())) return VertexAnimClonar(src, nuevoTarget);
+        id << "mem:" << sNext++;
+        if (!RegisterFramesOwn(*src, id.str())) return VertexAnimClone(src, newTarget);
     }
-    // la copia: todo lo de la anim como VertexAnimClonar, pero los frames son los MISMOS
-    VertexAnimation* d = new VertexAnimation(nuevoTarget, src->name, src->UseNormals,
-                                             src->speed, src->repeat, src->proximaAnimacion);
+    // la copia: todo lo de la anim como VertexAnimClone, pero los frames son los MISMOS
+    VertexAnimation* d = new VertexAnimation(newTarget, src->name, src->UseNormals,
+                                             src->speed, src->repeat, src->nextAnimation);
     d->basePath   = src->basePath;
     d->padding    = src->padding;
     d->startFrame = src->startFrame;
     d->endFrame   = src->endFrame;
     d->fps        = src->fps;
-    d->noCargo    = src->noCargo;
-    d->curvas     = src->curvas;
-    AdoptarDe(*d, (W3dRecurso*)src->datosRec);
+    d->notLoaded  = src->notLoaded;
+    d->curves     = src->curves;
+    AdoptFrom(*d, (W3dResource*)src->dataRec);
     // (lo que dice la anim de origen manda: el dato de LoadFrames no anota sus capas)
     d->frameCount = src->frameCount;
     d->vcount     = src->vcount;
@@ -296,11 +296,11 @@ VertexAnimation* VertexAnimCompartir(VertexAnimation* src, Mesh* nuevoTarget) {
     return d;
 }
 
-void VertexAnimation::LiberarFrames() {
-    if (datosRec) {   // los frames son del dato compartido: solo se va la ref
+void VertexAnimation::FreeFrames() {
+    if (dataRec) {   // los frames son del dato compartido: solo se va la ref
         frames.clear();
-        W3dRecursoSoltar((W3dRecurso*)datosRec, W3DREC_PERMANENTE);
-        datosRec = 0;
+        W3dResourceRelease((W3dResource*)dataRec, W3DREC_PERMANENT);
+        dataRec = 0;
         return;
     }
     for (size_t i = 0; i < frames.size(); ++i) {
@@ -313,27 +313,27 @@ void VertexAnimation::LiberarFrames() {
     frames.clear();
 }
 
-VertexAnimation::~VertexAnimation() { LiberarFrames(); }
+VertexAnimation::~VertexAnimation() { FreeFrames(); }
 
 bool VertexAnimation::LoadFrames() {
     if (!target || !target->vertex || target->vertexSize <= 0)
         return false;
 
-    LiberarFrames();   // recargar sin fugar los frames anteriores
+    FreeFrames();   // recargar sin fugar los frames anteriores
 
     // FRAMES COMPARTIDOS: si otra instancia ya cargo este mismo basePath,
     // adoptar sus frames (+1 ref) sin tocar el disco.
     if (gAnimCacheOn && frameCount > 0 && !basePath.empty()) {
-        AsegurarOpsAnim();
-        W3dRecurso* r = W3dRecursoBuscar(W3DREC_ANIM, AnimIdCompartido(*this));
-        if (r && r->estado == W3DREC_LISTO && r->dato) {
-            AnimDatos* d = (AnimDatos*)r->dato;
+        EnsureOpsAnim();
+        W3dResource* r = W3dResourceFind(W3DREC_ANIM, AnimIdShared(*this));
+        if (r && r->state == W3DREC_READY && r->data) {
+            AnimData* d = (AnimData*)r->data;
             if (d->vcount == target->vertexSize && !d->frames.empty()) {
                 frames = d->frames;                 // mismos punteros
                 vcount = d->vcount;
                 endFrame = d->frames.back()->frame; // mismo cierre que la carga
-                datosRec = r;
-                W3dRecursoRetener(r, W3DREC_PERMANENTE);
+                dataRec  = r;
+                W3dResourceRetain(r, W3DREC_PERMANENT);
                 return true;
             }
         }
@@ -353,12 +353,12 @@ bool VertexAnimation::LoadFrames() {
         // archivos reales. Con ifstream, en Android TODA la vertex animation
         // (el personaje, los enemigos) se quedaba sin cargar.
         bool okFrm = false;
-        const std::string datosFrm = w3dFileSystem::ReadTextFile(path.str(), &okFrm);
+        const std::string dataFrm = w3dFileSystem::ReadTextFile(path.str(), &okFrm);
         if (!okFrm) {
             std::cerr << "[Anim] No se pudo abrir " << path.str() << "\n";
             return false;
         }
-        std::istringstream file(datosFrm);
+        std::istringstream file(dataFrm);
 
         std::vector<GLfloat> verts;
         std::vector<GLbyte>  tempNormals;
@@ -431,19 +431,19 @@ bool VertexAnimation::LoadFrames() {
     if (!frames.empty()) endFrame = frames.back()->frame;
     vcount = target->vertexSize;   // los frames (.obj) estan armados para este conteo
 
-    // FRAMES COMPARTIDOS: registrar esta carga como el dato del id (AnimDatos
+    // FRAMES COMPARTIDOS: registrar esta carga como el dato del id (AnimData
     // adopta los frames; esta instancia queda con la ref que deja el registro).
     if (gAnimCacheOn && !frames.empty() && !basePath.empty()) {
-        AsegurarOpsAnim();
-        const std::string id = AnimIdCompartido(*this);
-        if (!W3dRecursoBuscar(W3DREC_ANIM, id)) {
-            AnimDatos* d = new AnimDatos();
+        EnsureOpsAnim();
+        const std::string id = AnimIdShared(*this);
+        if (!W3dResourceFind(W3DREC_ANIM, id)) {
+            AnimData* d = new AnimData();
             d->frames = frames;
             d->vcount = vcount;
             d->useNormals = UseNormals;
             d->useUV = UseUV;
-            W3dRecurso* nr = W3dRecursoRegistrarExterno(W3DREC_ANIM, id, d, d->Bytes());
-            if (nr) datosRec = nr;
+            W3dResource* nr = W3dResourceRegisterExternal(W3DREC_ANIM, id, d, d->Bytes());
+            if (nr) dataRec = nr;
             else { d->frames.clear(); delete d; }
         }
     }
@@ -454,9 +454,9 @@ bool VertexAnimation::LoadFrames() {
 void ApplyVertexFrame(const VertexAnimation& anim, size_t frameIndex) {
     assert(anim.target);
     if (anim.frames.empty()) return;   // sin frames el clamp de abajo daria (size_t)-1 -> lectura fuera de rango
-    // COW (MallaDatos.h): el playback escribe vertex[] (+normales/uv si las usa).
+    // COW (MeshData.h): el playback escribe vertex[] (+normales/uv si las usa).
     // La POSE es POR INSTANCIA: la geometria compartida se desinstancia aca.
-    anim.target->DesinstanciarDatos(W3DMD_POS | (anim.UseNormals ? W3DMD_NOR : 0)
+    anim.target->UninstantiateData(W3DMD_POS | (anim.UseNormals ? W3DMD_NOR : 0)
                                               | (anim.UseUV ? W3DMD_UV : 0));
 
     if (frameIndex >= anim.frames.size()) {
@@ -473,12 +473,12 @@ void ApplyVertexFrame(const VertexAnimation& anim, size_t frameIndex) {
         for (size_t i = 0; i < nFloats; ++i) {
             mesh->vertex[i] = srcPos[i];
         }
-        // ESTADO REAL DE POSE (ver Mesh::posadaPorAnim): en reposo solo si lo que se
+        // ESTADO REAL DE POSE (ver Mesh::posedByAnim): en reposo solo si lo que se
         // copio es el KEYFRAME BASE (el primero con posiciones de esta anim).
         const VertexFrame* base = NULL;
         for (size_t k = 0; k < anim.frames.size() && !base; ++k)
             if (anim.frames[k] && anim.frames[k]->positions) base = anim.frames[k];
-        mesh->posadaPorAnim = (frame != base);
+        mesh->posedByAnim = (frame != base);
     }
 
     // ---------- normales (capa propia, opcional, 3 bytes por VERTICE) ----------
@@ -516,8 +516,8 @@ void BlendVertexAnimations(
     // no existe en VertexAnimation)
     assert(fromAnim.target->vertexSize == toAnim.target->vertexSize);
 
-    // COW (MallaDatos.h): la mezcla escribe vertex[] (+normales/uv si las usan)
-    if (mesh) mesh->DesinstanciarDatos(W3DMD_POS
+    // COW (MeshData.h): la mezcla escribe vertex[] (+normales/uv si las usan)
+    if (mesh) mesh->UninstantiateData(W3DMD_POS
                 | ((fromAnim.UseNormals && toAnim.UseNormals) ? W3DMD_NOR : 0)
                 | ((fromAnim.UseUV && toAnim.UseUV) ? W3DMD_UV : 0));
 
@@ -542,10 +542,10 @@ void BlendVertexAnimations(
             A->positions[i] * (1.0f - blendT) +
             B->positions[i] * blendT;
     }
-    // ESTADO REAL DE POSE (ver Mesh::posadaPorAnim): una MEZCLA de dos clips nunca
+    // ESTADO REAL DE POSE (ver Mesh::posedByAnim): una MEZCLA de dos clips nunca
     // es el keyframe base (blendT ya vino clampeado a (0,1) mas arriba: los
     // extremos se fueron por ApplyVertexFrame, que decide el flag por su cuenta).
-    mesh->posadaPorAnim = true;
+    mesh->posedByAnim = true;
     }
 
     // ---------- normales (solo si ambas animaciones las usan) ----------
@@ -577,12 +577,12 @@ void BlendVertexAnimations(
 
 // ============================================================================
 //  EVALUADOR COMUN del EASE (SIN overshoot) — ver el contrato en VertexAnimation.h.
-//  La reproduccion (EvalVertexAnim) y el editor de curvas (VertexCanalTemp en
+//  La reproduccion (EvalVertexAnim) y el editor de curvas (VertexChannelTemp en
 //  Timeline.cpp) usan ESTAS funciones: la curva dibujada = la curva real.
 // ============================================================================
-void VertexAnimClampHandle(bool salida, float spanFrames, float& dF, float& dV) {
+void VertexAnimClampHandle(bool output, float spanFrames, float& dF, float& dV) {
     if (spanFrames < 0.0f) spanFrames = 0.0f;
-    if (salida) {
+    if (output) {
         // handle derecho del key IZQUIERDO: tiempo hacia adelante dentro del tramo,
         // punto de control de valor entre 0 (su key) y 1 (el otro)
         if (dF < 0.0f) dF = 0.0f;               if (dF > spanFrames) dF = spanFrames;
@@ -604,30 +604,30 @@ static void VertexAnimSegBase(const VertexFrame& A, const VertexFrame& B, AnimPr
     seg.keyframes.push_back(ka); seg.keyframes.push_back(kb);
 }
 
-void VertexAnimHandlesTramo(const VertexFrame& A, const VertexFrame& B,
+void VertexAnimHandlesSegment(const VertexFrame& A, const VertexFrame& B,
                             float& outDF, float& outDV, float& inDF, float& inDV) {
     AnimProperty seg; VertexAnimSegBase(A, B, seg);
-    seg.HandleEfectivo(0, true,  outDF, outDV);  // resuelve tambien los CALCULADOS (Vector/Auto/...)
-    seg.HandleEfectivo(1, false, inDF,  inDV);
+    seg.EffectiveHandle(0, true,  outDF, outDV);  // resuelve tambien los CALCULADOS (Vector/Auto/...)
+    seg.EffectiveHandle(1, false, inDF,  inDV);
     const float span = (float)(B.frame - A.frame);
     VertexAnimClampHandle(true,  span, outDF, outDV);
     VertexAnimClampHandle(false, span, inDF,  inDV);
 }
 
-float EvalCurvaVertexAnim(const VertexFrame& A, const VertexFrame& B, float frame) {
+float EvalCurveVertexAnim(const VertexFrame& A, const VertexFrame& B, float frame) {
     const int span = B.frame - A.frame;
     if (span <= 0) return 1.0f;                       // keys pisados: manda el derecho
     if (frame <= (float)A.frame) return 0.0f;
     if (frame >= (float)B.frame) return 1.0f;
     if (A.interp == KfConstant) return 0.0f;          // escalon: A hasta llegar a B
     const float t = (frame - (float)A.frame) / (float)span;
-    if (KfEsEasing(A.interp)) return KfEasing(A.interp, t);   // easing: la misma curva que las de transform
+    if (KfIsEasing(A.interp)) return KfEasing(A.interp, t);   // easing: la misma curva que las de transform
     if (A.interp != KfBezier) return t;               // lineal
     // BEZIER con los handles efectivos CLAMPEADOS al rectangulo del tramo (los MISMOS
     // que dibuja/agarra el editor): los 4 puntos de control quedan en la caja
     // [A.frame..B.frame] x [0..1] -> la cubica es monotona y no se sale de 0..1.
     float aDF, aDV, bDF, bDV;
-    VertexAnimHandlesTramo(A, B, aDF, aDV, bDF, bDV);
+    VertexAnimHandlesSegment(A, B, aDF, aDV, bDF, bDV);
     AnimProperty seg; VertexAnimSegBase(A, B, seg);
     seg.keyframes[0].handleType = HFree; seg.keyframes[0].outDF = aDF; seg.keyframes[0].outDV = aDV;
     seg.keyframes[1].handleType = HFree; seg.keyframes[1].inDF  = bDF; seg.keyframes[1].inDV  = bDV;
@@ -638,15 +638,15 @@ float EvalCurvaVertexAnim(const VertexFrame& A, const VertexFrame& B, float fram
 
 // que CAPA trae un frame? (0 = posiciones, 1 = uv, 2 = normales). El criterio unico de
 // "capa presente" que comparten la evaluacion, la busqueda de tramos y el move selectivo.
-static bool VertexFrameTrae(const VertexFrame* f, int capa) {
+static bool VertexFrameBrings(const VertexFrame* f, int layer) {
     if (!f) return false;
-    if (capa == 0) return f->positions != NULL;
-    if (capa == 1) return f->uvs != NULL;
+    if (layer == 0) return f->positions != NULL;
+    if (layer == 1) return f->uvs != NULL;
     return f->normals != NULL;
 }
 
 // ---- aplicar UNA capa a la malla (t=0 -> A, t=1 -> B; B NULL = HOLD A) ----
-static void AplicarCapaPos(const VertexFrame* A, const VertexFrame* B, float t, Mesh* mesh) {
+static void ApplyLayerPos(const VertexFrame* A, const VertexFrame* B, float t, Mesh* mesh) {
     if (!A || !A->positions || !mesh->vertex) return;
     const size_t nF = (size_t)mesh->vertexSize * 3;
     const VertexFrame* S = NULL;                       // copia directa de un solo frame?
@@ -661,7 +661,7 @@ static void AplicarCapaPos(const VertexFrame* A, const VertexFrame* B, float t, 
 }
 // capa NORMALES: independiente de las posiciones (frames propios; si la anim no tiene
 // ningun frame con normales, EvalVertexAnim ni entra aca y la malla conserva las suyas)
-static void AplicarCapaNrm(const VertexFrame* A, const VertexFrame* B, float t, Mesh* mesh) {
+static void ApplyLayerNrm(const VertexFrame* A, const VertexFrame* B, float t, Mesh* mesh) {
     if (!A || !A->normals || !mesh->normals) return;
     const size_t nF = (size_t)mesh->vertexSize * 3;
     const VertexFrame* S = NULL;
@@ -674,7 +674,7 @@ static void AplicarCapaNrm(const VertexFrame* A, const VertexFrame* B, float t, 
         mesh->normals[i] = NrmFloatToByte(na * (1.0f - t) + nb * t);
     }
 }
-static void AplicarCapaUV(const VertexFrame* A, const VertexFrame* B, float t, Mesh* mesh) {
+static void ApplyLayerUV(const VertexFrame* A, const VertexFrame* B, float t, Mesh* mesh) {
     if (!A || !A->uvs || !mesh->uv) return;
     const size_t nU = (size_t)mesh->vertexSize * 2;
     const VertexFrame* S = NULL;
@@ -694,8 +694,8 @@ void EvalVertexAnim(const VertexAnimation& anim, Mesh* mesh, float frame) {
     if (anim.vcount != 0 && anim.vcount != mesh->vertexSize) return;
     const std::vector<VertexFrame*>& F = anim.frames;
     if (F.empty()) return;
-    // COW (MallaDatos.h): la evaluacion escribe vertex[] (+normales/uv segun capas).
-    mesh->DesinstanciarDatos(W3DMD_POS | (anim.UseNormals ? W3DMD_NOR : 0)
+    // COW (MeshData.h): la evaluacion escribe vertex[] (+normales/uv segun capas).
+    mesh->UninstantiateData(W3DMD_POS | (anim.UseNormals ? W3DMD_NOR : 0)
                                        | (anim.UseUV ? W3DMD_UV : 0));
 
     // CADA CAPA se evalua POR SU CUENTA (curvas separadas): las posiciones interpolan
@@ -703,45 +703,45 @@ void EvalVertexAnim(const VertexAnimation& anim, Mesh* mesh, float frame) {
     // NORMALES entre los que traen normals. Un frame solo-UV NO corta el tramo de
     // posiciones (y al reves). Sin ningun frame con normales (capa borrada), la pasa
     // de normales no encuentra tramo y se saltea entera: la malla conserva las suyas.
-    bool algo = false;
-    for (int capa = 0; capa < 3; ++capa) {
+    bool something = false;
+    for (int layer = 0; layer < 3; ++layer) {
         // el par [A,B] de ESTA capa que rodea 'frame' (los frames van ordenados)
         const VertexFrame* A = NULL; const VertexFrame* B = NULL;
-        const VertexFrame* primero = NULL;            // primer keyframe de la capa (el BASE, capa 0)
+        const VertexFrame* first = NULL;            // primer keyframe de la capa (el BASE, capa 0)
         for (size_t i = 0; i < F.size(); ++i) {
             const VertexFrame* f = F[i]; if (!f) continue;
-            if (!VertexFrameTrae(f, capa)) continue;
-            if (!primero) primero = f;                // el 1ro de la capa: siempre antes que A y que B
+            if (!VertexFrameBrings(f, layer)) continue;
+            if (!first) first = f;                    // el 1ro de la capa: siempre antes que A y que B
             if ((float)f->frame <= frame) A = f;      // el ultimo a la izquierda (o el mismo cuadro)
             else { B = f; break; }                    // el primero a la derecha
         }
         if (!A && !B) continue;                       // la capa no tiene keyframes
         float t = 0.0f;
         if (!A) { A = B; B = NULL; }                  // antes del primero: HOLD el primero
-        else if (B) t = EvalCurvaVertexAnim(*A, *B, frame);  // el ease COMUN (mismo que dibuja el editor)
+        else if (B) t = EvalCurveVertexAnim(*A, *B, frame);  // el ease COMUN (mismo que dibuja el editor)
         // despues del ultimo: B quedo NULL -> HOLD A (igual que las curvas de canal)
-        if (capa == 0) {
-            AplicarCapaPos(A, B, t, mesh);
-            // ESTADO REAL DE POSE (ver Mesh::posadaPorAnim): la malla queda EN REPOSO
+        if (layer == 0) {
+            ApplyLayerPos(A, B, t, mesh);
+            // ESTADO REAL DE POSE (ver Mesh::posedByAnim): la malla queda EN REPOSO
             // solo si lo que se acaba de escribir es EXACTAMENTE el keyframe BASE, o
             // sea A == el primer keyframe con posiciones y sin mezcla (t == 0: la
             // interpolacion con t=0 copia A tal cual, bit a bit). Cualquier otro
             // cuadro la deja POSADA. Nadie mas escribe este flag: una edicion sin
             // autokey mueve vertex[] y NO la posa, que era la regresion.
-            mesh->posadaPorAnim = !(A == primero && t == 0.0f);
+            mesh->posedByAnim = !(A == first && t == 0.0f);
         }
-        else if (capa == 1) AplicarCapaUV(A, B, t, mesh);
-        else                AplicarCapaNrm(A, B, t, mesh);
-        algo = true;
+        else if (layer == 1) ApplyLayerUV(A, B, t, mesh);
+        else                ApplyLayerNrm(A, B, t, mesh);
+        something = true;
     }
-    if (algo) mesh->skinGeomVersion++;   // re-subir el VBO (ver BlendVertexAnimations)
+    if (something) mesh->skinGeomVersion++;   // re-subir el VBO (ver BlendVertexAnimations)
 }
 
 int VertexAnimSetKey(VertexAnimation& anim, int frame,
                      const GLfloat* positions, const GLbyte* normals,
                      const GLfloat* uvs, int interp) {
     if (!anim.target || anim.target->vertexSize <= 0 || (!positions && !uvs && !normals)) return -1;
-    anim.DesinstanciarFrames();   // COW: se van a mutar los keyframes
+    anim.UninstantiateFrames();   // COW: se van a mutar los keyframes
     const size_t nFloats = (size_t)anim.target->vertexSize * 3;
     const size_t nUV = (size_t)anim.target->vertexSize * 2;
     anim.vcount = anim.target->vertexSize;   // los frames quedan armados para este conteo
@@ -785,7 +785,7 @@ int VertexAnimSetKey(VertexAnimation& anim, int frame,
     // insertar ORDENADO por frame
     VertexFrame* nf = new VertexFrame();
     nf->positions = pos; nf->normals = nrm; nf->uvs = tuv; nf->frame = frame; nf->interp = interp;
-    if (interp == KfBezier) nf->handleType = HPlano;   // ease in/out (igual que SetKeyCurva)
+    if (interp == KfBezier) nf->handleType = HPlane;   // ease in/out (igual que SetKeyCurve)
     size_t ins = 0;
     while (ins < anim.frames.size() && anim.frames[ins]->frame < frame) ++ins;
     anim.frames.insert(anim.frames.begin() + ins, nf);
@@ -793,8 +793,8 @@ int VertexAnimSetKey(VertexAnimation& anim, int frame,
     return (int)ins;
 }
 
-bool VertexAnimBorrarFrame(VertexAnimation& anim, int frame) {
-    anim.DesinstanciarFrames();   // COW: se borran keyframes
+bool VertexAnimDeleteFrame(VertexAnimation& anim, int frame) {
+    anim.UninstantiateFrames();   // COW: se borran keyframes
     for (size_t k = 0; k < anim.frames.size(); ++k) {
         if (anim.frames[k]->frame != frame) continue;
         VertexFrame* f = anim.frames[k];
@@ -809,15 +809,15 @@ bool VertexAnimBorrarFrame(VertexAnimation& anim, int frame) {
     return false;
 }
 
-bool VertexAnimBorrarCapa(VertexAnimation& anim, int frame, int capa) {
-    anim.DesinstanciarFrames();   // COW: se mutan los keyframes
+bool VertexAnimDeleteLayer(VertexAnimation& anim, int frame, int layer) {
+    anim.UninstantiateFrames();   // COW: se mutan los keyframes
     for (size_t k = 0; k < anim.frames.size(); ++k) {
         VertexFrame* f = anim.frames[k];
         if (!f || f->frame != frame) continue;
-        if (capa == 0) {
+        if (layer == 0) {
             if (!f->positions) return false;             // este frame no keyframea posiciones
             delete[] (GLfloat*)f->positions; f->positions = NULL;
-        } else if (capa == 1) {
+        } else if (layer == 1) {
             if (!f->uvs) return false;                   // este frame no keyframea UV
             delete[] (GLfloat*)f->uvs; f->uvs = NULL;
         } else {
@@ -829,31 +829,31 @@ bool VertexAnimBorrarCapa(VertexAnimation& anim, int frame, int capa) {
             anim.frames.erase(anim.frames.begin() + k);
             anim.frameCount = (int)anim.frames.size();
         }
-        if (capa == 1) {                                 // el espejo UseUV sigue a los datos
-            bool hay = false;
+        if (layer == 1) {                                 // el espejo UseUV sigue a los datos
+            bool has = false;
             for (size_t i = 0; i < anim.frames.size(); ++i)
-                if (anim.frames[i] && anim.frames[i]->uvs) { hay = true; break; }
-            anim.UseUV = hay;
+                if (anim.frames[i] && anim.frames[i]->uvs) { has = true; break; }
+            anim.UseUV = has;
         }
-        if (capa == 2) {                                 // idem el espejo UseNormals
-            bool hay = false;
+        if (layer == 2) {                                 // idem el espejo UseNormals
+            bool has = false;
             for (size_t i = 0; i < anim.frames.size(); ++i)
-                if (anim.frames[i] && anim.frames[i]->normals) { hay = true; break; }
-            anim.UseNormals = hay;
+                if (anim.frames[i] && anim.frames[i]->normals) { has = true; break; }
+            anim.UseNormals = has;
         }
         return true;
     }
     return false;
 }
 
-bool VertexAnimBorrarCapaNormales(VertexAnimation& anim) {
-    anim.DesinstanciarFrames();   // COW: se borran capas de los keyframes
-    bool alguno = false;
+bool VertexAnimDeleteLayerNormals(VertexAnimation& anim) {
+    anim.UninstantiateFrames();   // COW: se borran capas de los keyframes
+    bool any = false;
     for (size_t k = anim.frames.size(); k-- > 0; ) {
         VertexFrame* f = anim.frames[k];
         if (!f || !f->normals) continue;
         delete[] (GLbyte*)f->normals; f->normals = NULL;
-        alguno = true;
+        any = true;
         if (!f->positions && !f->uvs) {                  // era solo-normales: se va entero
             delete f;
             anim.frames.erase(anim.frames.begin() + k);
@@ -861,7 +861,7 @@ bool VertexAnimBorrarCapaNormales(VertexAnimation& anim) {
     }
     anim.frameCount = (int)anim.frames.size();
     anim.UseNormals = false;   // EvalVertexAnim ya no encuentra tramo de normales: se la saltea
-    return alguno;
+    return any;
 }
 
 void VertexAnimSetInterp(VertexAnimation& anim, int frame, int interp) {
@@ -869,7 +869,7 @@ void VertexAnimSetInterp(VertexAnimation& anim, int frame, int interp) {
         if (anim.frames[k]->frame == frame) { anim.frames[k]->interp = interp; return; }
 }
 
-void VertexAnimOrdenar(VertexAnimation& anim) {
+void VertexAnimSort(VertexAnimation& anim) {
     // insertion sort por 'frame' (C++03: sin lambdas; ademas son pocos keyframes). NO
     // borra colisiones: los punteros siguen todos vivos (el arrastre los referencia).
     std::vector<VertexFrame*>& F = anim.frames;
@@ -888,13 +888,13 @@ void VertexAnimOrdenar(VertexAnimation& anim) {
 // el par [A,B] de la capa que rodea 'frame' (mismo criterio que EvalVertexAnim). 'ignorar' saca UN keyframe de
 // la cuenta: sirve para preguntar "cuanto valdria esta capa aca SI este keyframe no existiera" (lo usa el move
 // selectivo para sacarle al origen la contribucion de los vertices seleccionados).
-static void VertexAnimCapaAB(const std::vector<VertexFrame*>& F, int capa, float frame,
+static void VertexAnimLayerAB(const std::vector<VertexFrame*>& F, int layer, float frame,
                              const VertexFrame** Aout, const VertexFrame** Bout,
-                             const VertexFrame* ignorar = NULL) {
+                             const VertexFrame* ignore = NULL) {
     const VertexFrame* A = NULL; const VertexFrame* B = NULL;
     for (size_t i = 0; i < F.size(); ++i) {
-        const VertexFrame* f = F[i]; if (f == ignorar) continue;
-        if (!VertexFrameTrae(f, capa)) continue;
+        const VertexFrame* f = F[i]; if (f == ignore) continue;
+        if (!VertexFrameBrings(f, layer)) continue;
         if ((float)f->frame <= frame) A = f;
         else { B = f; break; }
     }
@@ -903,26 +903,26 @@ static void VertexAnimCapaAB(const std::vector<VertexFrame*>& F, int capa, float
 }
 // evalua UNA capa de la anim en 'frame' a un BUFFER (no toca la malla): outF para
 // posiciones (vc*3) / uv (vc*2), outB para normales (vc*3). Mismo interpolador que la
-// reproduccion (EvalCurvaVertexAnim). Si la capa no tiene keyframes no escribe nada.
+// reproduccion (EvalCurveVertexAnim). Si la capa no tiene keyframes no escribe nada.
 // Devuelve false si la capa no tenia NINGUN keyframe (sin 'ignorar'): el buffer queda como estaba.
-static bool VertexAnimEvalCapaBuffer(const VertexAnimation& anim, int capa, float frame,
+static bool VertexAnimEvalLayerBuffer(const VertexAnimation& anim, int layer, float frame,
                                      int vc, GLfloat* outF, GLbyte* outB,
-                                     const VertexFrame* ignorar = NULL) {
+                                     const VertexFrame* ignore = NULL) {
     const VertexFrame* A; const VertexFrame* B;
-    VertexAnimCapaAB(anim.frames, capa, frame, &A, &B, ignorar);
+    VertexAnimLayerAB(anim.frames, layer, frame, &A, &B, ignore);
     if (!A) return false;
-    float t = B ? EvalCurvaVertexAnim(*A, *B, frame) : 0.0f;
-    if (capa == 0 && outF) {
+    float t = B ? EvalCurveVertexAnim(*A, *B, frame) : 0.0f;
+    if (layer == 0 && outF) {
         const size_t n = (size_t)vc * 3;
         if (!B || t <= 0.0f) { for (size_t i = 0; i < n; ++i) outF[i] = A->positions[i]; }
         else if (t >= 1.0f)  { for (size_t i = 0; i < n; ++i) outF[i] = B->positions[i]; }
         else for (size_t i = 0; i < n; ++i) outF[i] = A->positions[i]*(1.0f-t) + B->positions[i]*t;
-    } else if (capa == 1 && outF) {
+    } else if (layer == 1 && outF) {
         const size_t n = (size_t)vc * 2;
         if (!B || t <= 0.0f) { for (size_t i = 0; i < n; ++i) outF[i] = A->uvs[i]; }
         else if (t >= 1.0f)  { for (size_t i = 0; i < n; ++i) outF[i] = B->uvs[i]; }
         else for (size_t i = 0; i < n; ++i) outF[i] = A->uvs[i]*(1.0f-t) + B->uvs[i]*t;
-    } else if (capa == 2 && outB) {
+    } else if (layer == 2 && outB) {
         const size_t n = (size_t)vc * 3;
         if (!B || t <= 0.0f) { for (size_t i = 0; i < n; ++i) outB[i] = A->normals[i]; }
         else if (t >= 1.0f)  { for (size_t i = 0; i < n; ++i) outB[i] = B->normals[i]; }
@@ -932,14 +932,14 @@ static bool VertexAnimEvalCapaBuffer(const VertexAnimation& anim, int capa, floa
     return true;
 }
 // frame vivo en 'frame' (o NULL). 'salvo' = punteros a IGNORAR (los que se estan moviendo)
-static VertexFrame* VertexAnimFrameEn(VertexAnimation& anim, int frame,
-                                      const std::vector<VertexFrame*>* salvo) {
+static VertexFrame* VertexAnimFrameIn(VertexAnimation& anim, int frame,
+                                      const std::vector<VertexFrame*>* except) {
     for (size_t k = 0; k < anim.frames.size(); ++k) {
         VertexFrame* f = anim.frames[k];
         if (!f || f->frame != frame) continue;
-        if (salvo) { bool esMovido = false;
-            for (size_t i = 0; i < salvo->size(); ++i) if ((*salvo)[i] == f) { esMovido = true; break; }
-            if (esMovido) continue; }
+        if (except) { bool isMoved = false;
+            for (size_t i = 0; i < except->size(); ++i) if ((*except)[i] == f) { isMoved = true; break; }
+            if (isMoved) continue; }
         return f;
     }
     return NULL;
@@ -949,52 +949,52 @@ static VertexFrame* VertexAnimFrameEn(VertexAnimation& anim, int frame,
 // evaluaria en ese mismo cuadro SIN el. Es la definicion de "este cuadro le anima algo a estos vertices": un key
 // que cae justo sobre la recta/curva de sus vecinos no cambia nada, es un cuadro de paso.
 // mask NULL = todos los vertices. Tolerancias: posiciones/UV en float, normales en bytes (+-1 = redondeo).
-static bool VertexCapaAporta(const VertexAnimation& anim, const VertexFrame* f, int capa, int vc,
+static bool VertexLayerContributes(const VertexAnimation& anim, const VertexFrame* f, int layer, int vc,
                              const unsigned char* mask) {
-    if (!VertexFrameTrae(f, capa)) return false;
-    const size_t n = (capa == 1) ? (size_t)vc*2 : (size_t)vc*3;
-    if (capa == 2) {
+    if (!VertexFrameBrings(f, layer)) return false;
+    const size_t n = (layer == 1) ? (size_t)vc*2 : (size_t)vc*3;
+    if (layer == 2) {
         std::vector<GLbyte> b(n, 0);
-        if (!VertexAnimEvalCapaBuffer(anim, capa, (float)f->frame, vc, NULL, &b[0], f)) return true; // sin vecinos: aporta
+        if (!VertexAnimEvalLayerBuffer(anim, layer, (float)f->frame, vc, NULL, &b[0], f)) return true; // sin vecinos: aporta
         for (int v = 0; v < vc; ++v) { if (mask && !mask[v]) continue;
             for (int c = 0; c < 3; ++c){ int d = (int)f->normals[v*3+c] - (int)b[v*3+c]; if (d < 0) d = -d; if (d > 1) return true; } }
         return false;
     }
     std::vector<GLfloat> b(n, 0.0f);
-    if (!VertexAnimEvalCapaBuffer(anim, capa, (float)f->frame, vc, &b[0], NULL, f)) return true;
-    const int cn = (capa == 1) ? 2 : 3;
-    const float tol = (capa == 1) ? 1e-6f : 1e-5f;
-    const GLfloat* src = (capa == 1) ? f->uvs : f->positions;
+    if (!VertexAnimEvalLayerBuffer(anim, layer, (float)f->frame, vc, &b[0], NULL, f)) return true;
+    const int cn = (layer == 1) ? 2 : 3;
+    const float tol = (layer == 1) ? 1e-6f : 1e-5f;
+    const GLfloat* src = (layer == 1) ? f->uvs : f->positions;
     for (int v = 0; v < vc; ++v) { if (mask && !mask[v]) continue;
         for (int c = 0; c < cn; ++c) if (fabsf(src[v*cn+c] - b[v*cn+c]) > tol) return true; }
     return false;
 }
-bool VertexAnimKeyAportaSel(const VertexAnimation& anim, int capa, int frame, const unsigned char* mask) {
+bool VertexAnimKeyContributesSel(const VertexAnimation& anim, int layer, int frame, const unsigned char* mask) {
     const int vc = (anim.vcount > 0) ? anim.vcount : (anim.target ? anim.target->vertexSize : 0);
     if (vc <= 0) return true;
     for (size_t k = 0; k < anim.frames.size(); ++k)
         if (anim.frames[k] && anim.frames[k]->frame == frame)
-            return VertexCapaAporta(anim, anim.frames[k], capa, vc, mask);
+            return VertexLayerContributes(anim, anim.frames[k], layer, vc, mask);
     return false;
 }
 
-bool VertexAnimMoverKeysSelectivo(VertexAnimation& anim,
-                                  const std::vector<int>& origen,
-                                  const std::vector<int>& destino,
+bool VertexAnimMoveKeysSelective(VertexAnimation& anim,
+                                  const std::vector<int>& origin,
+                                  const std::vector<int>& destination,
                                   const unsigned char* mask) {
-    if (!mask || origen.empty() || origen.size() != destino.size()) return false;
-    anim.DesinstanciarFrames();   // COW: move selectivo escribe los frames
+    if (!mask || origin.empty() || origin.size() != destination.size()) return false;
+    anim.UninstantiateFrames();   // COW: move selectivo escribe los frames
     const int vc = (anim.vcount > 0) ? anim.vcount : (anim.target ? anim.target->vertexSize : 0);
     if (vc <= 0) return false;
     const size_t nF = (size_t)vc * 3, nU = (size_t)vc * 2;
 
     // los frames FUENTE (se descartan pares sin frame o con origen == destino)
     std::vector<VertexFrame*> src; std::vector<int> dst;
-    for (size_t i = 0; i < origen.size(); ++i) {
-        if (origen[i] == destino[i]) continue;
-        VertexFrame* f = VertexAnimFrameEn(anim, origen[i], NULL);
+    for (size_t i = 0; i < origin.size(); ++i) {
+        if (origin[i] == destination[i]) continue;
+        VertexFrame* f = VertexAnimFrameIn(anim, origin[i], NULL);
         if (!f) continue;
-        src.push_back(f); dst.push_back(destino[i]);
+        src.push_back(f); dst.push_back(destination[i]);
     }
     if (src.empty()) return false;
 
@@ -1007,21 +1007,21 @@ bool VertexAnimMoverKeysSelectivo(VertexAnimation& anim,
     // (Lo del ORIGEN va DESPUES de escribir el destino: los vertices seleccionados tienen que caer sobre la
     //  interpolacion NUEVA -la que dejo el move-, no sobre la vieja, o el cuadro de origen les seguiria animando
     //  un pico raro y no desapareceria de la fila filtrada.)
-    std::vector<GLfloat*> movPos(src.size(), (GLfloat*)NULL), prepPos(src.size(), (GLfloat*)NULL), sinPos(src.size(), (GLfloat*)NULL);
-    std::vector<GLbyte*>  movNrm(src.size(), (GLbyte*)NULL),  prepNrm(src.size(), (GLbyte*)NULL),  sinNrm(src.size(), (GLbyte*)NULL);
-    std::vector<GLfloat*> movUV (src.size(), (GLfloat*)NULL), prepUV (src.size(), (GLfloat*)NULL), sinUV (src.size(), (GLfloat*)NULL);
+    std::vector<GLfloat*> movPos(src.size(), (GLfloat*)NULL), prepPos(src.size(), (GLfloat*)NULL), noPos(src.size(), (GLfloat*)NULL);
+    std::vector<GLbyte*>  movNrm(src.size(), (GLbyte*)NULL),  prepNrm(src.size(), (GLbyte*)NULL),  noNrm(src.size(), (GLbyte*)NULL);
+    std::vector<GLfloat*> movUV (src.size(), (GLfloat*)NULL), prepUV (src.size(), (GLfloat*)NULL), noUV (src.size(), (GLfloat*)NULL);
     std::vector<VertexFrame> ease(src.size());   // interp/handles del movido (para el frame nuevo del destino)
     for (size_t i = 0; i < src.size(); ++i) {
         ease[i] = *src[i]; ease[i].positions = NULL; ease[i].normals = NULL; ease[i].uvs = NULL;
-        VertexFrame* quieto = VertexAnimFrameEn(anim, dst[i], &src);   // el que NO se mueve
+        VertexFrame* still = VertexAnimFrameIn(anim, dst[i], &src);   // el que NO se mueve
         if (src[i]->positions) {
             GLfloat* mv = new GLfloat[nF];
             for (size_t j = 0; j < nF; ++j) mv[j] = src[i]->positions[j];
             movPos[i] = mv;
-            if (!(quieto && quieto->positions)) {
+            if (!(still && still->positions)) {
                 GLfloat* b = new GLfloat[nF];
                 for (size_t j = 0; j < nF; ++j) b[j] = mv[j];               // fallback: la pose del movido
-                VertexAnimEvalCapaBuffer(anim, 0, (float)dst[i], vc, b, NULL);
+                VertexAnimEvalLayerBuffer(anim, 0, (float)dst[i], vc, b, NULL);
                 for (int v = 0; v < vc; ++v) if (mask[v]) {                 // los seleccionados: el movido
                     b[v*3] = mv[v*3]; b[v*3+1] = mv[v*3+1]; b[v*3+2] = mv[v*3+2]; }
                 prepPos[i] = b;
@@ -1031,10 +1031,10 @@ bool VertexAnimMoverKeysSelectivo(VertexAnimation& anim,
             GLbyte* mv = new GLbyte[nF];
             for (size_t j = 0; j < nF; ++j) mv[j] = src[i]->normals[j];
             movNrm[i] = mv;
-            if (!(quieto && quieto->normals)) {
+            if (!(still && still->normals)) {
                 GLbyte* b = new GLbyte[nF];
                 for (size_t j = 0; j < nF; ++j) b[j] = mv[j];
-                VertexAnimEvalCapaBuffer(anim, 2, (float)dst[i], vc, NULL, b);
+                VertexAnimEvalLayerBuffer(anim, 2, (float)dst[i], vc, NULL, b);
                 for (int v = 0; v < vc; ++v) if (mask[v]) {
                     b[v*3] = mv[v*3]; b[v*3+1] = mv[v*3+1]; b[v*3+2] = mv[v*3+2]; }
                 prepNrm[i] = b;
@@ -1044,10 +1044,10 @@ bool VertexAnimMoverKeysSelectivo(VertexAnimation& anim,
             GLfloat* mv = new GLfloat[nU];
             for (size_t j = 0; j < nU; ++j) mv[j] = src[i]->uvs[j];
             movUV[i] = mv;
-            if (!(quieto && quieto->uvs)) {
+            if (!(still && still->uvs)) {
                 GLfloat* b = new GLfloat[nU];
                 for (size_t j = 0; j < nU; ++j) b[j] = mv[j];
-                VertexAnimEvalCapaBuffer(anim, 1, (float)dst[i], vc, b, NULL);
+                VertexAnimEvalLayerBuffer(anim, 1, (float)dst[i], vc, b, NULL);
                 for (int v = 0; v < vc; ++v) if (mask[v]) { b[v*2] = mv[v*2]; b[v*2+1] = mv[v*2+1]; }
                 prepUV[i] = b;
             }
@@ -1061,7 +1061,7 @@ bool VertexAnimMoverKeysSelectivo(VertexAnimation& anim,
     // evaluaba ahi: no saltan). Va ANTES que el origen: el origen se resuelve contra el resultado.
     std::vector<VertexFrame*> recF; std::vector<int> recM;   // frames que RECIBIERON un destino + capas escritas
     for (size_t i = 0; i < src.size(); ++i) {
-        VertexFrame* q = VertexAnimFrameEn(anim, dst[i], NULL);
+        VertexFrame* q = VertexAnimFrameIn(anim, dst[i], NULL);
         if (!q) {
             q = new VertexFrame();
             q->frame = dst[i];
@@ -1073,14 +1073,14 @@ bool VertexAnimMoverKeysSelectivo(VertexAnimation& anim,
             while (ins < anim.frames.size() && anim.frames[ins]->frame < dst[i]) ++ins;
             anim.frames.insert(anim.frames.begin() + ins, q);
         }
-        int escritas = 0;
+        int written = 0;
         if (movPos[i]) {
             if (q->positions) {
                 GLfloat* qp = (GLfloat*)q->positions;
                 for (int v = 0; v < vc; ++v) if (mask[v]) {
                     qp[v*3] = movPos[i][v*3]; qp[v*3+1] = movPos[i][v*3+1]; qp[v*3+2] = movPos[i][v*3+2]; }
             } else if (prepPos[i]) { q->positions = prepPos[i]; prepPos[i] = NULL; }
-            escritas |= 1;
+            written |= 1;
         }
         if (movNrm[i]) {
             if (q->normals) {
@@ -1088,18 +1088,18 @@ bool VertexAnimMoverKeysSelectivo(VertexAnimation& anim,
                 for (int v = 0; v < vc; ++v) if (mask[v]) {
                     qn[v*3] = movNrm[i][v*3]; qn[v*3+1] = movNrm[i][v*3+1]; qn[v*3+2] = movNrm[i][v*3+2]; }
             } else if (prepNrm[i]) { q->normals = prepNrm[i]; prepNrm[i] = NULL; }
-            escritas |= 4;
+            written |= 4;
         }
         if (movUV[i]) {
             if (q->uvs) {
                 GLfloat* qu = (GLfloat*)q->uvs;
                 for (int v = 0; v < vc; ++v) if (mask[v]) { qu[v*2] = movUV[i][v*2]; qu[v*2+1] = movUV[i][v*2+1]; }
             } else if (prepUV[i]) { q->uvs = prepUV[i]; prepUV[i] = NULL; }
-            escritas |= 2;
+            written |= 2;
         }
         size_t r = 0; for (; r < recF.size(); ++r) if (recF[r] == q) break;
         if (r == recF.size()){ recF.push_back(q); recM.push_back(0); }
-        recM[r] |= escritas;
+        recM[r] |= written;
     }
 
     // ---- PASADA 3: el ORIGEN pierde la contribucion de los vertices SELECCIONADOS ----
@@ -1113,58 +1113,58 @@ bool VertexAnimMoverKeysSelectivo(VertexAnimation& anim,
     // Un frame que ademas RECIBIO un destino en esa capa no se toca: manda el keyframe que acaba de llegar.
     for (size_t i = 0; i < src.size(); ++i) {
         VertexFrame* f = src[i]; if (!f) continue;
-        int recibido = 0;
-        for (size_t r = 0; r < recF.size(); ++r) if (recF[r] == f){ recibido = recM[r]; break; }
-        if (f->positions && !(recibido & 1)) {
+        int received = 0;
+        for (size_t r = 0; r < recF.size(); ++r) if (recF[r] == f){ received = recM[r]; break; }
+        if (f->positions && !(received & 1)) {
             GLfloat* s = new GLfloat[nF];
-            if (VertexAnimEvalCapaBuffer(anim, 0, (float)f->frame, vc, s, NULL, f)) sinPos[i] = s; else delete[] s;
+            if (VertexAnimEvalLayerBuffer(anim, 0, (float)f->frame, vc, s, NULL, f)) noPos[i] = s; else delete[] s;
         }
-        if (f->normals && !(recibido & 4)) {
+        if (f->normals && !(received & 4)) {
             GLbyte* s = new GLbyte[nF];
-            if (VertexAnimEvalCapaBuffer(anim, 2, (float)f->frame, vc, NULL, s, f)) sinNrm[i] = s; else delete[] s;
+            if (VertexAnimEvalLayerBuffer(anim, 2, (float)f->frame, vc, NULL, s, f)) noNrm[i] = s; else delete[] s;
         }
-        if (f->uvs && !(recibido & 2)) {
+        if (f->uvs && !(received & 2)) {
             GLfloat* s = new GLfloat[nU];
-            if (VertexAnimEvalCapaBuffer(anim, 1, (float)f->frame, vc, s, NULL, f)) sinUV[i] = s; else delete[] s;
+            if (VertexAnimEvalLayerBuffer(anim, 1, (float)f->frame, vc, s, NULL, f)) noUV[i] = s; else delete[] s;
         }
     }
     for (size_t i = 0; i < src.size(); ++i) {     // aplicar (en un paso aparte: ningun origen ve el de otro)
         VertexFrame* f = src[i]; if (!f) continue;
-        int recibido = 0;
-        for (size_t r = 0; r < recF.size(); ++r) if (recF[r] == f){ recibido = recM[r]; break; }
-        if (f->positions && !(recibido & 1)) {
-            if (!sinPos[i]) { delete[] (GLfloat*)f->positions; f->positions = NULL; }  // sin vecinos: nada que sostener
+        int received = 0;
+        for (size_t r = 0; r < recF.size(); ++r) if (recF[r] == f){ received = recM[r]; break; }
+        if (f->positions && !(received & 1)) {
+            if (!noPos[i]) { delete[] (GLfloat*)f->positions; f->positions = NULL; }  // sin vecinos: nada que sostener
             else { GLfloat* p = (GLfloat*)f->positions;
                    for (int v = 0; v < vc; ++v) if (mask[v]) {
-                       p[v*3] = sinPos[i][v*3]; p[v*3+1] = sinPos[i][v*3+1]; p[v*3+2] = sinPos[i][v*3+2]; } }
+                       p[v*3] = noPos[i][v*3]; p[v*3+1] = noPos[i][v*3+1]; p[v*3+2] = noPos[i][v*3+2]; } }
         }
-        if (f->normals && !(recibido & 4)) {
-            if (!sinNrm[i]) { delete[] (GLbyte*)f->normals; f->normals = NULL; }
+        if (f->normals && !(received & 4)) {
+            if (!noNrm[i]) { delete[] (GLbyte*)f->normals; f->normals = NULL; }
             else { GLbyte* p = (GLbyte*)f->normals;
                    for (int v = 0; v < vc; ++v) if (mask[v]) {
-                       p[v*3] = sinNrm[i][v*3]; p[v*3+1] = sinNrm[i][v*3+1]; p[v*3+2] = sinNrm[i][v*3+2]; } }
+                       p[v*3] = noNrm[i][v*3]; p[v*3+1] = noNrm[i][v*3+1]; p[v*3+2] = noNrm[i][v*3+2]; } }
         }
-        if (f->uvs && !(recibido & 2)) {
-            if (!sinUV[i]) { delete[] (GLfloat*)f->uvs; f->uvs = NULL; }
+        if (f->uvs && !(received & 2)) {
+            if (!noUV[i]) { delete[] (GLfloat*)f->uvs; f->uvs = NULL; }
             else { GLfloat* p = (GLfloat*)f->uvs;
-                   for (int v = 0; v < vc; ++v) if (mask[v]) { p[v*2] = sinUV[i][v*2]; p[v*2+1] = sinUV[i][v*2+1]; } }
+                   for (int v = 0; v < vc; ++v) if (mask[v]) { p[v*2] = noUV[i][v*2]; p[v*2+1] = noUV[i][v*2+1]; } }
         }
     }
     for (size_t i = 0; i < src.size(); ++i) {     // ...y recien ahora, que capas quedaron REDUNDANTES
         VertexFrame* f = src[i]; if (!f) continue;
-        int recibido = 0;
-        for (size_t r = 0; r < recF.size(); ++r) if (recF[r] == f){ recibido = recM[r]; break; }
-        if (f->positions && !(recibido & 1) && !VertexCapaAporta(anim, f, 0, vc, NULL)){ delete[] (GLfloat*)f->positions; f->positions = NULL; }
-        if (f->normals   && !(recibido & 4) && !VertexCapaAporta(anim, f, 2, vc, NULL)){ delete[] (GLbyte*)f->normals;   f->normals   = NULL; }
-        if (f->uvs       && !(recibido & 2) && !VertexCapaAporta(anim, f, 1, vc, NULL)){ delete[] (GLfloat*)f->uvs;      f->uvs       = NULL; }
+        int received = 0;
+        for (size_t r = 0; r < recF.size(); ++r) if (recF[r] == f){ received = recM[r]; break; }
+        if (f->positions && !(received & 1) && !VertexLayerContributes(anim, f, 0, vc, NULL)){ delete[] (GLfloat*)f->positions; f->positions = NULL; }
+        if (f->normals   && !(received & 4) && !VertexLayerContributes(anim, f, 2, vc, NULL)){ delete[] (GLbyte*)f->normals;   f->normals   = NULL; }
+        if (f->uvs       && !(received & 2) && !VertexLayerContributes(anim, f, 1, vc, NULL)){ delete[] (GLfloat*)f->uvs;      f->uvs       = NULL; }
     }
     // los frames de origen que quedaron SIN NINGUNA capa se van
     for (size_t k = anim.frames.size(); k-- > 0; ) {
         VertexFrame* f = anim.frames[k];
         if (!f) { anim.frames.erase(anim.frames.begin()+k); continue; }
         if (f->positions || f->normals || f->uvs) continue;
-        bool esSrc = false; for (size_t i = 0; i < src.size(); ++i) if (src[i] == f){ esSrc = true; break; }
-        if (!esSrc) continue;                      // uno vacio que no venia de aca: no es asunto nuestro
+        bool isSrc = false; for (size_t i = 0; i < src.size(); ++i) if (src[i] == f){ isSrc = true; break; }
+        if (!isSrc) continue;                      // uno vacio que no venia de aca: no es asunto nuestro
         anim.frames.erase(anim.frames.begin()+k);
         for (size_t i = 0; i < src.size(); ++i) if (src[i] == f) src[i] = NULL;   // olvidarlo ANTES de liberarlo
         delete f;
@@ -1172,25 +1172,25 @@ bool VertexAnimMoverKeysSelectivo(VertexAnimation& anim,
 
     // liberar los temporales (los prep* que se adjuntaron ya quedaron en NULL)
     for (size_t i = 0; i < src.size(); ++i) {
-        delete[] movPos[i]; delete[] prepPos[i]; delete[] sinPos[i];
-        delete[] movNrm[i]; delete[] prepNrm[i]; delete[] sinNrm[i];
-        delete[] movUV[i];  delete[] prepUV[i];  delete[] sinUV[i];
+        delete[] movPos[i]; delete[] prepPos[i]; delete[] noPos[i];
+        delete[] movNrm[i]; delete[] prepNrm[i]; delete[] noNrm[i];
+        delete[] movUV[i];  delete[] prepUV[i];  delete[] noUV[i];
     }
-    VertexAnimOrdenar(anim);
+    VertexAnimSort(anim);
     anim.frameCount = (int)anim.frames.size();
     // los espejos de capa pueden haber cambiado (una capa entera pudo desaparecer)
-    { bool hayN = false, hayU = false;
+    { bool hasN = false, hasU = false;
       for (size_t k = 0; k < anim.frames.size(); ++k){ if (!anim.frames[k]) continue;
-          if (anim.frames[k]->normals) hayN = true;
-          if (anim.frames[k]->uvs)     hayU = true; }
-      anim.UseNormals = hayN; anim.UseUV = hayU; }
+          if (anim.frames[k]->normals) hasN = true;
+          if (anim.frames[k]->uvs)     hasU = true; }
+      anim.UseNormals = hasN; anim.UseUV = hasU; }
     return true;
 }
 
-bool VertexAnimMoverKeySelectivo(VertexAnimation& anim, int origen, int destino,
+bool VertexAnimMoveKeySelective(VertexAnimation& anim, int origin, int destination,
                                  const unsigned char* mask) {
-    std::vector<int> o(1, origen), d(1, destino);
-    return VertexAnimMoverKeysSelectivo(anim, o, d, mask);
+    std::vector<int> o(1, origin), d(1, destination);
+    return VertexAnimMoveKeysSelective(anim, o, d, mask);
 }
 
 // helpers de escritura/lectura LE (little-endian explicito: NO depender del orden nativo,
@@ -1208,7 +1208,7 @@ static unsigned GetU32(const unsigned char* p){
 }
 static float GetF32(const unsigned char* p){ unsigned u=GetU32(p); float f; std::memcpy(&f,&u,4); return f; }
 
-void VertexAnimSerializar(const VertexAnimation& anim, std::vector<unsigned char>& out){
+void VertexAnimSerialize(const VertexAnimation& anim, std::vector<unsigned char>& out){
     out.clear();
     int vc = anim.target ? anim.target->vertexSize : 0;
     // si no hay target, deducir vc del primer frame no sirve (no guardamos vc por frame);
@@ -1238,72 +1238,72 @@ void VertexAnimSerializar(const VertexAnimation& anim, std::vector<unsigned char
         PutF32(out, f->inDF); PutF32(out, f->inDV); PutF32(out, f->outDF); PutF32(out, f->outDV);
         // v5: que CAPAS trae este frame (bit0 = posiciones, bit1 = uv, bit2 = normales).
         // Solo se escriben los buffers presentes, en orden posiciones / normales / uv.
-        unsigned capas = (f->positions ? 1u : 0u) | (f->uvs ? 2u : 0u) | (f->normals ? 4u : 0u);
-        PutU32(out, capas);
-        if (capas & 1u) for (size_t i=0;i<nF;i++) PutF32(out, f->positions[i]);
-        if (capas & 4u) for (size_t i=0;i<nF;i++) out.push_back((unsigned char)f->normals[i]);
-        if (capas & 2u) for (size_t i=0;i<nU;i++) PutF32(out, f->uvs[i]);
+        unsigned layers = (f->positions ? 1u : 0u) | (f->uvs ? 2u : 0u) | (f->normals ? 4u : 0u);
+        PutU32(out, layers);
+        if (layers & 1u) for (size_t i=0;i<nF;i++) PutF32(out, f->positions[i]);
+        if (layers & 4u) for (size_t i=0;i<nF;i++) out.push_back((unsigned char)f->normals[i]);
+        if (layers & 2u) for (size_t i=0;i<nU;i++) PutF32(out, f->uvs[i]);
     }
 }
 
-bool VertexAnimDeserializar(VertexAnimation& anim, const unsigned char* in, size_t n){
+bool VertexAnimDeserialize(VertexAnimation& anim, const unsigned char* in, size_t n){
     if (!in || n < 20) return false;
     if (in[0]!='W'||in[1]!='3'||in[2]!='D'||in[3]!='V') return false;
     size_t p = 4;
-    unsigned ver = GetU32(in+p); p+=4;
-    if (ver >= 3 && n < 24) return false;    // v3+ mete un u32 extra (useUV) en el header (24 bytes)
+    unsigned show = GetU32(in+p); p+=4;
+    if (show >= 3 && n < 24) return false;    // v3+ mete un u32 extra (useUV) en el header (24 bytes)
     unsigned vc  = GetU32(in+p); p+=4;
     unsigned useN= GetU32(in+p); p+=4;
-    const bool conUV = (ver >= 3);           // v3+: header trae useUV
+    const bool withUV = (show >= 3);           // v3+: header trae useUV
     unsigned useU = 0;
-    if (conUV){ useU = GetU32(in+p); p+=4; }
+    if (withUV){ useU = GetU32(in+p); p+=4; }
     unsigned nfr = GetU32(in+p); p+=4;
     if (vc == 0) return false;
     const size_t nF = (size_t)vc * 3;
     const size_t nU = (size_t)vc * 2;
-    const bool conHandles = (ver >= 2);   // v1: sin handles (default); v2: con handles del bezier
-    const bool conCapas   = (ver >= 4);   // v4: mascara de capas POR FRAME (frames de tamano variable)
-    const bool nrmPropia  = (ver >= 5);   // v5: la capa de NORMALES tiene bit propio (bit2); antes
+    const bool withHandles = (show >= 2);   // v1: sin handles (default); v2: con handles del bezier
+    const bool withLayers  = (show >= 4);   // v4: mascara de capas POR FRAME (frames de tamano variable)
+    const bool nrmOwn      = (show >= 5);   // v5: la capa de NORMALES tiene bit propio (bit2); antes
                                           // viajaba PEGADA a las posiciones (si useN)
-    anim.LiberarFrames();
+    anim.FreeFrames();
     anim.UseNormals = (useN != 0);
     anim.UseUV = (useU != 0);
     anim.vcount = (int)vc;   // los frames del blob estan armados para este conteo de vertices
     for (unsigned k=0;k<nfr;k++){
         // v4+ tiene frames de TAMANO VARIABLE -> se valida el resto del blob antes de cada
         // bloque (v1..v3 pasan por los mismos chequeos: son un caso de tamano fijo)
-        size_t need = 8 + (conHandles ? 20u : 0u) + (conCapas ? 4u : 0u);
-        if (n < p + need){ anim.LiberarFrames(); anim.frameCount = 0; return false; }
+        size_t need = 8 + (withHandles ? 20u : 0u) + (withLayers ? 4u : 0u);
+        if (n < p + need){ anim.FreeFrames(); anim.frameCount = 0; return false; }
         VertexFrame* f = new VertexFrame();
         f->frame  = (int)GetU32(in+p); p+=4;
         f->interp = (int)GetU32(in+p); p+=4;
-        if (conHandles){
+        if (withHandles){
             f->handleType = (int)GetU32(in+p); p+=4;
             f->inDF = GetF32(in+p); p+=4; f->inDV = GetF32(in+p); p+=4;
             f->outDF = GetF32(in+p); p+=4; f->outDV = GetF32(in+p); p+=4;
         }
         // capas del frame: v4+ la trae explicita; v1..v3 era el layout viejo (posiciones
         // siempre; uv en TODOS los frames si useU) -> retrocompat
-        unsigned capas = 1u | (useU ? 2u : 0u);
-        if (conCapas){ capas = GetU32(in+p); p+=4; }
-        anim.frames.push_back(f);   // ya en la lista: si falla un bloque, LiberarFrames lo limpia
-        if (capas & 1u){
+        unsigned layers = 1u | (useU ? 2u : 0u);
+        if (withLayers){ layers = GetU32(in+p); p+=4; }
+        anim.frames.push_back(f);   // ya en la lista: si falla un bloque, FreeFrames lo limpia
+        if (layers & 1u){
             // v1..v4: las normales acompanaban a las posiciones (useN) -> se leen juntas
-            size_t needPos = nF*4 + ((!nrmPropia && useN) ? nF : 0);
-            if (n < p + needPos){ anim.LiberarFrames(); anim.frameCount = 0; return false; }
+            size_t needPos = nF*4 + ((!nrmOwn && useN) ? nF : 0);
+            if (n < p + needPos){ anim.FreeFrames(); anim.frameCount = 0; return false; }
             GLfloat* pos = new GLfloat[nF];
             for (size_t i=0;i<nF;i++){ pos[i]=GetF32(in+p); p+=4; }
             f->positions = pos;
-            if (!nrmPropia && useN){ GLbyte* nr = new GLbyte[nF]; for (size_t i=0;i<nF;i++){ nr[i]=(GLbyte)in[p]; p++; } f->normals = nr; }
+            if (!nrmOwn && useN){ GLbyte* nr = new GLbyte[nF]; for (size_t i=0;i<nF;i++){ nr[i]=(GLbyte)in[p]; p++; } f->normals = nr; }
         }
-        if (nrmPropia && (capas & 4u)){   // v5: bloque de normales propio (puede venir sin posiciones)
-            if (n < p + nF){ anim.LiberarFrames(); anim.frameCount = 0; return false; }
+        if (nrmOwn && (layers & 4u)){   // v5: bloque de normales propio (puede venir sin posiciones)
+            if (n < p + nF){ anim.FreeFrames(); anim.frameCount = 0; return false; }
             GLbyte* nr = new GLbyte[nF];
             for (size_t i=0;i<nF;i++){ nr[i]=(GLbyte)in[p]; p++; }
             f->normals = nr;
         }
-        if (capas & 2u){
-            if (n < p + nU*4){ anim.LiberarFrames(); anim.frameCount = 0; return false; }
+        if (layers & 2u){
+            if (n < p + nU*4){ anim.FreeFrames(); anim.frameCount = 0; return false; }
             GLfloat* uv = new GLfloat[nU];
             for (size_t i=0;i<nU;i++){ uv[i]=GetF32(in+p); p+=4; }
             f->uvs = uv;
@@ -1319,7 +1319,7 @@ VertexAnimationActive::VertexAnimationActive(Mesh* mesh):
 }
 
 // ver el comentario del .h: cortar AHORA al clip 'clip' y caer en el cuadro 'frame'.
-void VertexAnimationActive::CambiarYa(int clip, float frame) {
+void VertexAnimationActive::ChangeNow(int clip, float frame) {
     if (!meshToAnim) return;
     if (clip < 0 || clip >= (int)meshToAnim->animations.size()) return;
     VertexAnimation* an = meshToAnim->animations[clip];
@@ -1348,9 +1348,9 @@ void VertexAnimationActive::UpdateAnimation(float dtSeg){
     // los keyframes (anim vieja / mal configurada), usar el span real de estos.
     int startF = anim->startFrame;
     int endF   = anim->endFrame;
-    int primerKF = anim->frames.front()->frame;
-    int ultimoKF = anim->frames.back()->frame;
-    if (endF <= startF) { startF = primerKF; endF = ultimoKF; }
+    int firstKF = anim->frames.front()->frame;
+    int lastKF  = anim->frames.back()->frame;
+    if (endF <= startF) { startF = firstKF; endF = lastKF; }
     if (endF < startF) endF = startF;
 
     int fps = (anim->fps > 0) ? anim->fps : 30;
@@ -1369,9 +1369,9 @@ void VertexAnimationActive::UpdateAnimation(float dtSeg){
             VertexAnimation* nx = meshToAnim->animations[currentAnim];
             playFrame = (float)(nx ? nx->startFrame : startF);
             anim = nx;
-        } else if (anim->proximaAnimacion >= 0 &&
-                   anim->proximaAnimacion < (int)meshToAnim->animations.size()) {
-            currentAnim = nextAnim = anim->proximaAnimacion;
+        } else if (anim->nextAnimation >= 0 &&
+                   anim->nextAnimation < (int)meshToAnim->animations.size()) {
+            currentAnim = nextAnim = anim->nextAnimation;
             VertexAnimation* nx = meshToAnim->animations[currentAnim];
             playFrame = (float)(nx ? nx->startFrame : startF);
             anim = nx;
@@ -1385,14 +1385,14 @@ void VertexAnimationActive::UpdateAnimation(float dtSeg){
     }
 
     if (!anim || anim->frames.empty()) return;
-    // la dibuja una rutina: el tiempo y los cambios de clip avanzan, la pose se calcula al apuntarla (W3dPoseAlDia)
-    if (meshToAnim->soloRutina) { meshToAnim->posePendiente = true; return; }
+    // la dibuja una rutina: el tiempo y los cambios de clip avanzan, la pose se calcula al apuntarla (W3dUpToDatePose)
+    if (meshToAnim->onlyRoutine) { meshToAnim->posePending = true; return; }
     EvalVertexAnim(*anim, meshToAnim, playFrame);
 }
 
-void W3dPoseAlDia(Mesh* m) {
-    if (!m || !m->posePendiente) return;
-    m->posePendiente = false;
+void W3dUpToDatePose(Mesh* m) {
+    if (!m || !m->posePending) return;
+    m->posePending = false;
     VertexAnimationActive* a = FindTargetAnim(m);
     if (!a || a->currentAnim < 0 || a->currentAnim >= (int)m->animations.size()) return;
     VertexAnimation* anim = m->animations[a->currentAnim];
@@ -1400,8 +1400,8 @@ void W3dPoseAlDia(Mesh* m) {
 }
 
 std::vector<VertexAnimationActive*> VertexAnimationActives;
-void (*OnSeleccionarAnimVertex)(Mesh* m, int idx) = NULL;
-int  (*ActivaAnimVertexDe)(Mesh* m) = NULL;
+void (*OnSelectAnimVertex)(Mesh* m, int idx) = NULL;
+int  (*ActiveAnimVertexOf)(Mesh* m) = NULL;
 
 VertexAnimationActive* FindTargetAnim(Mesh* target) {
     if (!target)
@@ -1427,14 +1427,14 @@ void RemapVertexAnims(Mesh* mesh, const int* newToOld, int newVcount, int oldVco
     for (size_t a = 0; a < mesh->animations.size(); ++a){
         VertexAnimation* an = mesh->animations[a];
         if (!an) continue;
-        an->DesinstanciarFrames();   // COW: el remap reescribe los frames
+        an->UninstantiateFrames();   // COW: el remap reescribe los frames
         const int avc = an->vcount;   // conteo con el que estan armados los frames de ESTA anim
         // GUARDA anti-desalineado: las RECETAS de corte asumen que los verts ORIGINALES del
         // layout pre-op ocupan [0, vtxAnimRecipeBase) = el layout de los frames (avc). Si no
         // coincide (ej: un restaurar-y-reaplicar que no restauro los frames), remapear leeria
         // los keyframes CORRIDOS y la malla animada se rompe. Fallback documentado: esa anim
         // queda ESTATICA en la pose actual (pierde la anim, pero JAMAS buffers desalineados).
-        const bool alineada = (avc > 0) &&
+        const bool aligned = (avc > 0) &&
             (mesh->vtxAnimRecipes.empty() || mesh->vtxAnimRecipeBase == avc);
         for (size_t k = 0; k < an->frames.size(); ++k){
             VertexFrame* f = an->frames[k];
@@ -1448,48 +1448,48 @@ void RemapVertexAnims(Mesh* mesh, const int* newToOld, int newVcount, int oldVco
             for (int gi = 0; gi < newVcount; ++gi){
                 int ov = newToOld[gi];
                 // que ES este vert nuevo: 1 = EXISTENTE (sigue la anim), 2 = con RECETA
-                // (corte: lerp de 2 viejos en TODAS las capas; o receta soloUV de un
+                // (corte: lerp de 2 viejos en TODAS las capas; o receta onlyUV de un
                 // duplicar/extrude: SOLO la capa UV copia la del origen, posiciones y
                 // normales estaticas), 0 = NUEVO sin receta (estatico en la pose actual)
-                int modo = 0; const Mesh::VtxRecipe* rec = NULL;
-                if (alineada && ov >= 0 && ov < avc) modo = 1;
+                int mode = 0; const Mesh::VtxRecipe* rec = NULL;
+                if (aligned && ov >= 0 && ov < avc) mode = 1;
                 else {
                     int ri = ov - mesh->vtxAnimRecipeBase;
-                    if (alineada && ov >= mesh->vtxAnimRecipeBase && ri >= 0 && ri < (int)mesh->vtxAnimRecipes.size()){
+                    if (aligned && ov >= mesh->vtxAnimRecipeBase && ri >= 0 && ri < (int)mesh->vtxAnimRecipes.size()){
                         const Mesh::VtxRecipe& r = mesh->vtxAnimRecipes[ri];
-                        if (r.a >= 0 && r.a < avc && r.b >= 0 && r.b < avc){ modo = 2; rec = &r; }
+                        if (r.a >= 0 && r.a < avc && r.b >= 0 && r.b < avc){ mode = 2; rec = &r; }
                     }
                 }
-                // receta soloUV: posiciones/normales van por el camino ESTATICO (como modo 0)
-                const bool recSoloUV = (modo == 2 && rec->soloUV);
+                // receta onlyUV: posiciones/normales van por el camino ESTATICO (como modo 0)
+                const bool recOnlyUV = (mode == 2 && rec->onlyUV);
                 if (np){   // capa POSICIONES (np != NULL implica f->positions != NULL)
-                    if (modo == 1){
+                    if (mode == 1){
                         np[gi*3]=f->positions[ov*3]; np[gi*3+1]=f->positions[ov*3+1]; np[gi*3+2]=f->positions[ov*3+2];
-                    } else if (modo == 2 && !recSoloUV){
+                    } else if (mode == 2 && !recOnlyUV){
                         float u = 1.0f - rec->t;
                         np[gi*3]  =f->positions[rec->a*3]  *u+f->positions[rec->b*3]  *rec->t;
                         np[gi*3+1]=f->positions[rec->a*3+1]*u+f->positions[rec->b*3+1]*rec->t;
                         np[gi*3+2]=f->positions[rec->a*3+2]*u+f->positions[rec->b*3+2]*rec->t;
-                    } else {   // modo 0, o receta soloUV: estatico en la pose actual
+                    } else {   // modo 0, o receta onlyUV: estatico en la pose actual
                         np[gi*3]=mesh->vertex[gi*3]; np[gi*3+1]=mesh->vertex[gi*3+1]; np[gi*3+2]=mesh->vertex[gi*3+2];
                     }
                 }
                 if (nn){   // capa NORMALES (nn != NULL implica f->normals != NULL)
-                    if (modo == 1){
+                    if (mode == 1){
                         nn[gi*3]=f->normals[ov*3]; nn[gi*3+1]=f->normals[ov*3+1]; nn[gi*3+2]=f->normals[ov*3+2];
-                    } else if (modo == 2 && !recSoloUV){
+                    } else if (mode == 2 && !recOnlyUV){
                         float u = 1.0f - rec->t;
                         nn[gi*3]  =(GLbyte)(f->normals[rec->a*3]  *u+f->normals[rec->b*3]  *rec->t);
                         nn[gi*3+1]=(GLbyte)(f->normals[rec->a*3+1]*u+f->normals[rec->b*3+1]*rec->t);
                         nn[gi*3+2]=(GLbyte)(f->normals[rec->a*3+2]*u+f->normals[rec->b*3+2]*rec->t);
-                    } else if ((modo == 0 || recSoloUV) && mesh->normals){
+                    } else if ((mode == 0 || recOnlyUV) && mesh->normals){
                         nn[gi*3]=mesh->normals[gi*3]; nn[gi*3+1]=mesh->normals[gi*3+1]; nn[gi*3+2]=mesh->normals[gi*3+2];
                     } else { nn[gi*3]=0; nn[gi*3+1]=127; nn[gi*3+2]=0; }
                 }
                 if (nu){   // capa UV (nu != NULL implica f->uvs != NULL)
-                    if (modo == 1){
+                    if (mode == 1){
                         nu[gi*2]=f->uvs[ov*2]; nu[gi*2+1]=f->uvs[ov*2+1];
-                    } else if (modo == 2){
+                    } else if (mode == 2){
                         float u = 1.0f - rec->t;
                         nu[gi*2]  =f->uvs[rec->a*2]  *u+f->uvs[rec->b*2]  *rec->t;
                         nu[gi*2+1]=f->uvs[rec->a*2+1]*u+f->uvs[rec->b*2+1]*rec->t;
@@ -1507,9 +1507,9 @@ void RemapVertexAnims(Mesh* mesh, const int* newToOld, int newVcount, int oldVco
 }
 
 void VertexAnimSnapshot(Mesh* mesh, VtxAnimSnap& out){
-    out.anims.clear(); out.tiene = false;
+    out.anims.clear(); out.has = false;
     if (!mesh) return;
-    out.tiene = true;
+    out.has = true;
     out.anims.resize(mesh->animations.size());
     for (size_t a = 0; a < mesh->animations.size(); ++a){
         VertexAnimation* an = mesh->animations[a];
@@ -1531,8 +1531,8 @@ void VertexAnimSnapshot(Mesh* mesh, VtxAnimSnap& out){
     }
 }
 
-void VertexAnimRestaurarSnap(Mesh* mesh, const VtxAnimSnap& snap){
-    if (!mesh || !snap.tiene) return;
+void VertexAnimRestoreSnap(Mesh* mesh, const VtxAnimSnap& snap){
+    if (!mesh || !snap.has) return;
     for (size_t a = 0; a < mesh->animations.size() && a < snap.anims.size(); ++a){
         VertexAnimation* an = mesh->animations[a];
         const VtxAnimSnap::Anim& sa = snap.anims[a];
@@ -1555,7 +1555,7 @@ void VertexAnimRestaurarSnap(Mesh* mesh, const VtxAnimSnap& snap){
     }
 }
 
-void VertexAnimRemapPorPosicion(VertexAnimation& anim, Mesh* mesh){
+void VertexAnimRemapByPosition(VertexAnimation& anim, Mesh* mesh){
     if (!mesh || !mesh->vertex || mesh->vertexSize<=0 || anim.frames.empty()) return;
     const int N = mesh->vertexSize;         // verts de la malla (del GLB, re-splitteado)
     const int M = anim.vcount;              // verts del blob de la anim
@@ -1597,7 +1597,7 @@ void VertexAnimRemapPorPosicion(VertexAnimation& anim, Mesh* mesh){
     anim.vcount = N;
 }
 
-void VertexAnimLiberarControlador(Mesh* mesh){
+void VertexAnimFreeController(Mesh* mesh){
     for (size_t i = 0; i < VertexAnimationActives.size(); ){
         if (VertexAnimationActives[i] && VertexAnimationActives[i]->meshToAnim == mesh){
             delete VertexAnimationActives[i];
@@ -1648,7 +1648,7 @@ void UpdateAnimations(float dtSeg){
 // Es el mismo bloque que corre en PC (main.cpp): se llama por frame; el cache interno (serial/anim/frame) solo
 // re-evalua al cambiar. El loop de Symbian FALTABA llamarlo -> al dar Play/scrubbear un clip (ej "correr") la
 // timeline avanzaba pero la malla vertex-animada no cambiaba (UpdateAnimations la saltea a proposito: kind 3).
-void AplicarVertexAnimTimeline(){
+void ApplyVertexAnimTimeline(){
     extern int CurrentFrame;
     if (ActiveAnimKind == 3 && ActiveAnimMesh) {
         VertexAnimationActive* va = FindTargetAnim(ActiveAnimMesh);
@@ -1656,8 +1656,8 @@ void AplicarVertexAnimTimeline(){
         if (ai >= 0 && ai < (int)ActiveAnimMesh->animations.size() && ActiveAnimMesh->animations[ai] &&
             !ActiveAnimMesh->animations[ai]->frames.empty()) {
             static unsigned int lastSerial = 0, lastGen = 0; static int lastAnim = -1, lastFrame = -999999;
-            if (ActiveAnimMesh->serial != lastSerial || ai != lastAnim || CurrentFrame != lastFrame || lastGen != g_animCurvasGen) {
-                lastSerial = ActiveAnimMesh->serial; lastAnim = ai; lastFrame = CurrentFrame; lastGen = g_animCurvasGen;   // (o editaron la curva)
+            if (ActiveAnimMesh->serial != lastSerial || ai != lastAnim || CurrentFrame != lastFrame || lastGen != g_animCurvesGen) {
+                lastSerial = ActiveAnimMesh->serial; lastAnim = ai; lastFrame = CurrentFrame; lastGen = g_animCurvesGen;   // (o editaron la curva)
                 VertexAnimation* an = ActiveAnimMesh->animations[ai];
                 an->target = ActiveAnimMesh;
                 EvalVertexAnim(*an, ActiveAnimMesh, (float)CurrentFrame);
@@ -1667,48 +1667,48 @@ void AplicarVertexAnimTimeline(){
 }
 
 // ============================================================================
-//  W3dReposoVertexAnim -- ver el contrato completo en VertexAnimation.h
+//  W3dRestVertexAnim -- ver el contrato completo en VertexAnimation.h
 // ============================================================================
-W3dReposoVertexAnim::W3dReposoVertexAnim(Mesh* m) : malla(m), restaurar(false) {
-    if (!malla || !malla->vertex || malla->vertexSize <= 0) return;
-    if (!malla->PosadaPorVertexAnim()) return;    // EN REPOSO: no hay nada que hacer (caso normal)
+W3dRestVertexAnim::W3dRestVertexAnim(Mesh* m) : mesh(m), restore(false) {
+    if (!mesh || !mesh->vertex || mesh->vertexSize <= 0) return;
+    if (!mesh->PosedByVertexAnim()) return;    // EN REPOSO: no hay nada que hacer (caso normal)
     // la anim (y el cuadro) del KEYFRAME BASE. Si ninguna sirve -los frames no
     // alinean con la malla, una op de topologia a medio camino- no hay reposo al
     // que volver: se deja como esta (lado conservador, igual que la poda).
-    const VertexAnimation* an = NULL; int cuadroBase = 0;
-    for (size_t a = 0; a < malla->animations.size() && !an; ++a) {
-        const VertexAnimation* c = malla->animations[a];
+    const VertexAnimation* an = NULL; int frameBase = 0;
+    for (size_t a = 0; a < mesh->animations.size() && !an; ++a) {
+        const VertexAnimation* c = mesh->animations[a];
         if (!c) continue;
-        if (c->vcount != 0 && c->vcount != malla->vertexSize) continue;
+        if (c->vcount != 0 && c->vcount != mesh->vertexSize) continue;
         for (size_t k = 0; k < c->frames.size(); ++k)
-            if (c->frames[k] && c->frames[k]->positions) { an = c; cuadroBase = c->frames[k]->frame; break; }
+            if (c->frames[k] && c->frames[k]->positions) { an = c; frameBase = c->frames[k]->frame; break; }
     }
     if (!an) return;
-    const size_t n3 = (size_t)malla->vertexSize * 3;
-    const size_t n2 = (size_t)malla->vertexSize * 2;
-    pos.assign(malla->vertex, malla->vertex + n3);
-    if (malla->normals) nrm.assign(malla->normals, malla->normals + n3);
-    if (malla->uv)      uvs.assign(malla->uv, malla->uv + n2);
-    restaurar = true;
+    const size_t n3 = (size_t)mesh->vertexSize * 3;
+    const size_t n2 = (size_t)mesh->vertexSize * 2;
+    pos.assign(mesh->vertex, mesh->vertex + n3);
+    if (mesh->normals) nrm.assign(mesh->normals, mesh->normals + n3);
+    if (mesh->uv)      uvs.assign(mesh->uv, mesh->uv + n2);
+    restore = true;
     // el mismo evaluador del playback en el cuadro base: deja las TRES capas
     // (posiciones, normales, UV) como en reposo y apaga solo el flag de pose.
-    EvalVertexAnim(*an, malla, (float)cuadroBase);
+    EvalVertexAnim(*an, mesh, (float)frameBase);
 }
 
-W3dReposoVertexAnim::~W3dReposoVertexAnim() {
-    if (!restaurar || !malla || !malla->vertex) return;
-    const size_t n3 = (size_t)malla->vertexSize * 3;
-    const size_t n2 = (size_t)malla->vertexSize * 2;
+W3dRestVertexAnim::~W3dRestVertexAnim() {
+    if (!restore || !mesh || !mesh->vertex) return;
+    const size_t n3 = (size_t)mesh->vertexSize * 3;
+    const size_t n2 = (size_t)mesh->vertexSize * 2;
     // LA TOPOLOGIA CAMBIO ADENTRO DEL SCOPE (el scope no era solo "guardar": alguien
     // separo/corto/rebuildeo la malla): no hay pose que devolver, las posiciones que
     // quedaron son las del CUADRO BASE. Entonces la malla se queda EN REPOSO **y con
     // el flag en false**, que es el estado que corresponde a esas posiciones. Antes
-    // salteaba el memcpy pero igual escribia posadaPorAnim=true -> malla en reposo
+    // salteaba el memcpy pero igual escribia posedByAnim=true -> malla en reposo
     // diciendo "estoy posada" (el gate apagado sobre geometria de modelo).
     if (pos.size() != n3) return;
-    std::memcpy(malla->vertex, &pos[0], n3 * sizeof(GLfloat));
-    if (malla->normals && nrm.size() == n3) std::memcpy(malla->normals, &nrm[0], n3 * sizeof(GLbyte));
-    if (malla->uv && uvs.size() == n2)      std::memcpy(malla->uv, &uvs[0], n2 * sizeof(GLfloat));
-    malla->posadaPorAnim = true;   // vuelve a estar POSADA: la pose es la que habia
-    malla->skinGeomVersion++;      // re-subir el VBO (la pantalla tiene que seguir mostrando la pose)
+    std::memcpy(mesh->vertex, &pos[0], n3 * sizeof(GLfloat));
+    if (mesh->normals && nrm.size() == n3) std::memcpy(mesh->normals, &nrm[0], n3 * sizeof(GLbyte));
+    if (mesh->uv && uvs.size() == n2)      std::memcpy(mesh->uv, &uvs[0], n2 * sizeof(GLfloat));
+    mesh->posedByAnim = true;   // vuelve a estar POSADA: la pose es la que habia
+    mesh->skinGeomVersion++;    // re-subir el VBO (la pantalla tiene que seguir mostrando la pose)
 }

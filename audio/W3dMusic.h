@@ -28,9 +28,9 @@ namespace w3dEngine {
 // Una pista de musica en reproduccion. delete la detiene y libera.
 //
 // El volumen NO se manda crudo al backend: se multiplica por el VOLUMEN GLOBAL del
-// motor (audio/W3dVolumen.h), asi el mute y el volumen del usuario valen para todo
+// motor (audio/W3dVolume.h), asi el mute y el volumen del usuario valen para todo
 // lo que suena. Cada pista recuerda SU volumen propio; si cambia el global, se
-// re-aplica sola (W3dMusicRefrescarVolumenes).
+// re-aplica sola (W3dMusicRefreshVolumes).
 class W3dMusic {
 public:
     W3dMusic();                              // se anota en el registro de pistas
@@ -38,22 +38,22 @@ public:
     virtual void Stop() = 0;                 // detiene (idempotente)
     // Pausa / reanuda. Hace falta porque iOS deja sonar UN SOLO medio a la vez: al reproducir un
     // video con audio, el sistema PAUSA la musica, y despues hay que volver a arrancarla a mano.
-    virtual void Pausar() {}
-    virtual void Reanudar() {}
+    virtual void Pause() {}
+    virtual void Resume() {}
     virtual bool Playing() const = 0;
 
     void  SetVolume(float v);                // 0..1 — volumen PROPIO de esta pista
-    float Volume() const { return propio; }
-    void  RefrescarVolumen();                // re-aplica propio x ganancia global
+    float Volume() const { return own; }
+    void  RefreshVolume();                // re-aplica propio x ganancia global
 
 protected:
-    virtual void AplicarVolumen(float v) = 0;  // lo implementa el backend (valor final)
-    float propio;
+    virtual void ApplyVolume(float v) = 0;  // lo implementa el backend (valor final)
+    float own;
 };
 
 // Re-aplica el volumen a todas las pistas vivas. La llama W3dVolumen al cambiar el
 // volumen/mute global; la app normalmente no necesita llamarla.
-void W3dMusicRefrescarVolumenes();
+void W3dMusicRefreshVolumes();
 
 // Reproduce musica COMPRIMIDA desde bytes EN MEMORIA (ej: descifrados de un .w3dpack).
 // 'mime' identifica el contenedor para el backend ("audio/mpeg", "audio/ogg", "audio/aac").

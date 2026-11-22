@@ -10,15 +10,15 @@
 //
 //  Lo que hay que saber de la PVR (y que este modulo deja a la vista):
 //    - LISTAS: lo opaco, lo recortado por alfa ("punch through") y lo translucido van en tres listas que se mandan
-//      una despues de la otra, cada una UNA vez por cuadro: EmpezarLista(Opaca) ... EmpezarLista(Recorte) ...
-//      EmpezarLista(Translucida). Dentro de la translucida manda el orden de envio (sin autosort).
+//      una despues de la otra, cada una UNA vez por cuadro: BeginList(Opaca) ... BeginList(Recorte) ...
+//      BeginList(Translucida). Dentro de la translucida manda el orden de envio (sin autosort).
 //    - PROFUNDIDAD: es 1/w (mas grande = mas cerca); no hay plano lejano.
-//    - PLANO CERCANO: la PVR no recorta lo que queda detras de la camara. Tiras(..., recortar = true) recorta cada
+//    - PLANO CERCANO: la PVR no recorta lo que queda detras de la camara. Strips(..., recortar = true) recorta cada
 //      triangulo que lo cruza (mas lento: solo para lo que puede cruzarlo; lo que esta entero adelante va rapido).
 //    - TEXTURAS: en orden "twiddled", de 8 a 1024 por lado, de 16 bits (565, 1555, 4444) o de 4 bits con una paleta
 //      de 16 colores (64 bancos; los colores en ARGB8888). Ojo: con filtro bilineal, las de paleta de 32 bits
 //      rinden la mitad en la PVR.
-//    - NIEBLA: por tabla (128 entradas segun 1/w); NieblaConstante deja todo lo que la tenga prendida oscurecido
+//    - NIEBLA: por tabla (128 entradas segun 1/w); ConstantFog deja todo lo que la tenga prendida oscurecido
 //      igual (el "StgTint" de un juego: el escenario se oscurece sin tocar sus vertices).
 //
 //  No convive con GLdc en el mismo cuadro: un programa usa uno o el otro (Iniciar arranca la PVR).
@@ -29,130 +29,130 @@
 namespace w3dPVR {
 
     // --- el cuadro y sus listas ---
-    enum Lista { ListaOpaca = 0, ListaRecorte, ListaTranslucida };
+    enum List { OpaqueList = 0, ClipList, TranslucentList };
     // vid_set_mode(640x480) + pvr_init con las tres listas, sin autosort, paletas en ARGB8888. vertices = bytes del
     // buffer de vertices de la PVR (por defecto 1 MB: dos, uno por cuadro en curso)
-    bool Iniciar(int bytesVertices = 1024 * 1024);
-    void EmpezarCuadro();          // espera a que la PVR acepte otro cuadro
-    void EmpezarLista(Lista l);    // (cierra la anterior)
-    void TerminarCuadro();         // cierra la lista abierta y el cuadro (la PVR lo dibuja mientras se arma el proximo)
-    void ColorDeFondo(float r, float g, float b);
+    bool Start(int bytesVertices = 1024 * 1024);
+    void BeginFrame();         // espera a que la PVR acepte otro cuadro
+    void BeginList(List l);    // (cierra la anterior)
+    void FinishFrame();        // cierra la lista abierta y el cuadro (la PVR lo dibuja mientras se arma el proximo)
+    void BackgroundColor(float r, float g, float b);
 
     // --- texturas ---
-    // PANTALLA: una copia de la imagen de la pantalla (RGB565 sin twiddle, filas de 640; ver CapturarPantalla).
-    // PAL8: 8 bits por texel (twiddled) con su paleta aparte, que puede cambiar cada cuadro (ver ReservarPaleta8)
-    enum Formato { RGB565 = 0, ARGB1555, ARGB4444, PAL4, PANTALLA, PAL8 };
-    struct Textura {
+    // PANTALLA: una copia de la imagen de la pantalla (RGB565 sin twiddle, filas de 640; ver CaptureScreen).
+    // PAL8: 8 bits por texel (twiddled) con su paleta aparte, que puede cambiar cada cuadro (ver ReservePalette8)
+    enum Format { RGB565 = 0, ARGB1555, ARGB4444, PAL4, SCREEN, PAL8 };
+    struct Texture {
         void* vram;
-        uint16_t ancho, alto;
-        uint8_t formato, banco;      // banco: el de su paleta (PAL4)
-        uint8_t repetir, filtro;
+        uint16_t width, height;
+        uint8_t format, bank;      // banco: el de su paleta (PAL4)
+        uint8_t repeat, filter;
     };
     // 'datos': 16 bits ya twiddled; PAL4: 16 colores RGBA (64 bytes) y los texeles de 4 bits twiddled (el par
     // (2k, 2k+1) en el byte k: el par en el nibble bajo). false si no hay VRAM o bancos de paleta
-    // PAL8: 'datos' son solo los indices; su paleta es la del banco que se le ponga en 'banco' (ReservarPaleta8)
-    bool SubirTextura(Textura& t, int ancho, int alto, int formato, const void* datos, bool repetir, bool filtro);
-    void SoltarTextura(Textura& t);
+    // PAL8: 'datos' son solo los indices; su paleta es la del banco que se le ponga en 'banco' (ReservePalette8)
+    bool UploadTexture(Texture& t, int width, int height, int format, const void* data, bool repeat, bool filter);
+    void ReleaseTexture(Texture& t);
     // vuelve a copiar los texeles de una ya subida (mismo tamano y formato): una animacion por cuadros que tiene uno
-    // solo en la VRAM. Conviene hacerlo con AnterioresDibujados(): si no, se puede ver a medias en el cuadro anterior
-    void ActualizarTextura(Textura& t, const void* datos);
+    // solo en la VRAM. Conviene hacerlo con PrevDrawn(): si no, se puede ver a medias en el cuadro anterior
+    void UpdateTexture(Texture& t, const void* data);
     // LAS PALETAS DE 8 BITS: la paleta de la PVR tiene 1024 colores, los mismos que usan los 64 bancos de 16 de las
     // PAL4; una de 8 bits usa los de su banco de 256 (0..3), pero solo los primeros 'colores': reserva esos bancos de
     // 16 (hay que hacerlo antes de cargar las PAL4) y el resto de su banco de 256 sigue para las PAL4. -1 si no hay
-    int  ReservarPaleta8(int colores);
-    void SoltarPaleta8(int banco, int colores);
-    void PaletaPAL8(int banco, const uint8_t* rgba, int colores);   // RGBA de 8 bits
+    int  ReservePalette8(int colors);
+    void ReleasePalette8(int bank, int colors);
+    void PalettePAL8(int bank, const uint8_t* rgba, int colors);   // RGBA de 8 bits
     // la PVR dibuja un cuadro mientras se arma el siguiente: true si ya termino (y mostro) todos los que se mandaron.
     // Recien ahi se puede cambiar una paleta o una textura que usaba el anterior sin que se vea a medias
-    bool AnterioresDibujados();
-    int  VRAMLibre();              // bytes
-    int  BancosLibres();
-    // copia lo que se esta viendo a una textura (la reserva la primera vez; SoltarTextura la libera): la ultima imagen
-    // de un corte, para fundirla sobre la nueva. Sus UV: (0, 0) a (UPantalla(), VPantalla()). Lee la VRAM con el SH-4:
+    bool PrevDrawn();
+    int  FreeVRAM();              // bytes
+    int  FreeBanks();
+    // copia lo que se esta viendo a una textura (la reserva la primera vez; ReleaseTexture la libera): la ultima imagen
+    // de un corte, para fundirla sobre la nueva. Sus UV: (0, 0) a (UScreen(), VScreen()). Lee la VRAM con el SH-4:
     // unos milisegundos, una vez por corte
-    bool CapturarPantalla(Textura& t);
-    inline float UPantalla() { return 640.0f / 1024.0f; }
-    inline float VPantalla() { return 480.0f / 512.0f; }
+    bool CaptureScreen(Texture& t);
+    inline float UScreen() { return 640.0f / 1024.0f; }
+    inline float VScreen() { return 480.0f / 512.0f; }
 
     // --- el estado de lo que sigue: un encabezado de la PVR ---
-    enum Mezcla { Opaca = 0, Alfa, Suma, Multiplicar };
-    enum FuncionZ { ZMayorIgual = 0, ZMayor, ZSiempre };
-    struct Estado {
-        const Textura* tex;   // NULL = sin textura (color de vertice)
-        uint8_t mezcla;       // Mezcla (Opaca en la lista opaca / de recorte)
-        uint8_t escribeZ;
-        uint8_t funcionZ;     // FuncionZ (1/w: mas grande = mas cerca)
-        uint8_t caras;        // 1 descartar las de atras (giro antihorario adelante, como GL); 2 las de adelante
-        uint8_t niebla;       // la tabla de niebla (NieblaConstante)
-        uint8_t suma;         // a cada vertice se le suma ColorSumado (despues de la textura)
-        Estado() : tex(0), mezcla(Opaca), escribeZ(1), funcionZ(ZMayorIgual), caras(0), niebla(0), suma(0) {}
+    enum MixMode { Opaque = 0, Alpha, Sum, Multiply };
+    enum FunctionZ { ZGreaterEqual = 0, ZGreater, ZAlways };
+    struct State {
+        const Texture* tex;   // NULL = sin textura (color de vertice)
+        uint8_t mix;          // Mezcla (Opaca en la lista opaca / de recorte)
+        uint8_t writesZ;
+        uint8_t functionZ;     // FunctionZ (1/w: mas grande = mas cerca)
+        uint8_t faces;         // 1 descartar las de atras (giro antihorario adelante, como GL); 2 las de adelante
+        uint8_t fog;           // la tabla de niebla (ConstantFog)
+        uint8_t sum;           // a cada vertice se le suma AddedColor (despues de la textura)
+        State() : tex(0), mix(Opaque), writesZ(1), functionZ(ZGreaterEqual), faces(0), fog(0), sum(0) {}
     };
-    void Encabezado(const Estado& e);
-    // el color que se suma a los vertices que siguen (con Estado::suma; 0 = nada): un destello sin tocar la textura
-    void ColorSumado(uint32_t argb);
+    void Header(const State& e);
+    // el color que se suma a los vertices que siguen (con State::suma; 0 = nada): un destello sin tocar la textura
+    void AddedColor(uint32_t argb);
 
     // --- la matriz de pantalla: viewport * proyeccion * vista * modelo (4 x 4 por columnas, como GL); la pantalla
-    //     va en pixeles con la y para abajo. PantallaDesde arma viewport * proyeccion para Matriz() ---
-    void PantallaDesde(const float* proyeccion16, float* salida16);
-    void Matriz(const float* m16);   // la carga en XMTRX
+    //     va en pixeles con la y para abajo. ScreenFrom arma viewport * proyeccion para Matrix() ---
+    void ScreenFrom(const float* projection16, float* output16);
+    void Matrix(const float* m16);   // la carga en XMTRX
     // la matriz por k: la pantalla no cambia (x/w, y/w) y la profundidad (1/w) se divide por k. Apenas menos de 1
     // acerca sin mover nada (las calcomanias); FONDO manda detras de todo lo demas (lo que en GL se dibuja primero sin
     // escribir la profundidad, pero que aca va en la translucida, despues de lo opaco). El plano cercano no se escala
-    enum { FONDO = 1 << 14 };
-    void MatrizEscalada(const float* m16, float k);
-    float WCercano();                 // el w minimo (el plano cercano: 0.05 por defecto)
-    void SetWCercano(float w);
+    enum { BACKGROUND = 1 << 14 };
+    void ScaledMatrix(const float* m16, float k);
+    float WNear();                 // el w minimo (el plano cercano: 0.05 por defecto)
+    void SetWNear(float w);
 
     // --- dibujar ---
     // tiras con indices: CORTE termina una y arranca la siguiente (a la PVR le cuesta solo el encabezado de la nueva;
     // unirlas con degenerados le costaba 2 o 3 vertices). pos: 3 floats; uv: 2 floats (NULL = 0,0); argb: un color
     // por vertice (NULL = 'fijo'). Cada indice se transforma con la matriz cargada. 'recortar': alguna puede cruzar
     // el plano cercano (recorta triangulo por triangulo; si no, rapido y sin preguntar)
-    enum { CORTE = 0xFFFF };
-    void Tiras(const float* pos, const float* uv, const uint32_t* argb, uint32_t fijo, const uint16_t* idx, int n,
-               bool recortar);
+    enum { CUT = 0xFFFF };
+    void Strips(const float* pos, const float* uv, const uint32_t* argb, uint32_t fixed, const uint16_t* idx, int n,
+               bool crop);
     // LO QUIETO CON MUCHAS TIRAS CORTAS (un escenario: de 4 o 6 indices): cada vertice en un registro de 32 bytes (una
-    // linea de cache: x, y, z, u, v y su color ARGB) y los indices SIN CORTE: el ultimo de cada tira lleva FIN_TIRA
+    // linea de cache: x, y, z, u, v y su color ARGB) y los indices SIN CORTE: el ultimo de cada tira lleva END_STRIP
     // (el bit de arriba: hasta 32768 vertices). El bucle no busca los cortes ni paga nada por tira: la mitad del
     // trabajo de Tiras por vertice
-    struct VerticeModelo { float x, y, z, u, v; uint32_t argb; uint32_t libre[2]; };
-    enum { FIN_TIRA = 0x8000 };
-    void TirasModelo(const VerticeModelo* v, const uint16_t* fines, int n, bool recortar);
+    struct VertexModel { float x, y, z, u, v; uint32_t argb; uint32_t free[2]; };
+    enum { END_STRIP = 0x8000 };
+    void StripsModel(const VertexModel* v, const uint16_t* ends, int n, bool crop);
     // pasa tiras con CORTE a ese formato (sin las de menos de 3 indices): 'salida' puede ser 'idx' (nunca queda mas
     // largo). 'donde' (opcional, n + 1 lugares): donde[i] = el lugar en la salida de lo que estaba en idx[i] (para
     // pasar rangos que empiezan y terminan en un CORTE). Devuelve cuantos quedan; -1 si algun indice no entra
-    int TirasConFin(const uint16_t* idx, int n, uint16_t* salida, uint32_t* donde = 0);
+    int StripsWithEnd(const uint16_t* idx, int n, uint16_t* output, uint32_t* where = 0);
     // vertices YA transformados (los de un personaje: se transforman una vez y se dibujan en dos pasadas): x, y de
-    // pantalla y z = 1/w, o w <= 0 (detras del plano cercano: sus triangulos no se dibujan). Indices con FIN_TIRA
-    struct Vertice { float x, y, z, w; };
+    // pantalla y z = 1/w, o w <= 0 (detras del plano cercano: sus triangulos no se dibujan). Indices con END_STRIP
+    struct Vertex { float x, y, z, w; };
     // ('adelante': el que llama ya sabe que ninguno quedo detras; si no, se fija aca)
-    void TirasTransformadas(const Vertice* v, const float* uv, uint32_t argb, const uint16_t* fines, int n,
-                            bool adelante = false);
+    void TransformedStrips(const Vertex* v, const float* uv, uint32_t argb, const uint16_t* ends, int n,
+                            bool forward = false);
     // LO MAS RAPIDO: el vertice ya armado como lo recibe la PVR (la bandera, x, y, z de pantalla con z = 1/w, u, v):
-    // cada indice (con FIN_TIRA) se copia de a 8 bytes (fmov de pares) mas el color y la bandera. Lo arma el que
+    // cada indice (con END_STRIP) se copia de a 8 bytes (fmov de pares) mas el color y la bandera. Lo arma el que
     // transforma (un cuerpo, una vez por cuadro y por pasada); todos delante del plano cercano
-    struct Bloque { uint32_t bandera; float x, y, z, u, v; };
-    enum { BANDERA_VERTICE = 0xe0000000u };   // (PVR_CMD_VERTEX: la de cada Bloque)
-    void TirasBloques(const Bloque* b, uint32_t argb, const uint16_t* fines, int n);
+    struct Block { uint32_t flag; float x, y, z, u, v; };
+    enum { FLAG_VERTEX = 0xe0000000u };   // (PVR_CMD_VERTEX: la de cada Bloque)
+    void StripsBlocks(const Block* b, uint32_t argb, const uint16_t* ends, int n);
     // un cuadro 2D en pixeles (x0, y0)-(x1, y1) con sus UV y color, delante de todo
-    void Cuadro2D(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1, uint32_t argb,
+    void Frame2D(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1, uint32_t argb,
                   float z = 1e4f);
     // las cuatro esquinas (x, y) en orden 0 1 / 2 3 (para girarlo)
-    void Cuadro2DEsquinas(const float* xy8, const float* uv8, uint32_t argb, float z = 1e4f);
+    void Frame2DCorners(const float* xy8, const float* uv8, uint32_t argb, float z = 1e4f);
 
     // --- niebla ---
-    void NieblaConstante(float alfa, float r = 0, float g = 0, float b = 0);
+    void ConstantFog(float alpha, float r = 0, float g = 0, float b = 0);
 
     // --- lo que se mando en el cuadro (para el perfil) ---
-    struct Cuenta { int vertices, recortados, encabezados; };
-    Cuenta CuentaCuadro();
+    struct Count { int vertices, cropped, headers; };
+    Count CountFrame();
     // lo que ocupo el buffer de vertices de la PVR el ultimo cuadro y el que mas (bytes): si pasa el de Iniciar, la
     // PVR pierde poligonos
-    void BufferVertices(int& ultimo, int& maximo);
+    void BufferVertices(int& last, int& max);
 
     // 1/w para w > 0 con FSRRA (1/raiz de w*w, un ciclo del SH-4) en vez de FDIV (unos 10): la division por w de cada
     // vertice. Error ~1/2^21: nada en la pantalla
-    inline float Inversa(float w) {
+    inline float Inverse(float w) {
         float r = w * w;
         __asm__("fsrra %0" : "+f"(r));
         return r;

@@ -11,9 +11,9 @@
 // todavia no estan implementados: por ahora el selector solo cambia InteractionMode.
 enum { ObjectMode, EditMode, VertexPaint, WeightPaint, TexturePaint, PoseMode };
 // sub-estado del viewport: navegando, o en medio de un transform (G/R/S/extrude...).
-enum { editNavegacion, EdgeMove, FaceMove, timelineMove, rotacion, EditScale, translacion };
+enum { editNavigation, EdgeMove, FaceMove, timelineMove, rotation, EditScale, translation };
 
 extern int InteractionMode; // uno de ObjectMode/EditMode/...
-extern int estado;          // uno de editNavegacion/...
+extern int state;           // uno de editNavigation/...
 
 #endif

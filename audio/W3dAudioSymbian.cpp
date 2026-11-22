@@ -133,20 +133,20 @@ void W3dAudioBackendShutdown() {
     // MaoscBufferCopied no llega nunca; la app quedaba colgada al cerrar. Al segundo, el hilo se mata
     TRequestStatus st;
     s_thread.Logon(st);
-    RTimer reloj;
-    if (reloj.CreateLocal() == KErrNone) {
-        TRequestStatus vencio;
-        reloj.After(vencio, 1000000);
-        User::WaitForRequest(st, vencio);
+    RTimer clock;
+    if (clock.CreateLocal() == KErrNone) {
+        TRequestStatus expired;
+        clock.After(expired, 1000000);
+        User::WaitForRequest(st, expired);
         if (st == KRequestPending) {
             s_thread.LogonCancel(st);
             User::WaitForRequest(st);
             s_thread.Kill(KErrNone);
         } else {
-            reloj.Cancel();
-            User::WaitForRequest(vencio);
+            clock.Cancel();
+            User::WaitForRequest(expired);
         }
-        reloj.Close();
+        clock.Close();
     } else {
         User::WaitForRequest(st);
     }

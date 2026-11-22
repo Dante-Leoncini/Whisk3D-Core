@@ -281,8 +281,8 @@ inline bool LoadG(GetAsset get, void* ctx, const char* gltfName, Model& M) {
             const JVal* tgt = ch.find("target"); if (!tgt) continue;
             if (tgt->getS("path","") != "rotation") continue; // por ahora solo rotacion (es lo que anima el logo)
             int node = tgt->getI("node", -1); if (node < 0) continue;
-            int si = ch.getI("sampler", -1); if (si<0 || si>=(int)samps->size()) continue;
-            const JVal& sm = samps->arr[si];
+            int yes = ch.getI("sampler", -1); if (yes<0 || yes>=(int)samps->size()) continue;
+            const JVal& sm = samps->arr[yes];
             std::vector<float> times, vals; int tc=0, vc=0;
             if (!readAcc(doc, bufs, sm.getI("input",-1), times, tc) || tc!=1) continue;
             if (!readAcc(doc, bufs, sm.getI("output",-1), vals, vc) || vc!=4) continue;
@@ -348,10 +348,10 @@ inline void ChromeUV(const Vector3& wp, const Vector3& wn, const Vector3& cam,
     } else {
         Vector3 rel = wp - cam;
         Vector3 ep(rel.x*cr.x+rel.y*cr.y+rel.z*cr.z, rel.x*cu.x+rel.y*cu.y+rel.z*cu.z, -(rel.x*cf.x+rel.y*cf.y+rel.z*cf.z));
-        Vector3 en(wn.x*cr.x+wn.y*cr.y+wn.z*cr.z, wn.x*cu.x+wn.y*cu.y+wn.z*cu.z, -(wn.x*cf.x+wn.y*cf.y+wn.z*cf.z));
+        Vector3 in(wn.x*cr.x+wn.y*cr.y+wn.z*cr.z, wn.x*cu.x+wn.y*cu.y+wn.z*cu.z, -(wn.x*cf.x+wn.y*cf.y+wn.z*cf.z));
         Vector3 I = ep.Normalized();
-        float dd = I.x*en.x+I.y*en.y+I.z*en.z;
-        Vector3 R(I.x-2*dd*en.x, I.y-2*dd*en.y, I.z-2*dd*en.z);
+        float dd = I.x*in.x+I.y*in.y+I.z*in.z;
+        Vector3 R(I.x-2*dd*in.x, I.y-2*dd*in.y, I.z-2*dd*in.z);
         float mm = 2.0f*sqrtf(R.x*R.x+R.y*R.y+(R.z+1.0f)*(R.z+1.0f)); if (mm<1e-5f) mm=1e-5f;
         u = R.x/mm+0.5f; v = 1.0f - (R.y/mm+0.5f); // flip-V (matchea GL_SPHERE_MAP)
     }
@@ -368,7 +368,7 @@ inline Vector3 Rot3(const Matrix4& W, const Vector3& n) {
 // ENCUADRE: centro y semiextension con que se mira un modelo. Se calcula aparte de Draw para
 // poder (a) COMPARTIRLO entre dos modelos y que se compongan como en el editor, y (b) INTERPOLARLO
 // entre dos encuadres, que es como se mueve/agranda un modelo de un lugar a otro sin tocar su malla.
-struct Encuadre { Vector3 centro; float hx, hy, r; };
+struct Framing { Vector3 center; float hx, hy, r; };
 
 // bounding box de un modelo, o la UNION de dos (para componer varias piezas del mismo logo)
 inline void Union(const Model& A, const Model& B, Vector3& bmin, Vector3& bmax) {
@@ -378,10 +378,10 @@ inline void Union(const Model& A, const Model& B, Vector3& bmin, Vector3& bmax) 
     if (B.bmin.z < bmin.z) bmin.z = B.bmin.z;  if (B.bmax.z > bmax.z) bmax.z = B.bmax.z;
 }
 
-inline Encuadre CalcEncuadre(const Vector3& bmin, const Vector3& bmax, int vw, int vh) {
+inline Framing CalcFraming(const Vector3& bmin, const Vector3& bmax, int vw, int vh) {
     if (vw<1) vw=1; if (vh<1) vh=1;
-    Encuadre e;
-    e.centro = (bmin + bmax) * 0.5f;
+    Framing e;
+    e.center = (bmin + bmax) * 0.5f;
     Vector3 ext = bmax - bmin;
     e.r = ext.x; if (ext.y>e.r) e.r=ext.y; if (ext.z>e.r) e.r=ext.z; if (e.r<1e-4f) e.r=1.0f;
     float exM = ext.x*0.5f; float rz = ext.z*0.5f; if (rz>exM) exM=rz; // semi-ancho con el giro
@@ -393,12 +393,12 @@ inline Encuadre CalcEncuadre(const Vector3& bmin, const Vector3& bmax, int vw, i
     if (exM/ey > aspect) e.hy = exM/aspect; else e.hx = ey*aspect;   // letterbox: entra entero
     return e;
 }
-inline Encuadre CalcEncuadre(const Model& M, int vw, int vh) { return CalcEncuadre(M.bmin, M.bmax, vw, vh); }
+inline Framing CalcFraming(const Model& M, int vw, int vh) { return CalcFraming(M.bmin, M.bmax, vw, vh); }
 
 // mezcla lineal de dos encuadres (u=0 -> a, u=1 -> b): mueve y escala el modelo entre dos lugares
-inline Encuadre Mezclar(const Encuadre& a, const Encuadre& b, float u) {
-    Encuadre e;
-    e.centro = a.centro + (b.centro - a.centro) * u;
+inline Framing Mix(const Framing& a, const Framing& b, float u) {
+    Framing e;
+    e.center = a.center + (b.center - a.center) * u;
     e.hx = a.hx + (b.hx - a.hx) * u;
     e.hy = a.hy + (b.hy - a.hy) * u;
     e.r  = a.r  + (b.r  - a.r ) * u;
@@ -410,17 +410,17 @@ inline Encuadre Mezclar(const Encuadre& a, const Encuadre& b, float u) {
 // 'mundo' (opcional) es una matriz 4x4 EXTRA que se aplica al modelo entero despues de la
 // camara: sirve para animarlo (girarlo sobre un eje, correrlo) sin tocar su malla.
 inline void Draw(Model& M, float timeSec, int vx, int vy, int vw, int vh,
-                 const Encuadre* enc = 0, float alfa = 1.0f, const float* mundo = 0) {
+                 const Framing* enc = 0, float alpha = 1.0f, const float* world = 0) {
     if (vw<1) vw=1; if (vh<1) vh=1;
     // encuadre: fit del bounding XY del logo al viewport (letterbox), con margen para la rotacion (el logo gira
     // en Y -> su ancho proyectado puede llegar al radio en Z; se toma max(ancho/2, radioZ) como semi-ancho).
-    Encuadre E = enc ? *enc : CalcEncuadre(M, vw, vh);
-    Vector3 c = E.centro;
+    Framing E = enc ? *enc : CalcFraming(M, vw, vh);
+    Vector3 c = E.center;
     float r = E.r, hx = E.hx, hy = E.hy;
     gfx::Viewport(vx,vy,vw,vh);
     gfx::Enable(gfx::DepthTest);
     gfx::Disable(gfx::Lighting);
-    if (alfa < 0.999f) { gfx::Enable(gfx::Blend); gfx::SetMezcla(gfx::MezclaAlpha); }
+    if (alpha < 0.999f) { gfx::Enable(gfx::Blend); gfx::SetMix(gfx::MixAlpha); }
     else               { gfx::Disable(gfx::Blend); }
 
     gfx::MatrixMode(gfx::Projection); gfx::LoadIdentity();
@@ -429,7 +429,7 @@ inline void Draw(Model& M, float timeSec, int vx, int vy, int vw, int vh,
     // "camara": centrar el logo (miramos de frente, -Z). Base de camara en MUNDO para el reflejo por SW (chrome).
     Matrix4 view; view.Identity(); view.m[12]=-c.x; view.m[13]=-c.y; view.m[14]=-c.z;
     gfx::LoadMatrix(view.m);
-    if (mundo) gfx::MultMatrix(mundo);
+    if (world) gfx::MultMatrix(world);
     Vector3 cr(1,0,0), cu(0,1,0), cf(0,0,-1);   // ejes de la camara (orto de frente)
     Vector3 cam = c + Vector3(0,0, r*3.0f);      // ojo en +Z
     std::vector<float> ruv;                      // UV del reflejo (buffer local: nada de estado global escondido)
@@ -443,10 +443,10 @@ inline void Draw(Model& M, float timeSec, int vx, int vy, int vw, int vh,
             Mat mt;   // el ctor ya es el material por defecto
             if (P.material>=0 && P.material<(int)M.mats.size()) mt = M.mats[P.material];
             if (mt.doubleSided) gfx::Disable(gfx::CullFace); else gfx::Enable(gfx::CullFace);
-            gfx::Color4f(mt.base[0], mt.base[1], mt.base[2], mt.base[3]*alfa);
+            gfx::Color4f(mt.base[0], mt.base[1], mt.base[2], mt.base[3]*alpha);
             gfx::EnableArray(gfx::VertexArray); gfx::VertexPointer3f(0, &P.pos[0]);
-            bool usoChrome = (mt.chrome && mt.tex && !P.nrm.empty());
-            if (usoChrome) {
+            bool useChrome = (mt.chrome && mt.tex && !P.nrm.empty());
+            if (useChrome) {
                 // REFLEJO por SOFTWARE: la UV se calcula de la normal en MUNDO -> el metal "refleja" y cambia al
                 // ROTAR (no es una UV fija). Se recalcula por frame (la animacion mueve la normal).
                 ruv.resize((size_t)P.nverts*2); bool eq = (mt.reflectMode == 2);

@@ -25,30 +25,30 @@
 namespace w3dAICA {
 
     // el programa del AICA y los flujos (vuelve a arrancar el AICA: va antes de cargar nada)
-    bool Iniciar();
-    void Terminar();
+    bool Start();
+    void Finish();
 
     // --- efectos: en la memoria de sonido ---
-    enum Formato { ADPCM4 = 4, PCM16 = 16 };
-    typedef uint32_t Efecto;   // 0 = no se pudo cargar
+    enum Format { ADPCM4 = 4, PCM16 = 16 };
+    typedef uint32_t Effect;   // 0 = no se pudo cargar
     // mono; 'bytes' multiplo de 32 (el AICA los copia de a bloques). Se copia: 'datos' se puede soltar despues
-    Efecto CargarEfecto(const void* datos, uint32_t bytes, uint32_t hz, Formato formato);
-    void SoltarEfecto(Efecto e);
-    int  MemoriaLibre();       // bytes que quedan en la memoria de sonido
+    Effect LoadEffect(const void* data, uint32_t bytes, uint32_t hz, Format format);
+    void ReleaseEffect(Effect e);
+    int  FreeMemory();       // bytes que quedan en la memoria de sonido
     // suena en un canal libre: volumen 0..1, paneo -1 (izquierda) .. 1, tono 1 = normal. Devuelve el canal o -1
-    int  Tocar(Efecto e, float vol, float pan = 0.0f, float tono = 1.0f, bool lazo = false);
-    void Parar(int canal);
+    int  Touch(Effect e, float vol, float pan = 0.0f, float tone = 1.0f, bool loop = false);
+    void Stop(int channel);
 
     // --- flujos: desde la RAM principal (ADPCM; 'datos' tiene que seguir ahi mientras suena) ---
-    enum { FLUJOS = 4 };
+    enum { FLOWS = 4 };
     // devuelve el flujo (0..FLUJOS-1) o -1 si estan todos ocupados
-    int  TocarFlujo(const void* adpcm, uint32_t bytes, uint32_t hz, int canales, float vol, bool lazo);
-    void PararFlujo(int f);
-    bool FlujoSonando(int f);  // (uno sin lazo termina solo; al terminar se libera)
-    void VolumenFlujo(int f, float vol);
+    int  TouchFlow(const void* adpcm, uint32_t bytes, uint32_t hz, int channels, float vol, bool loop);
+    void StopFlow(int f);
+    bool FlowPlaying(int f);  // (uno sin lazo termina solo; al terminar se libera)
+    void VolumeFlow(int f, float vol);
 
     // (los flujos los atiende el hilo: queda por si un programa lo arranco sin hilo)
-    void Actualizar();
+    void Update();
 }
 
 #endif // W3D_DREAMCAST

@@ -4,7 +4,7 @@
 //  Header-only, C++03 / Symbian-safe. Reutilizable (fondo, humo, chispas, magia...).
 //
 //  Configurable: gravedad, viento, friccion, bamboleo (onirico), caja de nacimiento,
-//  velocidad inicial, vida, tamanio (inicial->final), alpha/brillo azaroso, giro,
+//  velocidad inicial, vida, tamanio (initial->final), alpha/brillo azaroso, giro,
 //  emision continua (rate) o manual, modo de mezcla (Mezcla) y hasta 8 texturas
 //  (elige una al azar por particula).
 //
@@ -19,20 +19,20 @@
 
 namespace w3dEngine {
 
-enum { ParticulaMaxEstela = 8 };   // puntos de historia de la forma LINEA (estela)
+enum { ParticleMaxTrail = 8 };   // puntos de historia de la forma LINEA (estela)
 
 // FORMA con que se dibuja cada particula
-enum ParticulaForma {
-    FormaBillboard = 0,   // quad mirando a la camara (el de siempre)
-    FormaEstirada  = 1,   // quad a lo largo de la VELOCIDAD (chispas, lluvia, balas trazadoras)
-    FormaLinea     = 2    // tira de LINEAS por las ultimas posiciones (estela; las chispas de GX)
+enum ParticleShape {
+    ShapeBillboard = 0,   // quad mirando a la camara (el de siempre)
+    ShapeStretched = 1,   // quad a lo largo de la VELOCIDAD (chispas, lluvia, balas trazadoras)
+    ShapeLine      = 2    // tira de LINEAS por las ultimas posiciones (estela; las chispas de GX)
 };
 
 struct Particle {
     float x, y, z;        // posicion
     float vx, vy, vz;     // velocidad
     float ax, ay, az;     // aceleracion PROPIA (la del emisor llevada a mundo al nacer), ademas de grav/viento
-    float hist[ParticulaMaxEstela * 3]; // estela: posiciones anteriores (la [0] es la mas nueva)
+    float hist[ParticleMaxTrail * 3]; // estela: posiciones anteriores (la [0] es la mas nueva)
     int   nHist;          // cuantas hay
     float histT;          // tiempo desde la ultima muestra de la estela
     float life, lifeMax;  // vida restante / total (s)
@@ -66,19 +66,19 @@ struct ParticleSystem {
     float turbAmp;
     float tintR, tintG, tintB;    // tinte global (1,1,1 = sin tinte)
     float offsetX, offsetY, offsetZ; // corrimiento global del campo al DIBUJAR (parallax / mover el emisor)
-    int   blend;                  // modo de mezcla (enum Mezcla). Default: MezclaAdd
+    int   blend;                  // modo de mezcla (enum Mezcla). Default: MixAdd
     // Con mezcla ADITIVA el color se multiplica por el alfa (asi la particula "desaparece").
     // Con mezcla ALFA eso OSCURECE la particula mientras se desvanece, que casi nunca es lo que
-    // se quiere: colorPlano deja el color quieto y solo baja el alfa.
-    bool  colorPlano;
-    bool  filtrar;                // textura LINEAR (suave) si true, NEAREST (pixelada) si false. Lo fija el emisor.
+    // se quiere: planeColor deja el color quieto y solo baja el alfa.
+    bool  planeColor;
+    bool  filter;                 // textura LINEAR (suave) si true, NEAREST (pixelada) si false. Lo fija el emisor.
     int   maxParts;               // tope de particulas vivas
     enum { MaxTexs = 8 };
     unsigned texs[MaxTexs]; int nTex;   // texturas (elige una al azar por particula)
-    // FLIPBOOK por EDAD: la textura es un atlas de flipCols x flipFilas celdas; cada particula
-    // recorre flipCuadros celdas segun su edad (0=nace -> flipCuadros-1=muere). flipCuadros=0 = sin
+    // FLIPBOOK por EDAD: la textura es un atlas de flipCols x flipRows celdas; cada particula
+    // recorre flipFrames celdas segun su edad (0=nace -> flipFrames-1=muere). flipFrames=0 = sin
     // flipbook (UV entero). Es CONSTANTE (celda entera por edad): 0 mezcla, solo apunta a la celda.
-    int flipCols, flipFilas, flipCuadros;
+    int flipCols, flipRows, flipFrames;
     // SUB-RECT del atlas unico (default 0,0,1,1 = la textura entera): el sprite
     // (y su grilla de flipbook) viven en [uvU0..uvU1] x [uvV0..uvV1]. Con TODOS
     // los emisores apuntando al mismo atlas, el pase de particulas queda en UN
@@ -89,26 +89,26 @@ struct ParticleSystem {
     // Pensadas para reproducir los efectos de juegos de consola (motores clasicos), que integran por frame
     // "size += plus; plus *= freno", "alpha *= k", "v *= drag". Aca van en formas CERRADAS por segundo:
     // no dependen del framerate (30 o 60 fps dan lo mismo).
-    float crece;         // CRECIMIENTO: el tamanio gana crece*(tamanio inicial) por segundo al nacer...
-    float frenoCrece;    // ...y esa tasa se multiplica por frenoCrece cada segundo (0..1; 1 = sin freno)
-    float alphaDecae;    // el alpha se multiplica por esto cada segundo (0..1; 1 = apagado)
-    float alphaMuerte;   // la particula MUERE cuando su alpha baja de esto (0 = nunca por alpha)
-    float arrastre;      // la velocidad se multiplica por esto cada segundo (0..1; 1 = sin arrastre)
-    bool  usarColorFinal;             // el color va de tint a colorFinal a lo largo de la vida
-    float colorFinR, colorFinG, colorFinB, alphaFinMul; // color al morir + alpha al morir (x a0)
-    float flipFps;       // FLIPBOOK a cuadros por segundo (0 = repartido en la vida, el de siempre)
-    bool  flipUnaVez;    // con flipFps: la particula muere al terminar el ultimo cuadro (sino hace loop)
-    int   forma;         // ParticulaForma
-    float estiramiento;  // FormaEstirada: largo = segundos de velocidad (la cola es pos - v*estiramiento)
-    int   estelaPuntos;  // FormaLinea: puntos de la estela (2..ParticulaMaxEstela)
-    float estelaPaso;    // FormaLinea: segundos entre muestras de la estela
-    float grosorLinea;   // FormaLinea: ancho en pixeles
+    float grows;         // CRECIMIENTO: el tamanio gana crece*(tamanio inicial) por segundo al nacer...
+    float brakeGrows;    // ...y esa tasa se multiplica por brakeGrows cada segundo (0..1; 1 = sin freno)
+    float alphaDecays;   // el alpha se multiplica por esto cada segundo (0..1; 1 = apagado)
+    float alphaDeath;    // la particula MUERE cuando su alpha baja de esto (0 = nunca por alpha)
+    float drag;          // la velocidad se multiplica por esto cada segundo (0..1; 1 = sin arrastre)
+    bool  useColorFinal;             // el color va de tint a colorFinal a lo largo de la vida
+    float endColorR, endColorG, endColorB, alphaEndMul; // color al morir + alpha al morir (x a0)
+    float flipFps;        // FLIPBOOK a cuadros por segundo (0 = repartido en la vida, el de siempre)
+    bool  flipOnce;       // con flipFps: la particula muere al terminar el ultimo cuadro (sino hace loop)
+    int   shape;          // ParticleShape
+    float stretch;        // ShapeStretched: largo = segundos de velocidad (la cola es pos - v*estiramiento)
+    int   trailPoints;    // ShapeLine: puntos de la estela (2..ParticleMaxTrail)
+    float trailStep;      // ShapeLine: segundos entre muestras de la estela
+    float thicknessLine;  // ShapeLine: ancho en pixeles
     // FUNDIDOS de DIBUJO (no cuentan para la muerte por alpha): una nube que nace o se cruza con la camara no
     // aparece/desaparece de golpe (una niebla de clima que se funde con la distancia a la camara).
-    float aparecer;      // segundos para ir de alpha 0 a 1 al nacer (0 = nace entera)
-    float cerca0, cerca1;// distancia a la camara: alpha 0 hasta cerca0, 1 desde cerca1 (cerca1 <= 0 = apagado)
-    float lejos0, lejos1;// alpha 1 hasta lejos0, 0 desde lejos1 (lejos1 <= 0 = apagado)
-    float ojoX, ojoY, ojoZ; // la camara que dibuja (la pone el que dibuja antes de AppendBillboard)
+    float appear;      // segundos para ir de alpha 0 a 1 al nacer (0 = nace entera)
+    float near0, near1;// distancia a la camara: alpha 0 hasta cerca0, 1 desde cerca1 (cerca1 <= 0 = apagado)
+    float far0, far1;// alpha 1 hasta lejos0, 0 desde lejos1 (lejos1 <= 0 = apagado)
+    float eyeX, eyeY, eyeZ; // la camara que dibuja (la pone el que dibuja antes de AppendBillboard)
 
     // ---------- RUNTIME ----------
     std::vector<Particle> parts;
@@ -127,28 +127,28 @@ struct ParticleSystem {
         alphaMin=0.3f; alphaMax=1.0f; spinMin=-0.5f; spinMax=0.5f;
         fadeIn=0.12f; fadeOut=0.30f; rate=0; turbAmp=0; tintR=1; tintG=1; tintB=1;
         offsetX=0; offsetY=0; offsetZ=0;
-        blend=MezclaAdd; colorPlano=false; filtrar=true; maxParts=200; nTex=0; acc=0; phase=0; rng=2463534242u;
-        flipCols=1; flipFilas=1; flipCuadros=0;
+        blend=MixAdd; planeColor=false; filter=true; maxParts=200; nTex=0; acc=0; phase=0; rng=2463534242u;
+        flipCols=1; flipRows=1; flipFrames=0;
         uvU0=0; uvV0=0; uvU1=1; uvV1=1;
-        crece=0; frenoCrece=1; alphaDecae=1; alphaMuerte=0; arrastre=1;
-        usarColorFinal=false; colorFinR=1; colorFinG=1; colorFinB=1; alphaFinMul=1;
-        flipFps=0; flipUnaVez=false;
-        forma=FormaBillboard; estiramiento=0.05f; estelaPuntos=4; estelaPaso=1.0f/30.0f; grosorLinea=1.0f;
-        aparecer=0; cerca0=0; cerca1=0; lejos0=0; lejos1=0; ojoX=0; ojoY=0; ojoZ=0;
+        grows=0; brakeGrows=1; alphaDecays=1; alphaDeath=0; drag=1;
+        useColorFinal=false; endColorR=1; endColorG=1; endColorB=1; alphaEndMul=1;
+        flipFps=0; flipOnce=false;
+        shape=ShapeBillboard; stretch=0.05f; trailPoints=4; trailStep=1.0f/30.0f; thicknessLine=1.0f;
+        appear=0; near0=0; near1=0; far0=0; far1=0; eyeX=0; eyeY=0; eyeZ=0;
     }
     // el factor de los FUNDIDOS de dibujo (aparecer + distancia a la camara), 0..1
-    float FactorFundidos(const Particle& p) const {
+    float FactorFades(const Particle& p) const {
         float f = 1.0f;
-        if (aparecer > 0.0f) { float t = Edad(p) / aparecer; if (t < 1.0f) f = t < 0.0f ? 0.0f : t; }
-        if (cerca1 > 0.0f || lejos1 > 0.0f) {
-            float dx = p.x - ojoX, dy = p.y - ojoY, dz = p.z - ojoZ;
+        if (appear > 0.0f) { float t = Age(p) / appear; if (t < 1.0f) f = t < 0.0f ? 0.0f : t; }
+        if (near1 > 0.0f || far1 > 0.0f) {
+            float dx = p.x - eyeX, dy = p.y - eyeY, dz = p.z - eyeZ;
             float d = sqrtf(dx*dx + dy*dy + dz*dz);
-            if (cerca1 > 0.0f) {
-                float k = (cerca1 > cerca0) ? (d - cerca0) / (cerca1 - cerca0) : (d >= cerca1 ? 1.0f : 0.0f);
+            if (near1 > 0.0f) {
+                float k = (near1 > near0) ? (d - near0) / (near1 - near0) : (d >= near1 ? 1.0f : 0.0f);
                 if (k < 1.0f) f *= (k < 0.0f ? 0.0f : k);
             }
-            if (lejos1 > 0.0f) {
-                float k = (lejos1 > lejos0) ? (lejos1 - d) / (lejos1 - lejos0) : (d <= lejos1 ? 1.0f : 0.0f);
+            if (far1 > 0.0f) {
+                float k = (far1 > far0) ? (far1 - d) / (far1 - far0) : (d <= far1 ? 1.0f : 0.0f);
                 if (k < 1.0f) f *= (k < 0.0f ? 0.0f : k);
             }
         }
@@ -156,83 +156,83 @@ struct ParticleSystem {
     }
 
     // ---- las curvas por EDAD (formas cerradas) ----
-    static float Edad(const Particle& p) { return p.lifeMax - p.life; }
+    static float Age(const Particle& p) { return p.lifeMax - p.life; }
     // multiplicador del tamanio por el crecimiento con freno: 1 + crece * integral(freno^t)
-    float MulTamanio(const Particle& p) const {
-        if (crece == 0.0f) return 1.0f;
-        float t = Edad(p);
-        if (frenoCrece >= 0.9999f || frenoCrece <= 0.0f) {
-            if (frenoCrece <= 0.0f) return 1.0f;           // freno 0 = no crece nunca
-            return 1.0f + crece * t;
+    float MulSize(const Particle& p) const {
+        if (grows == 0.0f) return 1.0f;
+        float t = Age(p);
+        if (brakeGrows >= 0.9999f || brakeGrows <= 0.0f) {
+            if (brakeGrows <= 0.0f) return 1.0f;           // freno 0 = no crece nunca
+            return 1.0f + grows * t;
         }
-        float lk = logf(frenoCrece);
-        return 1.0f + crece * (powf(frenoCrece, t) - 1.0f) / lk;
+        float lk = logf(brakeGrows);
+        return 1.0f + grows * (powf(brakeGrows, t) - 1.0f) / lk;
     }
     float MulAlpha(const Particle& p) const {
-        if (alphaDecae >= 0.9999f) return 1.0f;
-        if (alphaDecae <= 0.0f) return 0.0f;
-        return powf(alphaDecae, Edad(p));
+        if (alphaDecays >= 0.9999f) return 1.0f;
+        if (alphaDecays <= 0.0f) return 0.0f;
+        return powf(alphaDecays, Age(p));
     }
     // indice de cuadro del flipbook (-1 = sin flipbook)
-    int Cuadro(const Particle& p) const {
-        if (flipCuadros <= 0) return -1;
+    int Frame(const Particle& p) const {
+        if (flipFrames <= 0) return -1;
         int cel;
         if (flipFps > 0.0f) {
-            cel = (int)(Edad(p) * flipFps);
-            if (flipUnaVez) { if (cel >= flipCuadros) cel = flipCuadros - 1; }
-            else cel = cel % flipCuadros;
+            cel = (int)(Age(p) * flipFps);
+            if (flipOnce) { if (cel >= flipFrames) cel = flipFrames - 1; }
+            else cel = cel % flipFrames;
         } else {
             float lt = 1.0f - p.life/p.lifeMax;
-            cel = (int)(lt * flipCuadros);
+            cel = (int)(lt * flipFrames);
         }
-        if (cel < 0) cel = 0; if (cel >= flipCuadros) cel = flipCuadros - 1;
+        if (cel < 0) cel = 0; if (cel >= flipFrames) cel = flipFrames - 1;
         return cel;
     }
     // el tamanio (MEDIO lado) de la particula hoy
-    float TamanioDe(const Particle& p) const {
+    float SizeOf(const Particle& p) const {
         float lt = 1.0f - p.life/p.lifeMax;
-        return (p.size + (p.sizeEnd - p.size)*lt) * MulTamanio(p);
+        return (p.size + (p.sizeEnd - p.size)*lt) * MulSize(p);
     }
     // color y alpha de la particula hoy (sin tinte de mezcla): r,g,b y la opacidad 0..1
-    void ColorDe(const Particle& p, float& r, float& g, float& b, float& a) const {
+    void ColorOf(const Particle& p, float& r, float& g, float& b, float& a) const {
         float lt = 1.0f - p.life/p.lifeMax;
-        a = p.a0 * BrilloPorVida(p) * MulAlpha(p) * FactorFundidos(p);
+        a = p.a0 * BrightnessByLife(p) * MulAlpha(p) * FactorFades(p);
         r = tintR; g = tintG; b = tintB;
-        if (usarColorFinal) {
-            r += (colorFinR - r)*lt; g += (colorFinG - g)*lt; b += (colorFinB - b)*lt;
-            a *= 1.0f + (alphaFinMul - 1.0f)*lt;
+        if (useColorFinal) {
+            r += (endColorR - r)*lt; g += (endColorG - g)*lt; b += (endColorB - b)*lt;
+            a *= 1.0f + (alphaEndMul - 1.0f)*lt;
         }
     }
 
     // UV (12 floats = 2 triangulos) del CUADRO del flipbook para una edad lt (0..1). Sin flipbook
-    // (flipCuadros<=0) devuelve el quad entero. Celda entera por edad: constante, sin curvas ni CPU.
+    // (flipFrames<=0) devuelve el quad entero. Celda entera por edad: constante, sin curvas ni CPU.
     // Todo REMAPEADO al sub-rect uv* (0,0,1,1 = identico a antes).
-    void CeldaUV(float lt, float* out) const {
-        int cel = (flipCuadros <= 0) ? -1 : (int)(lt * flipCuadros);
-        CeldaUVIdx(cel, out);
+    void CellUV(float lt, float* out) const {
+        int cel = (flipFrames <= 0) ? -1 : (int)(lt * flipFrames);
+        CellUVIdx(cel, out);
     }
     // idem con el cuadro ya elegido (-1 = el quad entero)
-    void CeldaUVIdx(int cel, float* out) const {
+    void CellUVIdx(int cel, float* out) const {
         float ru = uvU1 - uvU0, rv = uvV1 - uvV0;
         // Los vertices del quad van (-x,-y) (+x,-y) (+x,+y) | (-x,-y) (+x,+y) (-x,+y): los de ABAJO toman v1 y los de
         // ARRIBA v0, porque la textura se sube sin invertir (fila 0 del PNG = v 0 = ARRIBA, la convencion de glTF).
         // Antes era al reves y TODAS las particulas salian cabeza abajo (una llama "iba hacia abajo").
-        if (flipCuadros <= 0 || cel < 0) {
+        if (flipFrames <= 0 || cel < 0) {
             out[0]=uvU0; out[1]=uvV1;  out[2]=uvU1; out[3]=uvV1;  out[4]=uvU1;  out[5]=uvV0;
             out[6]=uvU0; out[7]=uvV1;  out[8]=uvU1; out[9]=uvV0;  out[10]=uvU0; out[11]=uvV0;
             return;
         }
-        if (cel >= flipCuadros) cel = flipCuadros - 1;
-        int cols = flipCols > 0 ? flipCols : 1, filas = flipFilas > 0 ? flipFilas : 1;
-        int col = cel % cols, fila = (cel / cols) % filas;
-        float du = ru / (float)cols, dv = rv / (float)filas;
+        if (cel >= flipFrames) cel = flipFrames - 1;
+        int cols = flipCols > 0 ? flipCols : 1, rows = flipRows > 0 ? flipRows : 1;
+        int col = cel % cols, row = (cel / cols) % rows;
+        float du = ru / (float)cols, dv = rv / (float)rows;
         float u0 = uvU0 + col * du, u1 = u0 + du;
-        float v0 = uvV0 + fila * dv, v1 = v0 + dv;   // fila 0 = arriba del atlas
+        float v0 = uvV0 + row * dv, v1 = v0 + dv;   // fila 0 = arriba del atlas
         out[0]=u0; out[1]=v1;  out[2]=u1; out[3]=v1;  out[4]=u1;  out[5]=v0;
         out[6]=u0; out[7]=v1;  out[8]=u1; out[9]=v0;  out[10]=u0; out[11]=v0;
     }
 
-    void SetTexturas(const unsigned* t, int n) { if(n>MaxTexs)n=MaxTexs; nTex=n; for(int i=0;i<n;i++) texs[i]=t[i]; }
+    void SetTextures(const unsigned* t, int n) { if(n>MaxTexs)n=MaxTexs; nTex=n; for(int i=0;i<n;i++) texs[i]=t[i]; }
 
     // RNG: LCG -> [0,1). Deterministico (misma secuencia siempre); no usa Math.random.
     float frnd() { rng = rng*1664525u + 1013904223u; return (float)((rng>>8)&0xFFFFFFu)/16777216.0f; }
@@ -255,22 +255,22 @@ struct ParticleSystem {
     void EmitN(int k) { for(int i=0;i<k;i++) if(!Emit()) break; }
 
     // emite UNA particula EN EL PUNTO (px,py,pz) con velocidad de MODULO 'vel' en una
-    // direccion azarosa dentro del CONO de apertura 'aperturaDeg' (angulo TOTAL, en grados)
+    // direccion azarosa dentro del CONO de apertura 'apertureDeg' (angulo TOTAL, en grados)
     // alrededor del eje (ax,ay,az). apertura 0 = chorro recto; 360 = esfera entera.
     // El resto (vida, tamanio, alpha, giro, textura) sale de la config como en Emit().
     // Lo usa el emisor 3D del editor (objeto Particulas): el cono es la "dispersion".
-    Particle* EmitCono(float px, float py, float pz,
+    Particle* EmitCone(float px, float py, float pz,
                        float ax, float ay, float az,
-                       float vel, float aperturaDeg) {
+                       float vel, float apertureDeg) {
         Particle* p = Emit();
         if (!p) return 0;
         p->x = px; p->y = py; p->z = pz;
         // eje normalizado (si es ~0, se emite hacia +Y)
-        float al = sqrtf(ax*ax + ay*ay + az*az);
-        if (al < 1e-6f) { ax = 0; ay = 1; az = 0; } else { ax/=al; ay/=al; az/=al; }
+        float to = sqrtf(ax*ax + ay*ay + az*az);
+        if (to < 1e-6f) { ax = 0; ay = 1; az = 0; } else { ax/=to; ay/=to; az/=to; }
         // direccion azarosa uniforme en el CASQUETE de medio-angulo apertura/2:
         // cos(theta) uniforme en [cos(max), 1] y phi uniforme en [0, 2pi)
-        float maxRad = aperturaDeg * 0.5f * 0.0174532925f;
+        float maxRad = apertureDeg * 0.5f * 0.0174532925f;
         if (maxRad < 0.0f) maxRad = 0.0f; if (maxRad > 3.14159265f) maxRad = 3.14159265f;
         float cosMax = cosf(maxRad);
         float ct = cosMax + (1.0f - cosMax) * frnd();
@@ -296,20 +296,20 @@ struct ParticleSystem {
         phase += dt;
         if (rate>0) { acc += rate*dt; while(acc>=1.0f){ acc-=1.0f; if(!Emit()){ acc=0; break; } } }
         float damp = damping>0 ? (1.0f - damping*dt) : 1.0f; if(damp<0)damp=0;
-        if (arrastre < 0.9999f) damp *= (arrastre > 0.0f) ? powf(arrastre, dt) : 0.0f;  // arrastre por segundo
-        int nEst = estelaPuntos; if (nEst < 2) nEst = 2; if (nEst > ParticulaMaxEstela) nEst = ParticulaMaxEstela;
+        if (drag < 0.9999f) damp *= (drag > 0.0f) ? powf(drag, dt) : 0.0f;  // arrastre por segundo
+        int nEst = trailPoints; if (nEst < 2) nEst = 2; if (nEst > ParticleMaxTrail) nEst = ParticleMaxTrail;
         for (size_t i=0; i<parts.size(); ) {
             Particle& p = parts[i];
             p.life -= dt;
             if (p.life<=0) { parts[i]=parts.back(); parts.pop_back(); continue; } // swap-remove
             // muere por ALPHA (el "alpha < 4" de los efectos de consola) o al terminar un flipbook de una vez
-            if (alphaMuerte > 0.0f && p.a0 * BrilloPorVida(p) * MulAlpha(p) < alphaMuerte) { parts[i]=parts.back(); parts.pop_back(); continue; }
-            if (flipUnaVez && flipFps > 0.0f && flipCuadros > 0 && Edad(p) * flipFps >= (float)flipCuadros) { parts[i]=parts.back(); parts.pop_back(); continue; }
-            // ESTELA: guardar la posicion de ANTES de moverse cada estelaPaso segundos
-            if (forma == FormaLinea) {
+            if (alphaDeath > 0.0f && p.a0 * BrightnessByLife(p) * MulAlpha(p) < alphaDeath) { parts[i]=parts.back(); parts.pop_back(); continue; }
+            if (flipOnce && flipFps > 0.0f && flipFrames > 0 && Age(p) * flipFps >= (float)flipFrames) { parts[i]=parts.back(); parts.pop_back(); continue; }
+            // ESTELA: guardar la posicion de ANTES de moverse cada trailStep segundos
+            if (shape == ShapeLine) {
                 p.histT += dt;
-                float paso = estelaPaso > 0.001f ? estelaPaso : 0.001f;
-                if (p.histT >= paso || p.nHist == 0) {
+                float step = trailStep > 0.001f ? trailStep : 0.001f;
+                if (p.histT >= step || p.nHist == 0) {
                     p.histT = 0;
                     int n = p.nHist < nEst - 1 ? p.nHist + 1 : nEst - 1;
                     for (int k = n - 1; k > 0; k--) { p.hist[k*3] = p.hist[(k-1)*3]; p.hist[k*3+1] = p.hist[(k-1)*3+1]; p.hist[k*3+2] = p.hist[(k-1)*3+2]; }
@@ -338,11 +338,11 @@ struct ParticleSystem {
 
     // brillo por vida: aparece en 'fadeIn' (arranque), se mantiene, y se apaga en 'fadeOut' (final,
     // llega a 0 al morir). Asi puede quedar brillante casi toda la vida y recien apagarse al final.
-    float BrilloPorVida(const Particle& p) const {   // 0..1 segun cuanta vida le queda
+    float BrightnessByLife(const Particle& p) const {   // 0..1 segun cuanta vida le queda
         float t = 1.0f - p.life/p.lifeMax;        // 0=nace, 1=muere
-        float fin  = (fadeIn>0.0f  && t < fadeIn)       ? t/fadeIn         : 1.0f;
+        float end  = (fadeIn>0.0f  && t < fadeIn)       ? t/fadeIn         : 1.0f;
         float fout = (fadeOut>0.0f && t > 1.0f-fadeOut) ? (1.0f-t)/fadeOut : 1.0f;
-        float f = fin<fout ? fin : fout;
+        float f = end<fout ? end : fout;
         return f<0.0f ? 0.0f : f;
     }
 
@@ -360,31 +360,31 @@ struct ParticleSystem {
     // tapan detras de los muros) con DepthMask(false) para no escribirlo entre ellas.
     // arma el ESTADO COMPLETO del dibujo de billboards, sin heredar NADA del que
     // dibujo antes (la raiz del "humo verde": tras una escena 3D el ColorArray del
-    // ultimo mesh quedaba prendido, el Color4f de DrawBillboardUno se IGNORABA y el
+    // ultimo mesh quedaba prendido, el Color4f de DrawBillboardOne se IGNORABA y el
     // color/alpha salian de un puntero de colores de vertice viejo -verde sobre el
     // pasto-; y un TexEnv distinto de MODULATE pisaba la textura). En el caso 2D
     // historico todo esto ya estaba apagado: apagarlo de nuevo no cambia nada alli.
     // NO toca el depth test (contrato de DrawBillboard) ni la mezcla (es por sistema,
-    // la fija DrawBillboardUno). Es estatico: el pase GLOBAL del editor lo llama una
+    // la fija DrawBillboardOne). Es estatico: el pase GLOBAL del editor lo llama una
     // vez y despues intercala particulas de VARIOS sistemas ordenadas por profundidad.
-    static void DrawBillboardEstado() {
+    static void DrawBillboardState() {
         Disable(Lighting); Disable(CullFace); Disable(Fog);
         DisableArray(ColorArray); DisableArray(NormalArray);
         TexEnvReplace(false); TexEnvAlphaOnly(false); TexEnvDot3(false);   // MODULATE
         Enable(Texture2D); Enable(Blend);
         EnableArray(VertexArray); EnableArray(TexCoordArray);
     }
-    static void DrawBillboardFin() {
+    static void DrawBillboardEnd() {
         DisableArray(TexCoordArray);
         Disable(Blend);
     }
 
-    // BATCHEO (P2): en vez de dibujar la particula YA (DrawBillboardUno = un draw
+    // BATCHEO (P2): en vez de dibujar la particula YA (DrawBillboardOne = un draw
     // call POR particula), APPENDEA sus 6 vertices (pos + uv + color POR VERTICE)
     // a los buffers del lote del caller. El caller corta el lote cuando cambia la
     // corrida (textura / mezcla / tope) y dibuja la corrida ENTERA con UN draw
     // (ver el flush global del editor): 100 particulas pasan de 100 draws a 2-4.
-    // Mismos numeros que DrawBillboardUno (tamanio por vida, giro, brillo, tinte);
+    // Mismos numeros que DrawBillboardOne (tamanio por vida, giro, brillo, tinte);
     // el color uniforme de antes viaja ahora por vertice (mismo pixel final).
     // false = la particula no aporta (alpha 0): no appendea nada.
     bool AppendBillboard(const Particle& p,
@@ -392,15 +392,15 @@ struct ParticleSystem {
                          std::vector<float>& pos, std::vector<float>& uvs,
                          std::vector<unsigned char>& col) const {
         float r, g, bl, b;
-        ColorDe(p, r, g, bl, b); if (b <= 0.0f) return false;
-        float UV[12]; CeldaUVIdx(Cuadro(p), UV);   // flipbook (por edad o por fps) o el quad entero
-        float s = TamanioDe(p);
+        ColorOf(p, r, g, bl, b); if (b <= 0.0f) return false;
+        float UV[12]; CellUVIdx(Frame(p), UV);   // flipbook (por edad o por fps) o el quad entero
+        float s = SizeOf(p);
         float px = p.x+offsetX, py = p.y+offsetY, pz = p.z+offsetZ;
         float V[18];
-        if (forma == FormaEstirada) {
+        if (shape == ShapeStretched) {
             // quad de la COLA (pos - v*estiramiento) a la CABEZA (pos), de ancho 2*s, girado sobre la velocidad
             // para que su cara mire a la camara: ancho = normalize(vel x adelante-de-camara)
-            float tx = px - p.vx*estiramiento, ty = py - p.vy*estiramiento, tz = pz - p.vz*estiramiento;
+            float tx = px - p.vx*stretch, ty = py - p.vy*stretch, tz = pz - p.vz*stretch;
             float fx = ry*uz - rz*uy, fy = rz*ux - rx*uz, fz = rx*uy - ry*ux;   // adelante = right x up
             float wx = p.vy*fz - p.vz*fy, wy = p.vz*fx - p.vx*fz, wz = p.vx*fy - p.vy*fx;
             float wl = sqrtf(wx*wx + wy*wy + wz*wz);
@@ -421,7 +421,7 @@ struct ParticleSystem {
             for (int i = 0; i < 18; i++) V[i] = Q[i];
         }
         float a = b;
-        if (!colorPlano) { r *= b; g *= b; bl *= b; }
+        if (!planeColor) { r *= b; g *= b; bl *= b; }
         if (r < 0) r = 0; if (r > 1) r = 1; if (g < 0) g = 0; if (g > 1) g = 1;
         if (bl < 0) bl = 0; if (bl > 1) bl = 1; if (a < 0) a = 0; if (a > 1) a = 1;
         unsigned char cr = (unsigned char)(r*255.0f + 0.5f), cg = (unsigned char)(g*255.0f + 0.5f);
@@ -432,13 +432,13 @@ struct ParticleSystem {
         return true;
     }
 
-    // FormaLinea: appendea los SEGMENTOS de la estela (GL_LINES: 2 vertices por segmento) de la posicion
+    // ShapeLine: appendea los SEGMENTOS de la estela (GL_LINES: 2 vertices por segmento) de la posicion
     // actual hacia atras, con el alpha bajando hacia la cola. Sin textura (color por vertice).
     // false = no aporta (sin historia o alpha 0).
-    bool AppendEstela(const Particle& p, std::vector<float>& pos, std::vector<unsigned char>& col) const {
+    bool AppendTrail(const Particle& p, std::vector<float>& pos, std::vector<unsigned char>& col) const {
         if (p.nHist < 1) return false;
-        float r, g, bl, a; ColorDe(p, r, g, bl, a); if (a <= 0.0f) return false;
-        if (!colorPlano) { r *= a; g *= a; bl *= a; }
+        float r, g, bl, a; ColorOf(p, r, g, bl, a); if (a <= 0.0f) return false;
+        if (!planeColor) { r *= a; g *= a; bl *= a; }
         float px = p.x+offsetX, py = p.y+offsetY, pz = p.z+offsetZ;
         int n = p.nHist;
         for (int k = 0; k < n; k++) {
@@ -448,7 +448,7 @@ struct ParticleSystem {
             pos.push_back(x1); pos.push_back(y1); pos.push_back(z1);
             for (int e = 0; e < 2; e++) {
                 float f = 1.0f - (float)(k + e) / (float)(n + 1);   // cabeza 1 -> cola ~0
-                float fr = colorPlano ? r : r*f, fg = colorPlano ? g : g*f, fb = colorPlano ? bl : bl*f, fa = a*f;
+                float fr = planeColor ? r : r*f, fg = planeColor ? g : g*f, fb = planeColor ? bl : bl*f, fa = a*f;
                 if (fr > 1) fr = 1; if (fg > 1) fg = 1; if (fb > 1) fb = 1; if (fa > 1) fa = 1;
                 col.push_back((unsigned char)(fr*255.0f + 0.5f)); col.push_back((unsigned char)(fg*255.0f + 0.5f));
                 col.push_back((unsigned char)(fb*255.0f + 0.5f)); col.push_back((unsigned char)(fa*255.0f + 0.5f));
@@ -458,15 +458,15 @@ struct ParticleSystem {
     }
 
     // dibuja UNA particula de ESTE sistema como billboard en el plano (right, up).
-    // Requiere el estado de DrawBillboardEstado ya armado; fija la mezcla y la
+    // Requiere el estado de DrawBillboardState ya armado; fija la mezcla y la
     // textura del sistema en cada llamada (baratas: BindTexture cachea) para poder
     // INTERCALAR particulas de sistemas distintos (el orden global por profundidad).
-    void DrawBillboardUno(const Particle& p,
+    void DrawBillboardOne(const Particle& p,
                           float rx, float ry, float rz, float ux, float uy, float uz) {
         if (nTex<=0) return;
-        float b = p.a0 * BrilloPorVida(p); if (b<=0.0f) return;
+        float b = p.a0 * BrightnessByLife(p); if (b<=0.0f) return;
         float lt = 1.0f - p.life/p.lifeMax;
-        float UV[12]; CeldaUV(lt, UV);   // flipbook por edad (o quad entero si no hay flipbook)
+        float UV[12]; CellUV(lt, UV);   // flipbook por edad (o quad entero si no hay flipbook)
         float s = p.size + (p.sizeEnd - p.size)*lt;          // tamanio interpolado por vida
         float px = p.x+offsetX, py = p.y+offsetY, pz = p.z+offsetZ; // corrimiento global (parallax)
         float c = cosf(p.rot)*s, sn = sinf(p.rot)*s;         // quad rotado, medio-lado = s
@@ -477,20 +477,20 @@ struct ParticleSystem {
             px-exx-eyx, py-exy-eyy, pz-exz-eyz,   px+exx-eyx, py+exy-eyy, pz+exz-eyz,
             px+exx+eyx, py+exy+eyy, pz+exz+eyz,   px-exx-eyx, py-exy-eyy, pz-exz-eyz,
             px+exx+eyx, py+exy+eyy, pz+exz+eyz,   px-exx+eyx, py-exy+eyy, pz-exz+eyz };
-        SetMezcla(blend);
+        SetMix(blend);
         VertexPointer3f(0,V); TexCoordPointer2f(0,UV);
         BindTexture(texs[p.tex]);
-        if (colorPlano) Color4f(tintR, tintG, tintB, b);      // el color no se apaga: solo el alfa
+        if (planeColor) Color4f(tintR, tintG, tintB, b);      // el color no se apaga: solo el alfa
         else            Color4f(tintR*b, tintG*b, tintB*b, b); // aditiva: alpha->0 = desaparece
         DrawTrianglesArray(6);
     }
 
     void DrawBillboard(float rx, float ry, float rz, float ux, float uy, float uz) {
         if (parts.empty() || nTex<=0) return;
-        DrawBillboardEstado();
+        DrawBillboardState();
         for (size_t i=0; i<parts.size(); ++i)
-            DrawBillboardUno(parts[i], rx, ry, rz, ux, uy, uz);
-        DrawBillboardFin();
+            DrawBillboardOne(parts[i], rx, ry, rz, ux, uy, uz);
+        DrawBillboardEnd();
     }
 
     // caso 2D: arma un ortho x:[0,aspect] y:[0,1] (y=0 ABAJO) y dibuja. Las coords de config

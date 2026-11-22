@@ -29,7 +29,7 @@
 // (normals) y "UV" (uvs)- y cada una se evalua SOLO con los frames que traen su capa.
 // Insertar keyframe desde el 3D crea frames posiciones+normales (normalmente van
 // juntas); desde el UV editor, solo-UV. La capa de normales es BORRABLE entera
-// (VertexAnimBorrarCapaNormales): un modelo sin iluminacion no la necesita y la
+// (VertexAnimDeleteLayerNormals): un modelo sin iluminacion no la necesita y la
 // evaluacion se la saltea por completo. Si un frame trae varias capas, comparte
 // frame/interp/handles entre sus curvas (es UN cuadro).
 struct VertexFrame {
@@ -65,7 +65,7 @@ class VertexAnimation {
         std::string basePath;
         // defaults en el constructor de abajo (C++03)
         int frameCount;
-        int proximaAnimacion;
+        int nextAnimation;
         float speed;
         int padding;
         bool repeat;
@@ -80,7 +80,7 @@ class VertexAnimation {
         Mesh* target;
 
         // espejo de la capa de NORMALES: hay frames con normales? Se prende al capturar
-        // keyframes con normales y lo apaga VertexAnimBorrarCapaNormales. Como UseUV,
+        // keyframes con normales y lo apaga VertexAnimDeleteLayerNormals. Como UseUV,
         // manda lo que realmente hay guardado en los frames.
         bool UseNormals;
 
@@ -95,46 +95,46 @@ class VertexAnimation {
         // o la evaluacion leeria fuera de rango (crash). 0 = sin definir. Ver RemapVertexAnims.
         int vcount;
 
-        // EL BLOB DE FRAMES ESTABA Y NO SE PUDO LEER (hermano de W3dAjenos::noCargo de la
+        // EL BLOB DE FRAMES ESTABA Y NO SE PUDO LEER (hermano de W3dForeign::notLoaded de la
         // malla). La anim se declaraba en el .w3d con su entrada "buffers" y esa entrada no
         // se pudo abrir o no deserializo: en memoria queda con 0 frames. Guardar encima la
         // BORRABA para siempre (el escritor no emite "buffers" si no hay frames y el
-        // contenedor descarta lo huerfano bajo "animaciones/"), y todo eso en silencio. Con
+        // contenedor descarta lo huerfano bajo "animations/"), y todo eso en silencio. Con
         // el flag prendido el guardado se FRENA, igual que con una malla que no cargo.
-        bool noCargo;
+        bool notLoaded;
 
         // Frames de la animación (solo posiciones) — la parte VERTEX ANIMATION
         std::vector<VertexFrame*> frames;
 
-        // ---- FRAMES COMPARTIDOS (io/W3dRecursos.h, tipo ANIM): si datosRec !=
-        // NULL, los VertexFrame de 'frames' pertenecen a un AnimDatos del
+        // ---- FRAMES COMPARTIDOS (io/W3dResources.h, tipo ANIM): si dataRec !=
+        // NULL, los VertexFrame de 'frames' pertenecen a un AnimData del
         // almacen de recursos y NO se poseen: N instancias del mismo basePath
         // usan UN solo juego de frames (el ahorro grande: cada frame es la
         // malla entera). COW: toda mutacion de keyframes (SetKey/Borrar*/
-        // Mover*/Remap) llama antes a DesinstanciarFrames(). La POSE no vive
+        // Mover*/Remap) llama antes a UninstantiateFrames(). La POSE no vive
         // aca (se escribe en mesh->vertex, por instancia): el playback NO
         // desinstancia frames.
-        void* datosRec;             // W3dRecurso* (tipo ANIM); NULL = propios
-        void DesinstanciarFrames(); // copia profunda + suelta la ref (no-op si propios)
+        void* dataRec;              // W3dResource* (tipo ANIM); NULL = propios
+        void UninstantiateFrames(); // copia profunda + suelta la ref (no-op si propios)
 
         // curvas PROPIAS de esta animacion del objeto: transform (pos/rot/escala),
         // visible, render... Una "animacion de objeto" es un CONTENEDOR: puede
         // tener frames de vertices Y/O curvas de canal (cada animacion las suyas,
         // distintas de la animacion de ESCENA). Se evaluan cuando esta activa (kind 3).
-        std::vector<AnimProperty> curvas;
+        std::vector<AnimProperty> curves;
 
         VertexAnimation()
-            : frameCount(0), proximaAnimacion(-1), speed(1.0f), padding(0),
+            : frameCount(0), nextAnimation(-1), speed(1.0f), padding(0),
               repeat(true), target(NULL), UseNormals(false), UseUV(false), vcount(0),
-              noCargo(false), startFrame(1), endFrame(250), fps(30) {
-            // frames PROPIOS (como el otro constructor): sin esto datosRec quedaba con
-            // basura y ~VertexAnimation -> LiberarFrames "soltaba" un recurso inexistente
-            datosRec = 0;
+              notLoaded(false), startFrame(1), endFrame(250), fps(30) {
+            // frames PROPIOS (como el otro constructor): sin esto dataRec quedaba con
+            // basura y ~VertexAnimation -> FreeFrames "soltaba" un recurso inexistente
+            dataRec = 0;
         }
-        VertexAnimation(Mesh* tgt, const std::string& animName, bool useNormals = false, float Speed = 1, bool Repeat = true, int ProximaAnimacion = -1);
+        VertexAnimation(Mesh* tgt, const std::string& animName, bool useNormals = false, float Speed = 1, bool Repeat = true, int NextAnimation = -1);
     
         ~VertexAnimation();          // libera los frames (posiciones/normales new[])
-        void LiberarFrames();
+        void FreeFrames();
 
         // Cargar animaciones desde archivos .obj
         bool LoadFrames();
@@ -174,14 +174,14 @@ class VertexAnimationActive {
         // 'frame' se clampea al rango del clip destino. Reposa la malla en el acto
         // (no espera al proximo UpdateAnimation) para que el cuadro que pidio el
         // script sea el que se ve en ESTE tick.
-        void CambiarYa(int clip, float frame);
+        void ChangeNow(int clip, float frame);
 };
 
 // ---- A/B del cache de frames compartidos (comando 'animcache off|on' del
 //      harness) + contador de desinstancias por COW (lo muestra meminfo) ----
-void AnimsCacheActivo(bool on);
-bool AnimsCacheEstaActivo();
-int  AnimsDesinstanciadas();
+void ActiveAnimsCache(bool on);
+bool AnimsCacheIsActive();
+int  AnimsUninstantiated();
 
 // Mezcla dos animaciones y escribe en la malla target
 // - fromAnim: animación actual (ej: idle)
@@ -207,7 +207,7 @@ void ApplyVertexFrame(
 // Evalua la vertex anim a una POSICION del timeline (float) y escribe la malla.
 // CADA CAPA por su cuenta: las posiciones interpolan entre los frames que traen
 // positions, y las UV entre los que traen uvs (curvas separadas). El tramo lo
-// manda el keyframe izquierdo (constante/lineal/bezier via EvalCurvaVertexAnim).
+// manda el keyframe izquierdo (constante/lineal/bezier via EvalCurveVertexAnim).
 // Antes/despues del rango de cada capa: HOLD su extremo.
 void EvalVertexAnim(const VertexAnimation& anim, Mesh* mesh, float frame);
 
@@ -218,20 +218,20 @@ void EvalVertexAnim(const VertexAnimation& anim, Mesh* mesh, float frame);
 // efectivos del tramo al rectangulo entre los dos keys (tiempo dentro del tramo,
 // valor dentro de 0..1): una bezier con los 4 puntos de control en esa caja es
 // monotona y queda acotada. Estas funciones las COMPARTEN la reproduccion
-// (EvalVertexAnim) y el editor de curvas (VertexCanalTemp dibuja el trazo y los
-// handles con los valores de VertexAnimHandlesTramo): lo que se VE es lo que
+// (EvalVertexAnim) y el editor de curvas (VertexChannelTemp dibuja el trazo y los
+// handles con los valores de VertexAnimHandlesSegment): lo que se VE es lo que
 // corre, no pueden divergir. Las curvas de canal (objetos/huesos) NO pasan por
 // aca: conservan su overshoot libre.
 // clamp de UN handle al rectangulo del tramo. spanFrames = frames entre los dos
 // keys; salida=true es el handle derecho del key izquierdo (dF>=0, dV en 0..1),
 // salida=false el izquierdo del key derecho (dF<=0, dV en -1..0).
-void VertexAnimClampHandle(bool salida, float spanFrames, float& dF, float& dV);
+void VertexAnimClampHandle(bool output, float spanFrames, float& dF, float& dV);
 // handles EFECTIVOS del tramo A->B (resuelve Auto/Vector/etc + clamp), en la
 // escala progreso 0..1
-void VertexAnimHandlesTramo(const VertexFrame& A, const VertexFrame& B,
+void VertexAnimHandlesSegment(const VertexFrame& A, const VertexFrame& B,
                             float& outDF, float& outDV, float& inDF, float& inDV);
 // factor de mezcla 0..1 del tramo A->B en 'frame': monotono y sin overshoot
-float EvalCurvaVertexAnim(const VertexFrame& A, const VertexFrame& B, float frame);
+float EvalCurveVertexAnim(const VertexFrame& A, const VertexFrame& B, float frame);
 
 // inserta/actualiza un keyframe en la posicion 'frame' (ordenado). SOLO pisa las
 // capas que vienen NO-NULL: positions(+normals) la capa de vertices, uvs la de
@@ -245,17 +245,17 @@ int VertexAnimSetKey(VertexAnimation& anim, int frame,
                      const GLfloat* uvs, int interp);
 
 // borra el keyframe de vertices en 'frame' (libera sus buffers). true si borro alguno.
-bool VertexAnimBorrarFrame(VertexAnimation& anim, int frame);
+bool VertexAnimDeleteFrame(VertexAnimation& anim, int frame);
 // borra UNA CAPA (0 = posiciones, 1 = uv, 2 = normales) del keyframe en 'frame'. Si el
 // frame queda sin ninguna capa se borra entero. true si borro algo.
-bool VertexAnimBorrarCapa(VertexAnimation& anim, int frame, int capa);
+bool VertexAnimDeleteLayer(VertexAnimation& anim, int frame, int layer);
 // borra la capa de NORMALES de TODOS los frames de la anim (los frames que quedan sin
 // ninguna capa se van enteros) y apaga UseNormals -> EvalVertexAnim se saltea la
 // interpolacion de normales por completo (rendimiento: modelos sin iluminacion estilo
 // de los juegos de plataformas de PS1). El render queda con las normales que tenga la malla (estaticas);
-// el llamador del editor las recalcula si quiere (Mesh::RecalcularNormales).
+// el llamador del editor las recalcula si quiere (Mesh::RecalculateNormals).
 // true si borro algo.
-bool VertexAnimBorrarCapaNormales(VertexAnimation& anim);
+bool VertexAnimDeleteLayerNormals(VertexAnimation& anim);
 // ===== MOVE SELECTIVO por MASCARA de vertices (toggle "Solo vertices seleccionados") =====
 // Mueve n keyframes (origen[i] -> destino[i]) aplicando la mascara 'mask' (vcount
 // entradas, 1 = vertice seleccionado). Para CADA capa que traiga el frame movido:
@@ -278,26 +278,26 @@ bool VertexAnimBorrarCapaNormales(VertexAnimation& anim);
 // Todas las mediciones (evaluaciones) se hacen contra el estado PREVIO al move, en una
 // pasada aparte, asi mover varios keys a la vez no se contamina.
 // Devuelve true si movio algo.
-bool VertexAnimMoverKeysSelectivo(VertexAnimation& anim,
-                                  const std::vector<int>& origen,
-                                  const std::vector<int>& destino,
+bool VertexAnimMoveKeysSelective(VertexAnimation& anim,
+                                  const std::vector<int>& origin,
+                                  const std::vector<int>& destination,
                                   const unsigned char* mask);
 // conveniencia: UN solo keyframe (origen -> destino) con la misma semantica.
-bool VertexAnimMoverKeySelectivo(VertexAnimation& anim, int origen, int destino,
+bool VertexAnimMoveKeySelective(VertexAnimation& anim, int origin, int destination,
                                  const unsigned char* mask);
 // El keyframe de 'frame' le ANIMA algo a los vertices de 'mask' en esa capa (0/1/2)? True si alguno de esos
 // vertices vale ahi algo distinto de lo que la capa evaluaria SIN este keyframe (un cuadro que cae justo sobre la
 // interpolacion de sus vecinos no anima nada: es un cuadro de paso). mask NULL = todos los vertices; un keyframe
 // sin vecinos en su capa siempre aporta. Lo usa el FILTRO de vista del toggle "Solo vertices seleccionados" del
 // dope/curvas, y es la misma regla con la que el move selectivo decide si el frame origen sobrevive.
-bool VertexAnimKeyAportaSel(const VertexAnimation& anim, int capa, int frame, const unsigned char* mask);
+bool VertexAnimKeyContributesSel(const VertexAnimation& anim, int layer, int frame, const unsigned char* mask);
 // interpolacion (KfConstant/KfLinear/KfBezier) del keyframe en 'frame'. No-op si no existe.
 void VertexAnimSetInterp(VertexAnimation& anim, int frame, int interp);
 // re-ordena los frames por su campo 'frame' (tras mover keyframes en el dope). SOLO
 // ordena: NO borra ni fusiona (los punteros siguen todos vivos -> seguro durante el
 // arrastre, donde un snapshot los referencia). Las colisiones (dos en el mismo cuadro)
 // las resuelve el llamador al confirmar.
-void VertexAnimOrdenar(VertexAnimation& anim);
+void VertexAnimSort(VertexAnimation& anim);
 
 // SERIALIZACION de los frames de vertices a un blob BINARIO compacto (para guardar en
 // el .w3d y no perder las animaciones autoradas en el editor). Formato little-endian
@@ -311,8 +311,8 @@ void VertexAnimOrdenar(VertexAnimation& anim);
 // Serializar vuelca anim.frames a 'out'. Deserializar reconstruye anim.frames (libera
 // los previos) leyendo 'in'; devuelve false si el blob no valida. 'vertexCount' es la
 // cantidad de vertices de la malla (se valida contra el header).
-void VertexAnimSerializar(const VertexAnimation& anim, std::vector<unsigned char>& out);
-bool VertexAnimDeserializar(VertexAnimation& anim, const unsigned char* in, size_t n);
+void VertexAnimSerialize(const VertexAnimation& anim, std::vector<unsigned char>& out);
+bool VertexAnimDeserialize(VertexAnimation& anim, const unsigned char* in, size_t n);
 
 void LoadVertexFrames(Mesh* mesh);
 
@@ -320,34 +320,34 @@ extern std::vector<VertexAnimationActive*> VertexAnimationActives;
 
 // hooks de la LISTA de animaciones del OBJETO (tarjeta del editor, PropList modo 7):
 // elegir una anim en la lista + leer cual es la activa. NULL sin editor.
-extern void (*OnSeleccionarAnimVertex)(Mesh* m, int idx);
-extern int  (*ActivaAnimVertexDe)(Mesh* m);
+extern void (*OnSelectAnimVertex)(Mesh* m, int idx);
+extern int  (*ActiveAnimVertexOf)(Mesh* m);
 
 VertexAnimationActive* FindTargetAnim(Mesh* target);
 
 // COPIA PROFUNDA de una vertex anim (frames + curvas), para DUPLICAR / SEPARAR una malla
 // animada. Los VertexFrame son duenios de sus buffers -> una copia plana daria doble free.
-// Analoga a Arm2DClonar (armature 2D). 'nuevoTarget' es la malla de la copia.
-VertexAnimation* VertexAnimClonar(const VertexAnimation* src, Mesh* nuevoTarget);
+// Analoga a Arm2DClone (armature 2D). 'newTarget' es la malla de la copia.
+VertexAnimation* VertexAnimClone(const VertexAnimation* src, Mesh* newTarget);
 
 // ---- FRAMES COMPARTIDOS ENTRE COPIAS (las instancias de un prefab) ----
 // Como los de LoadFrames: el juego de frames vive en el almacen (tipo ANIM), cada anim que lo usa
-// tiene una ref, y cualquier edicion de keyframes pasa antes por DesinstanciarFrames (COW). Asi 50
+// tiene una ref, y cualquier edicion de keyframes pasa antes por UninstantiateFrames (COW). Asi 50
 // instancias de un prefab con una vertex anim tienen UN solo juego de frames en memoria.
 // POR CLAVE: N mallas que leen el MISMO blob de frames. La primera lo deserializa y lo REGISTRA bajo
 // 'clave' (la arma el lector: la entrada del blob + su medida + su CRC); las demas lo ADOPTAN sin
-// deserializar (true), siempre que los frames esten armados para 'vcountMalla' vertices.
-bool VertexAnimAdoptarClave(VertexAnimation& anim, const std::string& clave, int vcountMalla);
-void VertexAnimRegistrarClave(VertexAnimation& anim, const std::string& clave);
-// CON OTRA ANIM: una copia de 'src' para 'nuevoTarget' (como VertexAnimClonar) que COMPARTE sus frames.
+// deserializar (true), siempre que los frames esten armados para 'vcountMesh' vertices.
+bool VertexAnimAdoptKey(VertexAnimation& anim, const std::string& key, int vcountMesh);
+void VertexAnimRegisterKey(VertexAnimation& anim, const std::string& key);
+// CON OTRA ANIM: una copia de 'src' para 'newTarget' (como VertexAnimClone) que COMPARTE sus frames.
 // Si los de 'src' eran propios (una anim sin guardar) pasan antes al almacen con un id de memoria y
 // 'src' queda compartiendolos tambien. Sin frames (o con el cache apagado) es una copia profunda.
-VertexAnimation* VertexAnimCompartir(VertexAnimation* src, Mesh* nuevoTarget);
+VertexAnimation* VertexAnimShare(VertexAnimation* src, Mesh* newTarget);
 
 // PUNTO UNICO de coherencia vertex-anim vs TOPOLOGIA: remapea los frames de vertices de
 // TODAS las anims de 'mesh' tras un cambio de topologia (borrar/subdividir/loop cut/
-// extrude/duplicar/rip/etc). Toda op de edicion desemboca en Mesh::GenerarRender, y
-// GenerarRender llama aca con el remapeo que ya calcula -> ninguna op tiene que sincronizar
+// extrude/duplicar/rip/etc). Toda op de edicion desemboca en Mesh::GenerateRender, y
+// GenerateRender llama aca con el remapeo que ya calcula -> ninguna op tiene que sincronizar
 // frames a mano. Contrato:
 //  - newToOld[gi] = indice del vertice GPU VIEJO del que sale el nuevo gi (los frames estan
 //    armados para ese layout viejo, de an->vcount verts). >= vcount o < 0 = vertice NUEVO.
@@ -369,35 +369,35 @@ struct VtxAnimSnap {
     struct Frame { std::vector<GLfloat> pos; std::vector<GLbyte> nrm; std::vector<GLfloat> uv; };
     struct Anim  { int vcount; std::vector<Frame> frames; Anim() : vcount(0) {} };
     std::vector<Anim> anims;
-    bool tiene;                      // hubo snapshot (aunque la malla no tenga anims)
-    VtxAnimSnap() : tiene(false) {}
+    bool has;                      // hubo snapshot (aunque la malla no tenga anims)
+    VtxAnimSnap() : has(false) {}
 };
 void VertexAnimSnapshot(Mesh* mesh, VtxAnimSnap& out);
 // escribe los buffers del snapshot de vuelta en los keyframes vivos (misma estructura de
 // anims/frames; si una anim cambio de cantidad de keyframes en el medio, se saltea).
-void VertexAnimRestaurarSnap(Mesh* mesh, const VtxAnimSnap& snap);
+void VertexAnimRestoreSnap(Mesh* mesh, const VtxAnimSnap& snap);
 
 // remapea los frames de 'anim' al conteo de vertices de mesh MATCHEANDO POR POSICION contra
 // el keyframe BASE (frames[0]). Lo usa la CARGA del .w3d: el GLB re-splitea los verts (32->60
 // por costuras UV/normal) y el blob de la anim quedaria desalineado; se exporta el GLB en la
 // pose base y aca cada vert de la malla se asocia al vert del blob mas cercano en esa pose.
-void VertexAnimRemapPorPosicion(VertexAnimation& anim, Mesh* mesh);
+void VertexAnimRemapByPosition(VertexAnimation& anim, Mesh* mesh);
 
 // saca (y libera) el controlador de reproduccion de 'mesh' de VertexAnimationActives.
 // Lo llama ~Mesh: sin esto el controlador queda con meshToAnim COLGANDO tras borrar la
 // malla (borrar objeto o reabrir proyecto) y UpdateAnimations lo dereferencia -> crash.
-void VertexAnimLiberarControlador(Mesh* mesh);
+void VertexAnimFreeController(Mesh* mesh);
 
 void UpdateAnimations(float dtSeg = 1.0f / 60.0f);
-// (Mesh::soloRutina) la pose que UpdateAnimations dejo pendiente, calculada ahora: la llama la rutina al apuntarla
-void W3dPoseAlDia(Mesh* m);
+// (Mesh::onlyRoutine) la pose que UpdateAnimations dejo pendiente, calculada ahora: la llama la rutina al apuntarla
+void W3dUpToDatePose(Mesh* m);
 // posa la vertex-anim ACTIVA en el timeline (kind 3) al frame del playhead (CurrentFrame). Se llama por frame;
 // re-evalua solo al cambiar de malla/anim/frame. En PC vive inline en main.cpp; el loop de Symbian la invoca.
-void AplicarVertexAnimTimeline();
+void ApplyVertexAnimTimeline();
 void NewActiveVertexAnimation(Mesh* mesh, VertexAnimation* anim);
 
 // ============================================================================
-//  W3dReposoVertexAnim: LA MALLA EN REPOSO MIENTRAS DURA EL SCOPE
+//  W3dRestVertexAnim: LA MALLA EN REPOSO MIENTRAS DURA EL SCOPE
 //
 //  LO QUE SE GUARDA A DISCO ES LA MALLA EN REPOSO, NUNCA LA POSE DEL CUADRO.
 //  El playhead es estado de la SESION, no del modelo: si el usuario mueve el
@@ -419,18 +419,18 @@ void NewActiveVertexAnimation(Mesh* mesh, VertexAnimation* anim);
 //  reposo no es "mover vertices", es volver al espacio en el que las claves ya
 //  estaban escritas.
 // ============================================================================
-class W3dReposoVertexAnim {
+class W3dRestVertexAnim {
     public:
-        explicit W3dReposoVertexAnim(Mesh* m);
-        ~W3dReposoVertexAnim();
+        explicit W3dRestVertexAnim(Mesh* m);
+        ~W3dRestVertexAnim();
     private:
-        Mesh* malla;
-        bool  restaurar;                 // habia una pose que devolver
+        Mesh* mesh;
+        bool  restore;                   // habia una pose que devolver
         std::vector<GLfloat> pos;        // vertex[] posado (vertexSize*3)
         std::vector<GLbyte>  nrm;        // normals[] posado (vertexSize*3)
         std::vector<GLfloat> uvs;        // uv[] posado (vertexSize*2)
-        W3dReposoVertexAnim(const W3dReposoVertexAnim&);            // sin copia (C++03)
-        W3dReposoVertexAnim& operator=(const W3dReposoVertexAnim&);
+        W3dRestVertexAnim(const W3dRestVertexAnim&);            // sin copia (C++03)
+        W3dRestVertexAnim& operator=(const W3dRestVertexAnim&);
 };
 
 #endif
