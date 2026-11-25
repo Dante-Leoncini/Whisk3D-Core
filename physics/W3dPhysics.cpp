@@ -303,7 +303,7 @@ static const char* kSideName[3][2] = { { "left", "right" },
                                       { "top",     "bottom"    },
                                       { "front",    "back"   } };
 
-// Rebote contra los bordes de la caja de un objeto AREA. 'lados' NULL o "todos"
+// Rebote contra los bordes de la caja de un objeto AREA. 'lados' NULL o "all"
 // = las 4 (o 6) paredes cerradas; si no, solo rebotan los lados nombrados y el
 // resto queda ABIERTO (se puede salir por ahi).
 static bool BounceInArea(W3dBody* c, Object* area, const char* sides) {
@@ -441,15 +441,15 @@ static int LBounce(lua_State* L) {
 //   esta la cancha lo decide el .w3dui.
 //   "lados" dice que paredes EXISTEN; las que no se nombran quedan ABIERTAS (se
 //   puede salir por ahi). Separadores: espacio, coma, +, |, /. Palabras:
-//       x:  "izq" ("izquierda")   "der" ("derecha")
-//       y:  "arriba" ("techo")    "abajo" ("piso")     <- 2D: +y va hacia ABAJO
-//       z:  "frente" ("adelante") "fondo" ("atras")    <- solo en 3D
-//       "todos" = las 4/6 cerradas (lo mismo que no pasar el argumento)
-//   En 3D las palabras nombran DIRECCIONES, no letras de lua: "arriba"/"abajo"
-//   son las paredes de la vertical (la Z de lua, la Y del motor) y "frente"/
-//   "fondo" las de la profundidad (la Y de lua, la Z del motor). Siguen
+//       x:  "left"   "right"
+//       y:  "top"    "bottom"     <- 2D: +y va hacia ABAJO
+//       z:  "front"  "back"       <- solo en 3D
+//       "all" = las 4/6 cerradas (lo mismo que no pasar el argumento)
+//   En 3D las palabras nombran DIRECCIONES, no letras de lua: "top"/"bottom"
+//   son las paredes de la vertical (la Z de lua, la Y del motor) y "front"/
+//   "back" las de la profundidad (la Y de lua, la Z del motor). Siguen
 //   atadas al extremo menor/mayor de cada eje del MOTOR (kSideName), como antes.
-//   El pong es una linea: bounceOn(pelota, cancha, "arriba abajo") -> rebota en
+//   El pong es una linea: bounceOn(pelota, cancha, "top bottom") -> rebota en
 //   el techo y en el piso, y por los costados se va (eso es justamente el punto).
 //
 // bounceOn(obj, x0, y0, x1, y1 [, z0, z1]) -> bool  <- la forma con NUMEROS

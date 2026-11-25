@@ -157,6 +157,12 @@ bool C3DInit() {
     uNmat  = shaderInstanceGetUniformLocation(gProg.vertexShader, "nmat");
     uTexm  = shaderInstanceGetUniformLocation(gProg.vertexShader, "texm");
     uScale = shaderInstanceGetUniformLocation(gProg.vertexShader, "scale");
+    // (un nombre que no esta en w3d.v.pica da -1: C3D_FVUnifSet escribiria fuera del arreglo y el dibujo sale negro)
+    if (uMvp < 0 || uMv < 0 || uNmat < 0 || uTexm < 0 || uScale < 0) {
+        w3dLogfE("[c3d] w3d.v.pica no tiene un uniform: mvp %d mv %d nmat %d texm %d scale %d",
+                 uMvp, uMv, uNmat, uTexm, uScale);
+        return false;
+    }
     for (int i = 0; i < 2; i++) {
         gRing[i].base = (u8*)linearAlloc(kRingBytes);
         gRing[i].size = gRing[i].base ? kRingBytes : 0;

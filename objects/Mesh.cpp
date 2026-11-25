@@ -62,6 +62,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     activeModifier = -1; // stack de modificadores vacio (lo gestiona el editor)
     genVertex = NULL; genNormals = NULL; genUV = NULL; genColor = NULL; genFaces = NULL;
     genVertexSize = 0; genFacesSize = 0; genValid = false; // sin malla generada hasta que haya modificadores
+    genVersion = 0; vboGenPos = vboGenNor = vboGenCol = vboGenUV = vboGenIdx = 0; vboGenVer = 0;
     chromeExpPos = NULL; chromeExpUV = NULL; chromeExpCount = 0; chromeUVValid = false; chromeCacheEq = true; // reflejo (lazy)
     genChromeExpPos = NULL; genChromeExpUV = NULL; genChromeCount = 0; genChromeValid = false; // reflejo de la malla generada (lazy)
     tangents = NULL; nmColors = NULL; tangentsValid = false; // normal mapping (lazy)
@@ -120,6 +121,8 @@ Mesh::~Mesh() {
     // VBOs de render (buffer objects en GPU)
     namespace gfx = w3dEngine;
     gfx::DeleteBuffer(vboPos); gfx::DeleteBuffer(vboNor); gfx::DeleteBuffer(vboCol); gfx::DeleteBuffer(vboUV); gfx::DeleteBuffer(vboIdx);
+    gfx::DeleteBuffer(vboGenPos); gfx::DeleteBuffer(vboGenNor); gfx::DeleteBuffer(vboGenCol); gfx::DeleteBuffer(vboGenUV);
+    gfx::DeleteBuffer(vboGenIdx);
     // LA GEOMETRIA DE RENDER (y sus caches perezosas). El FreeMemory de arriba estaba
     // comentado y nada mas la liberaba: cada malla borrada fugaba vertex/normals/uv/color/
     // faces enteros. Cerrar y reabrir el mismo proyecto sumaba toda su geometria al heap
@@ -721,9 +724,22 @@ static unsigned TexMap(const Material* m, int k) {
 // LA LUZ POR PIXEL del material: la que eligio, o forzada si tiene un mapa que cambia algo en cada pixel (normal,
 // rugosidad, metalico, emision con textura): con la luz por vertice esos mapas no tienen donde aplicarse
 static bool gShadowObject = false;   // LAS SOMBRAS EN TIEMPO REAL: la malla que se dibuja las recibe (ShadowGuard, mas abajo)
+bool W3dSmallGPU() {
+#if defined(W3D_ANDROID_OLD) || defined(W3D_SYMBIAN)
+    return true;
+#else
+    return w3dEngine::GpuLimited();
+#endif
+}
+// lo que con la luz por vertice se veria distinto: el brillo de un metal o de algo pulido (la mancha del reflejo cambia
+// de forma), el vidrio. Lo mate (rugoso, sin metal) se ve igual: su luz difusa casi no cambia dentro de un triangulo
+static bool PixelVisible(const Material* m) {
+    return m->rtMetallic > 0.05f || m->rtRoughness < 0.5f || m->transmission > 0.0f || m->chrome;
+}
 static bool PerPixelEf(const Material* m) {
     if (!m) return false;
-    if (m->perPixel) return true;
+    // (en una GPU chica la luz por pixel de lo mate es la mitad del cuadro en la VideoCore IV y no se nota)
+    if (m->perPixel) return !W3dSmallGPU() || PixelVisible(m);
     if (m->normalMap && m->normalTexture && m->normalTexture->iID) return true;
     return TexMap(m, W3D_MAP_ROUGHNESS) || TexMap(m, W3D_MAP_METALLIC) || TexMap(m, W3D_MAP_EMISSION);
 }
@@ -1478,6 +1494,21 @@ void Mesh::UploadVBO(const GLfloat* posBuf, const GLbyte* norBuf, bool onlyPose)
     // buffer. Antes aca se subia el subconjunto del sector y el cambio de sector
     // re-subia el IBO entero (el anti-patron del stall del tiler MBX).
     if (faces && facesSize > 0 && !(comp & W3DMD_FACES)) { if (!vboIdx) vboIdx = gfx::GenBuffer(); gfx::IndexBufferData(vboIdx, faces, facesSize * (int)sizeof(MeshIndex)); vboIdxN = facesSize; vboIdxGeomVer = skinGeomVersion; }
+}
+
+// Sube los VBOs de la malla GENERADA (la de los modificadores) tal como esta ahora; RenderObject lo llama cuando cambio
+// (genVersion). Los arreglos que no hay quedan sin VBO
+void Mesh::UploadGenVBO() {
+    namespace gfx = w3dEngine;
+    vboGenVer = genVersion;
+    if (!genVertex || genVertexSize <= 0 || !genFaces || genFacesSize <= 0) return;
+    if (!vboGenPos) vboGenPos = gfx::GenBuffer();
+    gfx::ArrayBufferData(vboGenPos, genVertex, genVertexSize * 3 * (int)sizeof(GLfloat));
+    if (genNormals) { if (!vboGenNor) vboGenNor = gfx::GenBuffer(); gfx::ArrayBufferData(vboGenNor, genNormals, genVertexSize * 3 * (int)sizeof(GLbyte)); }
+    if (genColor)   { if (!vboGenCol) vboGenCol = gfx::GenBuffer(); gfx::ArrayBufferData(vboGenCol, genColor, genVertexSize * 4 * (int)sizeof(GLubyte)); }
+    if (genUV)      { if (!vboGenUV)  vboGenUV  = gfx::GenBuffer(); gfx::ArrayBufferData(vboGenUV, genUV, genVertexSize * 2 * (int)sizeof(GLfloat)); }
+    if (!vboGenIdx) vboGenIdx = gfx::GenBuffer();
+    gfx::IndexBufferData(vboGenIdx, genFaces, genFacesSize * (int)sizeof(MeshIndex));
 }
 
 // ===========================================================================
@@ -2586,7 +2617,24 @@ void Mesh::RenderObject() {
             // RAM, ya seteados arriba con VertexPointer3f(posBuf) etc). Sin re-spec del VBO -> sin stall del tiler.
         }
         if (maybeVBO && !drawVBO) PointersRAM(posBuf, norBuf, vertexColor, uv);   // (no fue por VBO: los de RAM ahora)
-        vboRenderActive = drawVBO; // ApplyMaterial bindea el uv VBO (no client-uv) mientras esto este activo
+        // LA MALLA GENERADA (subdiv, screw...) DESDE LA GPU: sus VBOs se suben cuando el stack la vuelve a armar
+        // (genVersion) y se dibuja desde ahi. Fuera de Edit Mode (ahi se regenera con cada cambio), sin capas/chrome
+        // (re-apuntan arreglos por pasada) y sin el @vertex de la CPU (las posiciones cambian en cada cuadro)
+        bool genVBO = false;
+        if (useGen && gfx::VBOSupported() && !anyFancy && !editActive && !weightPaintOn && !vertexPaintOn &&
+            !restoreGen.active && genVertexSize > 0 && genFacesSize >= 3) {
+            if (vboGenVer != genVersion || !vboGenPos || !vboGenIdx) UploadGenVBO();
+            if (vboGenPos && vboGenIdx) {
+                gfx::VertexVBO(vboGenPos);
+                if (genNormals && vboGenNor) gfx::NormalVBO(vboGenNor);
+                if (genColor && vboGenCol)   gfx::ColorVBO(vboGenCol);
+                if (genUV && vboGenUV)       gfx::TexCoordVBO(vboGenUV);
+                gfx::BindIndexVBO(vboGenIdx);
+                genVBO = true;
+                vboUVInUse = vboGenUV;
+            }
+        }
+        vboRenderActive = drawVBO || genVBO; // ApplyMaterial bindea el uv VBO (no client-uv) mientras esto este activo
         // LOS INDICES EN LA GPU AUNQUE LOS VERTICES VAYAN DE RAM (una malla skinneada animando, o con toon, contorno o
         // capas): el IBO es estatico (la malla completa, se sube una vez con la geometria, o el del recurso) y el dibujo
         // ya no convierte ni recorre sus indices. En el ARM11 del Galaxy Ace eso era ~4% de la CPU (dos pasadas por
@@ -2702,17 +2750,25 @@ void Mesh::RenderObject() {
                 // sphere HW (el texgen genera las texcoords solo) o NO-chrome: draw indexado. ApplyMaterial
                 // re-bindea el TexCoordPointer al uv BASE -> volvemos a genUV (sino la textura del Screw/Subdiv sale
                 // con las UV del perfil, mal indexadas). Con texgen (sphereHW) NO forzamos genUV.
-                if (!sphereHW && genUV) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer2f(0, genUV); }
-                gfx::DrawTriangles(grp.indicesDrawnCount, &genFaces[grp.startDrawn]);
+                if (!sphereHW && genUV) {
+                    gfx::EnableArray(gfx::TexCoordArray);
+                    if (genVBO && vboGenUV) gfx::TexCoordVBO(vboGenUV); else gfx::TexCoordPointer2f(0, genUV);
+                }
+                if (genVBO) gfx::DrawTrianglesVBO(grp.indicesDrawnCount, grp.startDrawn);
+                else gfx::DrawTriangles(grp.indicesDrawnCount, &genFaces[grp.startDrawn]);
                 // LAS CAPAS DE MATERIAL de la parte, encima (ver MaterialGroup::layersMat)
                 if (!solid && g < materialsGroup.size() && !materialsGroup[g].layersMat.empty()) {
                     const std::vector<Material*>& cm = materialsGroup[g].layersMat;
                     for (size_t c = 0; c < cm.size(); c++) {
                         if (!cm[c]) continue;
                         ApplyMaterial(cm[c], withLight, solid, editActive);
-                        if (genUV) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer2f(0, genUV); }
+                        if (genUV) {
+                            gfx::EnableArray(gfx::TexCoordArray);
+                            if (genVBO && vboGenUV) gfx::TexCoordVBO(vboGenUV); else gfx::TexCoordPointer2f(0, genUV);
+                        }
                         gfx::DepthFunc(gfx::DepthLEqual); gfx::DepthMask(false);   // (la misma superficie: no reescribe z)
-                        gfx::DrawTriangles(grp.indicesDrawnCount, &genFaces[grp.startDrawn]);
+                        if (genVBO) gfx::DrawTrianglesVBO(grp.indicesDrawnCount, grp.startDrawn);
+                        else gfx::DrawTriangles(grp.indicesDrawnCount, &genFaces[grp.startDrawn]);
                     }
                     gfx::DepthFunc(gfx::DepthLess); gfx::DepthMask(!gfx::w3dPassMirrorNoZ);
                     last = NULL;   // (la proxima parte vuelve a aplicar su material)
@@ -2723,6 +2779,7 @@ void Mesh::RenderObject() {
                     if (!genLinesIdx.empty()) {
                         if (g == W3dFirstGroupLines(materialsGroup)) W3dDrawLinesIdx(genLinesIdx, mat->thicknessLine);
                     } else if (grp.indicesDrawnCount >= 3) W3dDrawLinesMat(&genFaces[grp.startDrawn], grp.indicesDrawnCount, mat->thicknessLine);
+                    if (genVBO) gfx::BindIndexVBO(vboGenIdx);   // (las lineas desbindean el IBO: el resto dibuja de ahi)
                     last = NULL; // el trazo toco el z-func: re-aplicar el proximo material
                 }
                 continue;
@@ -2975,7 +3032,7 @@ void Mesh::RenderObject() {
                 last = NULL;
             }
         }
-        if (drawVBO) { gfx::UnbindVBOs(); vboRenderActive = false; } // volver a client-side (bordes/overlays/proximas mallas usan RAM)
+        if (drawVBO || genVBO) { gfx::UnbindVBOs(); vboRenderActive = false; } // volver a client-side (bordes/overlays/proximas mallas usan RAM)
         } // fin del relleno normal (else de xrayEdit)
 
         gfx::PolygonOffset(0.0f, 0.0f);

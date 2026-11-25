@@ -1124,7 +1124,7 @@ bool ParseCab(const char* p, const char* end, Cab& out) {
     if (!W3dReadWord(p, end, dom)) return false;
     out.domain = W3dmDomOf(dom);
     if (out.domain == W3DM_DOMMAL) return false;
-    // extras: clave=valor. "nombre=" va ULTIMO y toma el RESTO de la linea.
+    // extras: clave=valor. "name=" va ULTIMO y toma el RESTO de la linea.
     for (;;) {
         W3dSkipWhitespace(p, end);
         if (p >= end) break;

@@ -226,8 +226,12 @@ void TextureRetain(Texture* t) {
 static bool gKeepOrphan = false;
 void TexturesSetKeepOrphans(bool on) { gKeepOrphan = on; }
 bool TexturesKeepOrphans() { return gKeepOrphan; }
+// la de una LIBRERIA externa ("lib:<nombre>/...") no es de la biblioteca del proyecto: se vuelve a pedir de la libreria
+// cuando haga falta, asi que sin usuarios se libera tambien en el editor
+static bool KeepsOrphan(const Texture* t) { return gKeepOrphan && t->path.compare(0, 4, "lib:") != 0; }
 
-void TextureRelease(Texture* t) {
+// keep = false: la ultima referencia la libera aunque el editor guarde huerfanas (TextureReleaseAsleep)
+static void Release(Texture* t, bool keep) {
     if (!t) return;
     // una PURGADA en caliente es del CEMENTERIO (sus referencias se cerraron al purgarla y el objeto lo libera el
     // cierre del proyecto): soltarla aca -un paso de undo que la tenia y se cae del historial- la borraba dos veces
@@ -237,7 +241,7 @@ void TextureRelease(Texture* t) {
         // espejo ANTES de soltar: si el refcount llega a 0 el almacen libera
         // de verdad (y `t` deja de existir; si esta FIJADA queda con refs 0).
         t->refs = (r->refTotal > 0) ? (r->refTotal - 1) : 0;
-        if (gKeepOrphan && r->refTotal <= 1) {   // la ultima: queda cargada, huerfana (ver el .h)
+        if (keep && KeepsOrphan(t) && r->refTotal <= 1) {   // la ultima: queda cargada, huerfana (ver el .h)
             r->refTotal = 0; r->transientRef = 0;
             return;
         }
@@ -246,9 +250,11 @@ void TextureRelease(Texture* t) {
     }
     // sin descriptor (una copia vieja del camino A/B off): refcount local
     if (t->refs > 0) t->refs--;
-    if (t->refs > 0 || gKeepOrphan) return;
+    if (t->refs > 0 || (keep && KeepsOrphan(t))) return;
     FreeForReal(t);
 }
+void TextureRelease(Texture* t)       { Release(t, true); }
+void TextureReleaseAsleep(Texture* t) { Release(t, false); }
 
 // la RANURA de un material es duena de una referencia (ver Textures.h): la nueva se retiene ANTES de soltar la vieja
 // (si es la misma no se toca: soltarla primero la podia liberar en el medio)

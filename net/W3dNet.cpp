@@ -301,6 +301,12 @@ struct Link {
     Link() : id(-1), seqSend(1), seqReceive(1), heard(0), sent(0) {}
 };
 
+// LOS TOPES de lo que otro equipo puede hacer crecer (la Dreamcast tiene 16 MB): los confiables que llegan adelantados
+// (mas alla de la ventana se descartan: el que manda los repite), los mandados sin ACK (un par que hace ping pero nunca
+// confirma es un enlace roto), los mensajes que el juego todavia no leyo y las partidas encontradas
+const unsigned kWindow = 256;
+const size_t kMaxPending = 1024, kMaxReceived = 4096, kMaxSessions = 64;
+
 // un mensaje para Recibir
 struct Message {
     int sender;
@@ -426,6 +432,7 @@ void Deliver(int sender, const std::string& data) {
     Message m;
     m.sender = sender;
     m.data = data;
+    if (G.received.size() >= kMaxReceived) G.received.pop_front();   // (el juego no esta leyendo: se va lo mas viejo)
     G.received.push_back(m);
 }
 
@@ -512,7 +519,7 @@ void Process(const Direction& from, const unsigned char* p, int n) {
             G.sessions[i] = q;
             return;
         }
-        G.sessions.push_back(q);
+        if (G.sessions.size() < kMaxSessions) G.sessions.push_back(q);
         return;
     }
     case T_JOIN: {
@@ -607,7 +614,7 @@ void Process(const Direction& from, const unsigned char* p, int n) {
         const int sender = G.miId == 0 ? in->id : origin;
         std::string data((const char*)l.p, (size_t)l.remain());
         if (!reliable) { ReachedData(sender, recipient, data, false); return; }
-        if (seq >= in->seqReceive && !in->advanced.count(seq)) {
+        if (seq - in->seqReceive < kWindow && !in->advanced.count(seq)) {   // (sin signo: uno viejo da enorme)
             Writer saved;
             saved.u8((unsigned)sender);
             saved.u8((unsigned)recipient);
@@ -965,7 +972,7 @@ void Update() {
     std::vector<int> gone;
     for (std::map<int, Link>::iterator it = G.links.begin(); it != G.links.end(); ++it) {
         Link& in = it->second;
-        if (now - in.heard > GONE) { gone.push_back(it->first); continue; }
+        if (now - in.heard > GONE || in.pending.size() > kMaxPending) { gone.push_back(it->first); continue; }
         for (std::map<unsigned, Pending>::iterator p = in.pending.begin(); p != in.pending.end(); ++p) {
             if (now - p->second.sent < RESEND) continue;
             SendTo(in.dir, p->second.package);
@@ -1077,14 +1084,16 @@ bool ReadValue(lua_State* L, Reader& l, int prof) {
     }
     case V_TEXT: {
         const unsigned n = l.u32();
-        if (l.error || (int)n > l.remain()) return false;
+        // (sin signo: un largo de 2^31 para arriba, pasado a int, salia negativo y pasaba el control: se leia hasta 4 GB
+        //  despues del paquete. Lo manda cualquier jugador y el host lo reparte a todos)
+        if (l.error || n > (unsigned)l.remain()) return false;
         lua_pushlstring(L, (const char*)l.p, n);
         l.p += n;
         break;
     }
     case V_TABLE: {
         const unsigned n = l.u32();
-        if (l.error || (int)n > l.remain()) return false;
+        if (l.error || n > (unsigned)l.remain() / 2) return false;   // (cada par clave/valor ocupa al menos 2 bytes)
         lua_createtable(L, 0, (int)n);
         for (unsigned k = 0; k < n; k++) {
             if (!ReadValue(L, l, prof + 1) || !ReadValue(L, l, prof + 1)) return false;
@@ -1109,11 +1118,11 @@ const char* StateName(State e) {
     }
 }
 
-// netAvailable() -> bool, motivo ("sin permiso" / "sin red")
+// netAvailable() -> bool, motivo ("no permission" / "no network")
 int LAvailable(lua_State* L) {
     lua_pushboolean(L, Available() ? 1 : 0);
     if (Available()) return 1;
-    lua_pushstring(L, !Supported() ? "sin red" : "sin permiso");
+    lua_pushstring(L, !Supported() ? "no network" : "no permission");
     return 2;
 }
 // netDevice() -> el nombre de este dispositivo; netAddress() -> su IP en la red local
@@ -1137,7 +1146,7 @@ int LFind(lua_State* L) {
     lua_pushstring(L, Error().c_str());
     return 2;
 }
-// netMatches() -> { {nombre, dispositivo, jugadores, maximo, direccion}, ... }
+// netMatches() -> { {name, device, players, max, address}, ... }
 int LSessions(lua_State* L) {
     Update();
     const std::vector<Match>& v = Matches();
@@ -1148,7 +1157,7 @@ int LSessions(lua_State* L) {
         lua_pushstring(L, v[i].device.c_str()); lua_setfield(L, -2, "device");
         lua_pushinteger(L, v[i].players); lua_setfield(L, -2, "players");
         lua_pushinteger(L, v[i].max); lua_setfield(L, -2, "max");
-        lua_pushstring(L, v[i].direction.c_str()); lua_setfield(L, -2, "direction");
+        lua_pushstring(L, v[i].direction.c_str()); lua_setfield(L, -2, "address");
         lua_rawseti(L, -2, (int)i + 1);
     }
     return 1;
@@ -1169,7 +1178,7 @@ int LState(lua_State* L) {
 }
 // netSelf() -> mi id (0 el host) o -1
 int LYo(lua_State* L) { lua_pushinteger(L, MiId()); return 1; }
-// netPlayers() -> { {id, nombre, yo}, ... }
+// netPlayers() -> { {id, name, isSelf}, ... }
 int LPlayers(lua_State* L) {
     const std::vector<Player>& v = Players();
     lua_createtable(L, (int)v.size(), 0);
@@ -1177,7 +1186,7 @@ int LPlayers(lua_State* L) {
         lua_createtable(L, 0, 3);
         lua_pushinteger(L, v[i].id); lua_setfield(L, -2, "id");
         lua_pushstring(L, v[i].name.c_str()); lua_setfield(L, -2, "name");
-        lua_pushboolean(L, v[i].yo ? 1 : 0); lua_setfield(L, -2, "yo");
+        lua_pushboolean(L, v[i].yo ? 1 : 0); lua_setfield(L, -2, "isSelf");
         lua_rawseti(L, -2, (int)i + 1);
     }
     return 1;

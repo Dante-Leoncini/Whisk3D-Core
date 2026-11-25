@@ -1403,8 +1403,8 @@ const char* W3dTypeName(ObjectType t){
         case ObjectType::routine:     return "routine";
         case ObjectType::sound:     return "sound";
         case ObjectType::postProcess: return "postProcess";
-        case ObjectType::sondaluz:   return "sondaluz";
-        case ObjectType::sondareflejo: return "reflectionprobe";
+        case ObjectType::lightProbe:   return "sondaluz";
+        case ObjectType::reflectionProbe: return "reflectionprobe";
     }
     return "object";
 }

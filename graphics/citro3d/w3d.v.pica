@@ -3,7 +3,7 @@
 ;  pipeline fijo de GL corre aca, en la GPU (ver w3dGraphicsC3D.cpp). Ademas de la posicion, el color y las UV saca
 ;  la normal en OJO como cuaternion y el vector de vista: es lo que pide la iluminacion por fragmento de la PICA.
 ;
-;  Los arreglos llegan en su formato (float, short, byte, ubyte) y la PICA no los normaliza: 'escala' trae por cuanto
+;  Los arreglos llegan en su formato (float, short, byte, ubyte) y la PICA no los normaliza: 'scale' trae por cuanto
 ;  multiplicar cada uno en este draw (x = posicion, y = normal, z = UV, w = color). Un arreglo apagado llega como
 ;  atributo fijo (el color uniforme, la normal +Z...).
 ; ============================================================================
@@ -13,13 +13,13 @@
 .fvec mv[4]       ; modelview (la posicion en ojo: la vista para la luz)
 .fvec nmat[3]     ; la matriz de las normales (inversa transpuesta de la modelview, 3x3)
 .fvec texm[2]     ; matriz de textura (filas u y v)
-.fvec escala      ; x = posicion, y = normal, z = UV, w = color
+.fvec scale       ; x = posicion, y = normal, z = UV, w = color
 
 ; constantes
 .constf k(0.0, 1.0, -1.0, 0.5)
-.alias cero  k.xxxx
-.alias uno   k.yyyy
-.alias medio k.wwww
+.alias zero  k.xxxx
+.alias one   k.yyyy
+.alias half  k.wwww
 
 ; salidas
 .out opos  position
@@ -38,7 +38,7 @@
 
 .proc main
 	; posicion (w = 1 si el arreglo no la trae: las lineas y los puntos ya armados vienen en el espacio de recorte)
-	mul r0.xyz, escala.xxx, ipos.xyz
+	mul r0.xyz, scale.xxx, ipos.xyz
 	mov r0.w, ipos.w
 	dp4 opos.x, mvp[0], r0
 	dp4 opos.y, mvp[1], r0
@@ -53,18 +53,18 @@
 	mov oview, -r1
 
 	; UV con la matriz de textura (s, t, r, 1)
-	mul r2.xyz, escala.zzz, iuv.xyz
-	mov r2.w, uno
+	mul r2.xyz, scale.zzz, iuv.xyz
+	mov r2.w, one
 	dp4 otc0.x, texm[0], r2
 	dp4 otc0.y, texm[1], r2
-	mov otc0.zw, cero
+	mov otc0.zw, zero
 	mov otc1, iuv1
 
 	; color
-	mul oclr, escala.wwww, iclr
+	mul oclr, scale.wwww, iclr
 
 	; la normal en ojo, normalizada
-	mul r3.xyz, escala.yyy, inrm.xyz
+	mul r3.xyz, scale.yyy, inrm.xyz
 	dp3 r14.x, nmat[0], r3
 	dp3 r14.y, nmat[1], r3
 	dp3 r14.z, nmat[2], r3
@@ -74,15 +74,15 @@
 
 	; como cuaternion (el que rota +Z hasta la normal)
 	mov r4, k.yxxx
-	add r5, uno, r14.z
-	mul r5, medio, r5
-	cmp cero, ge, ge, r5.x
+	add r5, one, r14.z
+	mul r5, half, r5
+	cmp zero, ge, ge, r5.x
 	rsq r5, r5.x
-	mul r7, medio, r14
-	jmpc cmp.x, degenerada
+	mul r7, half, r14
+	jmpc cmp.x, degenerate
 	rcp r4.z, r5.x
 	mul r4.xy, r7, r5
-degenerada:
+degenerate:
 	mov onq, r4
 
 	end

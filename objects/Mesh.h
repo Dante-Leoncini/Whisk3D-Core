@@ -499,6 +499,12 @@ class Mesh : public Object {
         bool         vboPoseSkinned; // el VBO de posiciones tiene una pose DEFORMADA subida? -> al quitar el armature
                                        // (skinArmature=NULL) hay que re-subir el bind 1 vez (sino queda la ultima pose pegada)
         void UploadVBO(const GLfloat* posBuf, const GLbyte* norBuf, bool onlyPose); // sube/actualiza los VBOs
+        // ---- los VBOs de la malla GENERADA por los modificadores (genVertex...): se suben cuando el stack la vuelve a
+        //      armar (genVersion) y se dibuja desde ahi, como la malla comun. Sin esto un Subdivision Surface iba de RAM en
+        //      cada cuadro: el driver copiaba los vertices y el backend de ES 2.0 convertia y recorria los indices ----
+        unsigned int vboGenPos, vboGenNor, vboGenCol, vboGenUV, vboGenIdx;
+        unsigned     vboGenVer;   // genVersion con el que se subieron (0 = nunca)
+        void UploadGenVBO();
         // capas (W3DMD_*) que este dibujo toma de los VBO COMPARTIDOS del recurso (MeshResource.h):
         // UploadVBO no las sube. Lo decide RenderObject en cada dibujo (una skinneada dibuja SU pose).
         unsigned char sharedVbo;
@@ -674,6 +680,7 @@ class Mesh : public Object {
         std::vector<MeshIndex> genLinesIdx; // las mismas aristas, como pares de indices de la malla generada: las
                                              // LINEAS del material (Material::lineas) sin las diagonales de los triangulos
         bool genValid; // true = hay malla generada por modificadores -> usarla en el render
+        unsigned genVersion; // sube cada vez que GenerateMeshModified arma una malla generada nueva (sus VBOs)
         // VERSION DE LA GEOMETRIA EDITABLE: sube cada vez que algo cambia vertex[]/faces3d por las dos
         // puertas al render (RefreshRender / GenerateRender, en el editor). El Core no la usa: es para
         // que OTRA malla que depende de esta (un Boolean cuyo target es esta) sepa, comparando UN entero,
@@ -1530,6 +1537,10 @@ extern bool w3dReflecting;
 // el PASE de escena actual (sube una vez por cuadro, W3dScene3DPass): con Mesh::drawnPass dice si una rutina
 // dibujo a una malla onlyRoutine en este cuadro (un espejo solo refleja lo que se ve)
 extern unsigned g_w3dPass;
+
+// UNA GPU CHICA (los Android 2.3, Symbian, las de ES 2.0 que dibujan con un programa por draw): el visor simplifica lo
+// que en su pantalla no se ve (la subdivision del visor, la luz por pixel de lo mate). El render final no cambia
+bool W3dSmallGPU();
 
 #include "animation/VertexAnimation.h"
 

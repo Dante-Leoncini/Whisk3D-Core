@@ -90,10 +90,14 @@ void     TextureRename(Texture* t, const std::string& newValue);
 void     TextureRetain(Texture* t);
 // -1 ref. Al llegar a 0 la libera de verdad (GL + objeto + vector global).
 void     TextureRelease(Texture* t);
+// la de un material que se DUERME (TexturesSleepMaterial: el streaming lo descargo): sin otros usuarios se libera aunque
+// el editor guarde huerfanas (la ruta queda anotada en el material dormido y vuelve al despertarlo)
+void     TextureReleaseAsleep(Texture* t);
 // HUERFANAS: con esto prendido (el EDITOR), una textura que se queda sin usuarios NO se libera: sigue cargada en la
 // biblioteca como huerfana hasta que algo la purgue a proposito (Purge Orphans, cerrar el proyecto). Sacarle la
 // textura a un material la borraba de la biblioteca y ya no se podia volver a elegir. El juego compilado lo deja
-// apagado: ahi lo que nadie usa se libera solo (la memoria del telefono)
+// apagado: ahi lo que nadie usa se libera solo (la memoria del telefono). Las de una LIBRERIA externa ("lib:...") se
+// liberan igual: no son de la biblioteca del proyecto y se vuelven a pedir de la libreria
 void     TexturesSetKeepOrphans(bool on);
 bool     TexturesKeepOrphans();
 // EL MATERIAL RETIENE SUS TEXTURAS (refcount real): cada RANURA de un material (la textura base, el normal map, la

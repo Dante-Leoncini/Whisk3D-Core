@@ -83,8 +83,8 @@ struct ObjectType {
                         // posicional (3D, desde donde esta) o como musica (main/objects/Sound.h)
         postProcess,    // POSTPROCESADO puesto en el arbol: sus efectos se aplican a lo ya dibujado en ese punto
                         // (main/objects/PostProcessObj.h)
-        sondaluz,       // SONDA DE LUZ: una grilla de puntos con la luz indirecta horneada (main/objects/LightProbe.h)
-        sondareflejo    // SONDA DE REFLEJO: una imagen 360 horneada desde un lugar, para los reflejos (main/objects/ReflectionProbe.h)
+        lightProbe,     // SONDA DE LUZ: una grilla de puntos con la luz indirecta horneada (main/objects/LightProbe.h)
+        reflectionProbe // SONDA DE REFLEJO: una imagen 360 horneada desde un lugar, para los reflejos (main/objects/ReflectionProbe.h)
     };
     Enum v;
     ObjectType(Enum e) : v(e) {}

@@ -283,6 +283,10 @@ static void BatchEmpty();
 // ============================================================================
 static bool cap_depth=false, cap_cull=false, cap_tex=false, cap_light=false, cap_blend=false, cap_fog=false, cap_scissor=false;
 static bool cap_offset=false;   // GL_POLYGON_OFFSET_FILL
+// GL_DITHER: GL lo trae PRENDIDO. En una pantalla de 16 bits (la VideoCore IV del Ace) corre los colores que no caen
+// justo en un nivel: lo que se dibuja para LEER (los numeros de objeto de la sombra proyectada, el pick por color)
+// lo apaga, y sin esto quedaba prendido (la sombra salia en puntos sobre todo)
+static bool cap_dither=true;
 static bool cap_colormat=false; // GL_COLOR_MATERIAL: el color del VERTICE reemplaza el diffuse/ambient del material
 static int  matMode = 1; // 0=Projection, 1=ModelView, 2=Texture
 static Matrix4 curProj, curMV;
@@ -1096,8 +1100,11 @@ struct Program {
 #undef W3D_U
     GLint uClip[5]; UCache c_uClip[5];
 };
+// (los programas se crean recien cuando se arman: cada uno son ~7 KB con su cache de uniforms, y los 96 fijos eran 650 KB de
+//  RAM desde el arranque; un juego usa uno a cuatro, el modo de un programa por draw unos diez)
 static const int kProgramsMax = 96;
-static Program programs[kProgramsMax];
+static Program* programs[kProgramsMax];
+static Program& Prog(int i) { if (!programs[i]) programs[i] = new Program(); return *programs[i]; }
 static int nPrograms = 0;
 static Program* progUse  = 0;   // el del ultimo draw
 static GLuint activeProg = 0;   // el que tiene GL (glUseProgram)
@@ -1337,17 +1344,17 @@ static void buildProgram(){
     ShadowsForgetGL();   // (el mapa de sombras del contexto anterior ya no existe)
     ForgetProgramsEsp(); ForgetProgramsPost(); ForgetWrittenPrograms();
     { const char* r = getenv("W3D_TEST_FILL"); noFill = r && r[0] == '1'; }
-    BuildProgram(programs[0], (Key)(PAll | (LightsMax << PLights)));
+    BuildProgram(Prog(0), (Key)(PAll | (LightsMax << PLights)));
     nPrograms = 1;
     // (W3D_GLES2_BY_DRAW=1: el camino de la VideoCore IV en cualquier GPU, para probarlo en la PC)
     const char* force = getenv("W3D_GLES2_BY_DRAW");
-    if(!(force && force[0] == '1') && enters(programs[0].id)){
-        UseProgram(programs[0]);
+    if(!(force && force[0] == '1') && enters(Prog(0).id)){
+        UseProgram(Prog(0));
     } else {
         // (y no siempre: con los formatos de los atributos y el blending el driver le agrega instrucciones, y uno que
         // entra en la prueba puede no entrar en un draw)
         w3dLogfW("[w3dGLES2] el programa entero no entra en esta GPU: uno por draw, con hasta %d luces", kLightsByDraw);
-        DeleteProgram(programs[0]);
+        DeleteProgram(Prog(0));
         nPrograms = 0;
         byDraw = true;
         noVBO = true;
@@ -1376,7 +1383,8 @@ void Enable(Cap c){
         case ColorMaterial: cap_colormat=true; break; // el shader usa el vertex color como diffuse/ambient
         case Light0: if(!lights[0].on){ lights[0].on=true; lightsDirty=true; } break;
         case Normalize:
-        case PointSprite: case Dither: case Multisample: break; // no aplican / el shader ya normaliza
+        case Dither: if(!cap_dither){ BatchEmpty(); W3D_GLC(glEnable(GL_DITHER)); cap_dither=true; } break;
+        case PointSprite: case Multisample: break; // no aplican / el shader ya normaliza
     }
 }
 void Disable(Cap c){
@@ -1391,6 +1399,7 @@ void Disable(Cap c){
         case ColorMaterial: cap_colormat=false; break;
         case Light0: if(lights[0].on){ lights[0].on=false; lightsDirty=true; } break;
         case PolygonOffsetFill: if(!(byDraw && !cap_offset)){ W3D_GLC(glDisable(GL_POLYGON_OFFSET_FILL)); cap_offset=false; } break;
+        case Dither: if(cap_dither){ BatchEmpty(); W3D_GLC(glDisable(GL_DITHER)); cap_dither=false; } break;
         default: break;
     }
 }
@@ -1399,6 +1408,7 @@ bool IsEnabled(Cap c){
         case DepthTest: return cap_depth; case CullFace: return cap_cull; case Blend: return cap_blend;
         case ScissorTest: return cap_scissor; case Texture2D: return cap_tex; case Lighting: return cap_light;
         case Fog: return cap_fog; case ColorMaterial: return cap_colormat; case Light0: return lights[0].on;
+        case Dither: return cap_dither;
         default: return false;
     }
 }
@@ -2162,22 +2172,22 @@ static void PickProgramInteger(){
     const bool light = cap_light && !(cap_tex && texEnv==1);
     const bool pix   = lightPixel && light;
     if(pix && progPixel == -1 && nPrograms < kProgramsMax){
-        BuildProgram(programs[nPrograms], (Key)(PAll | PLightPixel | (LightsMax << PLights)));
-        if(Linked(programs[nPrograms].id)) progPixel = nPrograms++;
-        else { DeleteProgram(programs[nPrograms]); progPixel = -2; w3dLogfW("[w3dGLES2] la luz por pixel no entra en esta GPU: queda por vertice"); }
+        BuildProgram(Prog(nPrograms), (Key)(PAll | PLightPixel | (LightsMax << PLights)));
+        if(Linked(Prog(nPrograms).id)) progPixel = nPrograms++;
+        else { DeleteProgram(Prog(nPrograms)); progPixel = -2; w3dLogfW("[w3dGLES2] la luz por pixel no entra en esta GPU: queda por vertice"); }
     }
     // LAS SOMBRAS: el objeto que las recibe usa el gemelo con W3D_SOMBRA (por vertice o por pixel, como sin sombras). Se
     // arma la primera vez que hace falta; si no entra en la GPU, se dibuja sin sombras
     if(shadowActive && ((shadowMode == 1 && light) || shadowMode >= 2)){
         const int k = (pix && progPixel >= 0) ? 1 : 0;
         if(progShadow[k] == -1 && nPrograms < kProgramsMax){
-            BuildProgram(programs[nPrograms], (Key)(PAll | PShadow | (k ? PLightPixel : 0) | (LightsMax << PLights)));
-            if(Linked(programs[nPrograms].id)) progShadow[k] = nPrograms++;
-            else { DeleteProgram(programs[nPrograms]); progShadow[k] = -2; w3dLogfW("[w3dGLES2] las sombras no entran en esta GPU (luz por %s)", k ? "pixel" : "vertex"); }
+            BuildProgram(Prog(nPrograms), (Key)(PAll | PShadow | (k ? PLightPixel : 0) | (LightsMax << PLights)));
+            if(Linked(Prog(nPrograms).id)) progShadow[k] = nPrograms++;
+            else { DeleteProgram(Prog(nPrograms)); progShadow[k] = -2; w3dLogfW("[w3dGLES2] las sombras no entran en esta GPU (luz por %s)", k ? "pixel" : "vertex"); }
         }
-        if(progShadow[k] >= 0){ Program& ps = programs[progShadow[k]]; if(progUse != &ps) UseProgram(ps); return; }
+        if(progShadow[k] >= 0){ Program& ps = Prog(progShadow[k]); if(progUse != &ps) UseProgram(ps); return; }
     }
-    Program& p = (pix && progPixel >= 0) ? programs[progPixel] : programs[0];
+    Program& p = (pix && progPixel >= 0) ? Prog(progPixel) : Prog(0);
     if(progUse != &p) UseProgram(p);
 }
 // el programa de este draw, si hay uno por draw: el que tiene justo lo que se va a usar
@@ -2216,13 +2226,13 @@ static void PickProgram(int nV){
     } else if((f & PLight) && shOn) e |= (Key)1 << 42;   // (la sonda de luz con la luz por vertice)
     const Key key = (Key)f | (e << PState);
     if(progUse && progUse->key == key) return;
-    for(int i=0;i<nPrograms;i++) if(programs[i].key == key){ UseProgram(programs[i]); return; }
+    for(int i=0;i<nPrograms;i++) if(Prog(i).key == key){ UseProgram(Prog(i)); return; }
     if(nPrograms == kProgramsMax){   // (lleno: se tiran todos y se vuelven a armar los que hagan falta)
-        for(int i=0;i<nPrograms;i++) DeleteProgram(programs[i]);
+        for(int i=0;i<nPrograms;i++) DeleteProgram(Prog(i));
         nPrograms = 0;
     }
-    BuildProgram(programs[nPrograms], key);
-    UseProgram(programs[nPrograms++]);
+    BuildProgram(Prog(nPrograms), key);
+    UseProgram(Prog(nPrograms++));
     // (cada uno nuevo le cuesta al driver ~35 ms la primera vez que dibuja: el log dice cuantos hay y cuando aparecen)
     w3dLogf("[w3dGLES2] programa %d (clave %08x%08x)", nPrograms, (unsigned)(key >> 32), (unsigned)key);
 }
@@ -3391,7 +3401,7 @@ void GLES2Init(void* (*getProc)(const char*)){
       clearScissorDrawn = (r && strstr(r, "VideoCore III")) || (forceClear && forceClear[0] == '1');
       if(clearScissorDrawn) w3dLogfW("[w3dGLES2] %s: el clear con scissor se dibuja (el del driver se lleva el cuadro)", r); }
     // (un contexto nuevo arranca con todo lo de fabrica)
-    cap_depth=cap_cull=cap_blend=cap_scissor=cap_offset=false; boundTex=0; StateGLForget();
+    cap_depth=cap_cull=cap_blend=cap_scissor=cap_offset=false; cap_dither=true; boundTex=0; StateGLForget();
     buildProgram();
     { GLint v[4]={0,0,1,1}; glGetIntegerv(GL_VIEWPORT,v); for(int i=0;i<4;i++) vpCurrent[i]=(float)v[i]; }
 }

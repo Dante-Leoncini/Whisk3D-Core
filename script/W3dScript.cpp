@@ -139,7 +139,7 @@ static std::map<std::string, bool> gPressedKeys;
 static bool gEndFrameExternal = false;   // alguien llama W3dScriptEndFrame: el snapshot es suyo (ver el .h)
 static float gSticks[2][2] = { {0,0}, {0,0} };   // [izq/der][x/y]
 // LOS MANDOS POR SEPARADO (dos jugadores en el mismo equipo): ademas de la mezcla de todos (gSticks / gButtonsPad: lo
-// que leen button("a") y stick("izq")), el estado de cada uno. button("a", 2), stick("izq", 2), trigger("der", 2) y
+// que leen button("a") y stick("left")), el estado de cada uno. button("a", 2), stick("left", 2), trigger("right", 2) y
 // buttonPressed("a", 2) leen el mando 2 (1..W3D_GAMEPADS, en el orden en que se conectaron)
 enum { W3D_GAMEPADS = 4 };
 static float gSticksM[W3D_GAMEPADS][2][2];
@@ -712,13 +712,13 @@ void W3dViewAfter() { gViewDrawing = 0; }
 static void ViewsRestart() {
     gViews = 1; gViewsMode = 0; gViewCam[0] = gViewCam[1] = NULL; gViewsOwner = NULL; gViewDrawing = 0;
 }
-// setViews(n [, "lado" | "arriba"]): 1 = la pantalla entera (lo normal), 2 = dividida (lado a lado o una arriba de la
+// setViews(n [, "side" | "up"]): 1 = la pantalla entera (lo normal), 2 = dividida (lado a lado o una arriba de la
 // otra). El script que la llama recibe beforeView(i) antes de que se dibuje cada una
 static int LSetViews(lua_State* L) {
     const int n = (int)luaL_checkinteger(L, 1);
     const char* mode = luaL_optstring(L, 2, "side");
     gViews = n >= 2 ? 2 : 1;
-    gViewsMode = (mode && mode[0] == 'a') ? 1 : 0;
+    gViewsMode = (mode && mode[0] == 'u') ? 1 : 0;   // "up": una arriba de la otra
     lua_getfield(L, LUA_REGISTRYINDEX, "w3d_owner");
     gViewsOwner = (Object*)lua_touserdata(L, -1);
     lua_pop(L, 1);
@@ -883,19 +883,19 @@ bool W3dSharedScriptPair(int i, std::string* name, std::string* value) {
     return true;
 }
 
-// stick("izq"|"der" [, mando]) -> x, y del stick analogico (-1..1, deadzone ya aplicada); sin mando, todos juntos
+// stick("left"|"right" [, mando]) -> x, y del stick analogico (-1..1, deadzone ya aplicada); sin mando, todos juntos
 static int LStick(lua_State* L) {
     const char* n = luaL_optstring(L, 1, "left");
-    int which = (n && n[0] == 'd') ? 1 : 0;
+    int which = (n && n[0] == 'r') ? 1 : 0;   // ("right"; el refactor dejo la 'd' de "der": stick("right") leia el izquierdo)
     const int m = GamepadArg(L, 2);
     lua_pushnumber(L, m == -1 ? gSticks[which][0] : (m >= 0 ? gSticksM[m][which][0] : 0.0f));
     lua_pushnumber(L, m == -1 ? gSticks[which][1] : (m >= 0 ? gSticksM[m][which][1] : 0.0f));
     return 2;
 }
-// trigger("izq"|"der" [, mando]) -> 0..1: el gatillo analogico del mando (LT / RT, L2 / R2): un pedal (acelerador, freno)
+// trigger("left"|"right" [, mando]) -> 0..1: el gatillo analogico del mando (LT / RT, L2 / R2): un pedal (acelerador, freno)
 static int LTrigger(lua_State* L) {
     const char* n = luaL_optstring(L, 1, "right");
-    const int which = (n && n[0] == 'i') ? 0 : 1;
+    const int which = (n && n[0] == 'l') ? 0 : 1;   // ("left"; con la 'i' de "izq", trigger("left") leia el derecho)
     const int m = GamepadArg(L, 2);
     lua_pushnumber(L, m == -1 ? gTriggers[which] : (m >= 0 ? gTriggersM[m][which] : 0.0f));
     return 1;
@@ -2114,12 +2114,41 @@ static int LPrint(lua_State* L) {
     return 0;
 }
 
+// QUE CODIGO SE PUEDE CARGAR: en el editor solo TEXTO. El bytecode de Lua no tiene verificador: uno armado a mano lee y
+// escribe cualquier memoria, y un proyecto bajado de internet ejecutaria codigo nativo con solo apretar Play (o con
+// elegir el objeto: la tarjeta del script lee sus propiedades corriendolo). El juego compilado si carga bytecode: es el
+// suyo, el que armo CompileGame (los 2D se compilan sin W3D_NO_EDITOR: todos llevan W3D_GAME_RUNTIME)
+#if defined(W3D_NO_EDITOR) || defined(W3D_GAME_RUNTIME)
+static const char* const kLoadMode = "bt";
+#else
+static const char* const kLoadMode = "t";
+#endif
+// load(chunk [, nombre [, modo [, env]]]) con el modo de arriba, diga lo que diga el script. El load original va como
+// UPVALUE de esta funcion (en una global, el script lo llamaria directo con el modo que quisiera)
+static int LLoadText(lua_State* L) {
+    const int n = lua_gettop(L);
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_pushvalue(L, 1);                                   // el texto (o la funcion que lo va dando)
+    if (n >= 2) lua_pushvalue(L, 2); else lua_pushnil(L);  // el nombre
+    lua_pushstring(L, kLoadMode);                          // el modo: siempre el de kLoadMode
+    int nArgs = 3;
+    if (n >= 4) { lua_pushvalue(L, 4); nArgs = 4; }        // el entorno
+    lua_call(L, nArgs, LUA_MULTRET);
+    return lua_gettop(L) - n;
+}
+
 // stdlib SEGURA: base + table + string + math (sin io/os: un juego no toca discos)
 static void OpenLibs(lua_State* L) {
     luaL_requiref(L, LUA_GNAME, luaopen_base, 1);       lua_pop(L, 1);
     lua_pushcfunction(L, LPrint); lua_setglobal(L, "print");   // pisa el print de stdout por el que va al log
+    // (loadfile y dofile leen cualquier archivo por su ruta; load queda con el modo de kLoadMode)
+    lua_pushnil(L); lua_setglobal(L, "loadfile");
+    lua_pushnil(L); lua_setglobal(L, "dofile");
+    lua_getglobal(L, "load"); lua_pushcclosure(L, LLoadText, 1); lua_setglobal(L, "load");
     luaL_requiref(L, LUA_TABLIBNAME, luaopen_table, 1); lua_pop(L, 1);
-    luaL_requiref(L, LUA_STRLIBNAME, luaopen_string, 1);lua_pop(L, 1);
+    luaL_requiref(L, LUA_STRLIBNAME, luaopen_string, 1);
+    lua_pushnil(L); lua_setfield(L, -2, "dump");   // (sin string.dump no se arma bytecode desde un script)
+    lua_pop(L, 1);
     luaL_requiref(L, LUA_MATHLIBNAME, luaopen_math, 1); lua_pop(L, 1);
     SeedRandom(L);   // sembrar el random JUSTO despues de abrir math (una vez por lua_State)
 }
@@ -2308,7 +2337,7 @@ static bool RunFile(lua_State* L, const std::string& path) {
     // chunkname con '@': asi los errores salen "whiskpaddle.lua:12: ..." (igual que loadfile) en vez de
     // "[string \"...\"]:12" -> el usuario lee claro DONDE esta el error de su juego.
     std::string chunk = "@" + path;
-    if (luaL_loadbuffer(L, (const char*)&src[0] + off, src.size() - off, chunk.c_str()) != LUA_OK ||
+    if (luaL_loadbufferx(L, (const char*)&src[0] + off, src.size() - off, chunk.c_str(), kLoadMode) != LUA_OK ||
         lua_pcall(L, 0, 0, 0) != LUA_OK) {
         gLastError = lua_tostring(L, -1) ? lua_tostring(L, -1) : "error de lua";
         w3dLogfE("Script: %s", gLastError.c_str());
@@ -2535,7 +2564,7 @@ bool W3dScriptRun(Object* owner, const char* code, std::string& error) {
     for (size_t i = 0; i < it->second.size(); i++) {
         lua_State* L = it->second[i]->L;
         if (!L) continue;
-        if (luaL_dostring(L, code) != 0) {
+        if (luaL_loadbufferx(L, code, strlen(code), "=consola", "t") != LUA_OK || lua_pcall(L, 0, LUA_MULTRET, 0) != LUA_OK) {
             error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "error";
             lua_pop(L, 1);
             return false;
@@ -2784,12 +2813,16 @@ struct OrderDecl {
     }
 };
 
+// (leer las propiedades corre el cuerpo del script en el EDITOR, al elegir el objeto: uno que no termina colgaba el
+//  editor. El cuerpo de un script de verdad declara cosas: un millon de instrucciones sobra)
+static void PropsHook(lua_State* L, lua_Debug*) { luaL_error(L, "el script tarda demasiado al leer sus propiedades"); }
 bool W3dScriptReadProperties(const std::string& path, std::vector<W3dScriptProp>* props) {
     if (props) props->clear();
     if (path.empty()) return false;
     lua_State* L = luaL_newstate();
     OpenLibs(L);
     RegisterAPI(L);   // el script puede llamar a la API en su cuerpo: que no reviente
+    lua_sethook(L, PropsHook, LUA_MASKCOUNT, 1000000);
     bool ok = RunFile(L, path);
     if (ok && props) {
         lua_getglobal(L, "properties");

@@ -263,13 +263,13 @@ int  W3dSharedScriptCount();
 bool W3dSharedScriptPair(int i, std::string* name, std::string* value);
 
 // teclado para los scripts: la plataforma lo alimenta (nombres en minuscula:
-// "w", "s", "arriba", "abajo", ...). key("w") lo lee el .lua.
+// "w", "s", "up", "down", ...). key("w") lo lee el .lua.
 void W3dScriptKey(const char* name, bool pressed);
 void W3dScriptReleaseKeys();
 // GAMEPAD analogico: la plataforma alimenta los sticks (con la deadzone ya aplicada)
-// y los botones; el .lua los lee con stick("izq") -> x,y y button("a") -> bool
+// y los botones; el .lua los lee con stick("left") -> x,y y button("a") -> bool
 void W3dScriptStick(int which, float x, float y);      // 0 = izq, 1 = der
-void W3dScriptButtonPad(const char* name, bool v);     // "a" "b" "x" "y" "arriba"...
+void W3dScriptButtonPad(const char* name, bool v);     // "a" "b" "x" "y" "up"...
 void W3dScriptTrigger(int which, float v);              // gatillo analogico 0..1 (0 = izq / LT, 1 = der / RT)
 // ...y cada MANDO por separado (mando 0..3, en el orden en que se conectaron): lo leen button("a", 2), stick("izq", 2),
 // trigger("der", 2) y buttonPressed("a", 2) para dos jugadores en el mismo equipo. Lo de arriba sigue siendo la mezcla
