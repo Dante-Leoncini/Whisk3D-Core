@@ -8,6 +8,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>              // pow: los pasos de la envolvente se calculan al disparar la voz
+// MP3: dr_mp3 (thirdparty/dr_libs, dominio publico / MIT-0; ver su LEEME.md). Desde MEMORIA (sin stdio): el archivo
+// ya lo leyo ReadFileBytes (disco, pak o APK). No en Symbian: ahi el mp3 lo decodifica el hardware (W3dMusic) y un
+// tema entero en PCM no entra en la RAM del N95. W3D_NO_MP3 lo apaga en cualquier otra plataforma.
+#if !defined(W3D_SYMBIAN) && !defined(W3D_NO_MP3)
+    #define W3D_MP3 1
+    #define DR_MP3_IMPLEMENTATION
+    #define DR_MP3_NO_STDIO
+    #include "../thirdparty/dr_libs/dr_mp3.h"
+#endif
 #endif
 
 // El mixer + el loader WAV son PORTABLES. El dispatcher (esta unidad) siempre compila:
@@ -172,6 +181,40 @@ static W3dSound* decodeWav(const unsigned char* b, size_t len) {
     return s;
 }
 
+// MP3 -> el mismo W3dSound que un .wav: PCM de 16 bits (mono o estereo; mas canales se quedan con los dos primeros) a
+// su rate de origen (el mixer remuestrea, como con el .wav). Se decodifica ENTERO al cargar: un minuto estereo a
+// 44.1 kHz son ~10 MB de PCM (para la musica de una escena en la PC, nada; para el telefono, mejor un .wav corto).
+// Lo reconoce por la FIRMA (una etiqueta ID3 o el sync de un frame MPEG), no por la extension: llegan bytes.
+static W3dSound* decodeMp3(const unsigned char* b, size_t len) {
+#ifdef W3D_MP3
+    if (len < 4) return 0;
+    const bool id3 = memcmp(b, "ID3", 3) == 0;
+    const bool sync = b[0] == 0xFF && (b[1] & 0xE0) == 0xE0;
+    if (!id3 && !sync) return 0;
+    drmp3_config cfg; cfg.channels = 0; cfg.sampleRate = 0;
+    drmp3_uint64 frames = 0;
+    drmp3_int16* pcm = drmp3_open_memory_and_read_pcm_frames_s16(b, len, &cfg, &frames, NULL);
+    if (!pcm) return 0;
+    // (el W3dSound cuenta los frames en un int: mas de ~13 horas a 44.1 kHz no tiene sentido)
+    if (frames < 1 || cfg.channels < 1 || cfg.sampleRate < 1 || frames > (drmp3_uint64)0x3FFFFFFF) {
+        drmp3_free(pcm, NULL);
+        return 0;
+    }
+    const int can = cfg.channels >= 2 ? 2 : 1;
+    const size_t n = (size_t)frames;
+    short* out = new short[n * (size_t)can];
+    for (size_t i = 0; i < n; i++)
+        for (int c = 0; c < can; c++) out[i * (size_t)can + (size_t)c] = pcm[i * (size_t)cfg.channels + (size_t)c];
+    drmp3_free(pcm, NULL);
+    W3dSound* s = new W3dSound();
+    s->pcm = out; s->frames = (int)n; s->channels = can; s->rate = (int)cfg.sampleRate;
+    return s;
+#else
+    (void)b; (void)len;
+    return 0;
+#endif
+}
+
 // ---------------------------------------------------------------------------
 //  API publica
 // ---------------------------------------------------------------------------
@@ -199,7 +242,9 @@ void W3dAudioShutdown() {
 
 W3dSound* W3dSoundLoadMemory(const void* bytes, size_t len) {
     if (!s_ready) return 0;
-    return decodeWav((const unsigned char*)bytes, len);
+    W3dSound* s = decodeWav((const unsigned char*)bytes, len);
+    if (!s) s = decodeMp3((const unsigned char*)bytes, len);   // (.wav o .mp3: lo dice la firma, no la extension)
+    return s;
 }
 
 // Genera un tono de onda CUADRADA (beep estilo WhiskPaddle) como W3dSound, al rate del mixer. freq en Hz,

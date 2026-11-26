@@ -249,6 +249,32 @@ class Material {
         float emission[4];
         float ambient[4]; // reflectancia de la luz ambiente del material
         float shininess;  // brillo especular (exponente)
+        // LA FUERZA DE LA EMISION: lo que emite es emission.rgb x emissionStrength (como el Strength de Blender). Tambien
+        // multiplica el MAPA de emision en modo textura. Default 1 (lo de siempre). Clave del .w3d: "emissionStrength"
+        float emissionStrength;
+        // ---- LA TRANSFORMACION UV (formato/material-animado.md): la UV con la que se leen la textura base y los mapas
+        //      (no las capas extra ni la textura B) pasa por
+        //          uv' = R(uvRotation) * S(uvScale) * (uv - uvPivot) + uvPivot + uvOffset
+        //      R gira las COORDENADAS (U hacia V; la imagen gira para el otro lado); el desplazamiento se SUMA a la UV
+        //      (+U corre la imagen hacia -U, como el Location del Mapping de Blender en modo Point). Rotacion en grados.
+        //      Defaults: 0,0 / 1,1 / 0 / 0.5,0.5. Lo aplica cada backend con la matriz de textura (gfx::TexMatrixUVAffine)
+        //      y el trazado de rayos en su UV del impacto. Claves: "uvOffset", "uvScale", "uvRotation", "uvPivot" ----
+        float uvOffset[2];
+        float uvScale[2];
+        float uvRotation;
+        float uvPivot[2];
+        // true = la transformacion UV no es la identidad (sin ella no se arma ni se carga ninguna matriz)
+        bool UVTransformed() const {
+            return uvOffset[0] != 0.0f || uvOffset[1] != 0.0f || uvScale[0] != 1.0f || uvScale[1] != 1.0f || uvRotation != 0.0f;
+        }
+        // la matriz AFIN de la transformacion UV, por columnas: u' = m[0]*u + m[2]*v + m[4] ; v' = m[1]*u + m[3]*v + m[5]
+        void UVMatrix(float m[6]) const;
+        // IDENTIDAD ESTABLE (como Object::serial): un numero que no se recicla ni al renombrar ni al borrar. Lo usa el dope
+        // sheet para nombrar la pista de un material en sus claves de seleccion (el nombre se libera al renombrar)
+        unsigned serial;
+        // EL CABEZAL LO POSO alguna vez (una pista de material le escribio un canal): el guardado lo devuelve a su
+        // reposo (W3dMaterialsRestBegin) solo si es asi, como Object::posedByCurves
+        bool posedByCurves;
         std::string name;
         // CARPETA cosmetica del outliner por recursos ("Piel/Enemigos"; "" = la raiz). No
         // afecta al render ni al runtime: solo ordena la vista de materiales del editor.

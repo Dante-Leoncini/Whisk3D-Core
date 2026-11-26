@@ -1241,6 +1241,8 @@ static int LVertexPosAnim(lua_State* L) {
         lua_pushnumber(L, 0); lua_pushnumber(L, 0); lua_pushnumber(L, 0);
         return 3;
     }
+    // (la pose al dia: con la piel rigida el dibujo no deforma vertices y skinVertex podia quedar de antes)
+    if (m->skinArmature) { extern void SkinMesh(Mesh*); SkinMesh(m); }
     const GLfloat* src = (m->skinArmature && m->skinVertex && m->skinShapeSerial != 0xFFFFFFFFu) ? m->skinVertex : m->vertex;
     PushVec3Lua(L, src[i*3], src[i*3+1], src[i*3+2]);
     return 3;

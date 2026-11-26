@@ -25,25 +25,7 @@ size_t gShownBase = 0;       // los que KallistiOS ya habia mostrado al Iniciar
 // con predecremento: el SH-4 no tiene fmov con desplazamiento y cada una costaba tres instrucciones. Despues, el pref
 // que la manda a la PVR. 'sq' es la store queue de este vertice (alternan: sq ^= 32 antes de cada uno). Lo del vertice
 // va en registros de punto flotante (los enteros no alcanzan para el bucle y el compilador los mandaba a la pila).
-// (Sin "memory": solo escribe en la store queue, que nada lee; asi lo de alrededor sigue en registros)
-inline void SendSQ(uint32_t sq, uint32_t flags, float x, float y, float z, float u, float v, uint32_t argb,
-                     uint32_t oargb) {
-    uint32_t p = sq + 32;
-    __asm__ __volatile__(
-        "mov.l   %1, @-%0\n\t"
-        "mov.l   %2, @-%0\n\t"
-        "fmov.s  %3, @-%0\n\t"
-        "fmov.s  %4, @-%0\n\t"
-        "fmov.s  %5, @-%0\n\t"
-        "fmov.s  %6, @-%0\n\t"
-        "fmov.s  %7, @-%0\n\t"
-        "mov.l   %8, @-%0\n\t"
-        "pref    @%0\n\t"
-        : "+r"(p)
-        : "r"(oargb), "r"(argb), "f"(v), "f"(u), "f"(z), "f"(y), "f"(x), "r"(flags));
-}
-
-// lo mismo leyendo lo del vertice adentro, con post-incremento (fmov.s @Rm+: sin cuentas de direcciones): x, y, z de
+// Lo del vertice se lee adentro, con post-incremento (fmov.s @Rm+: sin cuentas de direcciones): x, y, z de
 // 'xyz' (o los ya calculados) y u, v de 'uv'. Lo que leen va declarado ("m"): con un "memory" el compilador tenia que
 // dejar en la memoria todo lo del bucle (la store queue, los punteros) y releerlo en cada vertice
 inline void SendSQOf(uint32_t sq, uint32_t flags, const float* xyz, const float* uv, uint32_t argb, uint32_t oargb) {

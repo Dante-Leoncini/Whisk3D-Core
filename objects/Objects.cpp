@@ -355,9 +355,30 @@ const char* W3dConstraintTypeName(int type){
         case W3dConstraintType::CopyRotation: return "Copy Rotation";
         case W3dConstraintType::Billboard:    return "Billboard";
         case W3dConstraintType::ChildOf:      return "Child Of";
+        case W3dConstraintType::CopyScale:      return "Copy Scale";
+        case W3dConstraintType::CopyTransforms: return "Copy Transforms";
+        case W3dConstraintType::TrackTo:        return "Track To";
+        case W3dConstraintType::DampedTrack:    return "Damped Track";
+        case W3dConstraintType::LockedTrack:    return "Locked Track";
+        case W3dConstraintType::StretchTo:      return "Stretch To";
+        case W3dConstraintType::LimitLocation:  return "Limit Location";
+        case W3dConstraintType::LimitRotation:  return "Limit Rotation";
+        case W3dConstraintType::LimitScale:     return "Limit Scale";
+        case W3dConstraintType::LimitDistance:  return "Limit Distance";
+        case W3dConstraintType::MaintainVolume: return "Maintain Volume";
+        case W3dConstraintType::Floor:          return "Floor";
+        case W3dConstraintType::Transformation: return "Transformation";
+        case W3dConstraintType::Pivot:          return "Pivot";
+        case W3dConstraintType::FollowPath:     return "Follow Path";
+        case W3dConstraintType::ClampTo:        return "Clamp To";
+        case W3dConstraintType::IK:             return "IK";
     }
     return "Constraint";
 }
+
+// el gancho de la polilinea de una Curve (ver W3dConstraint.h). NULL = nadie lo registro (un juego 2D,
+// que no compila Curve.cpp): Follow Path / Clamp To quedan sin efecto, sin crashear.
+W3dCurvePolyFn g_w3dCurvePoly = 0;
 
 int Object::ConstraintsCount() const { return (int)constraints.size(); }
 
@@ -407,8 +428,78 @@ static void W3dConsResolveRec(Object* node, Object* root, int& broken){
             broken++;
         }
     }
+    // los constraints de los HUESOS de un armature: su target y su pole, con la MISMA busqueda por scope
+    if (node->getType() == ObjectType::armature) {
+        Armature* a = (Armature*)node;
+        for (size_t b = 0; b < a->bones.size(); b++) {
+            std::vector<W3dConstraint*>& L = a->bones[b].constraints.list;
+            for (size_t i = 0; i < L.size(); i++) {
+                W3dConstraint* c = L[i]; if (!c) continue;
+                c->boneCache = -1; c->poleBoneCache = -1;
+                if (c->sourceType == W3dConstraintSource::Object) {
+                    c->sourceObj = c->sourceName.empty() ? NULL : W3dFindNameFrom(node, c->sourceName, root);
+                    if (!c->sourceName.empty() && !c->sourceObj) {
+                        w3dLogfW("[W3D] '%s' hueso '%s': el constraint '%s' apunta a '%s', que no esta en la escena",
+                                 node->name.c_str(), a->bones[b].name.c_str(), c->name.c_str(), c->sourceName.c_str());
+                        broken++;
+                    }
+                }
+                c->poleObj = c->poleName.empty() ? NULL : W3dFindNameFrom(node, c->poleName, root);
+                if (!c->poleName.empty() && !c->poleObj) {
+                    w3dLogfW("[W3D] '%s' hueso '%s': el pole de '%s' apunta a '%s', que no esta en la escena",
+                             node->name.c_str(), a->bones[b].name.c_str(), c->name.c_str(), c->poleName.c_str());
+                    broken++;
+                }
+            }
+        }
+        a->lastPoseFrame = -999999;   // los targets cambiaron: la pose se recalcula con ellos
+    }
     for (size_t i = 0; i < node->Childrens.size(); i++)
         W3dConsResolveRec(node->Childrens[i], root, broken);
+}
+
+// ---- LA IDENTIDAD DE UNA REF DE CONSTRAINT (contrato en Objects.h) ----
+W3dConstraint* W3dConstraintAtRef(Object* o, int slot, int* which){
+    if (!o || slot < 0) return NULL;
+    const int own = o->OwnRefs();
+    if (slot >= own) {
+        const int k = slot - own;
+        if (k >= (int)o->constraints.size()) return NULL;
+        if (which) *which = 0;
+        return o->constraints[k];
+    }
+    if (o->getType() == ObjectType::armature) return ((Armature*)o)->BoneConstraintOfRef(slot, which);
+    return NULL;
+}
+W3dConstraint* W3dConstraintBySerialAny(Object* o, unsigned int serial){
+    if (!o || !serial) return NULL;
+    W3dConstraint* c = o->ConstraintBySerial(serial);
+    if (!c && o->getType() == ObjectType::armature) c = ((Armature*)o)->BoneConstraintBySerial(serial);
+    return c;
+}
+void W3dConstraintSetRef(W3dConstraint* c, int which, Object* target, const std::string& name){
+    if (!c) return;
+    if (which == 1) { c->poleObj = target; c->poleName = name; c->poleBoneCache = -1; }
+    else            { c->sourceObj = target; c->sourceName = name; c->boneCache = -1; }
+}
+
+// RENOMBRAR UN HUESO (contrato en Armature.h): el subtarget / pole de todo constraint que apunta a 'a'
+static void W3dConsRenameBoneIn(W3dConstraint* c, Armature* a, const std::string& o, const std::string& n){
+    if (!c) return;
+    if (c->sourceObj == (Object*)a && c->bone == o) { c->bone = n; c->boneCache = -1; }
+    if (c->poleObj == (Object*)a && c->poleBone == o) { c->poleBone = n; c->poleBoneCache = -1; }
+}
+void W3dConstraintsRenameBone(Object* root, Armature* a, const std::string& oldName, const std::string& newName){
+    if (!root || !a || oldName == newName) return;
+    for (size_t i = 0; i < root->constraints.size(); i++) W3dConsRenameBoneIn(root->constraints[i], a, oldName, newName);
+    if (root->getType() == ObjectType::armature) {
+        Armature* r = (Armature*)root;
+        for (size_t b = 0; b < r->bones.size(); b++)
+            for (size_t i = 0; i < r->bones[b].constraints.list.size(); i++)
+                W3dConsRenameBoneIn(r->bones[b].constraints.list[i], a, oldName, newName);
+        r->poseDirty = true;
+    }
+    for (size_t i = 0; i < root->Childrens.size(); i++) W3dConstraintsRenameBone(root->Childrens[i], a, oldName, newName);
 }
 
 // 'raiz' es lo que se RECORRE (en la carga es SceneCollection; al generar una instancia de prefab, la
@@ -887,6 +978,9 @@ static bool W3dConstraintEffective(const W3dConstraint* c, const Object* owner){
     // Child Of: sin fuente (objeto) o sin ningun componente heredado no hace nada
     if (c->type == W3dConstraintType::ChildOf)
         return c->sourceType == W3dConstraintSource::Object && c->sourceObj != NULL && (c->coLoc || c->coRot || c->coEsc);
+    // los tipos NUEVOS (fase 2): el criterio comun con los huesos
+    if (c->type != W3dConstraintType::CopyLocation && c->type != W3dConstraintType::CopyRotation)
+        return W3dConsTypeEffective(c, false);
     // Copy Location / Copy Rotation: sin ejes no copia nada, y sin fuente tampoco
     if (!c->axisX && !c->axisY && !c->axisZ) return false;
     return (c->sourceType == W3dConstraintSource::View || c->sourceObj != NULL);
@@ -944,6 +1038,609 @@ bool W3dChildOfSetInverse(Object* o, W3dConstraint* c){
     if (!Matrix4::InvertAffine(Mt, iMt)) return false;
     c->inverse = iMt * Wp;
     return true;
+}
+
+// ============================================================================
+//  EVALUACION GENERICA (fase 2): un constraint sobre una MATRIZ (ver W3dConsCtx en W3dConstraint.h)
+//
+//  Los huesos y los tipos nuevos de objeto pasan por aca. Todo se hace en el "espacio comun" del
+//  dueno (el mundo para un objeto, el del objeto armature para un hueso) y se pasa a World / Local /
+//  Pose solo donde el constraint lo pide. Las formulas son las de Blender (constraint.cc), con los
+//  ejes del motor (Y arriba): un rig convertido se comporta igual eligiendo los ejes que corresponden.
+//  NADA de esto aloca por frame salvo el scratch ESTATICO de la polilinea de Follow Path / Clamp To.
+// ============================================================================
+static inline Vector3 W3dCol(const Matrix4& m, int c) { return Vector3(m.m[c*4], m.m[c*4+1], m.m[c*4+2]); }
+static inline void W3dSetCol(Matrix4& m, int c, const Vector3& v) { m.m[c*4] = v.x; m.m[c*4+1] = v.y; m.m[c*4+2] = v.z; }
+static inline Vector3 W3dTr(const Matrix4& m) { return Vector3(m.m[12], m.m[13], m.m[14]); }
+static inline void W3dSetTr(Matrix4& m, const Vector3& v) { m.m[12] = v.x; m.m[13] = v.y; m.m[14] = v.z; }
+// solo la parte lineal (una DIRECCION: sin la traslacion)
+static inline Vector3 W3dDir(const Matrix4& m, const Vector3& v) {
+    return Vector3(m.m[0]*v.x + m.m[4]*v.y + m.m[8]*v.z, m.m[1]*v.x + m.m[5]*v.y + m.m[9]*v.z, m.m[2]*v.x + m.m[6]*v.y + m.m[10]*v.z);
+}
+static inline Vector3 W3dAxisVec(int axis) {
+    switch (axis) {
+        case W3dConstraintAxis::X:    return Vector3( 1, 0, 0);
+        case W3dConstraintAxis::Y:    return Vector3( 0, 1, 0);
+        case W3dConstraintAxis::Z:    return Vector3( 0, 0, 1);
+        case W3dConstraintAxis::NegX: return Vector3(-1, 0, 0);
+        case W3dConstraintAxis::NegY: return Vector3( 0,-1, 0);
+        default:                      return Vector3( 0, 0,-1);
+    }
+}
+static inline Matrix4 W3dRotMat(const Quaternion& q) { Matrix4 R; q.ToMatrix(R.m); return R; }
+
+Quaternion W3dQuatFromTo(const Vector3& from, const Vector3& to){
+    const float d = from.Dot(to);
+    // (sin atajo para "casi paralelos": (1+d, cruz) normalizado es estable ahi, y un umbral como 0.999999
+    //  se comia giros de hasta 0.08 grados -> un IK que quedaba a 1 mm del target en una cadena de 3 m)
+    if (d < -0.999999f) {
+        // opuestos: medio giro alrededor de CUALQUIER perpendicular (se elige la mas estable)
+        Vector3 ax = Vector3::Cross(Vector3(1, 0, 0), from);
+        if (ax.LengthSq() < 1e-6f) ax = Vector3::Cross(Vector3(0, 1, 0), from);
+        ax = ax.Normalized();
+        return Quaternion(0.0f, ax.x, ax.y, ax.z);
+    }
+    const Vector3 c = Vector3::Cross(from, to);
+    Quaternion q(1.0f + d, c.x, c.y, c.z);   // (la mitad del angulo, sin trigonometria)
+    q.normalize();
+    return q;
+}
+
+// EULER <-> MATRIZ en los 6 ordenes de MatRotEuler: orden (a,b,c) compone R_c * R_b * R_a (a se aplica
+// primero). La extraccion es la de siempre generalizada con la paridad de la permutacion (verificada contra
+// la composicion en los 6 ordenes); en el gimbal lock fija el ultimo angulo en 0, como SkelMatrixToEulerFBX.
+static const int kEulerAxes[6][3] = { {0,1,2}, {0,2,1}, {1,2,0}, {1,0,2}, {2,0,1}, {2,1,0} };
+static inline float W3dM(const Matrix4& m, int row, int col) { return m.m[col*4 + row]; }
+Vector3 W3dEulerFromMatrix(const Matrix4& R, int order){
+    if (order < 0 || order > 5) order = 0;
+    const int a = kEulerAxes[order][0], b = kEulerAxes[order][1], c = kEulerAxes[order][2];
+    const float sg = (b == (a + 1) % 3) ? 1.0f : -1.0f;   // paridad: par = +1
+    float sb = -sg * W3dM(R, c, a);
+    if (sb > 1.0f) sb = 1.0f; if (sb < -1.0f) sb = -1.0f;
+    const float beta = asinf(sb);
+    float alpha, gamma;
+    if (fabsf(cosf(beta)) > 1e-4f) {
+        alpha = atan2f(sg * W3dM(R, c, b), W3dM(R, c, c));
+        gamma = atan2f(sg * W3dM(R, b, a), W3dM(R, a, a));
+    } else {
+        alpha = atan2f(-sg * W3dM(R, b, c), W3dM(R, b, b));
+        gamma = 0.0f;
+    }
+    const float R2D = 57.2957795f;
+    float e[3]; e[a] = alpha * R2D; e[b] = beta * R2D; e[c] = gamma * R2D;
+    return Vector3(e[0], e[1], e[2]);
+}
+Matrix4 W3dMatrixFromEuler(const Vector3& deg, int order){
+    if (order < 0 || order > 5) order = 0;
+    const float D2R = 0.0174532925f;
+    const float ang[3] = { deg.x, deg.y, deg.z };
+    Matrix4 out; out.Identity();
+    // R = R_c * R_b * R_a: se arma multiplicando de la izquierda en el orden a, b, c
+    for (int k = 0; k < 3; k++) {
+        const int ax = kEulerAxes[order][k];
+        const float cs = cosf(ang[ax] * D2R), sn = sinf(ang[ax] * D2R);
+        Matrix4 r; r.Identity();
+        if (ax == 0) { r.m[5] = cs; r.m[6] = sn; r.m[9] = -sn; r.m[10] = cs; }
+        else if (ax == 1) { r.m[0] = cs; r.m[2] = -sn; r.m[8] = sn; r.m[10] = cs; }
+        else { r.m[0] = cs; r.m[1] = sn; r.m[4] = -sn; r.m[5] = cs; }
+        out = r * out;
+    }
+    return out;
+}
+
+// descompone T * R * S. false = base espejada o plana (no hay rotacion PROPIA que describa la orientacion)
+static bool W3dDecomp(const Matrix4& m, Vector3& t, Quaternion& q, Vector3& s){
+    t = W3dTr(m);
+    s = Vector3(W3dCol(m, 0).Length(), W3dCol(m, 1).Length(), W3dCol(m, 2).Length());
+    return W3dMatrixQuat(m, q);
+}
+
+Matrix4 W3dConsBlend(const Matrix4& a, const Matrix4& b, float t){
+    if (t <= 0.0f) return a;
+    if (t >= 1.0f) return b;
+    Vector3 ta, sa, tb, sb; Quaternion qa, qb;
+    if (!W3dDecomp(a, ta, qa, sa) || !W3dDecomp(b, tb, qb, sb)) {
+        // sin rotacion propia que interpolar: mezcla lineal elemento a elemento (no crashea ni da NaN)
+        Matrix4 r; for (int i = 0; i < 16; i++) r.m[i] = a.m[i] + (b.m[i] - a.m[i]) * t;
+        return r;
+    }
+    return W3dLocalTRS(ta + (tb - ta) * t, Quaternion::Slerp(qa, qb, t), sa + (sb - sa) * t);
+}
+
+void W3dChildOfMaskMatrix(const W3dConstraint* c, Matrix4& T){
+    if (!c || (c->coLoc && c->coRot && c->coEsc)) return;
+    Vector3 t, s; Quaternion q;
+    if (!W3dDecomp(T, t, q, s)) q = Quaternion();
+    T = W3dLocalTRS(c->coLoc ? t : Vector3(0, 0, 0), c->coRot ? q : Quaternion(), c->coEsc ? s : Vector3(1, 1, 1));
+}
+
+bool W3dConsNeedsTarget(int type){
+    switch (type) {
+        case W3dConstraintType::Billboard:     case W3dConstraintType::LimitLocation:
+        case W3dConstraintType::LimitRotation: case W3dConstraintType::LimitScale:
+        case W3dConstraintType::MaintainVolume: case W3dConstraintType::Pivot:
+            return false;
+        default: return true;
+    }
+}
+
+bool W3dConsTypeEffective(const W3dConstraint* c, bool bone){
+    if (!c || !c->active || c->Weight() <= 0.0f) return false;
+    if (bone ? !W3dConstraintTypeForBone(c->type) : !W3dConstraintTypeForObject(c->type)) return false;
+    // un hueso no tiene VISTA: su pose se cachea por frame y no por viewport
+    if (bone && c->sourceType == W3dConstraintSource::View) return false;
+    switch (c->type) {
+        case W3dConstraintType::LimitLocation: case W3dConstraintType::LimitRotation: case W3dConstraintType::LimitScale:
+            for (int k = 0; k < 3; k++) if (c->useMin[k] || c->useMax[k]) return true;
+            return false;
+        case W3dConstraintType::MaintainVolume: case W3dConstraintType::Pivot:
+            return true;
+        case W3dConstraintType::CopyLocation: case W3dConstraintType::CopyRotation: case W3dConstraintType::CopyScale:
+            if (!c->axisX && !c->axisY && !c->axisZ) return false;
+            return c->sourceType == W3dConstraintSource::View || c->sourceObj != NULL;
+        case W3dConstraintType::ChildOf:
+            return c->sourceObj != NULL && (c->coLoc || c->coRot || c->coEsc);
+        case W3dConstraintType::FollowPath: case W3dConstraintType::ClampTo:
+            return c->sourceObj != NULL && c->sourceObj->getType() == ObjectType::curve && g_w3dCurvePoly != 0;
+        default:
+            return c->sourceObj != NULL;
+    }
+}
+
+// ---- espacios ----
+static Matrix4 W3dToSpace(const W3dConsCtx& x, const W3dConsMat& m, int space){
+    if (space == W3dConstraintSpace::World) return x.toWorld * m.M;
+    if (space == W3dConstraintSpace::Local) { Matrix4 iB; Matrix4::InvertAffine(m.rest, iB); return iB * m.M; }
+    return m.M;
+}
+static Matrix4 W3dFromSpace(const W3dConsCtx& x, const W3dConsMat& m, const Matrix4& Ms, int space){
+    if (space == W3dConstraintSpace::World) return x.fromWorld * Ms;
+    if (space == W3dConstraintSpace::Local) return m.rest * Ms;
+    return Ms;
+}
+
+// una base ortonormal con el eje 'a' (0..2, con signo 'sa') = f y el eje 'b' (0..2) = u (ya perpendicular
+// a f y unitario). El tercero sale del producto cruz CON LA MANO CORRECTA (X x Y = Z).
+static bool W3dBasis(int a, float sa, const Vector3& f, int b, const Vector3& u, Quaternion& q){
+    if (a == b) return false;
+    Vector3 col[3];
+    col[a] = f * sa; col[b] = u;
+    const int c = 3 - a - b;
+    col[c] = (b == (a + 1) % 3) ? Vector3::Cross(col[a], col[b]) : Vector3::Cross(col[b], col[a]);
+    Matrix4 R; R.Identity();
+    for (int k = 0; k < 3; k++) W3dSetCol(R, k, col[k]);
+    return W3dMatrixQuat(R, q);
+}
+// orientacion que apunta el eje 'track' (W3dConstraintAxis, con signo) del dueno a 'f' (unitario) con su
+// eje 'up' (0..2) lo mas cerca posible de 'upRef'. 'qCur' = la orientacion actual (si 'upRef' es paralelo a
+// 'f' se conserva el "arriba" que ya tenia, en vez de pegar un giro arbitrario).
+static bool W3dAimBasis(int track, int up, const Vector3& f, const Vector3& upRef, const Quaternion& qCur, Quaternion& q){
+    const int a = track % 3; const float sa = (track >= 3) ? -1.0f : 1.0f;
+    if (a == up) return false;
+    Vector3 u = upRef - f * upRef.Dot(f);
+    if (u.LengthSq() < 1e-8f) {
+        const Vector3 cu = qCur * W3dAxisVec(up);
+        u = cu - f * cu.Dot(f);
+        if (u.LengthSq() < 1e-8f) return false;
+    }
+    return W3dBasis(a, sa, f, up, u.Normalized(), q);
+}
+
+// ---- la POLILINEA de una curva, ORDENADA (Follow Path / Clamp To) ----
+// Sin aristas es la polilinea implicita 0-1-2-...; con aristas se camina desde una PUNTA (un nodo de
+// grado 1; si no hay ninguna es un lazo y se arranca del 0) por el primer vecino sin visitar. Las RAMAS
+// que salen del camino principal se ignoran (documentado). Scratch estatico: sin allocs por frame.
+static std::vector<Vector3> gPathPts;
+static std::vector<float>   gPathLen;
+static std::vector<int>     gPathDeg, gPathAdj, gPathFirst;
+static std::vector<char>    gPathSeen;
+static bool W3dPathBuild(const Object* curve, bool& closed){
+    closed = false;
+    gPathPts.clear(); gPathLen.clear();
+    const float* v = NULL; const unsigned short* e = NULL; int n = 0, ne = 0;
+    if (!g_w3dCurvePoly || !curve || !g_w3dCurvePoly(curve, &v, &n, &e, &ne) || !v || n < 1) return false;
+    if (ne <= 0 || !e) {
+        for (int i = 0; i < n; i++) gPathPts.push_back(Vector3(v[i*3], v[i*3+1], v[i*3+2]));
+    } else {
+        // adyacencia CSR (cada arista aparece en los dos nodos)
+        gPathDeg.assign(n, 0); gPathFirst.assign(n + 1, 0);
+        for (int k = 0; k < ne; k++) { const int p = e[k*2], q2 = e[k*2+1];
+            if (p < n && q2 < n && p != q2) { gPathDeg[p]++; gPathDeg[q2]++; } }
+        for (int i = 0; i < n; i++) gPathFirst[i + 1] = gPathFirst[i] + gPathDeg[i];
+        gPathAdj.assign(gPathFirst[n], 0);
+        std::vector<int>& fill = gPathDeg;   // se reusa como cursor de llenado
+        for (int i = 0; i < n; i++) fill[i] = gPathFirst[i];
+        for (int k = 0; k < ne; k++) { const int p = e[k*2], q2 = e[k*2+1];
+            if (p < n && q2 < n && p != q2) { gPathAdj[fill[p]++] = q2; gPathAdj[fill[q2]++] = p; } }
+        int start = -1;
+        for (int i = 0; i < n && start < 0; i++) if (gPathFirst[i + 1] - gPathFirst[i] == 1) start = i;
+        if (start < 0) start = 0;
+        gPathSeen.assign(n, 0);
+        int cur = start;
+        while (cur >= 0) {
+            gPathSeen[cur] = 1; gPathPts.push_back(Vector3(v[cur*3], v[cur*3+1], v[cur*3+2]));
+            int next = -1;
+            for (int k = gPathFirst[cur]; k < gPathFirst[cur + 1]; k++) if (!gPathSeen[gPathAdj[k]]) { next = gPathAdj[k]; break; }
+            if (next < 0 && gPathPts.size() > 2)
+                for (int k = gPathFirst[cur]; k < gPathFirst[cur + 1]; k++) if (gPathAdj[k] == start) closed = true;
+            cur = next;
+        }
+    }
+    if (closed) gPathPts.push_back(gPathPts[0]);   // el lazo se recorre hasta volver al principio
+    gPathLen.resize(gPathPts.size());
+    float acc = 0.0f;
+    for (size_t i = 0; i < gPathPts.size(); i++) {
+        if (i) acc += (gPathPts[i] - gPathPts[i - 1]).Length();
+        gPathLen[i] = acc;
+    }
+    return !gPathPts.empty();
+}
+// punto y tangente (espacio LOCAL de la curva) en la fraccion 'u' (0..1) del LARGO del camino
+static void W3dPathEval(float u, Vector3& pt, Vector3& tan){
+    const size_t n = gPathPts.size();
+    tan = Vector3(0, 0, -1);
+    if (n == 0) { pt = Vector3(0, 0, 0); return; }
+    if (n == 1) { pt = gPathPts[0]; return; }
+    const float total = gPathLen[n - 1];
+    if (total <= 1e-8f) { pt = gPathPts[0]; return; }
+    if (u < 0.0f) u = 0.0f; if (u > 1.0f) u = 1.0f;
+    const float s = u * total;
+    size_t i = 1;
+    while (i < n - 1 && gPathLen[i] < s) i++;
+    const float seg = gPathLen[i] - gPathLen[i - 1];
+    const float f = (seg > 1e-8f) ? (s - gPathLen[i - 1]) / seg : 0.0f;
+    pt = gPathPts[i - 1] + (gPathPts[i] - gPathPts[i - 1]) * f;
+    const Vector3 d = gPathPts[i] - gPathPts[i - 1];
+    if (d.LengthSq() > 1e-12f) tan = d.Normalized();
+}
+
+bool W3dConsApply(W3dConstraint* c, W3dConsCtx& x){
+    if (!c) return false;
+    const float t = c->Weight();
+    const Matrix4 Mo = x.owner.M;
+    Matrix4 R = Mo;
+    const bool ax[3]  = { c->axisX, c->axisY, c->axisZ };
+    const bool inv[3] = { c->invX, c->invY, c->invZ };
+    // el "arriba" del mundo (+Y) en el espacio comun (en un hueso, el del armature puede estar girado)
+    const Vector3 worldUp = W3dDir(x.fromWorld, Vector3(0, 1, 0)).Normalized();
+    switch (c->type) {
+        case W3dConstraintType::CopyLocation: {
+            if (!x.target.valid) return false;
+            Matrix4 O = W3dToSpace(x, x.owner, c->ownerSpace);
+            const Matrix4 T = W3dToSpace(x, x.target, c->targetSpace);
+            Vector3 o = W3dTr(O); const Vector3 tt = W3dTr(T);
+            for (int k = 0; k < 3; k++) if (ax[k]) {
+                const float v = inv[k] ? -tt[k] : tt[k];
+                o[k] = c->useOffset ? o[k] + v : v;
+            }
+            W3dSetTr(O, o);
+            R = W3dFromSpace(x, x.owner, O, c->ownerSpace);
+        } break;
+        case W3dConstraintType::CopyRotation: {
+            if (!x.target.valid) return false;
+            const Matrix4 O = W3dToSpace(x, x.owner, c->ownerSpace);
+            const Matrix4 T = W3dToSpace(x, x.target, c->targetSpace);
+            Vector3 ot, os, tt, ts; Quaternion oq, tq;
+            if (!W3dDecomp(O, ot, oq, os) || !W3dDecomp(T, tt, tq, ts)) return false;
+            const int ord = x.eulerOrder;
+            const bool all = ax[0] && ax[1] && ax[2] && !inv[0] && !inv[1] && !inv[2];
+            Quaternion qm = tq, nq;
+            Vector3 oe(0, 0, 0), te(0, 0, 0);
+            if (!all || c->mixMode == 1) {
+                oe = W3dEulerFromMatrix(W3dRotMat(oq), ord);
+                te = W3dEulerFromMatrix(W3dRotMat(tq), ord);
+                for (int k = 0; k < 3; k++) {
+                    if (!ax[k]) te[k] = (c->mixMode == 0) ? oe[k] : 0.0f;   // Replace: el eje no copiado queda como estaba
+                    else if (inv[k]) te[k] = -te[k];
+                }
+                if (!W3dMatrixQuat(W3dMatrixFromEuler(te, ord), qm)) return false;
+            }
+            if (c->mixMode == 1) {          // Add: suma de euler (el "Add" de Blender)
+                if (!W3dMatrixQuat(W3dMatrixFromEuler(oe + te, ord), nq)) return false;
+            }
+            else if (c->mixMode == 2) nq = qm * oq;   // Before: el target ANTES que el original
+            else if (c->mixMode == 3) nq = oq * qm;   // After
+            else nq = qm;                             // Replace
+            R = W3dFromSpace(x, x.owner, W3dLocalTRS(ot, nq, os), c->ownerSpace);
+        } break;
+        case W3dConstraintType::CopyScale: {
+            if (!x.target.valid) return false;
+            const Matrix4 O = W3dToSpace(x, x.owner, c->ownerSpace);
+            const Matrix4 T = W3dToSpace(x, x.target, c->targetSpace);
+            Vector3 ot, os, tt, ts; Quaternion oq, tq;
+            if (!W3dDecomp(O, ot, oq, os)) return false;
+            tt = W3dTr(T); ts = Vector3(W3dCol(T, 0).Length(), W3dCol(T, 1).Length(), W3dCol(T, 2).Length());
+            Vector3 ns = os;
+            for (int k = 0; k < 3; k++) if (ax[k]) {
+                const float v = (c->power == 1.0f) ? ts[k] : powf(ts[k], c->power);
+                ns[k] = !c->useOffset ? v : (c->scaleAdd ? os[k] + v - 1.0f : os[k] * v);
+            }
+            R = W3dFromSpace(x, x.owner, W3dLocalTRS(ot, oq, ns), c->ownerSpace);
+        } break;
+        case W3dConstraintType::CopyTransforms: {
+            if (!x.target.valid) return false;
+            const Matrix4 O = W3dToSpace(x, x.owner, c->ownerSpace);
+            const Matrix4 T = W3dToSpace(x, x.target, c->targetSpace);
+            const Matrix4 N = (c->mixMode == 2) ? T * O : (c->mixMode == 3) ? O * T : T;
+            R = W3dFromSpace(x, x.owner, N, c->ownerSpace);
+        } break;
+        case W3dConstraintType::ChildOf: {
+            // (solo huesos: el Child Of de un OBJETO va por su camino de la fase 1, que reemplaza al padre)
+            if (!x.target.valid) return false;
+            Matrix4 T = x.target.M;
+            W3dChildOfMaskMatrix(c, T);
+            R = T * c->inverse * Mo;
+        } break;
+        case W3dConstraintType::TrackTo:
+        case W3dConstraintType::DampedTrack:
+        case W3dConstraintType::LockedTrack: {
+            if (!x.target.valid) return false;
+            Vector3 ot, os; Quaternion oq;
+            if (!W3dDecomp(Mo, ot, oq, os)) return false;
+            Vector3 d = W3dTr(x.target.M) - ot;
+            if (d.LengthSq() < 1e-12f) return false;
+            d = d.Normalized();
+            Quaternion nq;
+            if (c->type == W3dConstraintType::DampedTrack) {
+                // el giro MINIMO que lleva el eje al target: nunca pega vueltas (por eso "damped")
+                const Vector3 a = (oq * W3dAxisVec(c->trackAxis)).Normalized();
+                nq = W3dQuatFromTo(a, d) * oq;
+            } else if (c->type == W3dConstraintType::LockedTrack) {
+                // gira SOLO alrededor del eje bloqueado: el eje que apunta va a la proyeccion del target
+                const Vector3 L = (oq * W3dAxisVec(c->lockAxis)).Normalized();
+                const Vector3 a = oq * W3dAxisVec(c->trackAxis);
+                const Vector3 dp = d - L * d.Dot(L), ap = a - L * a.Dot(L);
+                if (dp.LengthSq() < 1e-10f || ap.LengthSq() < 1e-10f) return false;   // eje = eje bloqueado
+                nq = W3dQuatFromTo(ap.Normalized(), dp.Normalized()) * oq;
+            } else {
+                // Track To: el eje apunta al target y el 'up' queda lo mas arriba posible (el +Y del mundo,
+                // o el del target si targetUp: lo de "Target Z" de Blender, con el arriba del motor)
+                const Vector3 upRef = c->targetUp ? W3dDir(x.target.M, Vector3(0, 1, 0)).Normalized() : worldUp;
+                if (!W3dAimBasis(c->trackAxis, c->upAxis, d, upRef, oq, nq)) return false;
+            }
+            R = W3dLocalTRS(ot, nq, os);
+        } break;
+        case W3dConstraintType::StretchTo: {
+            if (!x.target.valid) return false;
+            Vector3 ot, os; Quaternion oq;
+            if (!W3dDecomp(Mo, ot, oq, os)) return false;
+            Vector3 d = W3dTr(x.target.M) - ot;
+            const float dist = d.Length();
+            if (dist < 1e-8f) return false;
+            d = d * (1.0f / dist);
+            // el largo de REPOSO: el dado; si no, el del hueso; si no (un objeto), la distancia del primer
+            // frame, que se ANOTA (como hace Blender con orglength) para que de ahi en mas estire contra eso
+            float L0 = c->restLength;
+            if (L0 <= 0.0f) {
+                if (x.isBone && x.owner.length > 0.0f) L0 = x.owner.length;
+                else { c->restLength = dist; L0 = dist; }
+            }
+            const float sy = dist / L0;
+            const float bul = powf(L0 / dist, c->bulge);
+            float sx = 1.0f, sz = 1.0f;
+            if (c->volumeMode == 0) { sx = sz = sqrtf(bul); }
+            else if (c->volumeMode == 1) sx = bul;
+            else if (c->volumeMode == 2) sz = bul;
+            Quaternion nq;
+            const Vector3 yCur = (oq * Vector3(0, 1, 0)).Normalized();
+            bool okq = false;
+            if (c->keepAxis == 0) {          // Plane X: conserva el X lo mas posible
+                const Vector3 xCur = oq * Vector3(1, 0, 0);
+                Vector3 z = Vector3::Cross(xCur, d);
+                if (z.LengthSq() > 1e-10f) { z = z.Normalized(); okq = W3dBasis(1, 1.0f, d, 2, z, nq); }
+            } else if (c->keepAxis == 1) {   // Plane Z
+                const Vector3 zCur = oq * Vector3(0, 0, 1);
+                Vector3 xx = Vector3::Cross(d, zCur);
+                if (xx.LengthSq() > 1e-10f) { xx = xx.Normalized(); okq = W3dBasis(1, 1.0f, d, 0, xx, nq); }
+            }
+            if (!okq) nq = W3dQuatFromTo(yCur, d) * oq;   // Swing (o el plano quedo degenerado)
+            R = W3dLocalTRS(ot, nq, Vector3(os.x * sx, sy, os.z * sz));
+        } break;
+        case W3dConstraintType::LimitLocation: {
+            Matrix4 O = W3dToSpace(x, x.owner, c->ownerSpace);
+            Vector3 p = W3dTr(O);
+            for (int k = 0; k < 3; k++) {
+                if (c->useMin[k] && p[k] < c->vmin[k]) p[k] = c->vmin[k];
+                if (c->useMax[k] && p[k] > c->vmax[k]) p[k] = c->vmax[k];
+            }
+            W3dSetTr(O, p);
+            R = W3dFromSpace(x, x.owner, O, c->ownerSpace);
+        } break;
+        case W3dConstraintType::LimitRotation: {
+            const Matrix4 O = W3dToSpace(x, x.owner, c->ownerSpace);
+            Vector3 ot, os; Quaternion oq;
+            if (!W3dDecomp(O, ot, oq, os)) return false;
+            Vector3 e = W3dEulerFromMatrix(W3dRotMat(oq), x.eulerOrder);
+            for (int k = 0; k < 3; k++) {
+                if (c->useMin[k] && e[k] < c->vmin[k]) e[k] = c->vmin[k];
+                if (c->useMax[k] && e[k] > c->vmax[k]) e[k] = c->vmax[k];
+            }
+            Quaternion nq;
+            if (!W3dMatrixQuat(W3dMatrixFromEuler(e, x.eulerOrder), nq)) return false;
+            R = W3dFromSpace(x, x.owner, W3dLocalTRS(ot, nq, os), c->ownerSpace);
+        } break;
+        case W3dConstraintType::LimitScale: {
+            const Matrix4 O = W3dToSpace(x, x.owner, c->ownerSpace);
+            Vector3 ot, os; Quaternion oq;
+            if (!W3dDecomp(O, ot, oq, os)) return false;
+            for (int k = 0; k < 3; k++) {
+                if (c->useMin[k] && os[k] < c->vmin[k]) os[k] = c->vmin[k];
+                if (c->useMax[k] && os[k] > c->vmax[k]) os[k] = c->vmax[k];
+            }
+            R = W3dFromSpace(x, x.owner, W3dLocalTRS(ot, oq, os), c->ownerSpace);
+        } break;
+        case W3dConstraintType::LimitDistance: {
+            if (!x.target.valid) return false;
+            const Vector3 ctr = W3dTr(x.target.M);
+            Vector3 p = W3dTr(Mo);
+            Vector3 v = p - ctr;
+            const float dcur = v.Length();
+            if (c->distance <= 0.0f) c->distance = dcur;   // como Blender: la del primer frame
+            const float D = c->distance;
+            const Vector3 dir = (dcur > 1e-8f) ? v * (1.0f / dcur) : worldUp;
+            if (c->distMode == 0)      { if (dcur > D) p = ctr + dir * D; }
+            else if (c->distMode == 1) { if (dcur < D) p = ctr + dir * D; }
+            else p = ctr + dir * D;
+            W3dSetTr(R, p);
+        } break;
+        case W3dConstraintType::MaintainVolume: {
+            Matrix4 O = W3dToSpace(x, x.owner, c->ownerSpace);
+            const Vector3 s(W3dCol(O, 0).Length(), W3dCol(O, 1).Length(), W3dCol(O, 2).Length());
+            const int fa = c->freeAxis;
+            float total = 1.0f;
+            if (c->volMode == 0) total = s.x * s.y * s.z;
+            else if (c->volMode == 1) total = s[fa] * s[fa] * s[fa];
+            else total = s[fa];
+            if (fabsf(total) < 1e-12f) return false;
+            const float fac = sqrtf(fabsf(c->volume / total));
+            for (int k = 0; k < 3; k++) if (k != fa) W3dSetCol(O, k, W3dCol(O, k) * fac);
+            R = W3dFromSpace(x, x.owner, O, c->ownerSpace);
+        } break;
+        case W3dConstraintType::Floor: {
+            if (!x.target.valid) return false;
+            const int idx = c->trackAxis % 3; const bool neg = (c->trackAxis >= 3);
+            Vector3 p = W3dTr(Mo);
+            if (c->useRotation) {
+                // el piso gira con el target: se compara en el espacio del target
+                Matrix4 iT; Matrix4::InvertAffine(x.target.M, iT);
+                Vector3 lp = iT * p;
+                if (!neg) { if (lp[idx] < c->floorOffset) lp[idx] = c->floorOffset; }
+                else      { if (lp[idx] > -c->floorOffset) lp[idx] = -c->floorOffset; }
+                p = x.target.M * lp;
+            } else {
+                // en MUNDO (el piso es horizontal en el mundo aunque el armature este girado)
+                Vector3 pw = x.toWorld * p;
+                const Vector3 tw = x.toWorld * W3dTr(x.target.M);
+                if (!neg) { if (pw[idx] < tw[idx] + c->floorOffset) pw[idx] = tw[idx] + c->floorOffset; }
+                else      { if (pw[idx] > tw[idx] - c->floorOffset) pw[idx] = tw[idx] - c->floorOffset; }
+                p = x.fromWorld * pw;
+            }
+            W3dSetTr(R, p);
+        } break;
+        case W3dConstraintType::Transformation: {
+            if (!x.target.valid) return false;
+            const Matrix4 T = W3dToSpace(x, x.target, c->targetSpace);
+            const Matrix4 O = W3dToSpace(x, x.owner, c->ownerSpace);
+            Vector3 tt, ts, ot, os; Quaternion tq, oq;
+            if (!W3dDecomp(T, tt, tq, ts) || !W3dDecomp(O, ot, oq, os)) return false;
+            const Vector3 src = (c->mapFrom == 0) ? tt : (c->mapFrom == 1) ? W3dEulerFromMatrix(W3dRotMat(tq), x.eulerOrder) : ts;
+            Vector3 oe = W3dEulerFromMatrix(W3dRotMat(oq), x.eulerOrder);
+            for (int k = 0; k < 3; k++) {
+                const int sAx = c->mapAxis[k];
+                const float fmin = c->fromMin[sAx], fmax = c->fromMax[sAx];
+                float u = (fmax != fmin) ? (src[sAx] - fmin) / (fmax - fmin) : 0.0f;
+                if (!c->extrapolate) { if (u < 0.0f) u = 0.0f; if (u > 1.0f) u = 1.0f; }
+                const float out = c->toMin[k] + u * (c->toMax[k] - c->toMin[k]);
+                const bool add = (c->mixMode == 1);
+                if (c->mapTo == 0)      ot[k] = add ? ot[k] + out : out;
+                else if (c->mapTo == 1) oe[k] = add ? oe[k] + out : out;
+                else                    os[k] = add ? os[k] * out : out;   // escala: "Add" multiplica
+            }
+            if (c->mapTo == 1 && !W3dMatrixQuat(W3dMatrixFromEuler(oe, x.eulerOrder), oq)) return false;
+            R = W3dFromSpace(x, x.owner, W3dLocalTRS(ot, oq, os), c->ownerSpace);
+        } break;
+        case W3dConstraintType::Pivot: {
+            Vector3 ot, os; Quaternion oq;
+            if (!W3dDecomp(Mo, ot, oq, os)) return false;
+            if (c->pivotRotAxis >= 0) {
+                // pivotea SOLO en un rango de la rotacion (Blender: "Pivot When"): 0-2 = el eje negativo, 3-5 = positivo
+                const Vector3 e = W3dEulerFromMatrix(W3dRotMat(oq), x.eulerOrder);
+                const int k = c->pivotRotAxis % 3;
+                if (c->pivotRotAxis < 3 ? (e[k] > 0.0f) : (e[k] < 0.0f)) return false;
+            }
+            const Vector3 piv = x.target.valid ? W3dTr(x.target.M) + c->pivotOffset
+                              : (c->pivotAbs ? c->pivotOffset : ot + c->pivotOffset);
+            W3dSetTr(R, piv + oq * (ot - piv));
+        } break;
+        case W3dConstraintType::FollowPath: {
+            if (!x.targetObj) return false;
+            bool closed = false;
+            if (!W3dPathBuild(x.targetObj, closed)) return false;
+            float u = c->fixedPosition ? c->offsetFactor
+                    : ((float)(CurrentFrame - 1) - c->pathOffset) / c->pathDuration;
+            if (closed) { u = u - floorf(u); }
+            Vector3 pt, tan; W3dPathEval(u, pt, tan);
+            Matrix4 P; P.Identity();
+            if (c->followCurve) {
+                // la tangente es el eje de AVANCE del dueno; el arriba, el +Y de la curva
+                Quaternion q;
+                if (W3dAimBasis(c->trackAxis, c->upAxis, tan, Vector3(0, 1, 0), Quaternion(), q)) P = W3dRotMat(q);
+            }
+            W3dSetTr(P, pt);
+            // como Blender: mundo' = curva * camino * mundo del dueno (el pos propio queda como OFFSET sobre
+            // el camino), conservando la escala del dueno
+            Matrix4 N = x.targetObjM * P * Mo;
+            const Vector3 os(W3dCol(Mo, 0).Length(), W3dCol(Mo, 1).Length(), W3dCol(Mo, 2).Length());
+            for (int k = 0; k < 3; k++) { const float l = W3dCol(N, k).Length(); if (l > 1e-12f) W3dSetCol(N, k, W3dCol(N, k) * (os[k] / l)); }
+            R = N;
+        } break;
+        case W3dConstraintType::ClampTo: {
+            if (!x.targetObj) return false;
+            bool closed = false;
+            if (!W3dPathBuild(x.targetObj, closed)) return false;
+            Matrix4 iC; Matrix4::InvertAffine(x.targetObjM, iC);
+            const Vector3 lp = iC * W3dTr(Mo);   // el dueno en el espacio de la curva
+            Vector3 mn = gPathPts[0], mx = gPathPts[0];
+            for (size_t i = 1; i < gPathPts.size(); i++) for (int k = 0; k < 3; k++) {
+                if (gPathPts[i][k] < mn[k]) mn[k] = gPathPts[i][k];
+                if (gPathPts[i][k] > mx[k]) mx[k] = gPathPts[i][k];
+            }
+            int axc = c->clampAxis - 1;
+            if (axc < 0) { axc = 0; for (int k = 1; k < 3; k++) if (mx[k] - mn[k] > mx[axc] - mn[axc]) axc = k; }
+            const float len = mx[axc] - mn[axc];
+            if (len < 1e-8f) return false;
+            float u = (lp[axc] - mn[axc]) / len;
+            if (c->cyclic) u = u - floorf(u);
+            Vector3 pt, tan; W3dPathEval(u, pt, tan);
+            W3dSetTr(R, x.targetObjM * pt);
+        } break;
+        default:
+            return false;   // Billboard / IK no van por aca
+    }
+    x.owner.M = (t >= 1.0f) ? R : W3dConsBlend(Mo, R, t);
+    return true;
+}
+
+// ---- el TARGET de un constraint generico cuyo dueno es un OBJETO (en MUNDO) ----
+static bool W3dConsTargetForObject(W3dConstraint* c, W3dConsCtx& x){
+    x.target.valid = false; x.targetObj = NULL; x.targetObjM.Identity();
+    if (c->sourceType == W3dConstraintSource::View) {
+        // la vista: una matriz con la posicion y la orientacion de la camara bindeada (sin escala)
+        x.target.M = W3dLocalTRS(g_renderCamPos, g_renderCamRot, Vector3(1, 1, 1));
+        x.target.rest.Identity(); x.target.length = 0.0f; x.target.valid = true;
+        return true;
+    }
+    Object* f = c->sourceObj;
+    if (!f) return false;
+    Matrix4 W; f->GetWorldMatrix(W);         // recursivo: la fuente llega con SUS constraints
+    x.targetObj = f; x.targetObjM = W;
+    x.target.M = W; x.target.length = 0.0f;
+    if (f->Parent) f->Parent->GetWorldMatrix(x.target.rest); else x.target.rest.Identity();
+    if (!c->bone.empty() && f->getType() == ObjectType::armature) {
+        Armature* a = (Armature*)f;
+        EvaluatePoseSkeleton(a, CurrentFrame);          // cacheado por frame: gratis si ya se dibujo
+        const int h = W3dChildOfBone(c, a);
+        Matrix4 P, B; float len = 0.0f;
+        if (h >= 0 && W3dBoneFrameMatrix(a, h, P, &B, &len)) {
+            x.target.M = W * P; x.target.rest = W * B; x.target.length = len;
+            if (c->headTail > 0.0f) W3dSetTr(x.target.M, x.target.M * Vector3(0, len * c->headTail, 0));
+        }
+    }
+    x.target.valid = true;
+    return true;
+}
+
+// un constraint de OBJETO va por la matriz generica? Los 4 tipos de la fase 1 siguen por su camino de
+// siempre (resultados BIT A BIT iguales a los de antes) salvo un Copy Location/Rotation que use una opcion
+// de la fase 2 (espacios, invertir, offset, mezcla, un hueso de la fuente): esos van por la generica.
+static bool W3dConsGenericForObject(const W3dConstraint* c){
+    switch (c->type) {
+        case W3dConstraintType::Billboard: case W3dConstraintType::ChildOf: return false;
+        case W3dConstraintType::CopyLocation: case W3dConstraintType::CopyRotation:
+            return c->ownerSpace != W3dConstraintSpace::World || c->targetSpace != W3dConstraintSpace::World ||
+                   c->invX || c->invY || c->invZ || c->useOffset || c->mixMode != 0 || !c->bone.empty();
+        default: return true;
+    }
 }
 
 // contador de DIAGNOSTICO: cuantas veces corrio el CUERPO del evaluador (o sea, las que pasaron
@@ -1038,6 +1735,26 @@ static bool W3dEvalCons(const Object* o, const Matrix4* WpIn, Vector3& posOut, Q
             c->noticeCycle = true;
             w3dLogfW("constraints: ciclo entre '%s' y '%s' (constraint '%s'); se usa la transform base del otro",
                      o->name.c_str(), c->sourceObj->name.c_str(), c->name.c_str());
+        }
+
+        // ---- LOS TIPOS DE LA FASE 2 (Copy Scale .. Clamp To): por la matriz generica, en MUNDO ----
+        if (W3dConsGenericForObject(c)) {
+            if (!baseOk) continue;                      // padre espejado: no hay orientacion que componer
+            W3dConsCtx x;
+            x.isBone = false; x.eulerOrder = 5;         // el euler de un objeto es Rx*Ry*Rz (Quaternion::FromEulerXYZ)
+            x.owner.M = W3dLocalTRS(pw, qw, sw);
+            if (hasParent) x.owner.rest = Wp; else x.owner.rest.Identity();
+            x.owner.valid = true;
+            W3dConsTargetForObject(c, x);              // (los que no usan target siguen igual sin el)
+            if (!W3dConsApply(c, x)) continue;
+            Vector3 pn, sn; Quaternion qn;
+            if (!W3dDecomp(x.owner.M, pn, qn, sn)) continue;
+            pw = pn; qw = qn;
+            // la ESCALA se toma solo si el constraint la cambio de verdad: la ida y vuelta por la matriz
+            // ensucia el ultimo decimal y un Track To no tiene por que mover la escala del objeto
+            if (fabsf(sn.x - sw.x) > 1e-5f * (fabsf(sw.x) + 1e-6f) || fabsf(sn.y - sw.y) > 1e-5f * (fabsf(sw.y) + 1e-6f) ||
+                fabsf(sn.z - sw.z) > 1e-5f * (fabsf(sw.z) + 1e-6f)) { sw = sn; touchedScale = true; }
+            continue;
         }
 
         if (c->type == W3dConstraintType::CopyLocation) {

@@ -74,6 +74,7 @@ static int   fogMode = 0;
 static int   texEnv = 0;            // 0 modulate, 1 replace, 2 DOT3, 3 solo alfa
 static int   texGenCache = -1, matcapCache = -1;
 static float uvMat[4] = { 0, 0, 1, 1 };
+static float uvAff[6] = { 1, 0, 0, 1, 0, 0 };   // la transformacion afin puesta (matcapCache 3)
 static bool  pointSprite = false;
 static float pointSize = 1.0f, lineWidth = 1.0f;
 static int   vpCurrent[4] = { 0, 0, 320, 240 }, scCurrent[4] = { 0, 0, 320, 240 };
@@ -621,6 +622,16 @@ void TexMatrixUV(float du, float dv, float su, float sv) {
     uvMat[0] = du; uvMat[1] = dv; uvMat[2] = su; uvMat[3] = sv;
     curTex.Identity();
     curTex.m[0] = su; curTex.m[5] = sv; curTex.m[12] = du; curTex.m[13] = dv;
+}
+// la TRANSFORMACION UV de un material (afin: desplazamiento + escala + rotacion, ver w3dGraphics.h). Comparte el cache
+// con el matcap y TexMatrixUV (modo 3): cualquiera de los dos la resetea
+void TexMatrixUVAffine(const float* m6) {
+    if (!m6) { TexMatrixUV(0.0f, 0.0f, 1.0f, 1.0f); return; }
+    if (matcapCache == 3) { bool same = true; for (int k = 0; k < 6 && same; k++) same = (uvAff[k] == m6[k]); if (same) return; }
+    matcapCache = 3;
+    for (int k = 0; k < 6; k++) uvAff[k] = m6[k];
+    curTex.Identity();
+    curTex.m[0] = m6[0]; curTex.m[1] = m6[1]; curTex.m[4] = m6[2]; curTex.m[5] = m6[3]; curTex.m[12] = m6[4]; curTex.m[13] = m6[5];
 }
 bool HasTexGen() { return false; }   // (el sphere-map por hardware todavia no: cae al de software)
 

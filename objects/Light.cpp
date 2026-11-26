@@ -32,6 +32,7 @@ Light::Light(Object* parent, float x, float y, float z)
     intensity = 1.0f;
     distance = 0.0f;
     rtRadius = 0.2f; rtRays = 0.0f;            // trazado de rayos: una lampara chica (penumbra suave al prender el trazado), rayos = el global
+    area = false; areaShape = W3D_AREA_SQUARE; areaSizeX = 1.0f; areaSizeY = 1.0f;   // (la de area: un cuadrado de 1 m, como en Blender)
 }
 
 // Método Create
@@ -97,6 +98,31 @@ void Light::SetLightID(GLenum ID) {
     LightID = ID;
 }
 
+// ---- LA LUZ DE AREA (ver Light.h) ----
+bool W3dLightAreaRound(const Light* l) {
+    return l && (l->areaShape == W3D_AREA_DISK || l->areaShape == W3D_AREA_ELLIPSE);
+}
+void W3dLightAreaHalf(const Light* l, float& hx, float& hy) {
+    hx = hy = 0.0f;
+    if (!l) return;
+    const bool two = (l->areaShape == W3D_AREA_RECTANGLE || l->areaShape == W3D_AREA_ELLIPSE);
+    hx = (l->areaSizeX > 0.0f ? l->areaSizeX : 0.0f) * 0.5f;
+    hy = two ? (l->areaSizeY > 0.0f ? l->areaSizeY : 0.0f) * 0.5f : hx;
+}
+void W3dLightAreaAsSpot(const Light* l, float sx, float sy, float att[3]) {
+    float hx, hy; W3dLightAreaHalf(l, hx, hy);
+    const float S = (W3dLightAreaRound(l) ? 3.14159265f : 4.0f) * hx * sx * hy * sy;   // (la superficie en el mundo)
+    att[0] = S * 0.31830989f;   // S / pi: el radio^2 del disco de esa superficie
+    att[1] = 0.0f;
+    att[2] = 1.0f;
+}
+// la ESCALA del objeto en X e Y (la de area se agranda con ella, como en Blender)
+static void AreaScale(Light* l, float& sx, float& sy) {
+    Matrix4 W; l->GetWorldMatrix(W);
+    sx = sqrtf(W.m[0] * W.m[0] + W.m[1] * W.m[1] + W.m[2] * W.m[2]);
+    sy = sqrtf(W.m[4] * W.m[4] + W.m[5] * W.m[5] + W.m[6] * W.m[6]);
+}
+
 // ============================================================================
 //  PRE-PASE DE LUCES. En GL fijo una luz solo ilumina lo que se dibuja DESPUES de encenderla, y las luces se
 //  encendian en el orden del arbol: una luz colgada al final (el fogonazo de un arma, hijo del personaje)
@@ -155,8 +181,16 @@ void Light::RenderObject() {
         W3D_GL_RAW(glLightfv(LightID, GL_DIFFUSE,  difI));
         W3D_GL_RAW(glLightfv(LightID, GL_AMBIENT,  ambient));
         W3D_GL_RAW(glLightfv(LightID, GL_SPECULAR, speI));
-        W3D_GL_RAW(glLightf(LightID, GL_CONSTANT_ATTENUATION, attConstant));
-        W3D_GL_RAW(glLightf(LightID, GL_LINEAR_ATTENUATION,   attLinear));
+        if (area && !directional) {
+            // LA DE AREA sin la cuadratica: 1 / (r + d)^2 sin el d^2 (r = el radio del disco de su superficie): de cerca
+            // la misma luz que la superficie, de lejos cae mas lento (y sin cono alumbra tambien para atras)
+            float sx, sy, att[3]; AreaScale(this, sx, sy); W3dLightAreaAsSpot(this, sx, sy, att);
+            W3D_GL_RAW(glLightf(LightID, GL_CONSTANT_ATTENUATION, att[0]));
+            W3D_GL_RAW(glLightf(LightID, GL_LINEAR_ATTENUATION,   2.0f * sqrtf(att[0])));
+        } else {
+            W3D_GL_RAW(glLightf(LightID, GL_CONSTANT_ATTENUATION, attConstant));
+            W3D_GL_RAW(glLightf(LightID, GL_LINEAR_ATTENUATION,   attLinear));
+        }
         // QUADRATIC + SPOT: SOLO en PC. El GLES1 del N95 nunca los ejecuto (el bloque viejo no los tenia) y
         // parecen colgar el driver -> los dejamos afuera de Symbian (la luz queda puntual/direccional, sin cono).
     }
@@ -184,11 +218,24 @@ void Light::RenderObject() {
         w3dEngine::LightNfv(n, w3dEngine::LightDiffuse,  difI);
         w3dEngine::LightNfv(n, w3dEngine::LightAmbient,  ambient);
         w3dEngine::LightNfv(n, w3dEngine::LightSpecular, speI);
-        w3dEngine::LightNf(n, w3dEngine::LightConstantAtt,  attConstant);
-        w3dEngine::LightNf(n, w3dEngine::LightLinearAtt,    attLinear);
-        w3dEngine::LightNf(n, w3dEngine::LightQuadraticAtt, attQuadratic);
         const float sdir[3] = { 0.0f, 0.0f, -1.0f };       // el "forward" local de la lampara
-        w3dEngine::LightNSpot(n, directional ? 180.0f : spotCutoff, spotExponent, sdir);
+        if (area && !directional) {
+            // LA DE AREA: el foco que la reemplaza donde no esta su cuenta (la luz por vertice) y despues sus MEDIDAS para la
+            // luz por pixel (el backend las lleva a OJO con la matriz de ahora, como la posicion: la escala la agranda)
+            float sx, sy, att[3]; AreaScale(this, sx, sy); W3dLightAreaAsSpot(this, sx, sy, att);
+            w3dEngine::LightNf(n, w3dEngine::LightConstantAtt,  att[0]);
+            w3dEngine::LightNf(n, w3dEngine::LightLinearAtt,    att[1]);
+            w3dEngine::LightNf(n, w3dEngine::LightQuadraticAtt, att[2]);
+            w3dEngine::LightNSpot(n, 90.0f, 1.0f, sdir);
+            float hx, hy; W3dLightAreaHalf(this, hx, hy);
+            const float av[4] = { hx, hy, W3dLightAreaRound(this) ? 1.0f : 0.0f, 0.0f };
+            w3dEngine::LightNfv(n, w3dEngine::LightArea, av);
+        } else {
+            w3dEngine::LightNf(n, w3dEngine::LightConstantAtt,  attConstant);
+            w3dEngine::LightNf(n, w3dEngine::LightLinearAtt,    attLinear);
+            w3dEngine::LightNf(n, w3dEngine::LightQuadraticAtt, attQuadratic);
+            w3dEngine::LightNSpot(n, directional ? 180.0f : spotCutoff, spotExponent, sdir);
+        }
     }
     // GIZMO de la luz (overlay del editor): igual que en desktop
     if (g_lightOverlayHook && !gApplyingPrePass) g_lightOverlayHook(this);
@@ -213,13 +260,17 @@ void Light::RenderObject() {
         W3D_GL_RAW(glLightfv(LightID, GL_DIFFUSE,  difI));
         W3D_GL_RAW(glLightfv(LightID, GL_AMBIENT,  ambient));
         W3D_GL_RAW(glLightfv(LightID, GL_SPECULAR, speI));
-        // atenuacion editable (solo afecta a la puntual/spot; la direccional la ignora OpenGL)
-        W3D_GL_RAW(glLightf(LightID, GL_CONSTANT_ATTENUATION,  attConstant));
-        W3D_GL_RAW(glLightf(LightID, GL_LINEAR_ATTENUATION,    attLinear));
-        W3D_GL_RAW(glLightf(LightID, GL_QUADRATIC_ATTENUATION, attQuadratic));
+        // atenuacion editable (solo afecta a la puntual/spot; la direccional la ignora OpenGL). LA DE AREA: el GL fijo no
+        // tiene luces de area -> el foco que la reemplaza (90 grados con caida coseno desde el centro: ver Light.h)
+        const bool asSpot = area && !directional;
+        float att[3] = { attConstant, attLinear, attQuadratic };
+        if (asSpot) { float sx, sy; AreaScale(this, sx, sy); W3dLightAreaAsSpot(this, sx, sy, att); }
+        W3D_GL_RAW(glLightf(LightID, GL_CONSTANT_ATTENUATION,  att[0]));
+        W3D_GL_RAW(glLightf(LightID, GL_LINEAR_ATTENUATION,    att[1]));
+        W3D_GL_RAW(glLightf(LightID, GL_QUADRATIC_ATTENUATION, att[2]));
         // SPOT: cono + concentracion + direccion = el "forward" local del objeto (0,0,-1 bajo su matriz)
-        W3D_GL_RAW(glLightf(LightID, GL_SPOT_CUTOFF,   directional ? 180.0f : spotCutoff)); // 180 = sin cono (punto)
-        W3D_GL_RAW(glLightf(LightID, GL_SPOT_EXPONENT, spotExponent));
+        W3D_GL_RAW(glLightf(LightID, GL_SPOT_CUTOFF,   directional ? 180.0f : (asSpot ? 90.0f : spotCutoff))); // 180 = sin cono (punto)
+        W3D_GL_RAW(glLightf(LightID, GL_SPOT_EXPONENT, asSpot ? 1.0f : spotExponent));
         float sdir[3] = {0.0f, 0.0f, -1.0f};
         W3D_GL_RAW(glLightfv(LightID, GL_SPOT_DIRECTION, sdir));
     }
@@ -234,6 +285,7 @@ void Light::RenderObject() {
 void W3dLightSetType(Light* l, int type) {
     if (!l) return;
     l->directional = (type == 1);
+    l->area = (type == 3);   // (la de area guarda el cono del foco: si vuelve a ser foco, es el mismo)
     if (type == 2) { if (l->spotCutoff >= 179.5f) { l->spotCutoff = 45.0f; if (l->spotExponent < 1.0f) l->spotExponent = 8.0f; } }
     else if (type == 0) l->spotCutoff = 180.0f;
 }

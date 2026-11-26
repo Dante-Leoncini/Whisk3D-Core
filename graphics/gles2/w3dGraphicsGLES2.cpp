@@ -294,8 +294,8 @@ static Matrix4 curTex;     // matriz de TEXTURA de la unidad 0 (TexMatrixUV / ma
 static std::vector<Matrix4> stkProj, stkMV, stkTex;
 // LAS LUCES del pipeline fijo, con sus valores de fabrica de GL: la 0 difusa y especular blancas, las otras negras;
 // el ambiente de cada luz negro; sin atenuacion; sin cono. La posicion y la direccion del cono se guardan en OJO
-// (transformadas con la modelview del momento, como glLightfv).
-struct Light { bool on; float pos[4], amb[4], dif[4], spec[4], att[3], dir[3], cutCos, expo; };
+// (transformadas con la modelview del momento, como glLightfv). LA DE AREA (LightArea): sus medios lados en OJO
+struct Light { bool on; float pos[4], amb[4], dif[4], spec[4], att[3], dir[3], cutCos, expo; bool area, areaRound; float ax[3], ay[3]; };
 static Light lights[LightsMax];
 static float ambGlobal[4] = {0.2f,0.2f,0.2f,1};   // GL_LIGHT_MODEL_AMBIENT
 static bool  lightsDirty = true;                    // hay que volver a mandar las luces al shader
@@ -308,6 +308,7 @@ static void FactoryLights(){
         L.att[0]=1; L.att[1]=0; L.att[2]=0;
         L.dir[0]=0; L.dir[1]=0; L.dir[2]=-1;
         L.cutCos=-1.0f; L.expo=0.0f;   // corte 180 = sin cono
+        L.area=false; L.areaRound=false;
     }
     lightsDirty=true;
 }
@@ -347,6 +348,7 @@ static bool  texGenSphere=false;   // GL_SPHERE_MAP: las UV salen del reflejo (e
 static int texGenCache = -1;   // 0/1
 static int matcapCache = -1;   // 0 identidad / 1 matcap / 2 desplazamiento de UV
 static float uvMat[4] = { 0, 0, 1, 1 };
+static float uvAff[6] = { 1, 0, 0, 1, 0, 0 };   // la transformacion afin puesta (matcapCache 3)
 static bool  pointSprite=false; // point sprite: samplear la textura con gl_PointCoord (iconos: cursor/origen/luz)
 static float pointSize=1.0f;
 static float vpCurrent[4]={0,0,1,1};   // el glViewport actual (el sprite saca su centro en pixeles de ventana)
@@ -470,7 +472,7 @@ static const char* VS =
 "#endif\n"
 "#endif\n"
 "#if defined(W3D_MAPS) && !defined(W3D_TEX)\n"
-"  vT=aUV.xy;\n"   // (los mapas del material leen la UV aunque no haya textura base)
+"  { vec4 t=uTexM*aUV; vT=t.xy/t.w; }\n"   // (los mapas del material leen la UV aunque no haya textura base, con su transformacion)
 "#endif\n"
 "  vec4 c=aCol;\n"
 "#ifdef W3D_LIGHT_PIXEL\n"
@@ -696,6 +698,56 @@ static const char* FS =
 "#endif\n"
 "#endif\n"
 "#endif\n"
+// LA LUZ DE AREA (Light.h; W3D_AREA, ver DefsProgram). Llega en los arreglos de siempre (UploadLights): uLPos = el centro,
+// uLCone = hacia donde alumbra (w = -2: es de area), uLAtt = el medio ancho (xyz, en OJO) y el medio alto (w; negativo =
+// elipse). La DIFUSA es la cuenta EXACTA de la superficie: el factor de forma del poligono (el rectangulo, o la elipse
+// como un octogono de la misma superficie) por sus aristas, recortado por el horizonte del pixel (la integral de cada
+// arista sin acos, la de Heitz), en las unidades de una puntual (I / d^2 de lejos). El BRILLO va con el PUNTO
+// REPRESENTATIVO (Karis, UE4): el punto de la lampara mas cerca del reflejo, como una puntual que mira para alla; 'aw' =
+// cuanto abre el brillo PBR lo que tapa la lampara (que de cerca no queme)
+"#ifdef W3D_AREA\n"
+"W3D_HIGHP vec3 AreaArista(W3D_HIGHP vec3 a,W3D_HIGHP vec3 b){ W3D_HIGHP float x=dot(a,b); W3D_HIGHP float y=abs(x);"
+" W3D_HIGHP float v=(0.8543985+(0.4965155+0.0145206*y)*y)/(3.4175940+(4.1616724+y)*y);"
+" return cross(a,b)*((x>0.0)?v:0.5*inversesqrt(max(1.0-x*x,1e-7))-v); }\n"
+// (sin lo que queda bajo el horizonte; 'sal' / 'ent' = donde el poligono lo cruza, para cerrar el recortado por el horizonte)
+"void AreaAristaH(W3D_HIGHP vec3 a,W3D_HIGHP vec3 b,W3D_HIGHP vec3 N,inout W3D_HIGHP vec3 F,inout W3D_HIGHP vec3 sal,inout W3D_HIGHP vec3 ent){\n"
+"  W3D_HIGHP float za=dot(N,a); W3D_HIGHP float zb=dot(N,b);\n"
+"  if(za>=0.0 && zb>=0.0){ F+=AreaArista(a,b); return; }\n"
+"  if(za<0.0 && zb<0.0) return;\n"
+"  W3D_HIGHP vec3 x=normalize((za<zb)?a*zb-b*za:b*za-a*zb);\n"
+"  if(za>=0.0){ F+=AreaArista(a,x); sal=x; } else { F+=AreaArista(x,b); ent=x; } }\n"
+"W3D_HIGHP float AreaLuz(W3D_HIGHP vec3 c,W3D_HIGHP vec3 nl,W3D_HIGHP vec4 ax4,W3D_HIGHP vec3 p,W3D_HIGHP vec3 N,out W3D_HIGHP vec3 L,out float at,out float aw){\n"
+"  nl=normalize(nl); L=-nl; at=0.0; aw=0.0;\n"
+"  W3D_HIGHP vec3 ax=ax4.xyz; W3D_HIGHP float hx=length(ax); W3D_HIGHP float hy=abs(ax4.w); bool elip=ax4.w<0.0;\n"
+"  W3D_HIGHP vec3 xd=ax/max(hx,1e-6); W3D_HIGHP vec3 yd=cross(xd,nl); W3D_HIGHP vec3 ay=yd*hy;\n"
+"  W3D_HIGHP float A=(elip?3.14159265:4.0)*hx*hy; W3D_HIGHP float h=dot(p-c,nl);\n"
+"  if(h<=0.0 || A<=0.0) return 0.0;\n"   // (detras de la lampara: alumbra de un solo lado)
+"  W3D_HIGHP vec3 F=vec3(0.0); W3D_HIGHP vec3 sal=vec3(0.0); W3D_HIGHP vec3 ent=vec3(0.0);\n"
+"  if(!elip){ W3D_HIGHP vec3 v0=normalize(c+ax+ay-p); W3D_HIGHP vec3 v1=normalize(c-ax+ay-p);\n"
+"    W3D_HIGHP vec3 v2=normalize(c-ax-ay-p); W3D_HIGHP vec3 v3=normalize(c+ax-ay-p);\n"
+"    AreaAristaH(v0,v1,N,F,sal,ent); AreaAristaH(v1,v2,N,F,sal,ent); AreaAristaH(v2,v3,N,F,sal,ent); AreaAristaH(v3,v0,N,F,sal,ent); }\n"
+"  else { W3D_HIGHP vec3 va=normalize(c+ax*1.0539-p);\n"   // (el octogono con la superficie de la elipse: 1.0539 = sqrt(pi / (2 sqrt 2)))
+"    for(int k=1;k<=8;k++){ float a=float(k)*0.78539816;\n"
+"      W3D_HIGHP vec3 vb=normalize(c+(ax*cos(a)+ay*sin(a))*1.0539-p); AreaAristaH(va,vb,N,F,sal,ent); va=vb; } }\n"
+"  if(dot(sal,sal)>0.5 && dot(ent,ent)>0.5) F+=AreaArista(sal,ent);\n"
+// el punto representativo: donde el reflejo corta el plano de la lampara, llevado adentro de su forma
+"  W3D_HIGHP vec3 R=reflect(normalize(p),N); W3D_HIGHP float dr=dot(R,nl);\n"
+"  W3D_HIGHP vec3 q=((dr<-1e-4)?p-R*(h/dr):p+R*length(p-c))-c;\n"
+"  W3D_HIGHP float u=dot(q,xd); W3D_HIGHP float w=dot(q,yd);\n"
+"  if(!elip){ u=clamp(u,-hx,hx); w=clamp(w,-hy,hy); }\n"
+"  else { W3D_HIGHP float le=length(vec2(u/hx,w/hy)); if(le>1.0){ u/=le; w/=le; } }\n"
+"  W3D_HIGHP vec3 s=c+xd*u+yd*w-p; W3D_HIGHP float ds=length(s); L=s/max(ds,1e-6);\n"
+"  at=max(dot(-L,nl),0.0)/(ds*ds+A*0.31830989);\n"   // (como una puntual de esa intensidad que mira para alla; de cerca no explota)
+"  aw=sqrt(A*0.31830989)/(2.0*max(ds,1e-4));\n"
+"  return max(dot(N,F),0.0)*3.14159265/A; }\n"
+"#define AREA_VARS W3D_HIGHP float ed=0.0; float dk=1.0; float aw=0.0;\n"
+"#define AREA_LIGHT(i) if(uLCone[i].w<-1.5){ ed=AreaLuz(uLPos[i].xyz,uLCone[i].xyz,uLAtt[i],eye,N,L,at,aw); dk=0.0; }\n"
+"#define AREA_DK *dk\n"
+"#define AREA_DIF(i) +md.rgb*uLDif[i].rgb*(ed*kd)\n"
+"#define AREA_EXPO ((aw>0.0)?2.0/(min(rugP+aw,1.0)*min(rugP+aw,1.0))-1.0:expo)\n"
+"#else\n"
+"#define AREA_VARS\n#define AREA_LIGHT(i)\n#define AREA_DK\n#define AREA_DIF(i)\n#define AREA_EXPO expo\n"
+"#endif\n"
 "void main(){\n"
 "#ifdef W3D_CLIP\n"
 "  vec4 Pe = vec4(vP,1.0);\n"   // recorte por planos (desenrollado: GLSL ES 1.00 no indexa uniforms por variable)
@@ -738,7 +790,7 @@ static const char* FS =
 "#endif\n"
 "    vec4 md=(uColorMat==1)?vC:uMDiff; vec4 ma=(uColorMat==1)?vC:uMAmb;\n"
 "#ifdef W3D_MAPS\n"
-"    vec3 acc=((uMapEOn>0.5)?texture2D(uMapE,vT).rgb:uMyME.rgb)+ma.rgb*uAmbGlobal.rgb;\n"   // (la emision de su textura)
+"    vec3 acc=((uMapEOn>0.5)?texture2D(uMapE,vT).rgb*uMyME.a:uMyME.rgb)+ma.rgb*uAmbGlobal.rgb;\n"   // (la emision de su textura, x su fuerza)
 "#else\n"
 "    vec3 acc=uMyME.rgb+ma.rgb*uAmbGlobal.rgb;\n"
 "#endif\n"
@@ -771,8 +823,8 @@ static const char* FS =
 // ambiente del material por el global (el pipeline fijo)
 "    vec3 ambPbr=uAmbGlobal.rgb;\n"
 "#define LIGHT_BRIGHTNESS(i) if(pbr){ W3D_HIGHP vec3 Hh=normalize(L+V); float nh=max(dot(N,Hh),0.0); float vh=max(dot(V,Hh),0.0);"
-" vec3 fl=f0B+(vec3(1.0)-f0B)*((mp.z>0.0 || mp.x>0.0)?pow(1.0-vh,5.0):0.0);"
-" brightnessPbr+=at*tint*fl*uLSpec[i].rgb*(weightB*pow(nh,expo)*(expo+2.0)*0.125*ndl); }"
+" vec3 fl=f0B+(vec3(1.0)-f0B)*((mp.z>0.0 || mp.x>0.0)?pow(1.0-vh,5.0):0.0); float exL=AREA_EXPO;"
+" brightnessPbr+=at*tint*fl*uLSpec[i].rgb*(weightB*pow(nh,exL)*(exL+2.0)*0.125*ndl); }"
 " else { float nh=max(dot(N,normalize(L+vec3(0.0,0.0,1.0))),0.0); col1+=uMSpec.rgb*uLSpec[i].rgb*((uShine>0.0)?pow(nh,uShine):1.0); }\n"
 "#else\n"   // (sin PBR: la luz de siempre)
 "    const float kd=1.0;\n"
@@ -784,16 +836,17 @@ static const char* FS =
 "#else\n"
 "#define SHADOW_LIGHT(i)\n"
 "#endif\n"
-"#define LUZ(i) if(i<uNLights){ W3D_HIGHP vec3 L; float at=1.0; vec3 tint=vec3(1.0);"
+"#define LUZ(i) if(i<uNLights){ W3D_HIGHP vec3 L; float at=1.0; vec3 tint=vec3(1.0); AREA_VARS"
 "      if(uLPos[i].w!=0.0){ W3D_HIGHP vec3 d=uLPos[i].xyz/uLPos[i].w-eye; float dist=length(d); L=d/max(dist,1e-6);"
 "        at=1.0/max(uLAtt[i].x+uLAtt[i].y*dist+uLAtt[i].z*dist*dist,1e-6); }"
 "      else L=normalize(uLPos[i].xyz);"
 "      if(uLCone[i].w>-0.5){ float sd=dot(-L,normalize(uLCone[i].xyz)); at*=(sd>=uLCone[i].w)?pow(max(sd,0.0),uLAtt[i].w):0.0; }"
+"      AREA_LIGHT(i)"
 "      SHADOW_LIGHT(i)"
 "      float ndl=max(dot(N,L),0.0);"
-"      vec3 col1=ma.rgb*uLAmb[i].rgb+md.rgb*uLDif[i].rgb*ndl*kd;"
+"      vec3 col1=ma.rgb*uLAmb[i].rgb+md.rgb*uLDif[i].rgb*ndl*kd AREA_DK;"
 "      if(ndl>0.0){ LIGHT_BRIGHTNESS(i) }"
-"      acc+=at*col1*tint; }\n"
+"      acc+=(at*col1 AREA_DIF(i))*tint; }\n"
 "    LUCES\n"
 // EL ENTORNO 360: la luz difusa (la imagen borrosa en la direccion de la normal) y el reflejo (en la direccion
 // reflejada; mas rugoso, mas borroso), con el mismo Fresnel y el mismo tinte del metal que el brillo de las luces
@@ -1129,6 +1182,17 @@ static unsigned showLights = 1;   // sube cada vez que cambian las luces
 static bool noFill = false;
 static void OnlyUnPixel(){ glEnable(GL_SCISSOR_TEST); glScissor(0,0,1,1); }
 
+// LA LUZ DE AREA (Light.h) va con la luz POR PIXEL del programa ENTERO (un uniform dice cual es de area). Los demas -la
+// luz por vertice- la ven como el foco que la reemplaza (UploadLights). Con un programa POR DRAW (el entero no entra en la
+// GPU: la VideoCore IV del Android 2.3) tambien va el foco: su cuenta se repite en el shader por cada luz (el poligono de
+// la lampara, 4 aristas u 8 si es elipse, recortado por el horizonte) y el driver de la VideoCore IV se cae traduciendolo
+// en el primer draw (SIGSEGV adentro de libGLES_hgl.so, una recursion suya: el Bongo Cat, con 4 luces y una de area, en
+// un Galaxy Ace). No hay como atajarlo: no devuelve error, mata el proceso
+static bool ProgramWithArea(Key key){
+    if(!(key & PLightPixel) || byDraw) return false;
+    const Key e = key >> PState;
+    return e == 0 || ((e >> 43) & 1);
+}
 // los #define de un programa: sus funciones y LUCES = LUZ(0) LUZ(1) ... con sus luces
 static void DefsProgram(Key key, char* d, int size){
     int n = 0;
@@ -1150,6 +1214,7 @@ static void DefsProgram(Key key, char* d, int size){
         if((e >> 41) & 1) n += snprintf(d+n, size-n, "#define W3D_ENVIRONMENT_CUBE\n");
         if((e >> 42) & 1) n += snprintf(d+n, size-n, "#define W3D_SH_V\n");   // (la sonda de luz por vertice)
     } else n += snprintf(d+n, size-n, "#define W3D_SH_V\n");   // (el programa ENTERO: con un uniform)
+    if(ProgramWithArea(key)) n += snprintf(d+n, size-n, "#define W3D_AREA\n");   // (la luz de area por pixel)
     if(!byDraw && MapsHas()) n += snprintf(d+n, size-n, "#define W3D_MAPS\n");   // (los mapas del material)
     if(key & PShadow) n += snprintf(d+n, size-n, "#define W3D_SHADOW\n");   // (las sombras en tiempo real)
 #if !defined(W3D_ES2_NATIVE) || defined(W3D_VKGL)
@@ -1626,7 +1691,12 @@ static void InEyePoint(const float* v, float* out){   // posicion: w 0 = direcci
 void LightNfv(int i,LightFv p,const float* v){
     if(i<0 || i>=LightsMax) return;
     Light& L=lights[i];
-    if(p==LightPosition)     InEyePoint(v,L.pos);
+    if(p==LightPosition){    InEyePoint(v,L.pos); L.area=false; }   // (cada luz se arma desde la posicion: la de area despues)
+    else if(p==LightArea){   // LA DE AREA: sus medios lados en OJO con la modelview de AHORA (la escala la agranda)
+        const float* m=curMV.m;
+        for(int k=0;k<3;k++){ L.ax[k]=m[k]*v[0]; L.ay[k]=m[4+k]*v[1]; }
+        L.area=(v[0]>0.0f && v[1]>0.0f); L.areaRound=(v[2]>0.5f);
+    }
     else if(p==LightDiffuse)  for(int k=0;k<4;k++) L.dif[k]=v[k];
     else if(p==LightAmbient)  for(int k=0;k<4;k++) L.amb[k]=v[k];
     else if(p==LightSpecular) for(int k=0;k<4;k++) L.spec[k]=v[k];
@@ -1644,6 +1714,7 @@ void LightNSpot(int i,float cut,float exponent,const float* dir3){
     for(int k=0;k<3;k++) L.dir[k]=m[k]*dir3[0]+m[4+k]*dir3[1]+m[8+k]*dir3[2];
     L.cutCos=(cut>=180.0f) ? -1.0f : cosf(cut*0.01745329252f);
     L.expo=exponent;
+    L.area=false;   // (un foco comun; la de area manda sus medidas despues: LightArea)
     lightsDirty=true;
 }
 void LightN(int i,bool on){
@@ -1796,7 +1867,10 @@ static void CaptureDelete(){
     capW = capH = 0;
 }
 bool CaptureBegin(int w, int h){
-    if(!ready || w <= 0 || h <= 0 || byDraw || capActive || passEsp != 0) return false;
+    // (un programa por draw -las GPU chicas-: la sonda de reflejo de tiempo real no, por lo que cuesta; el render a
+    // archivo si (w3dRenderFinal): en Android 2.3 sus franjas van aca para no salir con el RGB565 de la ventana. Ahi la
+    // sonda tampoco entra: la captura ya esta puesta)
+    if(!ready || w <= 0 || h <= 0 || (byDraw && !w3dRenderFinal) || capActive || passEsp != 0) return false;
 #if !defined(W3D_ES2_NATIVE) && !defined(W3D_VKGL)
     if(!glGenFramebuffers || !glGenRenderbuffers || !glFramebufferRenderbuffer || !glRenderbufferStorage) return false;
 #endif
@@ -2066,6 +2140,16 @@ void TexMatrixUV(float du,float dv,float su,float sv){
     curTex.Identity();
     curTex.m[0]=su; curTex.m[5]=sv; curTex.m[12]=du; curTex.m[13]=dv;
 }
+// la TRANSFORMACION UV de un material (afin: desplazamiento + escala + rotacion, ver w3dGraphics.h). Comparte el cache
+// con el matcap y TexMatrixUV (modo 3): cualquiera de los dos la resetea
+void TexMatrixUVAffine(const float* m6){
+    if(!m6){ TexMatrixUV(0.0f,0.0f,1.0f,1.0f); return; }
+    if(matcapCache == 3){ bool same = true; for(int k=0;k<6 && same;k++) same = (uvAff[k] == m6[k]); if(same) return; }
+    matcapCache = 3;
+    for(int k=0;k<6;k++) uvAff[k] = m6[k];
+    curTex.Identity();
+    curTex.m[0]=m6[0]; curTex.m[1]=m6[1]; curTex.m[4]=m6[2]; curTex.m[5]=m6[3]; curTex.m[12]=m6[4]; curTex.m[13]=m6[5];
+}
 bool HasTexGen(){ return true; }   // el sphere-map y el matcap van por el shader (como el texgen de GL)
 
 // ============================================================================
@@ -2223,6 +2307,7 @@ static void PickProgram(int nV){
         if(pbr && envTex && envF[3] > 0.5f) e |= (Key)1 << 39;
         if(pbr && envTex && envF[3] > 0.5f && envCube) e |= (Key)1 << 41;   // (el entorno es un cubemap)
         if(pbr && escVp[2] > 0.0f && texScene && (matPbr[3] > 0.0f || matExtra[0] > 0.5f)) e |= (Key)1 << 40;
+        // (el bit 43, alguna luz de area, no va: con un programa por draw la de area es el foco, ver ProgramWithArea)
     } else if((f & PLight) && shOn) e |= (Key)1 << 42;   // (la sonda de luz con la luz por vertice)
     const Key key = (Key)f | (e << PState);
     if(progUse && progUse->key == key) return;
@@ -2243,6 +2328,7 @@ static void UploadLights(){
     if(lightsDirty){ showLights++; lightsDirty=false; }
     if(progUse->showLights == showLights || uNLights < 0) return;
     float pos[LightsMax*4], amb[LightsMax*4], dif[LightsMax*4], spec[LightsMax*4], att[LightsMax*4], cone[LightsMax*4];
+    const bool areaPix = ProgramWithArea(progUse->built);
     int n=0;
     for(int i=0;i<LightsMax;i++){
         const Light& L=lights[i];
@@ -2250,6 +2336,14 @@ static void UploadLights(){
         for(int k=0;k<4;k++){ pos[n*4+k]=L.pos[k]; amb[n*4+k]=L.amb[k]; dif[n*4+k]=L.dif[k]; spec[n*4+k]=L.spec[k]; }
         att[n*4]=L.att[0]; att[n*4+1]=L.att[1]; att[n*4+2]=L.att[2]; att[n*4+3]=L.expo;
         cone[n*4]=L.dir[0]; cone[n*4+1]=L.dir[1]; cone[n*4+2]=L.dir[2]; cone[n*4+3]=L.cutCos;
+        // LA DE AREA en un programa con su cuenta (W3D_AREA): en los MISMOS arreglos (ningun uniform de mas: en un ES 2.0
+        // de verdad no sobran). La atenuacion pasa a ser el medio ancho (xyz) y el medio alto (w; negativo = elipse), y el
+        // corte del cono -2 dice que es de area. En los demas programas queda el foco que la reemplaza (Light.cpp)
+        if(areaPix && L.area){
+            const float hy=sqrtf(L.ay[0]*L.ay[0]+L.ay[1]*L.ay[1]+L.ay[2]*L.ay[2]);
+            att[n*4]=L.ax[0]; att[n*4+1]=L.ax[1]; att[n*4+2]=L.ax[2]; att[n*4+3]=L.areaRound ? -hy : hy;
+            cone[n*4+3]=-2.0f;
+        }
         n++;
     }
     W3D_GLC(glUniform1i(uNLights,n));
@@ -2922,6 +3016,7 @@ static bool ShrinkProgram(Program& p){
     DeleteProgram(p);
     BuildProgram(p, c);
     p.key = requested;
+    w3dDrawsLost++;   // (con el draw fallido se fue lo que ya estaba dibujado: el render a archivo repite la franja)
     if(progUse == &p) progUse = 0;   // (el proximo setupState lo vuelve a poner en uso: su id y sus uniforms)
     w3dLogfW("[w3dGLES2] un programa no entraba en esta GPU al dibujar: se arma sin %s (clave %08x%08x)", sin,
              (unsigned)(requested >> 32), (unsigned)requested);

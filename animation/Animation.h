@@ -65,7 +65,18 @@ extern unsigned int lastRenderTime;
 //                  cada keyframe es un INDICE en SceneAnimation::camNames; interpolacion CONSTANTE (un corte).
 enum { AnimPosition, AnimRotation, AnimScale, AnimVisible, AnimRender, AnimVertex, AnimFov, AnimColor,
        AnimClip, AnimAmbient, AnimSpecular, AnimAtten, AnimSpot, AnimLightMisc, AnimCamActive, AnimShape, AnimStep,
-       AnimSound, AnimLightIntens, AnimCamFocus, AnimBackground, AnimBackgroundRot, AnimBackgroundTex };
+       AnimSound, AnimLightIntens, AnimCamFocus, AnimBackground, AnimBackgroundRot, AnimBackgroundTex,
+       AnimMatColor, AnimMatAlpha, AnimMatEmission, AnimMatEmitStrength, AnimMatSpecular, AnimMatRoughness,
+       AnimMatMetallic, AnimMatTransmission, AnimMatLayerForce, AnimMatUVOffset, AnimMatUVScale, AnimMatUVRotation };
+//   AnimMat*: los canales de un MATERIAL (sus curvas van en las pistas de material de una animacion de escena,
+//             SceneAnimation::materials, no en las de un objeto; ver formato/material-animado.md). AnimColor y
+//             AnimSpecular siguen siendo los de una LUZ:
+//     AnimMatColor        el color base RGB (diffuse[0..2]: X/Y/Z = R/G/B)     AnimMatAlpha     el alfa (diffuse[3], X)
+//     AnimMatEmission     el color de emision RGB (X/Y/Z)                       AnimMatEmitStrength la fuerza de la emision (X)
+//     AnimMatSpecular     specular RGB (X/Y/Z)                                  AnimMatRoughness / AnimMatMetallic (X)
+//     AnimMatTransmission la transmision (X)
+//     AnimMatLayerForce   el factor de una CAPA de textura: el COMPONENTE es el indice de la capa (como AnimShape)
+//     AnimMatUVOffset / AnimMatUVScale  la transformacion UV: X = U, Y = V     AnimMatUVRotation  en grados (X)
 //   AnimBackground:    el COLOR del FONDO del render (X/Y/Z = R/G/B). Las curvas del fondo viven en la COLECCION de la escena
 //   AnimBackgroundRot: la ROTACION de la textura 360 del fondo, en grados (X/Y/Z)
 //   AnimBackgroundTex: QUE fondo (AnimX, interpolacion CONSTANTE): 0 = el color; k = la textura k de la lista del fondo
@@ -423,6 +434,45 @@ bool KfBezierFromEasing(AnimProperty& ap, size_t i, int oldInterp);
 // Si el tramo no es bezier (o el keyframe es la punta), es un borrado comun: no hay forma que mantener.
 void DeleteKeyframeKeepingShape(AnimProperty& ap, int frame);
 
+// ---- LAS PISTAS DE MATERIAL ("se tendria que poder animar los materiales") ----
+// Un material NO es un objeto: vive en la lista global Materials, lo comparten muchas mallas y lo nombran por su nombre.
+// Sus curvas (canales AnimMat*) van en una pista por material dentro de cada animacion de ESCENA
+// (SceneAnimation::materials). La pista nombra al material por PUNTERO (renombrarlo no la pierde; el .w3d la guarda
+// por nombre). Las curvas son las de siempre: interpolaciones, easing, handles y modificadores andan igual.
+// VALOR BASE Y VALOR ANIMADO: como un objeto o una luz, el campo del material es lo que se ve. El cabezal le aplica las
+// curvas (canales sin curva no se tocan); editarlo sin keyframe es temporal (el proximo cambio de frame lo vuelve a la
+// curva). Lo que se GUARDA es su valor en el frame de inicio de la animacion que lo poso (W3dMaterialsRestBegin).
+class Material;   // objects/Materials.h
+class AnimationMaterial {
+public:
+    Material* mat;
+    std::vector<AnimProperty> Properties;
+    AnimationMaterial() : mat(0) {}
+};
+bool  W3dIsMatChannel(int prop);                      // AnimMatColor .. AnimMatUVRotation
+// el valor del canal (prop, comp) en el material (0 si no existe: una capa que no esta) / ponerlo
+float W3dMatChannelGet(const Material* m, int prop, int comp);
+void  W3dMatChannelSet(Material* m, int prop, int comp, float v);
+// las curvas que keyea JUNTAS el rombo de esa fila (un color: R/G/B; lo demas, la suya). Devuelve cuantas (en 'out')
+int   W3dMatChannelComps(int prop, int comp, int* out);
+// el nombre del canal (en ingles: T() al mostrarlo) y el sufijo de la componente ("R", "U"...; "" = ninguno)
+const char* W3dMatChannelBase(int prop);
+const char* W3dMatChannelSuffix(int prop, int comp);
+// aplica las curvas de UN material en 'frame' (continuo). true = escribio algun canal (y lo marca posado)
+bool  W3dApplyMaterialCurves(Material* m, const std::vector<AnimProperty>& props, float frame);
+// EL REPOSO (guardar sin hornear el cabezal, como RestAnimObjects con los objetos): los materiales que el cabezal poso
+// vuelven al valor de sus curvas en el frame de INICIO de su animacion de escena (la activa manda); End los devuelve a
+// lo que habia en la pantalla. 'solo' = solo ese material (NULL = todos)
+struct W3dMatRest {
+    Material* m;
+    float dif[4], emi[3], spe[3], emiK, rug, met, trans, uvOff[2], uvScl[2], uvRot;
+    std::vector<float> layers;
+    void Read(Material* mt);
+    void Write() const;
+};
+void W3dMaterialsRestBegin(std::vector<W3dMatRest>& saved, const Material* only);
+void W3dMaterialsRestEnd(std::vector<W3dMatRest>& saved);
+
 // Animación de objeto
 class AnimationObject { 
 public:
@@ -453,6 +503,9 @@ public:
     // con un global al activar la escena: vive siempre aca. Las camaras van por NOMBRE (sobreviven al guardado).
     std::vector<AnimProperty> camTrack;
     std::vector<std::string>  camNames;
+    // LAS PISTAS DE MATERIAL de esta escena (ver AnimationMaterial arriba). Como camTrack, NO se swapean con un global
+    // al activarla: viven siempre aca (el editor aplica las de la activa; el juego, las de la que suena)
+    std::vector<AnimationMaterial> materials;
     // LAS TIRAS DE ESQUELETO de la escena (una cinematica o una pelicula, no un juego): el armature 'armature' toca
     // su clip 'clip' desde 'frame' (el frame 'frame' de la escena es el primero del clip) mientras se reproduce el
     // timeline, y se acomoda solo al mover la linea de tiempo; fuera del clip queda en su primera / ultima pose.
@@ -491,6 +544,12 @@ const char* W3dCamInFrame(int scene, int frame);
 // aplica la pista en 'frame': llama g_activeCameraHook con el nombre (si hay pista). Lo llaman el editor (al mover
 // el playhead de una animacion de escena) y el juego (W3dAnimSceneTick, animEscena de lua).
 void W3dActiveCamApply(int scene, int frame);
+// ---- LAS PISTAS DE MATERIAL de la animacion de escena 'scene' (ver AnimationMaterial) ----
+// la pista de 'm' (NULL si no tiene y !create). OJO: crear una puede mover las demas (es un vector)
+AnimationMaterial* W3dMatTrack(int scene, Material* m, bool create);
+// aplica todas sus pistas en 'frame' (continuo). Sin pistas no cuesta nada. Lo llaman el editor (ApplyAnimationObjects)
+// y el juego (W3dAnimSceneTick: la animacion de escena que suena)
+void  W3dApplyMaterialTracks(int scene, float frame);
 // los registra main/: el Core no conoce la clase Camera ni CameraActive
 extern void (*g_activeCameraHook)(const char* name);
 extern void (*g_animFovHook)(Object* camera, float fov);   // curva AnimFov en el JUEGO (cinematicas)

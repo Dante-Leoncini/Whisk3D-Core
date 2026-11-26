@@ -773,6 +773,14 @@ extern unsigned long g_consEvalRuns;
 //    'dst' se queda con lo que ya tenia y la lista de 'src' va al final.
 // ============================================================================
 void W3dConstraintsResolveNames(Object* root);
+// ---- la identidad de una REF de constraint (la usa el undo del borrado de objetos, Undo.cpp) ----
+// El constraint detras del slot 'slot' de la puerta de refs de 'o' (de objeto o de HUESO, si 'o' es un
+// armature) y cual de sus punteros es ('which': 0 = target/fuente, 1 = pole). NULL = no es de un constraint.
+W3dConstraint* W3dConstraintAtRef(Object* o, int slot, int* which);
+// por SERIAL entre TODOS los constraints de 'o' (los suyos y los de sus huesos). NULL = ya no esta.
+W3dConstraint* W3dConstraintBySerialAny(Object* o, unsigned int serial);
+// escribe el puntero 'which' (0 target, 1 pole) y su vinculo por nombre
+void W3dConstraintSetRef(W3dConstraint* c, int which, Object* target, const std::string& name);
 void W3dCopyConstraints(Object* dst, const Object* src);
 
 // ORIENTACION de una matriz de mundo. Normaliza las 3 columnas de la base 3x3 (o sea

@@ -34,6 +34,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     layerUnit1 = -1;
     skinArmature = NULL; skinVertex = NULL; skinNormals = NULL; skinVertexCap = 0; skinWithLight = true; lastSkinFrame = -999999; skinPoseSerial = 0; lastSkinBordersFrame = -999999; skinBordersPoseSerial = 0; nextSkinFlat = 0; skinNCtrl = 0; skinGeomVersion = 1; bordersGeomVersion = 0; vtxAnimRecipeBase = 0; // skinning apagado por defecto
     skinAabbMin = Vector3(0,0,0); skinAabbMax = Vector3(0,0,0); skinAabbOk = false; consecutiveSkinCull = 0; // autocull
+    skinRigidBone = -1; skinRigidNow = false;   // (piel rigida: SkinRigidBone)
     skinEpsPos = 0.0f; skinEpsRot = 0.0f; skinIncOk = false; skinPrevWithLight = false; // skinning incremental
     shapeSerial = 0; skinShapeSerial = 0xFFFFFFFFu;   // shape keys: ninguna forma, nada calculado
     meshType = -1;       // no es una primitiva regenerable por defecto
@@ -432,10 +433,18 @@ void Mesh::UninstantiateData(unsigned mask, bool copy) {
 // --- NORMAL MAPPING (DOT3) ---------------------------------------------------------------------------------
 // Base tangente POR VERTICE de render (T en .xyz, handedness en .w). Acumula por triangulo desde pos+UV,
 // ortonormaliza contra la normal y guarda. CACHE: solo recalcula si cambio la geometria/UV (tangentsValid).
+// (TangentsFrom: la misma cuenta sobre otras posiciones / normales: la POSE de una malla con esqueleto)
+static void TangentsFrom(const GLfloat* vertex, const GLbyte* normals, const GLfloat* uv, const MeshIndex* faces,
+                         int vertexSize, int facesSize, GLfloat* tangents);
 void Mesh::ComputeTangents() {
     if (tangentsValid && tangents) return;
     if (!vertex || !uv || !normals || !faces || vertexSize <= 0 || facesSize < 3) return;
     delete[] tangents; tangents = new GLfloat[vertexSize * 4];
+    TangentsFrom(vertex, normals, uv, faces, vertexSize, facesSize, tangents);
+    tangentsValid = true;
+}
+static void TangentsFrom(const GLfloat* vertex, const GLbyte* normals, const GLfloat* uv, const MeshIndex* faces,
+                         int vertexSize, int facesSize, GLfloat* tangents) {
     std::vector<Vector3> tanAcc(vertexSize, Vector3(0,0,0));
     std::vector<Vector3> bitAcc(vertexSize, Vector3(0,0,0));
     for (int i = 0; i + 2 < facesSize; i += 3) {
@@ -466,24 +475,51 @@ void Mesh::ComputeTangents() {
         float hand = (Vector3::Cross(N, T).Dot(bitAcc[v]) < 0.0f) ? -1.0f : 1.0f;
         tangents[v*4] = T.x; tangents[v*4+1] = T.y; tangents[v*4+2] = T.z; tangents[v*4+3] = hand;
     }
-    tangentsValid = true;
 }
 
 // L (vector a la luz) en TANGENT-SPACE por vertice -> nmColors (el "primary color" del DOT3). lightLocal = la luz
-// en el espacio LOCAL de la malla. Se llama cada frame (la luz/camara se mueven). [-1,1] -> [0,1]*255.
+// en el espacio LOCAL de la malla. Se llama cada frame (la luz/camara se mueven).
+// EL RELIEVE RELATIVO: la pasada multiplica lo que ya se dibujo, que tiene la luz de TODAS las lamparas y el ambiente con
+// la normal de la malla (ApplyMaterial). Antes la base iba SIN luz y esta pasada ponia toda la luz con n.L de UNA sola
+// lampara (la principal): lo que le daba la espalda a esa quedaba NEGRO aunque otras lo alumbraran (el traje del gato de
+// frente, con la primera lampara de la escena detras: solo el borde). Ahora es n.L / N.L (n la del mapa, N la de la
+// malla): un mapa plano deja todo igual y el mapa solo agrega el relieve (aclara lo que mira a la luz, oscurece lo que
+// no). En tangent-space N = (0,0,1): L' = (Lx / Lz, Ly / Lz, 1), la mitad en el color (el DOT3 da n.L' / 2) y la mezcla
+// Multiply 2x lo vuelve a duplicar. Con la luz rasante o de atras el relieve se desvanece (L' -> (0,0,1)): esa lampara
+// no alumbra ahi
+// CON ESQUELETO: la POSE de este cuadro (las posiciones y normales que se dibujan y su base tangente), no la de reposo
 void Mesh::UpdateNormalMapColors(const Vector3& lightLocal) {
     if (!tangents || !normals || !vertex || vertexSize <= 0) return;
     if (!nmColors) nmColors = new GLubyte[vertexSize * 4];
+    const GLfloat* pos = vertex; const GLbyte* nor = normals; const GLfloat* tan = tangents;
+    static std::vector<GLfloat> tanPose;   // (la base de la pose: se rehace en cada dibujo, como el skinning)
+    if (skinArmature && skinVertex) {
+        pos = skinVertex;
+        if (skinNormals) nor = skinNormals;
+        if (uv && faces && facesSize >= 3) {
+            tanPose.resize((size_t)vertexSize * 4);
+            TangentsFrom(pos, nor, uv, faces, vertexSize, facesSize, &tanPose[0]);
+            tan = &tanPose[0];
+        }
+    }
     for (int v = 0; v < vertexSize; v++) {
-        Vector3 N(normals[v*3]/127.0f, normals[v*3+1]/127.0f, normals[v*3+2]/127.0f); N = N.Normalized();
-        Vector3 T(tangents[v*4], tangents[v*4+1], tangents[v*4+2]);
-        Vector3 B = Vector3::Cross(N, T) * tangents[v*4+3];
-        Vector3 P(vertex[v*3], vertex[v*3+1], vertex[v*3+2]);
+        Vector3 N(nor[v*3]/127.0f, nor[v*3+1]/127.0f, nor[v*3+2]/127.0f); N = N.Normalized();
+        Vector3 T(tan[v*4], tan[v*4+1], tan[v*4+2]);
+        Vector3 B = Vector3::Cross(N, T) * tan[v*4+3];
+        Vector3 P(pos[v*3], pos[v*3+1], pos[v*3+2]);
         Vector3 L = (lightLocal - P).Normalized();
         float lt = L.Dot(T), lb = L.Dot(B), ln = L.Dot(N);
-        nmColors[v*4]   = (GLubyte)((lt*0.5f+0.5f)*255.0f);
-        nmColors[v*4+1] = (GLubyte)((lb*0.5f+0.5f)*255.0f);
-        nmColors[v*4+2] = (GLubyte)((ln*0.5f+0.5f)*255.0f);
+        float ex = 0.0f, ey = 0.0f;
+        if (ln > 0.0f) {
+            // (rasante: se apaga hasta 0 en el horizonte sin salto; |L'xy| hasta 2, lo que entra en el color)
+            const float w = ln >= 0.2f ? 1.0f / ln : ln / 0.04f;
+            ex = lt * w; ey = lb * w;
+            if (ex > 2.0f) ex = 2.0f; if (ex < -2.0f) ex = -2.0f;
+            if (ey > 2.0f) ey = 2.0f; if (ey < -2.0f) ey = -2.0f;
+        }
+        nmColors[v*4]   = (GLubyte)((ex*0.25f+0.5f)*255.0f + 0.5f);
+        nmColors[v*4+1] = (GLubyte)((ey*0.25f+0.5f)*255.0f + 0.5f);
+        nmColors[v*4+2] = (GLubyte)(0.75f*255.0f + 0.5f);   // (L'z / 2 = 0.5)
         nmColors[v*4+3] = 255;
     }
 }
@@ -710,10 +746,6 @@ static bool gBackgroundActive = false;
 // ===================================================
 // aplica TODO el estado GL de un material, leyendolo DEL material (nada
 // hardcodeado). RenderObject la llama solo cuando el material cambia.
-// la malla que se esta dibujando hace la pasada DOT3 del normal map (la tiene solo el camino sin modificadores). Si no,
-// un material con normal map se dibuja con la luz de siempre: antes la base iba SIN luz esperando una pasada que con un
-// Subdivision no existia y la malla quedaba BLANCA
-static bool gNormalMapWithPass = true;   // (la apaga el loop de grupos de RenderObject mientras dibuja una malla generada)
 static bool gNeedsUV = false;            // (el material tiene mapas con textura en el shader: el array de UV va prendido)
 // LOS MAPAS DEL MATERIAL en el shader (normal, rugosidad, metalico, alfa, emision): los ids de sus texturas (0 = el numero).
 // El normal map va por el shader solo con la luz por pixel (ahi esta la normal de cada pixel); si no, por la pasada DOT3
@@ -752,8 +784,6 @@ static bool NormalInShader(const Material* m, bool withLight, bool solid) {
 
 void Mesh::ApplyMaterial(Material* mat, bool withLight, bool solid, bool offsetEdit) {
     namespace gfx = w3dEngine;
-    // (con normal map de verdad: el pase DOT3 de RenderObject va a correr con una textura subida y UV)
-    const bool nmPass = mat && mat->normalMap && gNormalMapWithPass && !NormalInShader(mat, withLight, solid);
     // X-RAY: la malla se dibuja al 50% para poder ver lo que queda detras. Se aplica sobre el
     // ALPHA (copias locales: el material REAL no se toca), asi vale igual en Solid, Material y
     // Rendered sin duplicar cada camino de dibujo.
@@ -778,7 +808,13 @@ void Mesh::ApplyMaterial(Material* mat, bool withLight, bool solid, bool offsetE
     const float kRt = 1.0f - fBake;
     const float amb[4] = { mat->ambient[0] * tn[0] * kRt,  mat->ambient[1] * tn[1] * kRt,  mat->ambient[2] * tn[2] * kRt,  mat->ambient[3]  * xrayA };
     const float dif[4] = { mat->diffuse[0] * tn[0] * kRt,  mat->diffuse[1] * tn[1] * kRt,  mat->diffuse[2] * tn[2] * kRt,  mat->diffuse[3]  * xrayA * alphaTrans };
-    const float emi[4] = { mat->emission[0] * kRt, mat->emission[1] * kRt, mat->emission[2] * kRt, mat->emission[3] * xrayA };
+    // LA FUERZA DE LA EMISION (Material::emissionStrength): la emision es color x fuerza. Con el MAPA de emision de los
+    // shaders el color sale de su textura: la fuerza le llega en el ALFA de la emision (que la luz no usa: el alfa del
+    // material es el del difuso) y el shader la multiplica (w3dGraphicsGLES2.cpp)
+    const float emK = mat->emissionStrength;
+    const bool emMap = pbrShader && TexMap(mat, W3D_MAP_EMISSION) != 0;
+    const float emi[4] = { mat->emission[0] * emK * kRt, mat->emission[1] * emK * kRt, mat->emission[2] * emK * kRt,
+                           emMap ? emK : mat->emission[3] * xrayA };
     gfx::SmoothShading(true); // el look suave/plano lo dan las NORMALES de la malla, no el material
     // SOMBREADO TOON (Material::toon): la rampa (textureB) en la unidad 1 con la coordenada por vertice que dejo
     // RenderObject (toonUV), y sin la luz de GL. Sin multitextura (GLES2) o sin esa coordenada se dibuja como un material
@@ -843,12 +879,7 @@ void Mesh::ApplyMaterial(Material* mat, bool withLight, bool solid, bool offsetE
         gfx::EnableArray(gfx::ColorArray);
         gfx::Enable(gfx::ColorMaterial);
     } else {
-        // con NORMAL MAP la base va sin luz -> la tiño con el COLOR de la luz aca (sino el N.L sale BLANCO).
-        if (nmPass)
-            gfx::Color4f(mat->diffuse[0]*g_renderLightColor.x, mat->diffuse[1]*g_renderLightColor.y,
-                         mat->diffuse[2]*g_renderLightColor.z, dif[3]);
-        else
-            gfx::Color4f(dif[0], dif[1], dif[2], dif[3]);
+        gfx::Color4f(dif[0], dif[1], dif[2], dif[3]);
         gfx::DisableArray(gfx::ColorArray);
     }
 
@@ -902,6 +933,10 @@ void Mesh::ApplyMaterial(Material* mat, bool withLight, bool solid, bool offsetE
         // OJO: TexGenSphere y TexMatrixMatcap tocan los DOS la matriz de textura -> nunca los dos a la vez.
         if (matcap) { gfx::TexGenSphere(false); gfx::TexMatrixMatcap(true); }   // matcap: matriz de textura (HW)
         else        { gfx::TexMatrixMatcap(false); gfx::TexGenSphere(sphereHW); } // sphere HW (flip-V) o reset
+        // LA TRANSFORMACION UV del material (desplazamiento, escala, rotacion: Material::UVMatrix) en la matriz de textura
+        // de la unidad 0: la leen la textura base, el normal map (DOT3) y, con shaders, los mapas. No con el reflejo: sus
+        // UV no son las de la malla (el matcap y el sphere map usan esa matriz para lo suyo)
+        if (!mat->chrome && mat->UVTransformed()) { float m6[6]; mat->UVMatrix(m6); gfx::TexMatrixUVAffine(m6); }
         gfx::TexEnvReplace(mat->chrome);        // reflejo (cualquier modo) = espejo: textura directa, sin luz
         if (matcap) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer3b(normals, vertexSize); } // normales -> texcoords
         else if (sw) { UpdateChromeUV(eq); // build los arrays por-corner (equirect o sphere); bind/draw en el loop
@@ -917,6 +952,7 @@ void Mesh::ApplyMaterial(Material* mat, bool withLight, bool solid, bool offsetE
         else gfx::MixTexturesOff();
         gfx::TexMatrixMatcap(false);
         gfx::TexGenSphere(false);
+        if (mat->UVTransformed()) { float m6[6]; mat->UVMatrix(m6); gfx::TexMatrixUVAffine(m6); }   // (los mapas: ver arriba)
         gfx::TexEnvReplace(false);
         if (uv) { if (vboRenderActive && vboUVInUse) gfx::TexCoordVBO(vboUVInUse); else gfx::TexCoordPointer2f(0, uv); }
         if (uv && gNeedsUV) gfx::EnableArray(gfx::TexCoordArray);   // (los mapas del material leen la UV)
@@ -929,8 +965,10 @@ void Mesh::ApplyMaterial(Material* mat, bool withLight, bool solid, bool offsetE
     if (normals && (sphereHWn || (withLight && mat->LightRealTime() && !toonOn))) gfx::EnableArray(gfx::NormalArray);
     else gfx::DisableArray(gfx::NormalArray);
     // la iluminacion en si solo si el material la pide (el chrome con GL_REPLACE la ignora -> espejo perfecto).
-    // Con NORMAL MAP la base va SIN luz (albedo plano): el pass DOT3 de abajo aporta toda la iluminacion (N.L).
-    if (withLight && mat->LightRealTime() && !nmPass && !toonOn) gfx::Enable(gfx::Lighting);
+    // Con NORMAL MAP sin shaders la base va CON la luz de siempre (todas las lamparas y el ambiente): la pasada DOT3 de
+    // RenderObject solo le agrega el relieve (UpdateNormalMapColors). Antes la base iba sin luz y la pasada ponia TODA la
+    // luz con n.L de una sola lampara: lo que le daba la espalda a esa quedaba negro aunque otras lo alumbraran
+    if (withLight && mat->LightRealTime() && !toonOn) gfx::Enable(gfx::Lighting);
     else gfx::Disable(gfx::Lighting);
     gfx::ShadingPerPixel(PerPixelEf(mat));   // (solo vale con shaders y con la luz prendida)
     // LAS SOMBRAS EN TIEMPO REAL, si la malla las recibe: con la luz de tiempo real, la del sol no llega donde algo la
@@ -941,7 +979,7 @@ void Mesh::ApplyMaterial(Material* mat, bool withLight, bool solid, bool offsetE
     if (gShadowObject) {
         int mode = 0;
         if (!solid && withLight) {
-            if (mat->LightRealTime() && !nmPass && !toonOn) mode = 1;
+            if (mat->LightRealTime() && !toonOn) mode = 1;
             else if (mat->lighting && mat->FactorLightBaked() >= 0.999f) {
                 const TexLayer* hl = NULL;
                 for (size_t k = 0; k < mat->layers.size() && !hl; k++)
@@ -1843,6 +1881,8 @@ unsigned int g_w3dForcedTexture = 0;
 void Mesh::RawPrepare() {
     namespace gfx = w3dEngine;
     rawVBO = false;
+    // (la pose al dia: con la piel rigida RenderObject no deforma vertices, asi que skinVertex podia quedar de antes)
+    if (skinArmature) { extern void SkinMesh(Mesh*); SkinMesh(this); }
     GLfloat* posBuf = (skinArmature && skinVertex) ? skinVertex : vertex;
     GLbyte*  norBuf = (skinArmature && skinNormals) ? skinNormals : normals;
     if (gfx::VBOSupported() && !skinArmature && posBuf && faces && facesSize >= 3) {
@@ -2056,11 +2096,18 @@ static void IndirectLightVertices(Mesh* m, const Material* mat, const GLfloat* p
             x.att[0] = l->attConstant; x.att[1] = l->attLinear; x.att[2] = l->attQuadratic;
         }
         x.cone = !x.dir && l->spotCutoff < 179.9f;
+        const bool area = !x.dir && l->area;   // LA DE AREA: como el foco que la reemplaza sin shaders (Light.h)
+        if (area) {
+            x.cone = true;
+            const float sx = sqrtf(LW.m[0]*LW.m[0] + LW.m[1]*LW.m[1] + LW.m[2]*LW.m[2]);
+            const float sy = sqrtf(LW.m[4]*LW.m[4] + LW.m[5]*LW.m[5] + LW.m[6]*LW.m[6]);
+            W3dLightAreaAsSpot(l, sx, sy, x.att);
+        }
         if (x.cone) {
             float d[3] = { -LW.m[8], -LW.m[9], -LW.m[10] };   // (el "adelante" local: -Z)
             const float ln = sqrtf(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
             for (int k = 0; k < 3; k++) x.sd[k] = ln > 1e-6f ? d[k] / ln : 0.0f;
-            x.cosCone = cosf(l->spotCutoff * 3.14159265f / 180.0f); x.expo = l->spotExponent;
+            x.cosCone = area ? 0.0f : cosf(l->spotCutoff * 3.14159265f / 180.0f); x.expo = area ? 1.0f : l->spotExponent;
         }
         ls.push_back(x);
     }
@@ -2087,7 +2134,7 @@ static void IndirectLightVertices(Mesh* m, const Material* mat, const GLfloat* p
         const float* light = &lit[(size_t)v * 3];
         unsigned char* out = &gLightIndCol[(size_t)v * 4];
         for (int k = 0; k < 3; k++) {
-            float c = mat->emission[k] + mat->diffuse[k] * light[k];
+            float c = mat->emission[k] * mat->emissionStrength + mat->diffuse[k] * light[k];   // (emision x su fuerza)
             if (vc) c *= vcol[v*4+k] / 255.0f;
             out[k] = (unsigned char)(c <= 0.0f ? 0 : c >= 1.0f ? 255 : (int)(c * 255.0f + 0.5f));
         }
@@ -2137,6 +2184,30 @@ void Mesh::RenderObject() {
     if ((!faces || facesSize < 3) && !editActive && !hasGen && looseEdges.empty()) return;
     GuardProbe guardProbe(this);   // (la luz indirecta de una sonda de luz, si hay una que alcance a la malla)
     ShadowGuard shadowGuard(this); // (las sombras en tiempo real, si las recibe)
+    // PIEL RIGIDA (SkinRigidBone, animation/SkeletalAnimation.cpp): la malla con esqueleto que sigue ENTERA a un hueso se
+    // dibuja como una malla quieta (el bind, de su VBO estatico) con la matriz de skin de ese hueso encima de la del
+    // objeto: la misma pose, sin deformar ni re-subir un vertice por cuadro. No va si algo de este dibujo necesita los
+    // vertices posados en la CPU: el toon (su rampa sale de la normal posada), un shader escrito (corre en la CPU sobre
+    // las posiciones) o el normal map de la luz DOT3 (UpdateNormalMapColors); tampoco al editarla o pintarla
+    int rigidBone = -1;
+    if (skinArmature && !editActive && !weightPaintOn && !vertexPaintOn && !hasGen) {
+        bool cpuVertex = false;
+        for (size_t g = 0; g < materialsGroup.size() && !cpuVertex; g++) {
+            const Material* mt = materialsGroup[g].material;
+            if (mt && (mt->toon || mt->shaderOn || mt->normalMap)) cpuVertex = true;
+        }
+        extern int SkinRigidBone(Mesh*);
+        if (!cpuVertex) rigidBone = SkinRigidBone(this);
+    }
+    struct RigidGuard {
+        Mesh* m; bool on;
+        RigidGuard(Mesh* mm, const float* M) : m(mm), on(M != NULL) {
+            m->skinRigidNow = on;
+            if (on) { w3dEngine::PushMatrix(); w3dEngine::MultMatrix(M); }
+        }
+        ~RigidGuard() { if (on) { w3dEngine::MatrixMode(w3dEngine::ModelView); w3dEngine::PopMatrix(); } m->skinRigidNow = false; }
+    } rigidGuard(this, rigidBone >= 0 ? skinArmature->bones[(size_t)rigidBone].skinMatrix.m : NULL);
+    const bool skinnedNow = skinArmature && rigidBone < 0;   // (deformada vertice por vertice en este dibujo)
     // ---- AUTOCULL por FRUSTUM (clave N95): una malla ENTERA fuera de la camara que esta dibujando no se
     //      skinnea ni se dibuja (en un primer plano, un cuerpo skinneado de 10k verts se deformaba y subia
     //      al GL para nada). El test lo pone el EDITOR via g_meshVisibleHook (Culling.cpp/W3dAabbVisible,
@@ -2150,7 +2221,7 @@ void Mesh::RenderObject() {
         extern bool (*g_meshVisibleHook)(const Vector3&, const Vector3&);
         if (g_meshAutocull && g_meshVisibleHook && !editActive && !weightPaintOn && !vertexPaintOn && !hasGen) {
             bool test = false; Vector3 mnL(0,0,0), mxL(0,0,0);
-            if (skinArmature) {
+            if (skinnedNow) {
                 // UN SALTO DE CUADRO (arrastrar la linea de tiempo, ir al principio, la vuelta del loop) deja la caja
                 // de la pose de ANTES, que puede estar fuera de cuadro aunque el personaje ya volvio: se culleaba y no
                 // se volvia a skinnear hasta 30 cuadros despues (se veia el esqueleto y la malla aparecia tarde). En
@@ -2177,7 +2248,7 @@ void Mesh::RenderObject() {
                 // el hook testea el AABB en coords LOCALES contra las matrices VIGENTES del pase
                 // (el ModelView ya trae el transform de este objeto): sin esquinas a mundo aca.
                 if (!g_meshVisibleHook(mnL, mxL)) {
-                    if (skinArmature && ++consecutiveSkinCull >= 30) {
+                    if (skinnedNow && ++consecutiveSkinCull >= 30) {
                         consecutiveSkinCull = 0;
                         extern void SkinMesh(Mesh*); SkinMesh(this); // refresca pose + AABB, sin dibujar
                     }
@@ -2210,7 +2281,7 @@ void Mesh::RenderObject() {
     // SKINNING: si hay esqueleto asignado, deformar a la pose (posBuf = skinVertex). Posiciones + normales rotadas.
     GLfloat* posBuf = vertex;
     GLbyte*  norBuf = normals;
-    if (skinArmature) {
+    if (skinnedNow) {
         // normales rotadas SOLO si algun mesh part tiene luz (sino no vale la pena; N95). w3dRenderNoLight -> todo unlit.
         // El pase Normal View tambien las necesita (colorea por normal en view-space) aunque el material sea unlit.
         // (el TOON tambien: su rampa se lee con la normal posada)
@@ -2570,15 +2641,15 @@ void Mesh::RenderObject() {
             if ((comp & W3DMD_UV) && vboUV)     { gfx::DeleteBuffer(vboUV);  vboUV = 0; }
             if ((comp & W3DMD_FACES) && vboIdx) { gfx::DeleteBuffer(vboIdx); vboIdx = 0; }
             unsigned geomShow = skinGeomVersion;
-            unsigned poseBe   = skinArmature ? skinArmature->poseSerial : 0u; // pose ACTUAL del esqueleto (sube al posar/animar)
+            unsigned poseBe   = skinnedNow ? skinArmature->poseSerial : 0u; // pose ACTUAL del esqueleto (sube al posar/animar)
             const bool posOwn = !(comp & W3DMD_POS);
             // atributos ESTATICOS (col/uv/idx + pos/nor base): re-subir solo al cambiar la geometria
-            if (vboGeomVer != geomShow || vboVertN != vertexSize || (posOwn && !vboPos)) { UploadVBO(posBuf, norBuf, false); vboGeomVer = geomShow; vboSkinFrame = lastSkinFrame; vboPoseSerial = poseBe; vboPoseSkinned = (skinArmature != NULL); }
+            if (vboGeomVer != geomShow || vboVertN != vertexSize || (posOwn && !vboPos)) { UploadVBO(posBuf, norBuf, false); vboGeomVer = geomShow; vboSkinFrame = lastSkinFrame; vboPoseSerial = poseBe; vboPoseSkinned = skinnedNow; }
             // POSE skinneada: el VBO de pos/nor ya tiene la pose ACTUAL? Se compara por SERIAL, no por # de frame: posar
             // un hueso o elegir un clip en el MISMO frame cambia la pose sin cambiar el frame -> el chequeo por frame la
             // daba por "ya subida" y quedaba la malla STALL (el bug: el esqueleto se movia pero la malla no).
-            bool poseInVBO = (!skinArmature) || (vboPoseSerial == poseBe);
-            if (skinArmature && !poseInVBO) {
+            bool poseInVBO = (!skinnedNow) || (vboPoseSerial == poseBe);
+            if (skinnedNow && !poseInVBO) {
                 // la pose cambio desde la ultima subida. Si esta ANIMANDO (cambio TAMBIEN desde el render anterior) NO
                 // re-subimos: re-especificar el VBO que el tiler del MBX todavia lee del frame previo = STALL de sync
                 // (la causa del jitter de fps). Se dibuja pos/nor de client-array este frame (mismo transfer, sin stall).
@@ -2586,8 +2657,9 @@ void Mesh::RenderObject() {
                 // beneficio de orbitar un personaje pausado).
                 bool animatingActive = (poseBe != vboPoseSerialPrev);
                 if (!animatingActive) { UploadVBO(posBuf, norBuf, true); vboSkinFrame = lastSkinFrame; vboPoseSerial = poseBe; vboPoseSkinned = true; poseInVBO = true; }
-            } else if (!skinArmature && vboPoseSkinned) {
-                UploadVBO(posBuf, norBuf, true); vboPoseSkinned = false; // armature removido -> re-subir el bind (sino queda la ultima pose)
+            } else if (!skinnedNow && vboPoseSkinned) {
+                // armature removido, o la malla paso a dibujarse RIGIDA -> re-subir el bind (sino queda la ultima pose)
+                UploadVBO(posBuf, norBuf, true); vboPoseSkinned = false;
             }
             vboSkinFramePrev = lastSkinFrame;
             vboPoseSerialPrev = poseBe;
@@ -2698,11 +2770,7 @@ void Mesh::RenderObject() {
                 if (vc) gfx::ColorPointer4ub(vc);
                 lightIndPlaced = false; last = NULL;
             }
-            if (mat != last) {
-                gNormalMapWithPass = !useGen;   // (la pasada DOT3 de abajo es solo del camino sin modificadores)
-                ApplyMaterial(mat, withLight, solid, editActive); last = mat;
-                gNormalMapWithPass = true;
-            }
+            if (mat != last) { ApplyMaterial(mat, withLight, solid, editActive); last = mat; }
             // LA LUZ INDIRECTA POR VERTICE (ver IndirectLightVertices): sin la luz de GL, con los colores de la CPU
             if (lightIndCPU && !solid && mat->lightIndirect && mat->LightRealTime() && withLight) {
                 if (useGen) IndirectLightVertices(this, mat, genVertex, genNormals, genColor, genVertexSize);
@@ -2822,13 +2890,17 @@ void Mesh::RenderObject() {
                 last = NULL; // el trazo toco el z-func: re-aplicar el proximo material
             }
 
-            // NORMAL MAPPING (DOT3) — pass 2 sobre la base: textura normal + N.L (color=L por vertice) en blend
-            // MULTIPLY -> base * (N.L). Textura UNICA (sin multitextura) -> portable PC + N95. Excluyente con chrome.
+            // NORMAL MAPPING (DOT3) — pass 2 sobre la base: textura normal + el relieve RELATIVO n.L / N.L (color = L' por
+            // vertice, ver UpdateNormalMapColors) en blend MULTIPLY 2x -> base * (n.L / N.L). Textura UNICA (sin
+            // multitextura) -> portable PC + N95. Excluyente con chrome.
             if (!solid && mat->normalMap && mat->normalTexture && mat->normalTexture->iID && uv && !NormalInShader(mat, withLight, solid)) {
                 ComputeTangents();
                 if (tangents) {
-                    if (!nmReady) { UpdateNormalMapColors(g_renderLightPos); nmReady = true; } // N.L con la LUZ de la escena
-                    gfx::Enable(gfx::Blend); gfx::BlendMode(1);             // Multiply (oscurece por N.L)
+                    if (!nmReady) {   // N.L con la LUZ de la escena (g_renderLightPos esta en el MUNDO: al espacio de la malla)
+                        Matrix4 W, Wi; GetWorldMatrix(W); Matrix4::InvertAffine(W, Wi);
+                        UpdateNormalMapColors(Wi * g_renderLightPos); nmReady = true;
+                    }
+                    gfx::Enable(gfx::Blend); gfx::BlendMode(3);             // Multiply 2x (el DOT3 da la mitad)
                     gfx::DepthFunc(gfx::DepthEqual); gfx::DepthMask(false); // misma superficie, NO re-escribe z
                     gfx::Disable(gfx::Lighting); gfx::DisableArray(gfx::NormalArray);
                     gfx::Disable(gfx::ColorMaterial);
@@ -2862,6 +2934,7 @@ void Mesh::RenderObject() {
                 gfx::Color4f(1.0f, 1.0f, 1.0f, 1.0f);
                 gfx::TexEnvReplace(false);
                 gfx::MixTexturesOff();   // (las capas van con una unidad: la mezcla de texturas es de la base)
+                if (mat->UVTransformed()) gfx::TexMatrixMatcap(false);   // (cada capa con SU UV: sin la transformacion del material)
                 bool uvForeign = false;
                 for (size_t c = 0; c < mat->layers.size(); c++) {
                     const TexLayer& cap = mat->layers[c];
@@ -2891,10 +2964,12 @@ void Mesh::RenderObject() {
                             gfx::TexFilter(!gfx::PixelatedGlobal() && mat->filtered); gfx::TexWrap(mat->repeat);
                             const GLfloat* buv = UVOfMap(mat, W3D_MAP_BASE);
                             gfx::TexCoordPointer2f(0, buv ? buv : uv);
+                            if (mat->UVTransformed()) { float m6[6]; mat->UVMatrix(m6); gfx::TexMatrixUVAffine(m6); }   // (la base: la suya)
                             gfx::MixTextures(cap.tex->iID, 1.0f, !gfx::PixelatedGlobal() && mat->filtered, mat->repeat, 2);
                             gfx::MixTexturesUV(cuv ? cuv : uv);
                             gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxDraw[dgrp.startDrawn]);
                             gfx::MixTexturesOff();
+                            if (mat->UVTransformed()) gfx::TexMatrixMatcap(false);
                         } else {
                             gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxDraw[dgrp.startDrawn]);
                             gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxDraw[dgrp.startDrawn]);
@@ -3080,7 +3155,7 @@ void Mesh::RenderBorders(const float* color, float width, bool pushBack) {
     // seguir la pose (sino la silueta verde queda en bind mientras el render se deforma). Las condiciones que pidio
     // (Object Mode solo si seleccionado / Edit Mode solo si "Display in Edit Mode") YA estan codificadas: el
     // contorno solo se dibuja al seleccionar, y skinArmature es NULL cuando "Display in Edit Mode" esta OFF en edit.
-    if (!usesGen && skinArmature && skinVertex && E && !E->empty()){
+    if (!usesGen && skinArmature && skinVertex && !skinRigidNow && E && !E->empty()){   // (rigida: el bind, con su matriz)
         extern int CurrentFrame;
         const std::vector<int>& ed = *E;
         // gate por (frame, poseSerial): al elegir un clip o posar en el MISMO frame la pose cambia sin cambiar el frame

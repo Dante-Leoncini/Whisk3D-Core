@@ -46,6 +46,7 @@ void BindTexture(unsigned int id) { W3D_TABLE()->BindTexture(id); }
 void TexGenSphere(bool on) { W3D_TABLE()->TexGenSphere(on); }
 void TexMatrixMatcap(bool on) { W3D_TABLE()->TexMatrixMatcap(on); }
 void TexMatrixUV(float du, float dv, float su, float sv) { W3D_TABLE()->TexMatrixUV(du, dv, su, sv); }
+void TexMatrixUVAffine(const float* m6) { W3D_TABLE()->TexMatrixUVAffine(m6); }
 bool HasTexGen() { return W3D_TABLE()->HasTexGen(); }
 void TexEnvReplace(bool on) { W3D_TABLE()->TexEnvReplace(on); }
 void TexEnvDot3(bool on) { W3D_TABLE()->TexEnvDot3(on); }

@@ -211,6 +211,7 @@ static int   gTexEnvCache    = -1;   // 0=modulate 1=replace 2=dot3 3=alphaonly
 static int   gTexGenCache    = -1;   // 0/1 (sphere-map por texgen + su matriz de textura)
 static int   gMatcapCache    = -1;   // 0 identidad / 1 matcap / 2 desplazamiento de UV (la matriz de textura)
 static float gUVMat[4]       = { 0, 0, 1, 1 };   // el desplazamiento puesto (gMatcapCache 2)
+static float gUVAff[6]       = { 1, 0, 0, 1, 0, 0 };   // la transformacion afin puesta (gMatcapCache 3)
 static int   gSmoothCache    = -1;   // 0/1 (shade model)
 static float gAlphaRefCache  = -1e9f;
 static signed char gArrOn[4]    = { -1, -1, -1, -1 }; // client arrays: -1 desconocido / 0 / 1
@@ -929,6 +930,24 @@ void TexMatrixUV(float du, float dv, float su, float sv) {
     MatrixMode(ModelView);
 }
 
+// la TRANSFORMACION UV de un material (afin: desplazamiento + escala + rotacion, ver w3dGraphics.h). Comparte el cache
+// con el matcap y TexMatrixUV (modo 3): cualquiera de los dos la resetea
+void TexMatrixUVAffine(const float* m6) {
+    if (!m6) { TexMatrixUV(0.0f, 0.0f, 1.0f, 1.0f); return; }
+    if (gMatcapCache == 3) {
+        bool same = true;
+        for (int k = 0; k < 6 && same; k++) same = (gUVAff[k] == m6[k]);
+        if (same) return;
+    }
+    gMatcapCache = 3;
+    for (int k = 0; k < 6; k++) gUVAff[k] = m6[k];
+    g_statStateChanges++;
+    const GLfloat M[16] = { m6[0], m6[1], 0, 0,  m6[2], m6[3], 0, 0,  0, 0, 1, 0,  m6[4], m6[5], 0, 1 };
+    MatrixMode(TextureMatrix);
+    W3D_GLC(glLoadMatrixf(M));
+    MatrixMode(ModelView);
+}
+
 // true si el backend tiene glTexGen (sphere-map por HARDWARE). PC = si; GLES1 del N95 = NO -> el matcap se
 // calcula por SOFTWARE (sphere-map por vertice, como el equirect). Lo usa el render del chrome para elegir.
 bool HasTexGen() {
@@ -1102,11 +1121,13 @@ static GLenum LightFvGL(LightFv p) {
         case LightDiffuse:  return GL_DIFFUSE;
         case LightSpecular: return GL_SPECULAR;
         case LightPosition: return GL_POSITION;
+        case LightArea:     break;   // (sin luces de area: no llega, ver LightNfv)
     }
     return GL_AMBIENT;
 }
 // (la POSICION se transforma con la modelview vigente: la perezosa tiene que estar en GL)
-void Light0fv(LightFv p, const float* v) { if (p == LightPosition) MatricesSync(); W3D_GLC(glLightfv(GL_LIGHT0, LightFvGL(p), v)); }
+// (LA DE AREA: el GL fijo no la tiene, Light.cpp ya la armo como foco)
+void Light0fv(LightFv p, const float* v) { if (p == LightArea) return; if (p == LightPosition) MatricesSync(); W3D_GLC(glLightfv(GL_LIGHT0, LightFvGL(p), v)); }
 static GLenum LightFGL(LightF p) {
     switch (p) {
         case LightConstantAtt:  return GL_CONSTANT_ATTENUATION;
@@ -1124,7 +1145,7 @@ void SetLightEnabled(unsigned int id, bool on) {
     if (on) W3D_GLC(glEnable(id)); else W3D_GLC(glDisable(id));
 }
 void LightNfv(int i, LightFv p, const float* v) {
-    if (i < 0 || i >= LightsMax) return;
+    if (i < 0 || i >= LightsMax || p == LightArea) return;
     if (p == LightPosition) MatricesSync();
     g_otherStat++;
     W3D_GLC(glLightfv(GL_LIGHT0 + (GLenum)i, LightFvGL(p), v));

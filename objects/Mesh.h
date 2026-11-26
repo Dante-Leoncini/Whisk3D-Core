@@ -460,6 +460,11 @@ class Mesh : public Object {
         std::vector<int>   skinBoneCp;
         std::vector<int>   skinCpRvOff;    // CSR inverso: CP -> render-verts
         std::vector<int>   skinCpRv;
+        // PIEL RIGIDA (SkinRigidBone, animation/SkeletalAnimation.cpp): el hueso que la malla sigue ENTERA (-1 = ninguno
+        // o una mezcla). Se calcula al armar el CSR. skinRigidNow: este dibujo va con la matriz del hueso (RenderObject;
+        // RenderBorders usa entonces el contorno del bind)
+        int                skinRigidBone;
+        bool               skinRigidNow;
         std::vector<unsigned char> skinCpDirty; // bitmap temporal por CP (se limpia por lista, no con memset)
         float     skinEpsPos, skinEpsRot;  // umbral sub-visible (escalado al tamaño de la malla)
         bool      skinIncOk;               // hay referencia valida (un pase COMPLETO con este layout)

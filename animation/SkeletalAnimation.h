@@ -127,6 +127,9 @@ void PrepareAuthoredSkin(Armature* a);
 extern int g_skinFormula;
 // deforma m->skinVertex a la pose del esqueleto (m->skinArmature) en CurrentFrame. Liviano; no-op si no hay skinning.
 class Mesh; void SkinMesh(Mesh* m);
+// PIEL RIGIDA: si la malla sigue ENTERA a un solo hueso, su indice (RenderObject la dibuja con la matriz de skin de ese
+// hueso, sin deformar vertices); si no, -1. Deja la pose evaluada al cuadro actual. Ver SkeletalAnimation.cpp
+int SkinRigidBone(Mesh* m);
 
 // FK de la pose ACTIVADO (default true): reproduce la animacion moviendo los huesos. El FK usa los transforms
 // LOCALES del FBX (Lcl Translation/Rotation/Scaling) y convierte la salida Z-up(nodo)->Y-up. Los armatures MANUALES

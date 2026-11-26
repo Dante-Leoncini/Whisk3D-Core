@@ -101,6 +101,10 @@ public:
     // W3dZipWriter::CopyFrom para reenvasar una entrada sin recomprimirla
     bool ReadRaw(const std::string& name, std::vector<unsigned char>& out,
                    unsigned* method, unsigned* crc, unsigned* origLen);
+    // la HUELLA de una entrada (el CRC32 y el tamano descomprimido del directorio central) SIN leer sus datos: lo que
+    // necesita el guardado de cada entrada que reenvasa (antes leia la entrada entera con ReadRaw para eso, y despues
+    // CopyFrom la volvia a leer). Valida su local header como ReadRaw: false = no esta o esta rota
+    bool Info(const std::string& name, unsigned* crc, unsigned* origLen);
 
     void List(std::vector<std::string>& out) const;   // en el orden del directorio
     size_t Count() const { return ents.size(); }

@@ -206,6 +206,13 @@ W3D_BACKEND_CLOSE
 W3D_BACKEND_OPEN
     void TexMatrixUV(float du, float dv, float su, float sv);
 W3D_BACKEND_CLOSE
+    // la matriz de textura como una transformacion AFIN de las UV, por columnas: u' = m[0]*u + m[2]*v + m[4],
+    // v' = m[1]*u + m[3]*v + m[5]. Es la TRANSFORMACION UV de un material (desplazamiento + escala + ROTACION:
+    // Material::UVMatrix, formato/material-animado.md). NULL = la identidad. Comparte el cache del matcap y de
+    // TexMatrixUV: TexMatrixMatcap(false) la resetea
+W3D_BACKEND_OPEN
+    void TexMatrixUVAffine(const float* m6);
+W3D_BACKEND_CLOSE
 
     // true si hay glTexGen (sphere-map EXACTO por hardware: PC). false en GLES1 (N95) -> ese modo cae a software.
 W3D_BACKEND_OPEN
@@ -401,7 +408,11 @@ W3D_BACKEND_OPEN
 W3D_BACKEND_CLOSE
 
     // --- luz 0 del pipeline fijo ---
-    enum LightFv { LightAmbient, LightDiffuse, LightSpecular, LightPosition };
+    // LightArea (solo LightNfv, solo los backends con shaders): la LUZ DE AREA (Light.h). v = medio ancho y medio alto en
+    // su espacio local, 1 = elipse; el backend los lleva a OJO con la modelview ACTIVA (como la posicion) y alumbra hacia
+    // la direccion del cono (LightNSpot). La posicion o el cono la vuelven a una luz comun: va DESPUES de los dos. Los
+    // backends sin shaders la ignoran (Light.cpp ya la armo como foco)
+    enum LightFv { LightAmbient, LightDiffuse, LightSpecular, LightPosition, LightArea };
 W3D_BACKEND_OPEN
     void Light0fv(LightFv p, const float* v);
 W3D_BACKEND_CLOSE
@@ -796,6 +807,10 @@ W3D_BACKEND_CLOSE
     extern bool w3dRenderFinal;
     // dibujando las caras de una SONDA DE REFLEJO de tiempo real: lo que no sale en las sondas (Object::inProbes) no se dibuja
     extern bool w3dPassProbe;
+    // LO DIBUJADO QUE LA GPU PERDIO: sube cada vez que un draw fallo y se llevo lo que ya habia en la imagen (la VideoCore
+    // IV: el primer draw de un programa que no le entra falla con GL_OUT_OF_MEMORY y se pierde lo anterior del cuadro).
+    // El render a archivo lo mira por franja y la dibuja de nuevo (ViewPort3D, el bucle de las franjas)
+    extern unsigned w3dDrawsLost;
 
     // PASE DE ESPEJO: true mientras el Mirror dibuja el reflejo. El material de
     // la malla NO puede decidir el z-test durante ese pase (el espejo ya lo

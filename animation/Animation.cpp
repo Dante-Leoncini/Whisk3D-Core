@@ -9,6 +9,7 @@
 #include "io/W3dResources.h"     // el reproductor de clips de jerarquia retiene su biblioteca mientras suena
 #include "objects/Mesh.h"        // shape keys (W3dApplyShapes)
 #include "objects/Light.h"       // los colores de una luz (canales AnimColor/AnimAmbient/... en el juego)
+#include "objects/Materials.h"   // las pistas de MATERIAL (canales AnimMat*)
 #include "Armature2DAnimation.h" // clips del ARMATURE 2D (kind 4): rango/fps propios
 #include "w3dlog.h"              // aviso del blindaje del kind 4 (el Core no tiene UI para notificar)
 #include <stdio.h> // sprintf GLOBAL (nombre unico de escena); Symbian/STLport no tiene std::snprintf
@@ -1247,6 +1248,151 @@ void W3dActiveCamApply(int scene, int frame) {
     if (n) g_activeCameraHook(n);
 }
 
+// ============================================================================
+//  LAS PISTAS DE MATERIAL (ver AnimationMaterial en Animation.h y formato/material-animado.md)
+// ============================================================================
+// el campo del material que mueve un canal (NULL = ese canal / componente no existe en el material)
+static float* MatChannelPtr(Material* m, int prop, int comp) {
+    if (!m) return NULL;
+    const bool rgb = comp >= AnimX && comp <= AnimZ, uv = comp == AnimX || comp == AnimY, one = comp == AnimX;
+    switch (prop) {
+        case AnimMatColor:        return rgb ? &m->diffuse[comp] : NULL;
+        case AnimMatAlpha:        return one ? &m->diffuse[3] : NULL;
+        case AnimMatEmission:     return rgb ? &m->emission[comp] : NULL;
+        case AnimMatEmitStrength: return one ? &m->emissionStrength : NULL;
+        case AnimMatSpecular:     return rgb ? &m->specular[comp] : NULL;
+        case AnimMatRoughness:    return one ? &m->rtRoughness : NULL;
+        case AnimMatMetallic:     return one ? &m->rtMetallic : NULL;
+        case AnimMatTransmission: return one ? &m->transmission : NULL;
+        // (la capa que no esta -una dormida que todavia no desperto, una que se borro- no se toca)
+        case AnimMatLayerForce:   return (comp >= 0 && comp < (int)m->layers.size()) ? &m->layers[(size_t)comp].force : NULL;
+        case AnimMatUVOffset:     return uv ? &m->uvOffset[comp] : NULL;
+        case AnimMatUVScale:      return uv ? &m->uvScale[comp] : NULL;
+        case AnimMatUVRotation:   return one ? &m->uvRotation : NULL;
+        default:                  return NULL;
+    }
+}
+bool W3dIsMatChannel(int prop) { return prop >= AnimMatColor && prop <= AnimMatUVRotation; }
+float W3dMatChannelGet(const Material* m, int prop, int comp) {
+    const float* f = MatChannelPtr(const_cast<Material*>(m), prop, comp);
+    return f ? *f : 0.0f;
+}
+void W3dMatChannelSet(Material* m, int prop, int comp, float v) {
+    float* f = MatChannelPtr(m, prop, comp);
+    if (f) *f = v;
+}
+int W3dMatChannelComps(int prop, int comp, int* out) {
+    if (prop == AnimMatColor || prop == AnimMatEmission || prop == AnimMatSpecular) {
+        out[0] = AnimX; out[1] = AnimY; out[2] = AnimZ; return 3;
+    }
+    out[0] = comp; return 1;
+}
+const char* W3dMatChannelBase(int prop) {
+    switch (prop) {
+        case AnimMatColor:        return "Base Color";
+        case AnimMatAlpha:        return "Alpha";
+        case AnimMatEmission:     return "Emission";
+        case AnimMatEmitStrength: return "Emission Strength";
+        case AnimMatSpecular:     return "Specular";
+        case AnimMatRoughness:    return "Roughness";
+        case AnimMatMetallic:     return "Metallic";
+        case AnimMatTransmission: return "Transmission";
+        case AnimMatLayerForce:   return "Layer";
+        case AnimMatUVOffset:     return "UV Offset";
+        case AnimMatUVScale:      return "UV Scale";
+        case AnimMatUVRotation:   return "UV Rotation";
+        default:                  return NULL;
+    }
+}
+const char* W3dMatChannelSuffix(int prop, int comp) {
+    static const char* const kRGB[3] = { "R", "G", "B" };
+    static const char* const kUV[2] = { "U", "V" };
+    if ((prop == AnimMatColor || prop == AnimMatEmission || prop == AnimMatSpecular) && comp >= 0 && comp < 3) return kRGB[comp];
+    if ((prop == AnimMatUVOffset || prop == AnimMatUVScale) && comp >= 0 && comp < 2) return kUV[comp];
+    return "";
+}
+
+AnimationMaterial* W3dMatTrack(int scene, Material* m, bool create) {
+    SceneAnimation* e = SceneIdx(scene);
+    if (!e || !m) return NULL;
+    for (size_t i = 0; i < e->materials.size(); i++) if (e->materials[i].mat == m) return &e->materials[i];
+    if (!create) return NULL;
+    AnimationMaterial am; am.mat = m;
+    e->materials.push_back(am);
+    return &e->materials.back();
+}
+
+bool W3dApplyMaterialCurves(Material* m, const std::vector<AnimProperty>& props, float frame) {
+    if (!m) return false;
+    bool wrote = false;
+    for (size_t p = 0; p < props.size(); p++) {
+        const AnimProperty& ap = props[p];
+        if (ap.keyframes.empty()) continue;
+        float* f = MatChannelPtr(m, ap.Property, ap.component);
+        if (!f) continue;
+        *f = ap.EvalF(frame, *f);
+        wrote = true;
+    }
+    // (lo lee el reposo del guardado, como Object::posedByCurves: solo se devuelve lo que el cabezal poso)
+    if (wrote) m->posedByCurves = true;
+    return wrote;
+}
+
+void W3dApplyMaterialTracks(int scene, float frame) {
+    SceneAnimation* e = SceneIdx(scene);
+    if (!e || e->materials.empty()) return;   // (lo comun: ni un material animado, no cuesta nada)
+    for (size_t i = 0; i < e->materials.size(); i++)
+        W3dApplyMaterialCurves(e->materials[i].mat, e->materials[i].Properties, frame);
+}
+
+// ---- EL REPOSO de los materiales posados (guardar sin hornear el cabezal) ----
+void W3dMatRest::Read(Material* mt) {
+    m = mt;
+    for (int k = 0; k < 4; k++) dif[k] = mt->diffuse[k];
+    for (int k = 0; k < 3; k++) { emi[k] = mt->emission[k]; spe[k] = mt->specular[k]; }
+    emiK = mt->emissionStrength; rug = mt->rtRoughness; met = mt->rtMetallic; trans = mt->transmission;
+    uvOff[0] = mt->uvOffset[0]; uvOff[1] = mt->uvOffset[1]; uvScl[0] = mt->uvScale[0]; uvScl[1] = mt->uvScale[1];
+    uvRot = mt->uvRotation;
+    layers.resize(mt->layers.size());
+    for (size_t c = 0; c < mt->layers.size(); c++) layers[c] = mt->layers[c].force;
+}
+void W3dMatRest::Write() const {
+    if (!m) return;
+    for (int k = 0; k < 4; k++) m->diffuse[k] = dif[k];
+    for (int k = 0; k < 3; k++) { m->emission[k] = emi[k]; m->specular[k] = spe[k]; }
+    m->emissionStrength = emiK; m->rtRoughness = rug; m->rtMetallic = met; m->transmission = trans;
+    m->uvOffset[0] = uvOff[0]; m->uvOffset[1] = uvOff[1]; m->uvScale[0] = uvScl[0]; m->uvScale[1] = uvScl[1];
+    m->uvRotation = uvRot;
+    for (size_t c = 0; c < layers.size() && c < m->layers.size(); c++) m->layers[c].force = layers[c];
+}
+void W3dMaterialsRestBegin(std::vector<W3dMatRest>& saved, const Material* only) {
+    saved.clear();
+    // primero las animaciones de escena que NO son la activa y la activa al final: si dos animan el mismo canal, gana la
+    // que el cabezal esta aplicando (el mismo orden que RestAnimObjects con los objetos)
+    for (int pass = 0; pass < 2; pass++)
+        for (size_t i = 0; i < SceneAnimations.size(); i++) {
+            if (((int)i == ActiveSceneAnim) != (pass == 1)) continue;
+            SceneAnimation* e = SceneAnimations[i];
+            if (!e || e->isClip) continue;
+            for (size_t t = 0; t < e->materials.size(); t++) {
+                AnimationMaterial& am = e->materials[t];
+                Material* m = am.mat;
+                if (!m || (only && m != only) || !m->posedByCurves) continue;
+                bool has = false;
+                for (size_t p = 0; p < am.Properties.size() && !has; p++) if (!am.Properties[p].keyframes.empty()) has = true;
+                if (!has) continue;   // (sin keyframes no hay pose que deshacer)
+                bool seen = false;
+                for (size_t k = 0; k < saved.size() && !seen; k++) seen = (saved[k].m == m);
+                if (!seen) { W3dMatRest r; r.Read(m); saved.push_back(r); }
+                W3dApplyMaterialCurves(m, am.Properties, (float)e->startFrame);
+            }
+        }
+}
+void W3dMaterialsRestEnd(std::vector<W3dMatRest>& saved) {
+    for (size_t i = saved.size(); i-- > 0; ) saved[i].Write();   // (al reves: gana lo que habia en la pantalla)
+    saved.clear();
+}
+
 // los canales de OBJETO de una lista de curvas, en 'frame' (la parte que el
 // juego necesita de W3dApplyCurvesInFrame del editor)
 // 'fr' CONTINUO (con fraccion): transformacion y fov se interpolan entre frames (la camara de una cinematica se mueve
@@ -1373,6 +1519,7 @@ void W3dAnimSceneTick(float dt) {
         if (ao.obj) ApplyCurvesGame(ao.obj, ao.Properties, gEscGameF);
     }
     W3dActiveCamApply(gEscGame, f);   // los CORTES de camara de la cinematica
+    W3dApplyMaterialTracks(gEscGame, gEscGameF);   // los MATERIALES animados (frame continuo, como los objetos)
 }
 
 int W3dAnimSceneFrame() { return gEscGame < 0 ? -1 : (int)gEscGameF; }

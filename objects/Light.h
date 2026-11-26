@@ -49,6 +49,25 @@ class Light : public Object {
         // DISTANCIA en metros: hasta donde alumbra una puntual/foco (el largo del cono que se dibuja). 0 = sin limite.
         // En el trazado de rayos la luz se apaga suave hasta llegar a 0 ahi; el GL fijo no la corta (solo atenua)
         float distance;
+        // LUZ DE AREA (tipo 3, la "Area" de Blender): una SUPERFICIE que alumbra de UN solo lado y pareja hacia todos lados
+        // de ese lado (lambertiana: de costado da menos luz, por el coseno). Esta en el plano XY local de la lampara (la
+        // escala del objeto la agranda, como en Blender) y alumbra hacia su -Z local, como el foco.
+        //   areaShape: W3D_AREA_SQUARE / RECTANGLE / DISK / ELLIPSE (las de Blender; el cuadrado y el disco usan solo X)
+        //   areaSizeX / areaSizeY: el ancho y el alto en metros (el diametro en el disco y la elipse)
+        // LA INTENSIDAD de la de area es la de una puntual de caida 1 / d^2 (atenuacion 0, 0, 1) vista de LEJOS: a d metros
+        // sobre su eje una superficie de frente recibe color * intensidad / d^2 (y de costado, por el coseno de cada lado),
+        // sea del tamanio que sea. Agrandarla NO la hace mas fuerte: reparte esa luz en mas superficie (la sombra se ablanda
+        // y de cerca no quema), como la potencia de Blender. De cerca vale la cuenta de la superficie entera: lo maximo, con
+        // la lampara tapando medio cielo, es pi * intensidad / superficie (no explota como 1 / d^2): ese es su brillo (la
+        // radiancia) en las unidades de las otras luces. DE BLENDER: una de area de P vatios (radiancia P / (pi * S) en
+        // Cycles) es intensidad = P / pi^2 (por la exposicion del conversor), con el color, la forma y el tamanio por la
+        // escala del objeto tal cual
+        // La atenuacion C/L/Q y el cono no se usan (el foco no se pierde: si vuelve a ser foco, es el mismo); la distancia si
+        // (en el trazado de rayos la apaga suave hasta ahi). Donde no hay cuenta de area (el GL fijo, GLES 1.1, PSP, 3DS,
+        // la luz por vertice) se dibuja como un foco: ver W3dLightAreaAsSpot
+        bool  area;
+        int   areaShape;
+        float areaSizeX, areaSizeY;
 
         static Light* Create(Object* parent = NULL, float x = 0, float y = 0, float z = 0);
 
@@ -84,7 +103,17 @@ const int MAX_LIGHTS_SCENE = 256;
 // PRE-PASE DE LUCES (Light.cpp): encender TODAS las luces visibles antes de dibujar la geometria del pase
 void W3dLightsPrePass(Object* root);
 void W3dLightsPrePassEnd();
-// EL TIPO de una luz: 0 Punto (para todos lados), 1 Sol (direccional), 2 Foco (un cono de 45 grados si no tenia)
+// EL TIPO de una luz: 0 Punto (para todos lados), 1 Sol (direccional), 2 Foco (un cono de 45 grados si no tenia),
+// 3 Area (una superficie: Light::area)
 void W3dLightSetType(Light* l, int type);
+// LA LUZ DE AREA (Light::area): sus formas (Light::areaShape, las de Blender en su orden)
+enum { W3D_AREA_SQUARE = 0, W3D_AREA_RECTANGLE = 1, W3D_AREA_DISK = 2, W3D_AREA_ELLIPSE = 3 };
+bool W3dLightAreaRound(const Light* l);                          // disco o elipse
+void W3dLightAreaHalf(const Light* l, float& hx, float& hy);     // los MEDIOS lados en su espacio local (sin la escala)
+// LA DE AREA COMO FOCO, para lo que no tiene su cuenta (el GL fijo, GLES 1.1, PSP, 3DS, la luz por vertice de los shaders,
+// la luz por vertice de la CPU): un foco de 90 grados con caida coseno (exponente 1) desde el centro, con atenuacion
+// 1 / (S/pi + d^2) (att = S/pi, 0, 1), S = la superficie en el mundo (sx, sy: la escala del objeto en X e Y). De lejos es
+// la misma luz; de cerca no pasa de la de la superficie entera (en el eje de un disco es la cuenta exacta)
+void W3dLightAreaAsSpot(const Light* l, float sx, float sy, float att[3]);
 
 #endif

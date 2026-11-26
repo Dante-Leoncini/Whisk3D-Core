@@ -9,6 +9,7 @@
 #include <stdio.h>  // sprintf GLOBAL (C99): en Symbian/STLport <cstdio> puede dejarlo solo en std::
 #include <cmath>
 #include <cstring>  // memcpy (los floats como enteros: SkinOrder)
+#include <stdlib.h>  // getenv (W3D_SKIN_RIGID)
 #include <vector>
 #include <map>
 #include <utility>
@@ -593,9 +594,600 @@ int W3dArmatureClipByName(const Armature* a, const std::string& name){
     return -1;
 }
 
+// ============================================================================
+//  CONSTRAINTS DE HUESO (W3dBone::constraints). Corren DESPUES del FK y ANTES de las matrices de skin,
+//  sobre world[] (el mundo de cada hueso en el espacio del FK), y como los de objeto NUNCA escriben
+//  poseT/R/S ni las curvas: modifican la pose que se dibuja y se skinnea.
+//
+//  EL ESPACIO COMUN de un hueso es el del objeto ARMATURE (el de poseWorld: Y arriba, con NodeToYup en un
+//  rig FBX), y su matriz es la del MARCO DEL HUESO: P = Ny * world * marco, con el +Y del marco a lo
+//  largo del hueso (cabeza -> punta). Asi "Track To con el eje Y" apunta el hueso como en Blender sin
+//  importar como vino orientado su reposo. Ny es una permutacion con signos: pasar de un espacio al otro
+//  es exacto.
+//
+//  EL ORDEN: perezoso y por dependencias. Un hueso se evalua despues de su padre, de los huesos de este
+//  mismo armature que sus constraints leen como target, y -si esta en una cadena IK- la cadena entera se
+//  resuelve de una vez cuando se llega a su primer hueso. Es lo que hace el depsgraph de Blender, sin
+//  grafo: una recursion con estado por hueso (0 pendiente / 1 evaluandose / 2 listo). Un ciclo (un hueso
+//  que termina dependiendo de si mismo) cae en el estado 1 y usa lo que ya hay, en vez de colgarse. La
+//  profundidad de la recursion es la de la jerarquia + los saltos de target (decenas en un rig real).
+//
+//  Los targets que NO son huesos de este armature se juntan ANTES del FK (BoneConsPrefetch): pedir el
+//  mundo de otro objeto puede volver a entrar a EvaluatePoseSkeleton (de otro armature) y este comparte
+//  su scratch estatico (local/world). Durante el FK no se llama afuera NUNCA.
+// ============================================================================
+static Matrix4 BoneRestLocal(const Armature* a, int i){
+    const W3dBone& b = a->bones[i];
+    const int N = (int)a->bones.size();
+    if (a->skinRebuildFK)   // biped: el reposo sale del TransformLink (ver EvaluatePoseSkeleton)
+        return (b.parent >= 0 && b.parent < N) ? a->bones[b.parent].tlNode.Inverse() * b.tlNode : b.tlNode;
+    return LocalOf(b);
+}
+static Matrix4 LinearInverse(const Matrix4& m){
+    Matrix4 L = m; L.m[12] = L.m[13] = L.m[14] = 0.0f;
+    Matrix4 iL; Matrix4::InvertAffine(L, iL);
+    return iL;
+}
+// la PUNTA ESCRITA de un rig glTF (head != tail): la ponen el importador glTF y el convertidor de Blender, y es la
+// de verdad (en Blender el hueso corre por su +Y, con su largo y su roll ya en el reposo). Un FBX no la usa: sus
+// head/tail no viven en el espacio del FK y la punta se deduce siempre (primer hijo / extension).
+static bool BoneTailGiven(const Armature* a, int i){
+    const W3dBone& b = a->bones[i];
+    return a->skinGltf && !a->skinAuthored && b.hasRest && (b.tail - b.head).LengthSq() > 1e-12f;
+}
+// el MUNDO de reposo de un hueso (espacio del FK): sus locales de reposo encadenados hasta la raiz
+static Matrix4 BoneRestWorld(const Armature* a, int i){
+    const int N = (int)a->bones.size();
+    Matrix4 acc = BoneRestLocal(a, i);
+    int p = a->bones[i].parent, guard = 0;
+    while (p >= 0 && p < N && guard++ < N) { acc = BoneRestLocal(a, p) * acc; p = a->bones[p].parent; }
+    return acc;
+}
+// la DIRECCION del hueso (cabeza -> punta, con su largo) en su marco LOCAL de reposo. Es la misma punta
+// que dibuja EvaluatePoseSkeleton: en un rig autorado el tail del usuario; en uno glTF la punta escrita; si no,
+// la cabeza del PRIMER hijo, o en una hoja la extension padre -> hueso (glTF: su +Y).
+static Vector3 BoneDirLocal(const Armature* a, int i, const Matrix4& restL){
+    const W3dBone& b = a->bones[i];
+    const int N = (int)a->bones.size();
+    if (a->skinAuthored) return b.tail - b.head;   // reposo sin rotacion: el espacio del armature
+    if (BoneTailGiven(a, i)) return LinearInverse(BoneRestWorld(a, i)) * (b.tail - b.head);
+    for (int k = 0; k < N; k++) if (a->bones[k].parent == i) {
+        const Matrix4 cl = BoneRestLocal(a, k);
+        return Vector3(cl.m[12], cl.m[13], cl.m[14]);
+    }
+    const Matrix4 iL = LinearInverse(restL);
+    // HOJA de un glTF sin punta: el hueso corre por su +Y (la convencion de glTF y de Blender), con el largo del
+    // tramo desde el padre o, en una raiz suelta, una decima del esqueleto. Antes era 5 unidades hacia +Z del FK:
+    // en un rig en metros con los huesos de deformacion sueltos (Rigify, el Bongo Cat) eran palitos de 5 m que
+    // cruzaban toda la escena, y el marco de los constraints de esos huesos salia torcido.
+    if (a->skinGltf) {
+        float L = (b.parent >= 0 && b.parent < N) ? Vector3(restL.m[12], restL.m[13], restL.m[14]).Length() : 0.0f;
+        if (L < 1e-6f) L = 0.1f * W3dArmatureRestSize(a);
+        if (L < 1e-6f) L = 0.1f;
+        return Vector3(0, L, 0);
+    }
+    if (b.parent >= 0 && b.parent < N) return iL * Vector3(restL.m[12], restL.m[13], restL.m[14]);
+    return iL * Vector3(0, 0, 5);
+}
+// MARCO del hueso: el giro minimo del +Y a su direccion, mas su roll. 'dir' = la punta en local (con largo).
+static void BoneFrameOf(const Armature* a, int i, const Matrix4& restL, Matrix4& frame, Vector3& dir, float& len){
+    dir = BoneDirLocal(a, i, restL);
+    len = dir.Length();
+    Quaternion q = (len > 1e-8f) ? W3dQuatFromTo(Vector3(0, 1, 0), dir * (1.0f / len)) : Quaternion();
+    if (a->bones[i].roll != 0.0f) q = q * Quaternion::FromAxisAngle(0, 1, 0, a->bones[i].roll);
+    q.ToMatrix(frame.m);
+}
+static int BoneByNameCached(const Armature* a, const std::string& name, int& cache){
+    const int n = (int)a->bones.size();
+    if (cache >= 0 && cache < n && a->bones[cache].name == name) return cache;
+    cache = -1;
+    for (int i = 0; i < n; i++) if (a->bones[i].name == name) { cache = i; break; }
+    return cache;
+}
+
+bool W3dBoneFrameMatrix(Armature* a, int bone, Matrix4& out, Matrix4* rest, float* length){
+    if (!a || bone < 0 || bone >= (int)a->bones.size()) return false;
+    const Matrix4 restL = BoneRestLocal(a, bone);
+    Matrix4 frame; Vector3 dir; float len = 0.0f;
+    BoneFrameOf(a, bone, restL, frame, dir, len);
+    out = a->bones[bone].poseWorld * frame;
+    if (rest) {
+        const int p = a->bones[bone].parent;
+        Matrix4 Pp; if (p >= 0 && p < (int)a->bones.size()) Pp = a->bones[p].poseWorld;
+                    else if (a->skinGltf) Pp.Identity(); else Pp = MatrixNodeToYup();
+        *rest = Pp * restL * frame;
+    }
+    if (length) *length = len;
+    return true;
+}
+
+// ---- EL REPOSO, CACHEADO (por armature) ----
+// Reproduciendo, todo lo del reposo es constante: la PreRotation de cada hueso (su trigonometria), su local de reposo,
+// su marco y su punta (que en un rig glTF sube por toda la cadena de padres). Se rehacia en cada cuadro, hueso por hueso:
+// medido en el Galaxy Ace con el Bongo Cat (48 huesos, 30 constraints), multiplicar matrices era lo mas caro del motor
+// reproduciendo. Se arma una vez y se rehace solo si cambia la FIRMA del reposo (editar huesos, importar, otro rig)
+struct W3dRestCache {
+    const Armature* a; unsigned sig;
+    std::vector<Matrix4> restL, pre, frame;   // BoneRestLocal, MatRotEuler(preRot) y el marco (BoneFrameOf)
+    std::vector<Vector3> dir;                 // la punta en el marco local de reposo (BoneDirLocal)
+    std::vector<float> len;
+};
+static std::vector<W3dRestCache*> gRestCaches;   // (unos pocos armatures; punteros: las referencias no se mueven)
+static inline void RestHashF(unsigned& h, float f){ unsigned u; memcpy(&u, &f, 4); h = (h ^ u) * 16777619u; }
+static inline void RestHashV(unsigned& h, const Vector3& v){ RestHashF(h, v.x); RestHashF(h, v.y); RestHashF(h, v.z); }
+static unsigned RestSignature(const Armature* a){
+    unsigned h = 2166136261u;
+    h = (h ^ (unsigned)a->bones.size()) * 16777619u;
+    h = (h ^ ((a->skinAuthored ? 1u : 0u) | (a->skinGltf ? 2u : 0u) | (a->skinRebuildFK ? 4u : 0u))) * 16777619u;
+    for (size_t i = 0; i < a->bones.size(); i++){
+        const W3dBone& b = a->bones[i];
+        h = (h ^ (unsigned)(b.parent + 1)) * 16777619u;
+        h = (h ^ (unsigned)(b.rotOrder | (b.hasRest ? 16 : 0))) * 16777619u;
+        RestHashV(h, b.restT); RestHashV(h, b.restR); RestHashV(h, b.restS); RestHashV(h, b.preRot);
+        RestHashV(h, b.head); RestHashV(h, b.tail); RestHashF(h, b.roll);
+        if (a->skinRebuildFK) for (int k = 0; k < 16; k++) RestHashF(h, b.tlNode.m[k]);
+    }
+    return h;
+}
+static const W3dRestCache& RestOf(const Armature* a){
+    const unsigned sig = RestSignature(a);
+    W3dRestCache* c = NULL;
+    for (size_t k = 0; k < gRestCaches.size(); k++) if (gRestCaches[k]->a == a) { c = gRestCaches[k]; break; }
+    if (c && c->sig == sig) return *c;
+    if (!c) {
+        if (gRestCaches.size() >= 16) { c = gRestCaches[0]; gRestCaches.erase(gRestCaches.begin()); gRestCaches.push_back(c); }
+        else { c = new W3dRestCache(); gRestCaches.push_back(c); }
+        c->a = a;
+    }
+    c->sig = sig;
+    const int N = (int)a->bones.size();
+    c->restL.resize(N); c->pre.resize(N); c->frame.resize(N); c->dir.resize(N); c->len.resize(N);
+    for (int i = 0; i < N; i++){
+        c->pre[i] = MatRotEuler(a->bones[i].preRot, 0);
+        c->restL[i] = BoneRestLocal(a, i);
+        BoneFrameOf(a, i, c->restL[i], c->frame[i], c->dir[i], c->len[i]);
+    }
+    return *c;
+}
+// EL MUNDO de todos los huesos en UNA pasada, de los padres a los hijos (WorldMat sube por la cadena entera para cada
+// hueso: con 48 huesos de profundidad 5 eran ~200 multiplicaciones por cuadro en vez de 48)
+static void WorldAll(const std::vector<W3dBone>& bones, const std::vector<Matrix4>& local, std::vector<Matrix4>& world, size_t N){
+    static std::vector<unsigned char> done;
+    static std::vector<int> pila;
+    done.assign(N, 0);
+    for (size_t i = 0; i < N; i++){
+        if (done[i]) continue;
+        pila.clear();
+        int j = (int)i; size_t guard = 0;
+        while (j >= 0 && j < (int)N && !done[(size_t)j] && guard++ <= N) { pila.push_back(j); j = bones[(size_t)j].parent; }
+        for (size_t k = pila.size(); k-- > 0; ){
+            const size_t b = (size_t)pila[k]; const int p = bones[b].parent;
+            world[b] = (p >= 0 && p < (int)N && done[(size_t)p]) ? world[(size_t)p] * local[b] : local[b];
+            done[b] = 1;
+        }
+    }
+}
+
+// ---- el estado de UNA pasada (scratch estatico: sin allocs por frame una vez que crecio) ----
+struct W3dBCChain { int owner; W3dConstraint* c; int first, count; bool solved; };
+struct W3dBCRun {
+    Armature* a; int N;
+    const W3dRestCache* rc;   // el reposo cacheado de 'a' (RestOf)
+    std::vector<Matrix4>* local; std::vector<Matrix4>* world;
+    Matrix4 Ny, NyInv, Wa, WaInv;
+    std::vector<unsigned char> state, dirty, frameOk, inChain;
+    std::vector<Matrix4> restL, frame;
+    std::vector<Vector3> dir;
+    std::vector<float> len;
+    std::vector<W3dBCChain> chains;
+    std::vector<int> chainBones, up;
+};
+static W3dBCRun gBC;
+
+static void BCEnsureFrame(int i){
+    if (gBC.frameOk[i]) return;
+    const W3dRestCache& rc = *gBC.rc;
+    gBC.restL[i] = rc.restL[i]; gBC.frame[i] = rc.frame[i]; gBC.dir[i] = rc.dir[i]; gBC.len[i] = rc.len[i];
+    gBC.frameOk[i] = 1;
+}
+static Matrix4 BCPose(int i){ BCEnsureFrame(i); return gBC.Ny * (*gBC.world)[i] * gBC.frame[i]; }
+static Matrix4 BCRest(int i){
+    BCEnsureFrame(i);
+    const int p = gBC.a->bones[i].parent;
+    if (p >= 0 && p < gBC.N) return gBC.Ny * (*gBC.world)[p] * gBC.restL[i] * gBC.frame[i];
+    return gBC.Ny * gBC.restL[i] * gBC.frame[i];
+}
+static void BCSetPose(int i, const Matrix4& P){
+    BCEnsureFrame(i);
+    Matrix4 iF; Matrix4::InvertAffine(gBC.frame[i], iF);   // (rotacion pura: es la traspuesta)
+    (*gBC.world)[i] = gBC.NyInv * P * iF;
+    gBC.dirty[i] = 1;
+}
+
+static void BCEval(int i);
+// el hueso de ESTE armature que el target/pole de 'c' lee (-1 = no es uno de los nuestros)
+static int BCInternalBone(W3dConstraint* c, bool pole){
+    Object* src = pole ? c->poleObj : c->sourceObj;
+    const std::string& bn = pole ? c->poleBone : c->bone;
+    if (src != (Object*)gBC.a || bn.empty()) return -1;
+    return BoneByNameCached(gBC.a, bn, pole ? c->poleBoneCache : c->boneCache);
+}
+// evalua ANTES los huesos propios que los constraints de 'i' leen (asi el Apply no recursa con matrices
+// en el stack)
+static void BCPrepTargets(int i){
+    std::vector<W3dConstraint*>& L = gBC.a->bones[i].constraints.list;
+    for (size_t k = 0; k < L.size(); k++) {
+        W3dConstraint* c = L[k];
+        if (!W3dConsTypeEffective(c, true) || c->type == W3dConstraintType::IK) continue;
+        const int h = BCInternalBone(c, false);
+        if (h >= 0 && h != i) BCEval(h);
+    }
+}
+// el target (pole=false) o el pole de 'c', en el espacio comun (el del armature)
+static bool BCTarget(W3dConstraint* c, bool pole, W3dConsMat& out, W3dConsCtx* ctx){
+    out.valid = false;
+    Object* src = pole ? c->poleObj : c->sourceObj;
+    if (!src) return false;
+    const int h = BCInternalBone(c, pole);
+    if (h >= 0) {
+        BCEval(h);   // (ya evaluado en el caso normal; en un ciclo devuelve lo que hay)
+        out.M = BCPose(h); out.rest = BCRest(h); out.length = gBC.len[h];
+        if (!pole && c->headTail > 0.0f)
+            { const Vector3 p = out.M * Vector3(0, out.length * c->headTail, 0); out.M.m[12] = p.x; out.M.m[13] = p.y; out.M.m[14] = p.z; }
+        out.valid = true;
+        if (ctx) { ctx->targetObj = src; ctx->targetObjM.Identity(); }
+        return true;
+    }
+    if (pole ? !c->cachePOk : !c->cacheTOk) return false;
+    out.M = gBC.WaInv * (pole ? c->cacheP : c->cacheT);
+    out.rest = gBC.WaInv * c->cacheTRest;
+    out.length = pole ? 0.0f : c->cacheTLen;
+    out.valid = true;
+    if (ctx) { ctx->targetObj = src; ctx->targetObjM = out.M; }   // (una curva no tiene hueso: es su mundo)
+    return true;
+}
+// los constraints NO-IK del hueso 'i', en orden de stack, sobre su matriz
+static void BCApply(int i){
+    W3dBone& b = gBC.a->bones[i];
+    std::vector<W3dConstraint*>& L = b.constraints.list;
+    bool any = false;
+    for (size_t k = 0; k < L.size() && !any; k++)
+        if (W3dConsTypeEffective(L[k], true) && L[k]->type != W3dConstraintType::IK) any = true;
+    if (!any) return;
+    W3dConsCtx x;
+    x.toWorld = gBC.Wa; x.fromWorld = gBC.WaInv; x.isBone = true; x.eulerOrder = b.rotOrder;
+    x.owner.M = BCPose(i); x.owner.rest = BCRest(i); x.owner.length = gBC.len[i]; x.owner.valid = true;
+    for (size_t k = 0; k < L.size(); k++) {
+        W3dConstraint* c = L[k];
+        if (!W3dConsTypeEffective(c, true) || c->type == W3dConstraintType::IK) continue;
+        x.targetObj = NULL; x.targetObjM.Identity();
+        BCTarget(c, false, x.target, &x);
+        if (W3dConsNeedsTarget(c->type) && !x.target.valid) continue;
+        W3dConsApply(c, x);
+    }
+    BCSetPose(i, x.owner.M);
+}
+
+// ---- IK: las POSICIONES de las articulaciones (espacio del FK) ----
+//  J[0..m] = cabezas de la cadena + el efector, L[k] = largo de cada tramo. Dos tramos (una pierna, un
+//  brazo) se resuelven ANALITICOS (ley del coseno en el plano raiz-target-pole: exacto, sin iterar, no se
+//  da vuelta nunca); mas tramos van por FABRIK partiendo de la pose del FK. El POLE fija el plano de la
+//  dobladura (+ poleAngle alrededor del eje raiz->target); sin pole se conserva la dobladura que ya traia
+//  el FK, y una cadena RECTA (sin dobladura que conservar) se dobla hacia 'perp' (el +Z del marco de la
+//  raiz). Como en Blender, conviene que la cadena tenga una leve dobladura en reposo o un pole.
+static std::vector<Vector3> gIKJ;
+static std::vector<float>   gIKL;
+static Vector3 IKRotateAround(const Vector3& p, const Vector3& root, const Quaternion& q){ return root + q * (p - root); }
+static void IKAlignBend(int m, const Vector3& root, const Vector3& u, const Vector3& bendWanted){
+    // gira las articulaciones intermedias alrededor del eje raiz->target hasta que la mas alejada del eje
+    // quede del lado de 'bendWanted'
+    float best = 0.0f; Vector3 cur(0, 0, 0);
+    for (int k = 1; k < m; k++) {
+        const Vector3 v = gIKJ[k] - root; const Vector3 p = v - u * v.Dot(u);
+        if (p.Length() > best) { best = p.Length(); cur = p; }
+    }
+    if (best < 1e-8f) return;
+    cur = cur * (1.0f / best);
+    float cs = cur.Dot(bendWanted); if (cs > 1.0f) cs = 1.0f; if (cs < -1.0f) cs = -1.0f;
+    float ang = acosf(cs) * 57.2957795f;
+    if (Vector3::Cross(cur, bendWanted).Dot(u) < 0.0f) ang = -ang;
+    const Quaternion q = Quaternion::FromAxisAngle(u, ang);
+    for (int k = 1; k < m; k++) gIKJ[k] = IKRotateAround(gIKJ[k], root, q);
+}
+static void IKSolvePositions(int m, const Vector3& G, bool hasPole, const Vector3& Q, float poleAngle,
+                             int iters, bool stretch, const Vector3& perp, float& stretchF){
+    stretchF = 1.0f;
+    const Vector3 root = gIKJ[0];
+    float total = 0.0f; for (int k = 0; k < m; k++) total += gIKL[k];
+    if (total <= 1e-8f) return;
+    const Vector3 toG = G - root; const float dist = toG.Length();
+    if (dist < 1e-8f) return;                      // el target en la raiz: no hay direccion
+    const Vector3 u = toG * (1.0f / dist);
+    if (stretch && dist > total) { stretchF = dist / total; for (int k = 0; k < m; k++) gIKL[k] *= stretchF; total = dist; }
+    // hacia donde se dobla
+    Vector3 bend(0, 0, 0); bool ok = false;
+    if (hasPole) { const Vector3 v = Q - root; bend = v - u * v.Dot(u); ok = bend.LengthSq() > 1e-12f; }
+    bool curBend = false;
+    if (!ok) {
+        float best = 0.0f;
+        for (int k = 1; k < m; k++) { const Vector3 v = gIKJ[k] - root; const Vector3 p = v - u * v.Dot(u);
+            if (p.Length() > best) { best = p.Length(); bend = p; } }
+        ok = curBend = (best > 1e-5f * total);
+    }
+    if (!ok) {
+        bend = perp - u * perp.Dot(u);
+        if (bend.LengthSq() < 1e-12f) { bend = Vector3::Cross(u, Vector3(1, 0, 0)); if (bend.LengthSq() < 1e-12f) bend = Vector3::Cross(u, Vector3(0, 0, 1)); }
+    }
+    bend = bend.Normalized();
+    if (hasPole && poleAngle != 0.0f) bend = Quaternion::FromAxisAngle(u, poleAngle) * bend;
+    if (dist >= total) {                            // no llega: la cadena RECTA hacia el target
+        float acc = 0.0f;
+        for (int k = 1; k <= m; k++) { acc += gIKL[k - 1]; gIKJ[k] = root + u * acc; }
+        return;
+    }
+    if (m == 1) { gIKJ[1] = root + u * gIKL[0]; return; }
+    if (m == 2) {
+        const float a = gIKL[0], b = gIKL[1];
+        float cA = (a * a + dist * dist - b * b) / (2.0f * a * dist);
+        if (cA > 1.0f) cA = 1.0f; if (cA < -1.0f) cA = -1.0f;
+        const float sA = sqrtf(1.0f - cA * cA);
+        gIKJ[1] = root + u * (a * cA) + bend * (a * sA);
+        Vector3 d2 = G - gIKJ[1]; const float l2 = d2.Length();
+        gIKJ[2] = (l2 > 1e-8f) ? gIKJ[1] + d2 * (b / l2) : G;
+        return;
+    }
+    // FABRIK. La semilla: con pole (o sin dobladura propia) se lleva la cadena al plano pedido; una cadena
+    // recta se dobla un poco para que el algoritmo tenga de donde tirar.
+    if (!curBend) {
+        bool straight = true;
+        for (int k = 1; k < m && straight; k++) { const Vector3 v = gIKJ[k] - root;
+            if ((v - u * v.Dot(u)).Length() > 1e-5f * total) straight = false; }
+        if (straight) for (int k = 1; k < m; k++) gIKJ[k] = gIKJ[k] + bend * (0.05f * total * sinf(3.14159265f * (float)k / (float)m));
+        else IKAlignBend(m, root, u, bend);
+    }
+    const float tol = 1e-5f * total;
+    for (int it = 0; it < iters; it++) {
+        gIKJ[m] = G;
+        for (int k = m - 1; k >= 0; k--) {
+            Vector3 d = gIKJ[k] - gIKJ[k + 1]; const float n = d.Length();
+            gIKJ[k] = (n > 1e-10f) ? gIKJ[k + 1] + d * (gIKL[k] / n) : gIKJ[k + 1] + bend * gIKL[k];
+        }
+        gIKJ[0] = root;
+        for (int k = 0; k < m; k++) {
+            Vector3 d = gIKJ[k + 1] - gIKJ[k]; const float n = d.Length();
+            gIKJ[k + 1] = (n > 1e-10f) ? gIKJ[k] + d * (gIKL[k] / n) : gIKJ[k] + u * gIKL[k];
+        }
+        if ((gIKJ[m] - G).Length() < tol) break;
+    }
+    if (hasPole) IKAlignBend(m, root, u, bend);    // el plano exacto del pole al final
+}
+
+static bool BCChainHas(const W3dBCChain& ch, int i){
+    for (int j = 0; j < ch.count; j++) if (gBC.chainBones[ch.first + j] == i) return true;
+    return false;
+}
+static void BCSolveChain(int k){
+    W3dBCChain& ch = gBC.chains[k];
+    if (ch.solved) return;
+    ch.solved = true;
+    W3dConstraint* c = ch.c;
+    const int m = ch.count, o = ch.owner;
+    std::vector<Matrix4>& W = *gBC.world;
+    const int cb0 = gBC.chainBones[ch.first];
+    const int rp = gBC.a->bones[cb0].parent;
+    if (rp >= 0 && rp < gBC.N) BCEval(rp);
+    { const int h = BCInternalBone(c, false); if (h >= 0) BCEval(h); }
+    { const int h = BCInternalBone(c, true);  if (h >= 0) BCEval(h); }
+    // la pose PREVIA al IK de la cadena (el FK con los OTROS constraints de cada hueso)
+    for (int j = 0; j < m; j++) {
+        const int b = gBC.chainBones[ch.first + j];
+        if (gBC.state[b] == 2) continue;
+        gBC.state[b] = 1;
+        BCPrepTargets(b);
+        const int p = gBC.a->bones[b].parent;
+        if (p >= 0 && p < gBC.N && gBC.dirty[p]) { W[b] = W[p] * (*gBC.local)[b]; gBC.dirty[b] = 1; }
+        BCApply(b);
+    }
+    W3dConsMat tg, pl;
+    const bool okT = BCTarget(c, false, tg, NULL);
+    const bool okP = okT && BCTarget(c, true, pl, NULL);
+    if (okT) {
+        static std::vector<Matrix4> Wpre, Leff, Wik;
+        Wpre.resize(m); Leff.resize(m); Wik.resize(m);
+        gIKJ.resize(m + 1); gIKL.resize(m);
+        for (int j = 0; j < m; j++) {
+            const int b = gBC.chainBones[ch.first + j];
+            Wpre[j] = W[b];
+            gIKJ[j] = Vector3(W[b].m[12], W[b].m[13], W[b].m[14]);
+            if (j) { Matrix4 iP; Matrix4::InvertAffine(Wpre[j - 1], iP); Leff[j] = iP * Wpre[j]; }
+        }
+        // el EFECTOR, relativo al ultimo hueso de la cadena: su punta (useTail) o la cabeza del dueno
+        Vector3 eLoc;
+        if (c->useTail) { BCEnsureFrame(o); eLoc = gBC.dir[o]; }
+        else { const Matrix4& lo = (*gBC.local)[o]; eLoc = Vector3(lo.m[12], lo.m[13], lo.m[14]); }
+        gIKJ[m] = Wpre[m - 1] * eLoc;
+        for (int j = 0; j < m; j++) gIKL[j] = (gIKJ[j + 1] - gIKJ[j]).Length();
+        const Vector3 G = gBC.NyInv * Vector3(tg.M.m[12], tg.M.m[13], tg.M.m[14]);
+        const Vector3 Q = okP ? gBC.NyInv * Vector3(pl.M.m[12], pl.M.m[13], pl.M.m[14]) : Vector3(0, 0, 0);
+        BCEnsureFrame(cb0);
+        const Vector3 perp = (Wpre[0] * gBC.frame[cb0]) * Vector3(0, 0, 1) - Vector3(Wpre[0].m[12], Wpre[0].m[13], Wpre[0].m[14]);
+        float sF = 1.0f;
+        IKSolvePositions(m, G, okP, Q, c->poleAngle, c->iterations, c->useStretch, perp, sF);
+        // de las posiciones a ROTACIONES: cada hueso, de la raiz a la punta, gira lo minimo para que su
+        // tramo apunte a donde quedo la articulacion siguiente (los hijos lo siguen por su local)
+        Matrix4 Wcur = Wpre[0];
+        for (int j = 0; j < m; j++) {
+            const int b = gBC.chainBones[ch.first + j];
+            const Vector3 head(Wcur.m[12], Wcur.m[13], Wcur.m[14]);
+            const Vector3 next = (j < m - 1) ? (Wcur * Leff[j + 1]) * Vector3(0, 0, 0) : Wcur * eLoc;
+            Vector3 cd = next - head, td = gIKJ[j + 1] - gIKJ[j];
+            Matrix4 Wn = Wcur;
+            if (cd.LengthSq() > 1e-16f && td.LengthSq() > 1e-16f) {
+                Matrix4 Rq; W3dQuatFromTo(cd.Normalized(), td.Normalized()).ToMatrix(Rq.m);
+                Wn = Rq * Wcur;
+                Wn.m[12] = head.x; Wn.m[13] = head.y; Wn.m[14] = head.z;
+            }
+            Wik[j] = Wn;
+            if (j < m - 1) Wcur = Wn * Leff[j + 1];   // (sin estirar: solo importa la DIRECCION de cada tramo)
+        }
+        if (sF != 1.0f) {
+            // STRETCH: cada hueso se escala a lo largo de SU eje (el +Y de su marco) y se pone en la articulacion
+            // RESUELTA. No se hereda en cadena: la escala no uniforme del padre torceria al hijo.
+            for (int j = 0; j < m; j++) {
+                const int b = gBC.chainBones[ch.first + j];
+                BCEnsureFrame(b);
+                Matrix4 S; S.Identity(); S.m[5] = sF;
+                Matrix4 iF; Matrix4::InvertAffine(gBC.frame[b], iF);
+                Wik[j] = Wik[j] * gBC.frame[b] * S * iF;
+                Wik[j].m[12] = gIKJ[j].x; Wik[j].m[13] = gIKJ[j].y; Wik[j].m[14] = gIKJ[j].z;
+            }
+        }
+        // la INFLUENCIA mezcla, hueso por hueso, el local previo con el del IK (en el local: mezclar mundos
+        // haria que cada hueso "corte camino" en vez de seguir a su padre)
+        const float t = c->Weight();
+        Matrix4 parentW; if (rp >= 0 && rp < gBC.N) parentW = W[rp]; else parentW.Identity();
+        Matrix4 iParent; Matrix4::InvertAffine(parentW, iParent);
+        for (int j = 0; j < m; j++) {
+            const int b = gBC.chainBones[ch.first + j];
+            if (t >= 1.0f) W[b] = Wik[j];
+            else {
+                Matrix4 Lpre, Lik;
+                if (j == 0) { Lpre = iParent * Wpre[0]; Lik = iParent * Wik[0]; }
+                else { Matrix4 iP; Matrix4::InvertAffine(Wik[j - 1], iP); Lpre = Leff[j]; Lik = iP * Wik[j]; }
+                const Matrix4 base = (j == 0) ? parentW : W[gBC.chainBones[ch.first + j - 1]];
+                W[b] = base * W3dConsBlend(Lpre, Lik, t);
+            }
+            gBC.dirty[b] = 1;
+        }
+    }
+    for (int j = 0; j < m; j++) gBC.state[gBC.chainBones[ch.first + j]] = 2;
+}
+
+static void BCEval(int i){
+    if (i < 0 || i >= gBC.N || gBC.state[i] != 0) return;
+    gBC.state[i] = 1;
+    const int p = gBC.a->bones[i].parent;
+    if (p >= 0 && p < gBC.N) BCEval(p);
+    if (gBC.inChain[i]) {
+        for (size_t k = 0; k < gBC.chains.size(); k++)
+            if (!gBC.chains[k].solved && BCChainHas(gBC.chains[k], i)) BCSolveChain((int)k);
+        if (gBC.state[i] == 2) return;
+    }
+    BCPrepTargets(i);
+    if (p >= 0 && p < gBC.N && gBC.dirty[p]) { (*gBC.world)[i] = (*gBC.world)[p] * (*gBC.local)[i]; gBC.dirty[i] = 1; }
+    BCApply(i);
+    gBC.state[i] = 2;
+}
+
+// 'Wa' = el mundo del armature, juntado ANTES del FK (BoneConsPrefetch): pedirlo aca adentro podria evaluar
+// los constraints del OBJETO armature y, por un Child Of, la pose de OTRO armature con el scratch del FK
+// (local/world) todavia en uso.
+static void BoneConsPass(Armature* a, std::vector<Matrix4>& local, std::vector<Matrix4>& world, const Matrix4& Wa){
+    const int N = (int)a->bones.size();
+    gBC.a = a; gBC.N = N; gBC.local = &local; gBC.world = &world;
+    gBC.rc = &RestOf(a);
+    if (a->skinGltf) { gBC.Ny.Identity(); gBC.NyInv.Identity(); }
+    else { gBC.Ny = MatrixNodeToYup(); Matrix4::InvertAffine(gBC.Ny, gBC.NyInv); }
+    gBC.Wa = Wa;
+    Matrix4::InvertAffine(gBC.Wa, gBC.WaInv);
+    gBC.state.assign(N, 0); gBC.dirty.assign(N, 0); gBC.frameOk.assign(N, 0); gBC.inChain.assign(N, 0);
+    gBC.restL.resize(N); gBC.frame.resize(N); gBC.dir.resize(N); gBC.len.resize(N);
+    // las CADENAS IK (de la raiz a la punta)
+    gBC.chains.clear(); gBC.chainBones.clear();
+    for (int o = 0; o < N; o++) {
+        std::vector<W3dConstraint*>& L = a->bones[o].constraints.list;
+        for (size_t k = 0; k < L.size(); k++) {
+            W3dConstraint* c = L[k];
+            if (!c || c->type != W3dConstraintType::IK || !W3dConsTypeEffective(c, true)) continue;
+            gBC.up.clear();
+            const int maxLen = (c->chainLength > 0) ? c->chainLength : N;
+            int cur = o, guard = 0;
+            while (cur >= 0 && cur < N && (int)gBC.up.size() < maxLen && guard++ <= N) { gBC.up.push_back(cur); cur = a->bones[cur].parent; }
+            int from = c->useTail ? 0 : 1;   // sin la punta, el dueno no gira (su cabeza es el efector)
+            if ((int)gBC.up.size() <= from) continue;
+            W3dBCChain ch; ch.owner = o; ch.c = c; ch.first = (int)gBC.chainBones.size(); ch.solved = false;
+            for (int j = (int)gBC.up.size() - 1; j >= from; j--) { gBC.chainBones.push_back(gBC.up[j]); gBC.inChain[gBC.up[j]] = 1; }
+            ch.count = (int)gBC.chainBones.size() - ch.first;
+            gBC.chains.push_back(ch);
+        }
+    }
+    for (int i = 0; i < N; i++) BCEval(i);
+    gBC.a = NULL; gBC.local = NULL; gBC.world = NULL;
+}
+
+// FNV de los bits de una matriz (la firma de los targets externos)
+static void HashMat(unsigned& h, const Matrix4& m){
+    for (int i = 0; i < 16; i++) { unsigned v; memcpy(&v, &m.m[i], 4); h ^= v; h *= 16777619u; }
+}
+// junta (en MUNDO) las matrices de los targets y poles que no son huesos de este armature. Devuelve la firma.
+static unsigned BoneConsPrefetch(Armature* a, Matrix4& Wa){
+    unsigned h = 2166136261u;
+    a->GetWorldMatrix(Wa);
+    HashMat(h, Wa);
+    for (size_t b = 0; b < a->bones.size(); b++) {
+        std::vector<W3dConstraint*>& L = a->bones[b].constraints.list;
+        for (size_t k = 0; k < L.size(); k++) {
+            W3dConstraint* c = L[k]; if (!c) continue;
+            c->cacheTOk = false; c->cachePOk = false;
+            if (!W3dConsTypeEffective(c, true)) continue;
+            for (int w = 0; w < 2; w++) {
+                if (w == 1 && c->type != W3dConstraintType::IK) break;   // solo el IK tiene pole
+                Object* src = w ? c->poleObj : c->sourceObj;
+                const std::string& bn = w ? c->poleBone : c->bone;
+                if (!src || (src == (Object*)a && !bn.empty())) continue;   // nada, o un hueso propio
+                Matrix4 Wt; src->GetWorldMatrix(Wt);
+                Matrix4 rest; if (src->Parent) src->Parent->GetWorldMatrix(rest); else rest.Identity();
+                float len = 0.0f;
+                if (!bn.empty() && src->getType() == ObjectType::armature) {
+                    Armature* oa = (Armature*)src;
+                    EvaluatePoseSkeleton(oa, CurrentFrame);
+                    const int idx = BoneByNameCached(oa, bn, w ? c->poleBoneCache : c->boneCache);
+                    Matrix4 P, B;
+                    if (idx >= 0 && W3dBoneFrameMatrix(oa, idx, P, &B, &len)) {
+                        rest = Wt * B; Wt = Wt * P;
+                        if (!w && c->headTail > 0.0f) {
+                            const Vector3 p = Wt * Vector3(0, len * c->headTail, 0);
+                            Wt.m[12] = p.x; Wt.m[13] = p.y; Wt.m[14] = p.z;
+                        }
+                    }
+                }
+                if (w) { c->cacheP = Wt; c->cachePOk = true; }
+                else   { c->cacheT = Wt; c->cacheTRest = rest; c->cacheTLen = len; c->cacheTOk = true; }
+                HashMat(h, Wt);
+            }
+        }
+    }
+    return h;
+}
+
+bool W3dBoneConstraintTarget(Armature* a, W3dConstraint* c, Matrix4& out){
+    if (!a || !c || !c->sourceObj) return false;
+    Matrix4 Wa, iWa; a->GetWorldMatrix(Wa); Matrix4::InvertAffine(Wa, iWa);
+    Object* src = c->sourceObj;
+    if (!c->bone.empty() && src->getType() == ObjectType::armature) {
+        Armature* oa = (Armature*)src;
+        EvaluatePoseSkeleton(oa, CurrentFrame);
+        const int idx = BoneByNameCached(oa, c->bone, c->boneCache);
+        float len = 0.0f; Matrix4 P;
+        if (idx < 0 || !W3dBoneFrameMatrix(oa, idx, P, NULL, &len)) return false;
+        if (c->headTail > 0.0f) { const Vector3 p = P * Vector3(0, len * c->headTail, 0); P.m[12] = p.x; P.m[13] = p.y; P.m[14] = p.z; }
+        if (oa == a) { out = P; return true; }
+        Matrix4 Wo; oa->GetWorldMatrix(Wo);
+        out = iWa * Wo * P;
+        return true;
+    }
+    Matrix4 Wt; src->GetWorldMatrix(Wt);
+    out = iWa * Wt;
+    return true;
+}
+
 float g_poseFraction = 0.0f;   // (ver SkeletalAnimation.h)
 void EvaluatePoseSkeleton(Armature* a, int frame){
     if (!a) return;
+    // REENTRADA: juntando los targets de SUS constraints se llego de vuelta aca (un target que cuelga de
+    // un hueso de este mismo armature). Se usa la pose que ya hay: un frame de atraso en un ciclo, en vez
+    // de una recursion infinita.
+    if (a->consEvaluating) return;
     // GATING de playback: este armature reproduce su clip SOLO si es la animacion ACTIVA (ActiveAnimKind 1 + este
     // armature). Con una ESCENA activa (kind 0) o con OTRO armature activo, se muestra en REST -> "solo se mueve lo
     // seleccionado", no todos a la vez. (Posar a mano igual anda: poseDirty corta antes de leer la curva.)
@@ -649,7 +1241,19 @@ void EvaluatePoseSkeleton(Armature* a, int frame){
         a->mixSignature = signature;
         animPlay = -777;
     }
-    if (!frameChanged && !a->poseDirty) return;
+    // CONSTRAINTS DE HUESO: lo que leen de AFUERA se junta ACA, antes del FK (ver BoneConsPrefetch). Si
+    // cambio (arrastraron el target del IK, se movio el armature) la pose se recalcula aunque el frame sea
+    // el mismo, sin refrescar poseT/R/S desde la curva (igual que posando a mano).
+    const bool hasCons = a->HasBoneConstraints();
+    bool consChanged = false;
+    Matrix4 consWa; consWa.Identity();
+    if (hasCons) {
+        a->consEvaluating = true;
+        const unsigned sig = BoneConsPrefetch(a, consWa);
+        a->consEvaluating = false;
+        if (sig != a->consSignature) { a->consSignature = sig; consChanged = true; }
+    }
+    if (!frameChanged && !a->poseDirty && !consChanged) return;
     a->lastPoseFrame = frame; a->lastPoseAnim = animPlay; a->lastPoseFrameF = frameF;
     a->poseDirty = false;
     a->poseSerial++; // la pose se RECALCULA -> las mallas skinneadas re-deforman/re-suben el VBO aunque el frame no cambie
@@ -706,6 +1310,7 @@ void EvaluatePoseSkeleton(Armature* a, int frame){
         }
         b.poseT = T; b.poseR = R; b.poseS = S;
     }
+    const W3dRestCache& rest = RestOf(a);   // (el reposo, cacheado: ver W3dRestCache)
     for (size_t i = 0; i < N; i++){
         W3dBone& b = a->bones[i];
         if (a->skinRebuildFK){
@@ -738,13 +1343,16 @@ void EvaluatePoseSkeleton(Armature* a, int frame){
             Matrix4 Tdelta; Tdelta.Identity(); Tdelta.m[12] = dt.x; Tdelta.m[13] = dt.y; Tdelta.m[14] = dt.z;
             local[i] = Tdelta * Lcorrect * deltaRot;
         } else {
-            local[i] = LocalMat(b.poseT, b.poseR, b.poseS, b.preRot, b.rotOrder); // FK desde la POSE (editable)
+            // FK desde la POSE (editable): LocalMat con la PreRotation del reposo cacheado (la misma cuenta)
+            local[i] = MatTrans(b.poseT) * rest.pre[i] * MatRotEuler(b.poseR, b.rotOrder) * MatScale(b.poseS);
         }
     }
     // MUNDO por hueso; head animado en espacio nodo -> Y-up (el Object de la armature aplica la escala 0.01 al dibujar)
     static std::vector<Vector3> headNode, tailNode; headNode.resize(N); tailNode.resize(N);
+    WorldAll(a->bones, local, world, N);   // FK NORMAL: el MOVIMIENTO correcto del hueso
+    // los CONSTRAINTS de hueso (IK, Copy*, Track To...): sobre el mundo del FK, antes del skin y del dibujo
+    if (hasCons) BoneConsPass(a, local, world, consWa);
     for (size_t i = 0; i < N; i++){
-        world[i] = WorldMat(a->bones, local, (int)i); // FK NORMAL: el MOVIMIENTO correcto del hueso
         headNode[i] = world[i] * Vector3(0,0,0);      // display = FK normal (el hueso rota/se mueve bien)
         // Child Of: el mundo del hueso en el MISMO espacio que el display (glTF ya es Y-up; FBX es nodo Z-up)
         a->bones[i].poseWorld = a->skinGltf ? world[i] : (MatrixNodeToYup() * world[i]);
@@ -757,6 +1365,7 @@ void EvaluatePoseSkeleton(Armature* a, int frame){
     // tails: en un rig AUTORADO el tail es DATA del usuario (Edit Mode de huesos) -> se transforma con el
     // hueso: tail(pose) = world * (tail - head) (el vector local del hueso; en rest da el tail autorado).
     // En rigs FBX el tail no es confiable -> se deriva: hueso con hijo = head del 1er hijo; hoja = extender.
+    // En un glTF la punta ESCRITA (o la hoja por su +Y) se mueve con el hueso, igual que el marco de sus constraints.
     if (a->skinAuthored){
         for (size_t i = 0; i < N; i++)
             tailNode[i] = world[i] * (a->bones[i].tail - a->bones[i].head);
@@ -764,7 +1373,9 @@ void EvaluatePoseSkeleton(Armature* a, int frame){
     static std::vector<int> firstChild; firstChild.assign(N, -1);
     for (size_t i = 0; i < N; i++){ int pair = a->bones[i].parent; if (pair >= 0 && pair < (int)N && firstChild[pair] < 0) firstChild[pair] = (int)i; }
     for (size_t i = 0; i < N; i++){
-        if (firstChild[i] >= 0) tailNode[i] = headNode[firstChild[i]];        // conectado: tail = head del hijo
+        if (a->skinGltf && (firstChild[i] < 0 || BoneTailGiven(a, (int)i)))
+            tailNode[i] = world[i] * rest.dir[i];
+        else if (firstChild[i] >= 0) tailNode[i] = headNode[firstChild[i]];   // conectado: tail = head del hijo
         else { int pair = a->bones[i].parent;                                 // hoja: extender en la direccion parent->bone
                tailNode[i] = (pair >= 0 && pair < (int)N) ? headNode[i] + (headNode[i] - headNode[pair])
                                                         : headNode[i] + Vector3(0, 0, 5); }
@@ -948,6 +1559,61 @@ double g_skinTotalMs = 0, g_skinPoseMs = 0;
 namespace { struct MeasureSkin { double t0; MeasureSkin() : t0(g_skinClockHeight ? g_skinClockHeight() : 0) {}
     ~MeasureSkin() { if (g_skinClockHeight) g_skinTotalMs += g_skinClockHeight() - t0; } }; }
 
+// PIEL RIGIDA (pedido del dueno: "poder animar algo en estos telefonos sin que sea una tortura"). Una malla con
+// esqueleto que sigue ENTERA a un solo hueso -lo comun en un personaje: casco, mochila, ojos, armas; en un robot, cada
+// pieza- no necesita skinning: su pose es el bind por la matriz de ese hueso. RenderObject la dibuja asi (la matriz del
+// hueso sobre la del objeto, el VBO estatico del bind) en vez de deformar vertice por vertice en la CPU y re-subirlos
+// al GL en cada cuadro. Medido en el Galaxy Ace con el Bongo Cat (5 de sus 7 mallas son rigidas): la piel y su subida
+// eran la mitad del cuadro reproduciendo. Lo que necesita las posiciones en la CPU (trazado de rayos, sombras, fisica,
+// el pick) sigue llamando a SkinMesh, que las calcula igual. W3D_SKIN_RIGID=0 (entorno) lo apaga, para comparar
+static unsigned SkinSignature(const Mesh* m, const Armature* a);
+static int g_skinRigidOn = -1;
+int SkinRigidBone(Mesh* m){
+    if (g_skinRigidOn < 0) {
+#ifdef W3D_SYMBIAN
+        g_skinRigidOn = 1;
+#else
+        const char* e = getenv("W3D_SKIN_RIGID"); g_skinRigidOn = (e && *e == '0') ? 0 : 1;
+#endif
+    }
+    if (!g_skinRigidOn || !m || !m->skinArmature || !m->vertex || m->vertexSize <= 0) return -1;
+    if (m->HasShapesActive() || (int)m->vertCtrlPoint.size() < m->vertexSize) return -1;
+    Armature* a = m->skinArmature;
+    if (m->skinCpOff.empty() || m->nextSkinFlat != SkinSignature(m, a)) {
+        m->lastSkinFrame = -999999;   // (que no corte por el cache del cuadro: tiene que rearmar el CSR)
+        SkinMesh(m);
+    }
+    const int b = m->skinRigidBone;
+    if (b < 0 || b >= (int)a->bones.size() || !a->bones[b].hasSkin) return -1;
+    EvaluatePoseSkeleton(a, CurrentFrame);   // (la matriz del hueso al cuadro actual; cacheado)
+    const float* mm = a->bones[b].skinMatrix.m;
+    for (int k = 0; k < 16; k++) if (!(mm[k] < 1e6f && mm[k] > -1e6f)) return -1;   // (un hueso roto: el camino de siempre)
+    return b;
+}
+
+// LA FIRMA del CSR de pesos (ver SkinMesh): cambia con la geometria, el armature, los huesos (nombres y hasSkin) y los
+// vertex groups. La usan SkinMesh (para rearmarlo) y SkinRigidBone (para saber si su respuesta sigue valiendo)
+static unsigned SkinSignature(const Mesh* m, const Armature* a){
+    const int nv = m->vertexSize;
+    unsigned next = (unsigned)nv * 2654435761u;
+    next ^= (unsigned)(size_t)a; next = next*31u + (unsigned)a->bones.size();
+    next = next*31u + (unsigned)m->vertexGroups.size() + (unsigned)m->vertCtrlPoint.size()*131u;
+    next = next*2654435761u + m->skinGeomVersion; // regenerar geometria (GenerateRender/ComputeBorders) invalida aunque nV no cambie;
+                                                // como el mapeo render->CP (y por ende nCtrl) se rehace ahi, cubre el conteo de CP.
+    // los NOMBRES mapean group->bone (boneOf.find(vg->name)); si se renombra un grupo o un hueso, el mapeo cambia
+    // pero punteros/tamaños no -> hay que hashear los nombres (y hasSkin) sino el CSR queda stale. Barato (~cientos de chars).
+    for (size_t b = 0; b < a->bones.size(); b++){ const std::string& nm=a->bones[b].name;
+        for (size_t c=0;c<nm.size();c++) next = next*31u + (unsigned char)nm[c];
+        next = next*2u + (a->bones[b].hasSkin?1u:0u); }
+    for (size_t g = 0; g < m->vertexGroups.size(); g++){
+        next ^= (unsigned)(size_t)m->vertexGroups[g];
+        next = next*31u + (unsigned)m->vertexGroups[g]->verts.size();
+        const std::string& gn=m->vertexGroups[g]->name;
+        for (size_t c=0;c<gn.size();c++) next = next*31u + (unsigned char)gn[c];
+    }
+    return next;
+}
+
 void SkinMesh(Mesh* m){
     if (!m || !m->skinArmature || !m->vertex || m->vertexSize <= 0) return;
     MeasureSkin measure;
@@ -994,22 +1660,7 @@ void SkinMesh(Mesh* m){
     //      42840 render pero 7186 CP = 6x). Como los render-verts de un mismo CP comparten bind + pesos, el blend caro
     //      de matrices se hace 1 vez POR CP y se escalea (6x menos matematica). Invalida por firma de topologia
     //      (nextSkinFlat): vertexSize, armature, #huesos, #grupos + puntero/tamaño de cada grupo, #control-points. ----
-    unsigned next = (unsigned)nv * 2654435761u;
-    next ^= (unsigned)(size_t)a; next = next*31u + (unsigned)a->bones.size();
-    next = next*31u + (unsigned)m->vertexGroups.size() + (unsigned)m->vertCtrlPoint.size()*131u;
-    next = next*2654435761u + m->skinGeomVersion; // regenerar geometria (GenerateRender/ComputeBorders) invalida aunque nV no cambie;
-                                                // como el mapeo render->CP (y por ende nCtrl) se rehace ahi, cubre el conteo de CP.
-    // los NOMBRES mapean group->bone (boneOf.find(vg->name)); si se renombra un grupo o un hueso, el mapeo cambia
-    // pero punteros/tamaños no -> hay que hashear los nombres (y hasSkin) sino el CSR queda stale. Barato (~cientos de chars).
-    for (size_t b = 0; b < a->bones.size(); b++){ const std::string& nm=a->bones[b].name;
-        for (size_t c=0;c<nm.size();c++) next = next*31u + (unsigned char)nm[c];
-        next = next*2u + (a->bones[b].hasSkin?1u:0u); }
-    for (size_t g = 0; g < m->vertexGroups.size(); g++){
-        next ^= (unsigned)(size_t)m->vertexGroups[g];
-        next = next*31u + (unsigned)m->vertexGroups[g]->verts.size();
-        const std::string& gn=m->vertexGroups[g]->name;
-        for (size_t c=0;c<gn.size();c++) next = next*31u + (unsigned char)gn[c];
-    }
+    const unsigned next = SkinSignature(m, a);
     if (m->nextSkinFlat != next || m->skinCpOff.empty()){
         // nCtrl (cantidad de control-points) SOLO se recomputa al reconstruir (cambia con la geometria, ya en el sig via
         // skinGeomVersion). Fuera de aca el hot-loop usa m->skinNCtrl cacheado -> sin loop O(nv) por frame.
@@ -1089,6 +1740,19 @@ void SkinMesh(Mesh* m){
           m->skinEpsPos = diag * 2e-4f;   // traslacion: ~1/5000 del tamaño de la malla
           m->skinEpsRot = 2e-4f; }        // rotacion (adimensional): filtra el jitter del bake (85% < 1e-4)
         m->skinIncOk = false;   // el proximo pase COMPLETO deja la referencia del incremental
+        // PIEL RIGIDA (ver SkinRigidBone): TODOS los puntos con render-verts siguen a UN hueso, el MISMO (el casco, la
+        // mochila, los ojos de un personaje; las piezas de un robot por separado). Con eso la malla entera es su bind
+        // por la matriz de ese hueso: se dibuja con esa matriz, sin deformar ni re-subir un vertice
+        { int rb = -2;
+          if ((int)m->skinCpRv.size() < nv) rb = -1;   // algun render-vert sin punto: queda en bind
+          for (int c = 0; c < nCtrl && rb != -1; c++) {
+              if (m->skinCpRvOff[(size_t)c] == m->skinCpRvOff[(size_t)c + 1]) continue;   // (punto sin render-verts)
+              const int s0 = m->skinCpOff[c], e0 = m->skinCpOff[c + 1];
+              if (e0 - s0 != 1) { rb = -1; break; }   // sin hueso (queda en bind) o una mezcla
+              const int b = m->skinCpBone[s0];
+              if (rb == -2) rb = b; else if (rb != b) rb = -1;
+          }
+          m->skinRigidBone = (rb >= 0) ? rb : -1; }
         m->nextSkinFlat = next;
     }
 
@@ -1448,4 +2112,115 @@ void MoveActiveAnimation(Armature* a, int dir){
     a->animations[i] = a->animations[j];
     a->animations[j] = t;
     a->activeAnim = j;
+}
+
+// ============================================================================
+//  BAKE DE LOS CONSTRAINTS DE HUESO A KEYFRAMES (contrato en Armature.h)
+//
+//  Es el "Bake Action" con "Visual Keying" de Blender: lo que se ve (la pose CON constraints) pasa a ser
+//  curvas del clip. Sirve para los exportadores (el glTF exporta curvas, no constraints) y para el N95
+//  (resolver un IK por frame cuesta; leer una curva no).
+//  Se evalua TODO el rango antes de escribir una sola key: las curvas son la ENTRADA del FK, y escribir
+//  mientras se evalua haria que el frame siguiente lea lo que se acaba de hornear.
+//  La pose efectiva de cada hueso sale de poseWorld (el resultado final del evaluador): su local es
+//  inv(mundo del padre) * mundo, y se descompone con la MISMA convencion que arma el FK
+//  (LocalMat = T * PreRot * R(orden) * S). El euler se elige el mas parecido al del frame anterior (la
+//  forma "dada vuelta" y las vueltas de 360), para que la curva no pegue saltos de 360 entre keys.
+// ============================================================================
+static float BakeNear360(float v, float ref){
+    while (v - ref >  180.0f) v -= 360.0f;
+    while (v - ref < -180.0f) v += 360.0f;
+    return v;
+}
+static Vector3 BakeNearEuler(const Vector3& e, const Vector3& ref, int order){
+    static const int ax[6][3] = { {0,1,2}, {0,2,1}, {1,2,0}, {1,0,2}, {2,0,1}, {2,1,0} };
+    if (order < 0 || order > 5) order = 0;
+    Vector3 best = e; float bestD = 1e30f;
+    for (int flip = 0; flip < 2; flip++) {
+        Vector3 c = e;
+        if (flip) { const int a = ax[order][0], b = ax[order][1], cc = ax[order][2];
+                    c[a] = e[a] + 180.0f; c[b] = 180.0f - e[b]; c[cc] = e[cc] + 180.0f; }
+        for (int k = 0; k < 3; k++) c[k] = BakeNear360(c[k], ref[k]);
+        const float d = fabsf(c.x - ref.x) + fabsf(c.y - ref.y) + fabsf(c.z - ref.z);
+        if (d < bestD) { bestD = d; best = c; }
+    }
+    return best;
+}
+int W3dBakeBoneConstraints(Armature* a, int from, int to, bool removeConstraints){
+    if (!a || a->bones.empty() || !a->bones[0].hasRest) return -1;
+    if (a->skinRebuildFK) return -1;   // biped de FK reconstruido: su local NO es T*PreRot*R*S (se avisa arriba)
+    if (a->activeAnim < 0 || a->activeAnim >= (int)a->animations.size() || !a->animations[a->activeAnim]) return -1;
+    if (to < from) { const int t = to; to = from; from = t; }
+    const int N = (int)a->bones.size();
+    // QUE huesos: los duenos de un constraint efectivo y los huesos que mueve cada cadena IK
+    std::vector<char> bake(N, 0);
+    int count = 0;
+    for (int o = 0; o < N; o++) {
+        const std::vector<W3dConstraint*>& L = a->bones[o].constraints.list;
+        for (size_t k = 0; k < L.size(); k++) {
+            const W3dConstraint* c = L[k];
+            if (!W3dConsTypeEffective(c, true)) continue;
+            bake[o] = 1;
+            if (c->type == W3dConstraintType::IK) {
+                const int maxLen = (c->chainLength > 0) ? c->chainLength : N;
+                int cur = o, n = 0;
+                while (cur >= 0 && cur < N && n < maxLen) { bake[cur] = 1; cur = a->bones[cur].parent; n++; }
+            }
+        }
+    }
+    for (int i = 0; i < N; i++) if (bake[i]) count++;
+    if (!count) return 0;
+    W3dOwnArmatureAnims(a);   // escribe en el clip: si es de un animset compartido, pasa a ser propio
+    SkeletalAnimation* clip = a->animations[a->activeAnim];
+    // que el evaluador reproduzca ESTE clip (lo mismo que hace el timeline con el armature activo)
+    const int kindSaved = ActiveAnimKind; Armature* armSaved = ActiveAnimArm; const int frameSaved = CurrentFrame;
+    ActiveAnimKind = 1; ActiveAnimArm = a;
+    const int F = to - from + 1;
+    std::vector<Vector3> T((size_t)F * N), R((size_t)F * N), S((size_t)F * N);
+    std::vector<Vector3> prev(N);
+    std::vector<char> havePrev(N, 0);
+    Matrix4 rootSpace; if (a->skinGltf) rootSpace.Identity(); else rootSpace = MatrixNodeToYup();
+    for (int f = from; f <= to; f++) {
+        CurrentFrame = f;
+        a->lastPoseFrame = -999999; a->poseDirty = false;
+        EvaluatePoseSkeleton(a, f);
+        for (int i = 0; i < N; i++) {
+            if (!bake[i]) continue;
+            const W3dBone& b = a->bones[i];
+            const int p = b.parent;
+            Matrix4 iP; Matrix4::InvertAffine((p >= 0 && p < N) ? a->bones[p].poseWorld : rootSpace, iP);
+            const Matrix4 L = iP * b.poseWorld;
+            // L = T * PreRot * R * S  ->  A = inv(PreRot) * lineal(L) = R * S
+            Matrix4 lin = L; lin.m[12] = lin.m[13] = lin.m[14] = 0.0f;
+            Matrix4 iPre; Matrix4::InvertAffine(MatRotEuler(b.preRot, 0), iPre);
+            Matrix4 A = iPre * lin;
+            Vector3 sc;
+            for (int c = 0; c < 3; c++) {
+                const float l = sqrtf(A.m[c*4]*A.m[c*4] + A.m[c*4+1]*A.m[c*4+1] + A.m[c*4+2]*A.m[c*4+2]);
+                sc[c] = l;
+                if (l > 1e-12f) { A.m[c*4] /= l; A.m[c*4+1] /= l; A.m[c*4+2] /= l; }
+            }
+            Vector3 e = W3dEulerFromMatrix(A, b.rotOrder);
+            if (havePrev[i]) e = BakeNearEuler(e, prev[i], b.rotOrder);
+            else e = BakeNearEuler(e, b.poseR, b.rotOrder);   // el 1ro, cerca de lo que ya decia la curva
+            prev[i] = e; havePrev[i] = 1;
+            const size_t at = (size_t)(f - from) * N + i;
+            T[at] = Vector3(L.m[12], L.m[13], L.m[14]); R[at] = e; S[at] = sc;
+        }
+    }
+    for (int f = from; f <= to; f++)
+        for (int i = 0; i < N; i++) {
+            if (!bake[i]) continue;
+            const size_t at = (size_t)(f - from) * N + i;
+            BoneTrack& tr = clip->TrackOf(i);
+            SetKey3(tr, AnimPosition, f, T[at]);
+            SetKey3(tr, AnimRotation, f, R[at]);
+            SetKey3(tr, AnimScale,    f, S[at]);
+        }
+    if (clip->endFrame < to) clip->endFrame = to;
+    if (removeConstraints)
+        for (int i = 0; i < N; i++) if (!a->bones[i].constraints.empty()) a->bones[i].constraints.Clear();
+    ActiveAnimKind = kindSaved; ActiveAnimArm = armSaved; CurrentFrame = frameSaved;
+    a->lastPoseFrame = -999999; a->poseDirty = false; a->poseSerial++;
+    return count;
 }

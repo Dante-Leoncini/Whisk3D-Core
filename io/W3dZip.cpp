@@ -724,6 +724,16 @@ bool W3dZipReader::ReadRaw(const std::string& name, std::vector<unsigned char>& 
     return true;
 }
 
+bool W3dZipReader::Info(const std::string& name, unsigned* crc, unsigned* origLen) {
+    if (!fh) return false;
+    const W3dZipIndex* e = Find(name);
+    unsigned long dataStart = 0;
+    if (!e || !DataOf(e, dataStart)) return false;
+    if (crc)     *crc     = e->crc;
+    if (origLen) *origLen = e->origLen;
+    return true;
+}
+
 bool W3dZipReader::Read(const std::string& name, std::vector<unsigned char>& out) {
     out.clear();
     if (!fh) return false;

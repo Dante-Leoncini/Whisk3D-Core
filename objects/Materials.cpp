@@ -1,6 +1,7 @@
 #include "Materials.h"
 #include "W3dNames.h"     // nombres unicos (misma regla que objetos/huesos/grupos)
 #include "w3dGraphics.h"  // w3dEngine::Mezcla*: los codigos de mezcla (W3dMaterialIsLight)
+#include <math.h>         // cosf / sinf: la matriz de la transformacion UV
 
 Material* FactoryMaterial(Material* m) {
     if (m) m->perPixel = w3dEngine::ShadingPerPixelSupported();
@@ -91,6 +92,11 @@ Material::Material(const std::string& newName, bool MaterialDefaultFlag, bool Ha
     ior = 1.0f;   // (1 = sin refraccion: lo transparente deja ver lo de atras derecho; 1.33 agua, 1.5 vidrio)
     transmission = 0.0f;
     ssr = false;   // (los reflejos en pantalla: apagados)
+    // la fuerza de la emision y la transformacion UV: la identidad (un material de siempre se ve igual)
+    emissionStrength = 1.0f;
+    uvOffset[0] = uvOffset[1] = 0.0f; uvScale[0] = uvScale[1] = 1.0f; uvRotation = 0.0f; uvPivot[0] = uvPivot[1] = 0.5f;
+    { static unsigned sSerial = 0; serial = ++sSerial; }   // (no se recicla: ver Material::serial)
+    posedByCurves = false;
     shaderOn = false; shaderId = 0; shaderState = 0; shaderScreen = false; shaderTime = false; shaderCPU = NULL;
     if (!MaterialDefaultFlag){
         // los materiales del proyecto son GLOBALES y unicos: el ctor es el unico
@@ -108,6 +114,17 @@ Material::Material(const std::string& newName, bool MaterialDefaultFlag, bool Ha
 }
 
 Material::~Material() {}
+
+// uv' = R * S * (uv - pivote) + pivote + desplazamiento (ver Materials.h), armada una vez por dibujo: con la rotacion en
+// 0 no hay ni seno ni coseno (lo comun: una textura que solo se desplaza)
+void Material::UVMatrix(float m[6]) const {
+    float c = 1.0f, s = 0.0f;
+    if (uvRotation != 0.0f) { const float r = uvRotation * 0.017453292f; c = cosf(r); s = sinf(r); }
+    m[0] = c * uvScale[0]; m[1] = s * uvScale[0];
+    m[2] = -s * uvScale[1]; m[3] = c * uvScale[1];
+    m[4] = uvPivot[0] + uvOffset[0] - (m[0] * uvPivot[0] + m[2] * uvPivot[1]);
+    m[5] = uvPivot[1] + uvOffset[1] - (m[1] * uvPivot[0] + m[3] * uvPivot[1]);
+}
 
 static const char* const kMapKeys[W3D_MAPS] = { "base", "normal", "emission", "roughness", "metallic", "alpha" };
 const char* W3dMatMapKey(int m) { return (m >= 0 && m < W3D_MAPS) ? kMapKeys[m] : ""; }

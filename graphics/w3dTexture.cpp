@@ -351,7 +351,7 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtered, 
     if (!rgba || w <= 0 || h <= 0) {
         return 0;
     }
-    static std::vector<unsigned char> opaque;
+    std::vector<unsigned char> opaque;   // (local, como px16: estatica quedaba la copia RGBA de la textura mas grande)
     if (g_texAlphaDiscard) {   // (una copia con el alfa en 255: entra en 565 donde el alfa no se usa)
         opaque.assign(rgba, rgba + (size_t)w * h * 4);
         for (size_t i = 3; i < opaque.size(); i += 4) opaque[i] = 255;
@@ -413,7 +413,7 @@ unsigned int UploadRGBA(const unsigned char* rgba, int w, int h, bool filtered, 
     // TODAS las texturas del N95 (el ICL de Symbian decodifica y sube con UploadRGBA).
     const bool mips = withMips && pot && MipmapsGlobal();
     // 16 bits (la mitad de memoria) si la imagen entra sin perdida visible
-    static std::vector<unsigned short> px16;
+    std::vector<unsigned short> px16;   // (local: estatico quedaba del tamanio de la textura mas grande para siempre, 2 MB por una de 1024)
     GLenum format = GL_RGBA, type = GL_UNSIGNED_BYTE;
     const void* data = rgba;
     if (allow16) {
@@ -876,7 +876,7 @@ bool LoadTexture(const char* path, unsigned int& outId, int* outW, int* outH) {
     GLenum format = GL_RGBA, type = GL_UNSIGNED_BYTE;
     // 16 BITS si entra sin perdida visible (lo mismo que sube el N95 por UploadRGBA: el editor ve lo que vera el
     // telefono y la memoria se mide igual)
-    static std::vector<unsigned short> px16;
+    std::vector<unsigned short> px16;   // (local: estatico quedaba del tamanio de la textura mas grande para siempre, 2 MB por una de 1024)
     {
         GLenum f16 = GL_RGBA;
         const GLenum t16 = Pack16(data, w, h, px16, f16);

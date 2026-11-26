@@ -5,6 +5,7 @@
 #include "crossplatform.h"   // W3D_OVERRIDE (antes llegaba de rebote por Objects.h)
 #include "math/Matrix4.h"
 #include "math/Quaternion.h"
+#include "objects/W3dConstraint.h"   // W3dBoneConstraints (el stack de cada hueso)
 #include <vector>
 #include <string>
 
@@ -67,7 +68,17 @@ struct W3dBone {
     // Se guarda en el .w3d ("suelto": true solo cuando esta apagado con padre) -> los archivos
     // viejos (sin el campo) cargan con el comportamiento posicional de siempre.
     bool    connected;
-    W3dBone() : parent(-1), restS(1,1,1), poseS(1,1,1), rotOrder(0), hasRest(false), hasSkin(false), select(false), selHead(false), selTail(false), connected(true) {
+    // ---- CONSTRAINTS DEL HUESO (IK, Copy*, Track To, Limit*...) ----
+    // Se evaluan DESPUES del FK y ANTES de las matrices de skin (EvaluatePoseSkeleton) y, como los de
+    // objeto, NUNCA escriben poseT/R/S ni las curvas: modifican la pose que se dibuja/skinnea. El
+    // envoltorio copia en profundidad (W3dBone se copia por valor: ver W3dBoneConstraints).
+    W3dBoneConstraints constraints;
+    // ROLL del MARCO del hueso, en grados alrededor de su eje (cabeza->punta). Un hueso autorado no
+    // tiene rotacion de reposo: su marco es el giro MINIMO del +Y al hueso, y esto lo gira. Solo lo
+    // usan los constraints (que eje es "X"/"Z" del hueso para Track To, Limit Rotation local...): un
+    // rig convertido de Blender lo trae para que sus ejes coincidan. 0 = el de siempre.
+    float   roll;
+    W3dBone() : parent(-1), restS(1,1,1), poseS(1,1,1), rotOrder(0), hasRest(false), hasSkin(false), select(false), selHead(false), selTail(false), connected(true), roll(0.0f) {
         bind.Identity(); clusterTransform.Identity(); skinA.Identity(); skinInvBind.Identity(); skinMatrix.Identity();
         poseWorld.Identity();
     }
@@ -136,11 +147,20 @@ class Armature : public Object {
         int   retarget;
         const void* retargetClip;
         float retargetScale;
+        // ---- CONSTRAINTS DE HUESO: runtime (no se guarda) ----
+        // GUARDIA DE REENTRADA: un target de un constraint de hueso puede depender de ESTE armature (un
+        // Empty con Child Of a uno de sus huesos). Juntar su matriz vuelve a pedir esta pose: con la guardia
+        // prendida esa vuelta devuelve la pose que ya hay en vez de recursar para siempre.
+        bool consEvaluating;
+        // FIRMA de lo que los constraints leen de AFUERA (el mundo del armature y de cada target que no es
+        // un hueso propio): si cambia -arrastraron el target del IK- la pose se recalcula aunque el frame
+        // sea el mismo. Sin constraints no se calcula nada.
+        unsigned consSignature;
 
         Armature(Object* parent = NULL, Vector3 pos = Vector3(0, 0, 0))
             : Object(parent, "Armature", pos), activeAnim(-1), animsRec(NULL), animsVar(NULL), skinUsesBind(false), skinRebuildFK(false), skinGltf(false), skinAuthored(false), poseDirty(false), activeBone(-1), lastPoseFrameF(-999999.0f), lastPoseFrame(-999999), lastPoseAnim(-999), figureScale(1.0f), poseSerial(1),
               activeLayer(-1), mixSignature(0), remainingTrans(0.0f), transTotal(0.0f), gameFrame(0.0f), gameVel(1.0f), gameLoop(true), gameEnded(false),
-              retarget(0), retargetClip(NULL), retargetScale(1.0f) {}
+              retarget(0), retargetClip(NULL), retargetScale(1.0f), consEvaluating(false), consSignature(0) {}
         ~Armature() W3D_OVERRIDE; // libera los clips PROPIOS (los de un animset compartido solo se sueltan)
 
         ObjectType getType() W3D_OVERRIDE { return ObjectType::armature; }
@@ -149,6 +169,41 @@ class Armature : public Object {
         // encuadre ('.'/frame selected): envuelve TODOS los huesos (poseHead/poseTail), no solo el origen
         Vector3 PointFocus() const W3D_OVERRIDE;
         float   FocusRadius() const W3D_OVERRIDE;
+
+        // ---- LA PUERTA DE REFS (Objects.h): 2 por constraint de hueso, el TARGET y el POLE, en el orden
+        //      huesos -> stack. Asi borrar el objeto target, el undo de ese borrado y renombrarlo los
+        //      manejan las mismas maquinas que a la fuente de un constraint de objeto, sin saber de huesos.
+        int     OwnRefs() const W3D_OVERRIDE;
+        Object* OwnRef(int i) const W3D_OVERRIDE;
+        void    SetOwnRef(int i, Object* o) W3D_OVERRIDE;
+        std::string* RefOwnName(int i) W3D_OVERRIDE;
+        // el constraint de hueso detras del slot 'i' de OwnRef (which: 0 = target, 1 = pole). NULL = no hay.
+        W3dConstraint* BoneConstraintOfRef(int i, int* which) const;
+        W3dConstraint* BoneConstraintBySerial(unsigned int s) const;   // NULL = ya no esta
+        bool HasBoneConstraints() const;
+        // accesores del stack del hueso ACTIVO para la lista del panel (PropList modo 14) sin ver la clase
+        int         BoneConstraintsCount() const;
+        std::string BoneConstraintName(int i) const;
+        void        SetActiveBoneConstraint(int i);
+        int         ActiveBoneConstraint() const;
 };
+
+// ===== constraints de hueso: lo que el resto del motor pide (SkeletalAnimation.cpp) =====
+// la matriz de un hueso EN EL MARCO DEL HUESO (+Y a lo largo), en el espacio del objeto armature, con la
+// pose YA evaluada: es lo que un constraint lee de un target hueso. 'rest' (opcional) = su base local
+// (padre * reposo * marco) y 'length' su largo. false = indice invalido.
+bool W3dBoneFrameMatrix(Armature* a, int bone, Matrix4& out, Matrix4* rest, float* length);
+// la matriz del TARGET de un constraint de hueso, en el espacio del objeto armature (con su hueso y su
+// headTail), tal como la ve el evaluador en la pose actual. La usa el "Set Inverse" del Child Of de hueso.
+bool W3dBoneConstraintTarget(Armature* a, W3dConstraint* c, Matrix4& out);
+// HORNEA los constraints de hueso en keyframes del clip ACTIVO (el "Bake Action / Visual Transform" de
+// Blender): evalua cada frame de [desde, hasta] y escribe la pose EFECTIVA de los huesos con constraints
+// (y de las cadenas IK) como curvas de pos/rot/escala. 'quitar' borra despues esos constraints (si no,
+// se aplicarian dos veces encima de las curvas). Devuelve cuantos huesos keyeo; -1 = sin clip / rig no
+// soportado (biped de FK reconstruido). El undo lo captura el que llama (UndoBonesCapture).
+int W3dBakeBoneConstraints(Armature* a, int from, int to, bool removeConstraints);
+// RENOMBRAR UN HUESO: los vinculos por nombre a ese hueso (el subtarget/pole de cualquier constraint
+// -de objeto o de hueso- cuyo target es 'a') pasan al nombre nuevo. Recorre 'raiz' entera.
+void W3dConstraintsRenameBone(Object* root, Armature* a, const std::string& oldName, const std::string& newName);
 
 #endif // ARMATURE_H

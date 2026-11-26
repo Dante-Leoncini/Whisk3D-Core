@@ -52,6 +52,7 @@ struct W3dBackendTable {
     void (*TexGenSphere)(bool on);
     void (*TexMatrixMatcap)(bool on);
     void (*TexMatrixUV)(float du, float dv, float su, float sv);
+    void (*TexMatrixUVAffine)(const float* m6);
     bool (*HasTexGen)();
     void (*TexEnvReplace)(bool on);
     void (*TexEnvDot3)(bool on);
