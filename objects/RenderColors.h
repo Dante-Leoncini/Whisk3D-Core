@@ -16,6 +16,8 @@ enum RenderColorId {
     RC_normalVert,    // overlay: normal de vertice
     RC_normalCustom,  // overlay: normal custom
     RC_gizmoDark,     // gizmo apagado (ej: luz no seleccionada)
+    RC_editEdge,      // Edit Mode: vertices y aristas NO seleccionados (la jaula de la malla)
+    RC_background,    // el FONDO del tema (Routine: reconocer el "Clear color" viejo que traia ese color)
     RC_COUNT
 };
 

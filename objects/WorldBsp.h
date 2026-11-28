@@ -20,7 +20,7 @@
 //       unidad 1 de textura en la misma pasada (gfx::MixTextures, Multiply 2x).
 //  Cero objetos, cero rutinas, cero interprete: un mapa de 200 mil triangulos
 //  cuesta por cuadro lo que se ve (en el N95: ~100 materiales = ~100 draws).
-//  Lo usa el Culling con metodo Bsp (main/objects/Culling.cpp), que ademas
+//  Lo usa el Culling con metodo Bsp (libs/Whisk3DCore/objects/Culling.cpp), que ademas
 //  cullea sus HIJOS (props, entidades, NPCs) con el mismo PVS y frustum.
 //  C++03 / Symbian-safe. Sin nada de ningun juego.
 // ============================================================================

@@ -234,7 +234,7 @@ class Object {
 
         // PALETA DE COLORES elegida por este objeto, POR NOMBRE ("" = la del
         // padre: se HEREDA subiendo por Parent). Las paletas viven a nivel
-        // PROYECTO (ver main/W3dPalettes.h); los elementos 2D referencian sus
+        // PROYECTO (ver libs/Whisk3DCore/W3dPalettes.h); los elementos 2D referencian sus
         // colores por INDICE contra la paleta EFECTIVA del objeto. El campo
         // es generico (tambien en objetos 3D) como hook para materiales.
         std::string palette;

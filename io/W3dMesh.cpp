@@ -10,7 +10,7 @@
 #include <cstring>
 
 // libera las capas de la malla SIN pasar por Mesh::FreeLayers: ese metodo vive
-// en el EDITOR (main/edit/MeshEdit.cpp) y el juego compilado lo tiene STUBEADO en
+// en el EDITOR (libs/Whisk3DCore/edit/MeshEdit.cpp) y el juego compilado lo tiene STUBEADO en
 // vacio, asi que llamarlo desde aca leakearia en el runtime. Este archivo entra
 // en las dos builds y tiene que valerse por si mismo.
 static void W3dmFreeLayers(Mesh* m) {
@@ -67,7 +67,7 @@ static const int   kPrimN = 8;
 
 // ---------------------------------------------------------------------------
 //  clave de POSICION: los 12 bytes CRUDOS de los 3 floats. Es la MISMA que usa
-//  Mesh::SharpEdgeKey (main/edit/MeshEdit.cpp) y por eso el escritor de floats
+//  Mesh::SharpEdgeKey (libs/Whisk3DCore/edit/MeshEdit.cpp) y por eso el escritor de floats
 //  tiene que round-trippear EXACTO: si un decimal vuelve como otro float, la
 //  costura no matchea y se pierde EN SILENCIO.
 // ---------------------------------------------------------------------------
@@ -1582,7 +1582,7 @@ bool W3dMeshRead(const char* data, size_t n, Mesh* m, W3dMeshInfo* info) {
 
     // ---- MERGE DE RENDER ------------------------------------------------
     //  MISMA clave de 40 bytes y MISMO orden de primera aparicion que
-    //  GenerateRender (main/edit/MeshEdit.cpp): pos(12) + uv active(8) +
+    //  GenerateRender (libs/Whisk3DCore/edit/MeshEdit.cpp): pos(12) + uv active(8) +
     //  normal por corner(3) + color active(4). Por eso el array de render se
     //  reproduce BIT A BIT sin haberlo guardado.
     std::vector<float>         vp;

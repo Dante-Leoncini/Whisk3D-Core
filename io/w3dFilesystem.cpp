@@ -362,6 +362,9 @@ namespace w3dFileSystem {
     static unsigned                gPakSize = 0;
     static unsigned                gPakSeed = 0;
     static std::vector<PakEntry> gPakToc;
+    // el INDICE del TOC por nombre (normalizado): buscar un archivo era recorrer la lista comparando strings, en
+    // cada lectura y en cada "existe?" (un juego con 100 mallas lo hacia miles de veces al arrancar)
+    static std::map<std::string, size_t> gPakIndex;
 
     // flujo XOR: xorshift32 avanzado cada 4 bytes (mismo generador que el escritor)
     struct PakFlow { unsigned s; unsigned w; unsigned n; };
@@ -377,6 +380,37 @@ namespace w3dFileSystem {
         unsigned char b = (unsigned char)(f->w >> ((f->n & 3u) * 8u));
         f->n++;
         return b;
+    }
+    // SALTAR ADELANTE en el flujo sin generar los bytes de en medio. El xorshift32 es LINEAL sobre GF(2): N pasos son
+    // una matriz de 32x32 bits, T^N. Con las potencias T^(2^i) precalculadas, saltar N pasos cuesta 32 matrices como
+    // mucho (en vez de N pasos). Es el MISMO flujo que generar uno por uno (ver PakFlowSeek), solo que sin recorrerlo:
+    // asi una lectura PARCIAL de un archivo del pak (los bloques de una malla) descifra SOLO lo pedido. Antes cada
+    // pedacito descifraba el archivo entero: un juego de 100 mallas tardaba ~14 s de cuentas en arrancar (reporte de
+    // Kitten Dungeon, 2026-11-27)
+    static unsigned gPakJump[32][32];   // gPakJump[i][j] = T^(2^i) aplicado al bit j (la columna j)
+    static bool     gPakJumpReady = false;
+    static unsigned PakMatApply(const unsigned* M, unsigned x) {
+        unsigned y = 0;
+        for (int j = 0; x; j++, x >>= 1) if (x & 1u) y ^= M[j];
+        return y;
+    }
+    static void PakJumpInit() {
+        for (int j = 0; j < 32; j++) { unsigned x = 1u << j; x ^= x << 13; x ^= x >> 17; x ^= x << 5; gPakJump[0][j] = x; }
+        for (int i = 1; i < 32; i++)
+            for (int j = 0; j < 32; j++) gPakJump[i][j] = PakMatApply(gPakJump[i - 1], gPakJump[i - 1][j]);
+        gPakJumpReady = true;
+    }
+    // el estado del xorshift despues de 'steps' pasos
+    static unsigned PakAdvance(unsigned s, unsigned steps) {
+        if (!gPakJumpReady) PakJumpInit();
+        for (int i = 0; steps; i++, steps >>= 1) if (steps & 1u) s = PakMatApply(gPakJump[i], s);
+        return s;
+    }
+    // deja el flujo como si ya hubiera dado 'from' bytes
+    static void PakFlowSeek(PakFlow* f, unsigned from) {
+        const unsigned words = from / 4u;
+        f->s = PakAdvance(f->s, words); f->n = words * 4u;
+        for (unsigned r = from & 3u; r > 0; r--) PakFlowByte(f);   // (los bytes de la palabra que ya se usaron)
     }
     // lee un u32 LE del pak des-XOReando con el flujo (avanza 'pos')
     static unsigned PakReadU32(const unsigned char* d, unsigned* pos, PakFlow* f) {
@@ -425,27 +459,33 @@ namespace w3dFileSystem {
         }
         gPakData = data; gPakSize = size; gPakSeed = seed;
         gPakToc.swap(toc);
+        gPakIndex.clear();
+        for (size_t i = 0; i < gPakToc.size(); i++) gPakIndex.insert(std::make_pair(gPakToc[i].name, i));   // (el 1ro gana)
         w3dLogf("W3dPakRegistrar: pak de %u bytes con %u archivo(s)", size, count);
     }
 
-    // busca 'path' en el pak; si esta, lo copia des-XOReado a 'out'. Rutas
-    // comparadas NORMALIZADAS (mismo criterio que el resto del filesystem).
+    // la entrada del pak con ese nombre (comparado NORMALIZADO, como el resto del filesystem), o NULL. Sin descifrar nada
+    static const PakEntry* PakLookup(const std::string& path) {
+        if (!gPakData || gPakToc.empty() || path.empty()) return NULL;
+        std::map<std::string, size_t>::const_iterator it = gPakIndex.find(Normalizes(path));
+        return it == gPakIndex.end() ? NULL : &gPakToc[it->second];
+    }
+    // 'n' bytes desde 'from' de una entrada, des-XOReados: solo ese tramo (el flujo salta hasta 'from')
+    static void PakDecrypt(const PakEntry& e, unsigned from, unsigned n, std::vector<unsigned char>& out) {
+        out.resize(n);
+        if (!n) return;
+        PakFlow f;
+        PakFlowInit(&f, gPakSeed ^ (e.off * 2654435761u) ^ e.size);
+        if (from) PakFlowSeek(&f, from);
+        const unsigned char* src = gPakData + e.off + from;
+        for (unsigned k = 0; k < n; k++) out[k] = (unsigned char)(src[k] ^ PakFlowByte(&f));
+    }
+    // busca 'path' en el pak; si esta, lo copia des-XOReado a 'out'
     static bool PakFind(const std::string& path, std::vector<unsigned char>& out) {
-        if (!gPakData || gPakToc.empty() || path.empty()) return false;
-        std::string p = Normalizes(path);
-        for (size_t i = 0; i < gPakToc.size(); i++) {
-            if (gPakToc[i].name != p) continue;
-            const PakEntry& e = gPakToc[i];
-            out.resize(e.size);
-            if (e.size) {
-                PakFlow f;
-                PakFlowInit(&f, gPakSeed ^ (e.off * 2654435761u) ^ e.size);
-                for (unsigned k = 0; k < e.size; k++)
-                    out[k] = (unsigned char)(gPakData[e.off + k] ^ PakFlowByte(&f));
-            }
-            return true;
-        }
-        return false;
+        const PakEntry* e = PakLookup(path);
+        if (!e) return false;
+        PakDecrypt(*e, 0, e->size, out);
+        return true;
     }
 
     bool ReadFileRange(const std::string& path, unsigned from, unsigned n, std::vector<unsigned char>& out) {
@@ -455,6 +495,15 @@ namespace w3dFileSystem {
             if (W3dSplitLibPath(path, &lib, &ent)) {
                 W3dStore* a = LibStore(lib);
                 if (a) return a->ReadRange(Normalizes(ent), from, n, out);
+            }
+        }
+        // del PAK: solo el tramo pedido (antes se descifraba el archivo entero por cada tramo)
+        if (gPakData) {
+            const PakEntry* e = PakLookup(path);
+            if (e) {
+                if (from > e->size || e->size - from < n) return false;
+                PakDecrypt(*e, from, n, out);
+                return true;
             }
         }
         if (!gPakData && gMountedStore && gMountedStore->ReadRange(Normalizes(path), from, n, out)) return true;
@@ -724,10 +773,7 @@ namespace w3dFileSystem {
         // se consulta ANTES de leer (la escena de UI, el .mtl de cada .obj, los
         // sidecars): la app abria con media escena o directamente en negro.
         const std::string normEx = Normalizes(path);   // ver ReadFileBytes: el indice no resuelve ".."
-        if (gPakData) {
-            std::vector<unsigned char> tmp;
-            if (PakFind(path, tmp) || (normEx != path && PakFind(normEx, tmp))) return true;
-        }
+        if (gPakData && PakLookup(path)) return true;   // (el indice: sin descifrar el archivo para saber que esta)
     #ifdef __ANDROID__
         // ruta RELATIVA = asset del APK (mismo criterio que ReadFileBytes). Si no
         // esta ahi se sigue probando con fopen: puede ser un archivo del sandbox.

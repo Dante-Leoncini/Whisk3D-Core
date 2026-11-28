@@ -25,7 +25,12 @@
 #include <algorithm>
 #include <stdio.h>   // snprintf: formatear el default numerico / el dump de getShared()
 #include <string.h>
-#include <time.h>    // time(): fuente que VARIA entre ejecuciones para la semilla del random
+#include <time.h>    // time(): fuente que VARIA entre ejecuciones para la semilla del random; date(): localtime/gmtime
+#if defined(_WIN32) && !defined(W3D_SYMBIAN)
+#include <sys/timeb.h>   // unixTime(): _ftime (los milisegundos, sin windows.h)
+#else
+#include <sys/time.h>    // unixTime(): gettimeofday (como objects/WrittenShader.cpp, en todas las plataformas)
+#endif
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>   // touch(): el navegador dice si la pantalla se toca
 #endif
@@ -321,6 +326,87 @@ static int LRandom(lua_State* L) {
     lua_settop(L, 0);
     PushMathRandom(L);
     lua_call(L, 0, 1);                       // math.random() -> [0,1)
+    return 1;
+}
+
+// ---- LA HORA DEL SISTEMA ------------------------------------------------------------------------------------------------
+// unixTime() -> segundos, ms: el TIEMPO UNIX (los segundos desde el 1/1/1970 00:00 UTC, el reloj de la maquina) y los
+// milisegundos de ese segundo (0..999). Van en DOS enteros a proposito: con el lua de 32 bits (LUA_32BITS, la Dreamcast)
+// un solo numero con decimales no alcanza para los segundos de hoy (~1.800.000.000) sin perder minutos. Con dos enteros
+// la cuenta es exacta en todas las plataformas:
+//   local s0, ms0 = unixTime()                      -- en start(): la hora de arranque
+//   local s, ms = unixTime()                        -- despues
+//   local paso = (s - s0) + (ms - ms0) / 1000       -- segundos que pasaron, con decimales
+// Es el reloj de PARED: mide el tiempo real aunque el juego vaya lento, pero si alguien le cambia la hora a la maquina,
+// salta. Para medir cuanto tarda un pedazo de codigo esta clockMs().
+static void UnixNow(lua_Integer* s, int* ms) {
+#if defined(_WIN32) && !defined(W3D_SYMBIAN)
+    struct _timeb tb;
+    _ftime(&tb);
+    *s = (lua_Integer)tb.time;
+    *ms = (int)tb.millitm;
+#else
+    struct timeval tv;
+    if (gettimeofday(&tv, 0) == 0) {
+        *s = (lua_Integer)tv.tv_sec;
+        *ms = (int)(tv.tv_usec / 1000);
+    } else {
+        *s = (lua_Integer)time(NULL);
+        *ms = 0;
+    }
+#endif
+}
+static int LUnixTime(lua_State* L) {
+    lua_Integer s = 0;
+    int ms = 0;
+    UnixNow(&s, &ms);
+    lua_pushinteger(L, s);
+    lua_pushinteger(L, ms);
+    return 2;
+}
+// unixTimeMs() -> milisegundos y unixTimeSec() -> segundos con decimales: el MISMO tiempo UNIX en un solo numero, para
+// que medir sea una resta:
+//   local inicio = unixTimeSec()            -- en start()
+//   local t = unixTimeSec() - inicio        -- despues: los segundos que pasaron (con los milisegundos)
+// En un lua de 64 bits (todas las plataformas salvo la Dreamcast) son exactos: los ms como ENTERO y los segundos en un
+// double (exacto al milisegundo por miles de anios). Con el lua de 32 bits (LUA_32BITS, la Dreamcast) un solo numero no
+// alcanza para el tiempo de hoy y pierden precision: ahi va unixTime(), que da los dos enteros.
+static int LUnixTimeMs(lua_State* L) {
+    lua_Integer s = 0;
+    int ms = 0;
+    UnixNow(&s, &ms);
+    if (sizeof(lua_Integer) >= 8) lua_pushinteger(L, s * 1000 + ms);
+    else                          lua_pushnumber(L, (lua_Number)s * 1000 + ms);   // (32 bits: aproximado)
+    return 1;
+}
+static int LUnixTimeSec(lua_State* L) {
+    lua_Integer s = 0;
+    int ms = 0;
+    UnixNow(&s, &ms);
+    lua_pushnumber(L, (lua_Number)s + (lua_Number)ms / 1000);
+    return 1;
+}
+// date([segundos [, utc]]) -> tabla {year, month, day, hour, min, sec, wday, yday}: la fecha y la hora de ese tiempo
+// UNIX (sin argumentos o con nil: AHORA), en la hora LOCAL de la maquina, o en UTC si utc es true. month 1..12,
+// day 1..31, hour 0..23, wday 1..7 (1 = domingo, como os.date de lua), yday 1..366. Es la parte segura de
+// os.date("*t"): la libreria os no se abre (un juego no toca el disco).
+static int LDate(lua_State* L) {
+    time_t t;
+    if (lua_isnoneornil(L, 1)) t = time(NULL);
+    else t = (time_t)floor(luaL_checknumber(L, 1));
+    const bool utc = lua_toboolean(L, 2) != 0;
+    struct tm* tmv = utc ? gmtime(&t) : localtime(&t);
+    if (!tmv) tmv = gmtime(&t);   // (una plataforma sin zona horaria: queda en UTC)
+    if (!tmv) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 8);
+    lua_pushinteger(L, tmv->tm_year + 1900); lua_setfield(L, -2, "year");
+    lua_pushinteger(L, tmv->tm_mon + 1);     lua_setfield(L, -2, "month");
+    lua_pushinteger(L, tmv->tm_mday);        lua_setfield(L, -2, "day");
+    lua_pushinteger(L, tmv->tm_hour);        lua_setfield(L, -2, "hour");
+    lua_pushinteger(L, tmv->tm_min);         lua_setfield(L, -2, "min");
+    lua_pushinteger(L, tmv->tm_sec);         lua_setfield(L, -2, "sec");
+    lua_pushinteger(L, tmv->tm_wday + 1);    lua_setfield(L, -2, "wday");
+    lua_pushinteger(L, tmv->tm_yday + 1);    lua_setfield(L, -2, "yday");
     return 1;
 }
 // el hook de PREFABS (ver W3dScript.h): lo instala el importador del editor
@@ -838,6 +924,54 @@ static int LProperty(lua_State* L) {
         lua_pushstring(L, cfg->c_str());
     }
     return 1;
+}
+
+// LAS PROPIEDADES COMO VARIABLES: un nombre que el script NO definio pero que esta en su tabla `properties` se lee
+// con la funcion que le corresponde: speed -> property("speed"), difficulty (una lista) -> option("difficulty"),
+// ball ("object") -> object("ball"), y un boton, su funcion. Asi alcanza con escribir `speed` en vez de
+// property("speed"). Es el __index de la tabla global: Lua solo lo consulta con lo que NO es una variable del script,
+// asi que lo de siempre (la API, las variables) no cambia ni cuesta mas. Se lee en el momento: ve lo que se cambie en
+// Propiedades con el juego andando. `speed = 5` crea una variable del script, que desde ahi tapa a la propiedad
+static int LGlobalIndex(lua_State* L) {
+    // (1 = la tabla global, 2 = el nombre)
+    if (lua_type(L, 2) != LUA_TSTRING) { lua_pushnil(L); return 1; }
+    lua_pushliteral(L, "properties");
+    lua_rawget(L, 1);                            // (rawget: sin volver a pasar por aca)
+    if (!lua_istable(L, -1)) { lua_pushnil(L); return 1; }
+    lua_pushvalue(L, 2);
+    lua_rawget(L, -2);                           // properties[nombre]: lo declarado
+    lua_CFunction read = LProperty;              // numero, si/no o texto
+    switch (lua_type(L, -1)) {
+        case LUA_TNIL:      return 1;            // no es una propiedad: nil, como cualquier global sin definir
+        case LUA_TFUNCTION: return 1;            // un boton: su funcion
+        case LUA_TSTRING:
+            if (strcmp(lua_tostring(L, -1), "object") == 0) read = LObject;
+            break;
+        case LUA_TTABLE: {                       // una lista de opciones, o un boton { "texto", funcion }
+            const int n = (int)lua_rawlen(L, -1);
+            for (int i = 1; i <= n; i++) {
+                lua_rawgeti(L, -1, i);
+                if (lua_isfunction(L, -1)) return 1;   // el boton: su funcion
+                lua_pop(L, 1);
+            }
+            read = LOption;
+            break;
+        }
+        default: break;
+    }
+    lua_settop(L, 2);
+    lua_pushcfunction(L, read);
+    lua_pushvalue(L, 2);
+    lua_call(L, 1, 1);
+    return 1;
+}
+static void PropertiesAsVariables(lua_State* L) {
+    lua_pushglobaltable(L);
+    lua_newtable(L);
+    lua_pushcfunction(L, LGlobalIndex);
+    lua_setfield(L, -2, "__index");
+    lua_setmetatable(L, -2);
+    lua_pop(L, 1);
 }
 
 // getShared("suma") -> el valor del mapa compartido entre scripts (nil si no
@@ -1610,7 +1744,7 @@ static int LRotate(lua_State* L) {
 // ---- ESCALA ---------------------------------------------------------------
 // getScale(o) -> sx, sy, sz del objeto (ejes de Lua: sz = la escala vertical).
 // OJO: getScale() SIN argumento es OTRA cosa (el factor responsive de pantalla, min(w,h)/480) y vive
-// en main/script/BindsGame.cpp, que se registra DESPUES y pisa a este. Por eso alla el bind mira si
+// en libs/Whisk3DCore/script/BindsGame.cpp, que se registra DESPUES y pisa a este. Por eso alla el bind mira si
 // le pasaron un objeto y, si es asi, devuelve esta misma escala: las dos formas conviven (y alla
 // tambien tiene que salir con W3dLuaAxes).
 static int LScaleObj(lua_State* L) {
@@ -2162,6 +2296,10 @@ static void RegisterAPI(lua_State* L) {
     lua_pushcfunction(L, LLoadTextures);     lua_setglobal(L, "loadTextures");
     lua_pushcfunction(L, LPressedButton); lua_setglobal(L, "buttonPressed");
     lua_pushcfunction(L, LRandom);   lua_setglobal(L, "random");
+    lua_pushcfunction(L, LUnixTime); lua_setglobal(L, "unixTime");   // la hora del sistema (tiempo UNIX + ms)
+    lua_pushcfunction(L, LUnixTimeMs);  lua_setglobal(L, "unixTimeMs");    // el mismo tiempo, en milisegundos
+    lua_pushcfunction(L, LUnixTimeSec); lua_setglobal(L, "unixTimeSec");   // ...y en segundos con decimales
+    lua_pushcfunction(L, LDate);     lua_setglobal(L, "date");       // fecha y hora (local o UTC) de un tiempo UNIX
     lua_pushcfunction(L, LObject); lua_setglobal(L, "object");
     lua_pushcfunction(L, LOption); lua_setglobal(L, "option");
     lua_pushcfunction(L, LProperty); lua_setglobal(L, "property");
@@ -2311,6 +2449,7 @@ static void RegisterAPI(lua_State* L) {
     // permiso que de la aplicacion. Ver net/W3dNet.h.
     w3dNet::RegisterBinds((void*)L);
     if (gBindExtra) gBindExtra((void*)L);   // la API 2D del editor / plataforma
+    PropertiesAsVariables(L);               // speed en vez de property("speed") (ver LGlobalIndex)
 }
 
 static bool RunFile(lua_State* L, const std::string& path) {
@@ -2818,6 +2957,34 @@ struct OrderDecl {
 // (leer las propiedades corre el cuerpo del script en el EDITOR, al elegir el objeto: uno que no termina colgaba el
 //  editor. El cuerpo de un script de verdad declara cosas: un millon de instrucciones sobra)
 static void PropsHook(lua_State* L, lua_Debug*) { luaL_error(L, "el script tarda demasiado al leer sus propiedades"); }
+void W3dScriptApiNames(std::vector<std::string>* out) {
+    if (!out) return;
+    out->clear();
+    lua_State* L = luaL_newstate();
+    OpenLibs(L);
+    RegisterAPI(L);
+    lua_pushglobaltable(L);
+    lua_pushnil(L);
+    while (lua_next(L, -2) != 0) {
+        if (lua_type(L, -2) == LUA_TSTRING) {
+            const std::string name = lua_tostring(L, -2);
+            const int t = lua_type(L, -1);
+            if (t == LUA_TFUNCTION) out->push_back(name);
+            else if (t == LUA_TTABLE && name != "_G" && name != "package") {   // math, string, table...
+                lua_pushnil(L);
+                while (lua_next(L, -2) != 0) {
+                    if (lua_type(L, -2) == LUA_TSTRING) out->push_back(name + "." + lua_tostring(L, -2));
+                    lua_pop(L, 1);
+                }
+            }
+        }
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    lua_close(L);
+    std::sort(out->begin(), out->end());
+}
+
 bool W3dScriptReadProperties(const std::string& path, std::vector<W3dScriptProp>* props) {
     if (props) props->clear();
     if (path.empty()) return false;

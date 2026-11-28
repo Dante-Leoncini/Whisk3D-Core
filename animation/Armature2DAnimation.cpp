@@ -205,7 +205,7 @@ void Armature2DEvaluate(Mesh* m, int frame) {
 
 // MODO JUEGO: no hay una malla "activa" del timeline, asi que se evalua TODA la escena. Se llama
 // desde el loop del editor con el Play puesto (main/app/main.cpp). El runtime standalone
-// (Whisk3D-Examples/game/w3drun.cpp) es UI 2D pura -stubbea Mesh- y no tiene mallas que evaluar:
+// (libs/Whisk3DCore/game/w3drun.cpp) es UI 2D pura -stubbea Mesh- y no tiene mallas que evaluar:
 // si algun dia el runtime carga escenas 3D, este es el llamado que le falta.
 void Armature2DEvaluateScene(int frame) {
     if (!SceneCollection) return;

@@ -198,7 +198,7 @@ private: // no copiable (es dueno de punteros): la lista guarda Armature2D*
     Armature2D& operator=(const Armature2D&);
 };
 
-// MODIFICADOR: concepto del EDITOR (definido en main/edit/Modifier.h). El core solo guarda una lista de
+// MODIFICADOR: concepto del EDITOR (definido en libs/Whisk3DCore/edit/Modifier.h). El core solo guarda una lista de
 // PUNTEROS (no conoce la clase ni la procesa; el editor la crea/gestiona y a futuro genera la malla de render).
 // pero la realidad es que no me termina de gustar esta logica y lo quiero cambiar... me gustaria que el Core quede lo mas simple y limpio posible
 // pero toda la logica de modificadores, capas, etc etc solo lo complico de mas al pedo.
@@ -223,7 +223,20 @@ class MeshFace {
 // (si b<0), o interpolar (lerp) entre los corners 'a' y 'b' en 's'.
 struct CornerSrc {
     int a, b; float s;
-    CornerSrc(int A=-1, int B=-1, float S=0.0f) : a(A), b(B), s(S) {}
+    // (opcional) una TERCERA esquina: valor = a*(1-s-t) + b*s + c*t. La usa el CUCHILLO para un vertice nuevo en el medio
+    // de una cara (sus pesos baricentricos)
+    int c; float t;
+    CornerSrc(int A=-1, int B=-1, float S=0.0f) : a(A), b(B), s(S), c(-1), t(0.0f) {}
+    static CornerSrc Three(int A, int B, int C, float S, float T) { CornerSrc r(A, B, S); r.c = C; r.t = T; return r; }
+};
+// un punto del CUCHILLO (Mesh::KnifeCutEdit), en el espacio LOCAL de la malla
+struct KnifePoint {
+    enum { Vertex = 0, Edge, Face };
+    int kind;     // Vertex: 'a' = el vertice (de vertex[]); Edge: la arista a-b y 't' de a hacia b; Face: adentro de 'face'
+    int a, b; float t;
+    int face;     // (Face) la cara de faces3d
+    Vector3 p;    // donde esta
+    KnifePoint() : kind(Face), a(-1), b(-1), t(0.0f), face(-1), p(0, 0, 0) {}
 };
 
 class MaterialGroup { 
@@ -664,7 +677,7 @@ class Mesh : public Object {
         // el editor los crea/gestiona (main/edit) y a futuro genera la malla de render. El ORDEN importa.
         std::vector<Modifier*>    modifiers; int activeModifier;
 
-        // gestion del stack (DEFINIDAS EN EL EDITOR, main/edit/MeshEdit.cpp; el core solo las declara + las llama en ~Mesh):
+        // gestion del stack (DEFINIDAS EN EL EDITOR, libs/Whisk3DCore/edit/MeshEdit.cpp; el core solo las declara + las llama en ~Mesh):
         void AddModifier(int type);            // agrega uno del tipo dado al final + lo deja activo
         void DeleteActiveModifier();           // borra el modificador activo (lo LIBERA)
         // saca el activo del stack SIN liberarlo y lo devuelve (el que llama pasa a ser dueno).
@@ -700,7 +713,7 @@ class Mesh : public Object {
         //  BUFFER. Cuando pvsFaces != NULL, el render dibuja ESTOS indices (el subconjunto
         //  de triangulos del sector activo) en vez de faces[], con pvsGroups como mesh
         //  parts (mismo orden/material que materialsGroup, rangos recortados al sector).
-        //  Los llena el EDITOR (W3dPVSApplySector, main/edit/MeshEdit.cpp) al cambiar de
+        //  Los llena el EDITOR (W3dPVSApplySector, libs/Whisk3DCore/edit/MeshEdit.cpp) al cambiar de
         //  sector; el core solo dibuja: cambiar de sector = swap de indices (el VBO re-sube
         //  SOLO el IBO al ver pvsVersion distinto), NUNCA trabajo por frame. Los atributos
         //  (vertex/normals/uv/color) son los de SIEMPRE: la malla editable queda intacta.
@@ -749,9 +762,6 @@ class Mesh : public Object {
         // geometria). Si en el cuadro siguiente la firma es la misma, la cuenta no se rehace.
         std::vector<float> indirectLight;
         unsigned indirectLightSig;
-        // lockNormals: BLOQUEAR NORMALES (Propiedades > Malla 3D > Edicion). En el Modo Edicion, al confirmar un
-        // movimiento NO se recalculan las normales: las importadas o arregladas a mano se conservan. Es de cada malla.
-        bool lockNormals;
         // (onlyRoutine) su vertex anim avanzo pero NO se evaluo: la pose se calcula recien cuando una rutina la apunta
         // (W3dUpToDatePose). Lo que no se dibuja no interpola nada
         bool posePending;
@@ -809,7 +819,7 @@ class Mesh : public Object {
         // tocan SOLO faces3d.mat + materialsGroup + el index buffer (no la geometria ni el edit mesh).
         void RegroupMeshParts(); // rearma faces[] + rangos por mesh part desde faces3d.mat
         void OptimizeCacheRender(); // reordena los triangulos de faces[] para el cache de vertices del GPU (Forsyth, MIT)
-        // (def en main/edit/MeshEdit.cpp: usan el EditMesh + la seleccion de caras)
+        // (def en libs/Whisk3DCore/edit/MeshEdit.cpp: usan el EditMesh + la seleccion de caras)
         void AssignFacesToMeshPart(int idx);    // caras SELECCIONADAS (edit) -> mesh part idx
         // llena sel3d[f] (por faces3d) = 1 para las caras "seleccionadas" segun el EditSelectMode ACTUAL (una
         // cara cuenta si TODOS sus corners estan seleccionados). Sirve en modo vertice/borde/cara (como Delete>Faces).
@@ -1256,14 +1266,27 @@ class Mesh : public Object {
         // "tapa" (offset epsilon) y la deja seleccionada para que el editor la mueva.
         // outDirLocal = direccion (normal); outConstrain=false si no hay caras (libre).
         bool ExtrudeEdit(Vector3& outDirLocal, bool& outConstrain);
-        // INSET FACES (I en Edit Mode, menu Face; main/edit/MeshEdit.cpp): achica hacia adentro las caras
+        // las caras (de faces3d) que el ultimo extrude hizo desde aristas SUELTAS: no tienen cara vecina que les de el
+        // sentido, asi que se orientan hacia la vista al confirmar el movimiento (OrientFacesToward)
+        std::vector<int> extrudeFreeFaces;
+        bool OrientFacesToward(const std::vector<int>& faces, const Vector3& eye, const Vector3& fwd, bool ortho);
+        // CUCHILLO (K): parte las caras a lo largo de los puntos 'pts' (en LOCAL, sobre la malla). eye = el ojo
+        // (perspectiva) y fwd = hacia donde mira (ortografica), tambien en local. through = corta tambien lo que no se ve
+        bool KnifeCutEdit(const std::vector<KnifePoint>& pts, const Vector3& eye, const Vector3& fwd, bool ortho, bool through);
+        // los CRUCES de un tramo del cuchillo con las aristas (donde van a nacer vertices), en orden: el dibujo mientras
+        // se corta. Sin los extremos del tramo
+        void KnifeCrossings(const KnifePoint& p0, const KnifePoint& p1, const Vector3& eye, const Vector3& fwd, bool ortho,
+                            bool through, std::vector<KnifePoint>& out);
+        // la cara (de faces3d, sin las ocultas) que toca un RAYO local, la mas cercana: false si no toca nada
+        bool KnifeRayFace(const Vector3& o, const Vector3& d, Vector3& hit, int& face);
+        // INSET FACES (I en Edit Mode, menu Face; libs/Whisk3DCore/edit/MeshEdit.cpp): achica hacia adentro las caras
         // 'selFace3d' (una marca por faces3d) dejando un anillo de caras nuevas en el contorno. Las opciones son las
         // del panel "Inset Faces" (InsetOptions, main/edit/MeshEdit.h). Deja seleccionadas las caras de adentro (o el
         // anillo, con "Select Outer"). No captura undo: lo hace el modal al confirmar
         bool InsetEdit(const InsetOptions& o, const std::vector<char>& selFace3d);
         // las faces3d que forma la seleccion de la UI (todas sus esquinas seleccionadas); false si no hay ninguna
         bool SelectedFaces3d(std::vector<char>& selFace3d);
-        // BEVEL (Ctrl+B; main/edit/MeshEdit.cpp): redondea las aristas 'aristas' (o los vertices 'selRep', con afecta = 0)
+        // BEVEL (Ctrl+B; libs/Whisk3DCore/edit/MeshEdit.cpp): redondea las aristas 'aristas' (o los vertices 'selRep', con afecta = 0)
         // con un perfil de N segmentos. Las opciones son las del panel "Bevel" (BevelOptions). Deja seleccionadas las
         // caras nuevas. No captura undo: lo hace el modal al confirmar. BevelSelection lee la seleccion de la UI
         bool BevelEdit(const BevelOptions& o, const std::vector<char>& selRep, const std::vector<std::pair<int,int> >& selEdges);
@@ -1290,7 +1313,9 @@ class Mesh : public Object {
 
         // F "New Edge/Face from Vertices": con los verts sel crea arista(2)/tri(3)/
         // ngon(4+). NO crea verts (conecta los existentes). false si hay < 2.
-        bool CreateFaceEdit();
+        // eyeLocal / fwdLocal (opcionales, en el espacio de la malla): el ojo de la vista y hacia donde mira; ortho = la
+        // vista es ortografica (vale la direccion, no el ojo). La cara nueva queda MIRANDO a la vista
+        bool CreateFaceEdit(const float* eyeLocal = NULL, const float* fwdLocal = NULL, bool ortho = false);
 
         // SHADE SMOOTH/FLAT (menu Face) sobre las caras sel: smooth=normal promedio
         // por posicion (redondea); flat=split + normal de cara (aplana). false si

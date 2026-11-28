@@ -67,7 +67,7 @@ enum { AnimPosition, AnimRotation, AnimScale, AnimVisible, AnimRender, AnimVerte
        AnimClip, AnimAmbient, AnimSpecular, AnimAtten, AnimSpot, AnimLightMisc, AnimCamActive, AnimShape, AnimStep,
        AnimSound, AnimLightIntens, AnimCamFocus, AnimBackground, AnimBackgroundRot, AnimBackgroundTex,
        AnimMatColor, AnimMatAlpha, AnimMatEmission, AnimMatEmitStrength, AnimMatSpecular, AnimMatRoughness,
-       AnimMatMetallic, AnimMatTransmission, AnimMatLayerForce, AnimMatUVOffset, AnimMatUVScale, AnimMatUVRotation };
+       AnimMatMetallic, AnimMatTransmission, AnimMatLayerForce };
 //   AnimMat*: los canales de un MATERIAL (sus curvas van en las pistas de material de una animacion de escena,
 //             SceneAnimation::materials, no en las de un objeto; ver formato/material-animado.md). AnimColor y
 //             AnimSpecular siguen siendo los de una LUZ:
@@ -76,7 +76,6 @@ enum { AnimPosition, AnimRotation, AnimScale, AnimVisible, AnimRender, AnimVerte
 //     AnimMatSpecular     specular RGB (X/Y/Z)                                  AnimMatRoughness / AnimMatMetallic (X)
 //     AnimMatTransmission la transmision (X)
 //     AnimMatLayerForce   el factor de una CAPA de textura: el COMPONENTE es el indice de la capa (como AnimShape)
-//     AnimMatUVOffset / AnimMatUVScale  la transformacion UV: X = U, Y = V     AnimMatUVRotation  en grados (X)
 //   AnimBackground:    el COLOR del FONDO del render (X/Y/Z = R/G/B). Las curvas del fondo viven en la COLECCION de la escena
 //   AnimBackgroundRot: la ROTACION de la textura 360 del fondo, en grados (X/Y/Z)
 //   AnimBackgroundTex: QUE fondo (AnimX, interpolacion CONSTANTE): 0 = el color; k = la textura k de la lista del fondo
@@ -449,7 +448,7 @@ public:
     std::vector<AnimProperty> Properties;
     AnimationMaterial() : mat(0) {}
 };
-bool  W3dIsMatChannel(int prop);                      // AnimMatColor .. AnimMatUVRotation
+bool  W3dIsMatChannel(int prop);                      // AnimMatColor .. AnimMatLayerForce
 // el valor del canal (prop, comp) en el material (0 si no existe: una capa que no esta) / ponerlo
 float W3dMatChannelGet(const Material* m, int prop, int comp);
 void  W3dMatChannelSet(Material* m, int prop, int comp, float v);
@@ -465,7 +464,7 @@ bool  W3dApplyMaterialCurves(Material* m, const std::vector<AnimProperty>& props
 // lo que habia en la pantalla. 'solo' = solo ese material (NULL = todos)
 struct W3dMatRest {
     Material* m;
-    float dif[4], emi[3], spe[3], emiK, rug, met, trans, uvOff[2], uvScl[2], uvRot;
+    float dif[4], emi[3], spe[3], emiK, rug, met, trans;
     std::vector<float> layers;
     void Read(Material* mt);
     void Write() const;

@@ -1254,7 +1254,7 @@ void W3dActiveCamApply(int scene, int frame) {
 // el campo del material que mueve un canal (NULL = ese canal / componente no existe en el material)
 static float* MatChannelPtr(Material* m, int prop, int comp) {
     if (!m) return NULL;
-    const bool rgb = comp >= AnimX && comp <= AnimZ, uv = comp == AnimX || comp == AnimY, one = comp == AnimX;
+    const bool rgb = comp >= AnimX && comp <= AnimZ, one = comp == AnimX;
     switch (prop) {
         case AnimMatColor:        return rgb ? &m->diffuse[comp] : NULL;
         case AnimMatAlpha:        return one ? &m->diffuse[3] : NULL;
@@ -1266,13 +1266,10 @@ static float* MatChannelPtr(Material* m, int prop, int comp) {
         case AnimMatTransmission: return one ? &m->transmission : NULL;
         // (la capa que no esta -una dormida que todavia no desperto, una que se borro- no se toca)
         case AnimMatLayerForce:   return (comp >= 0 && comp < (int)m->layers.size()) ? &m->layers[(size_t)comp].force : NULL;
-        case AnimMatUVOffset:     return uv ? &m->uvOffset[comp] : NULL;
-        case AnimMatUVScale:      return uv ? &m->uvScale[comp] : NULL;
-        case AnimMatUVRotation:   return one ? &m->uvRotation : NULL;
         default:                  return NULL;
     }
 }
-bool W3dIsMatChannel(int prop) { return prop >= AnimMatColor && prop <= AnimMatUVRotation; }
+bool W3dIsMatChannel(int prop) { return prop >= AnimMatColor && prop <= AnimMatLayerForce; }
 float W3dMatChannelGet(const Material* m, int prop, int comp) {
     const float* f = MatChannelPtr(const_cast<Material*>(m), prop, comp);
     return f ? *f : 0.0f;
@@ -1298,17 +1295,12 @@ const char* W3dMatChannelBase(int prop) {
         case AnimMatMetallic:     return "Metallic";
         case AnimMatTransmission: return "Transmission";
         case AnimMatLayerForce:   return "Layer";
-        case AnimMatUVOffset:     return "UV Offset";
-        case AnimMatUVScale:      return "UV Scale";
-        case AnimMatUVRotation:   return "UV Rotation";
         default:                  return NULL;
     }
 }
 const char* W3dMatChannelSuffix(int prop, int comp) {
     static const char* const kRGB[3] = { "R", "G", "B" };
-    static const char* const kUV[2] = { "U", "V" };
     if ((prop == AnimMatColor || prop == AnimMatEmission || prop == AnimMatSpecular) && comp >= 0 && comp < 3) return kRGB[comp];
-    if ((prop == AnimMatUVOffset || prop == AnimMatUVScale) && comp >= 0 && comp < 2) return kUV[comp];
     return "";
 }
 
@@ -1351,8 +1343,6 @@ void W3dMatRest::Read(Material* mt) {
     for (int k = 0; k < 4; k++) dif[k] = mt->diffuse[k];
     for (int k = 0; k < 3; k++) { emi[k] = mt->emission[k]; spe[k] = mt->specular[k]; }
     emiK = mt->emissionStrength; rug = mt->rtRoughness; met = mt->rtMetallic; trans = mt->transmission;
-    uvOff[0] = mt->uvOffset[0]; uvOff[1] = mt->uvOffset[1]; uvScl[0] = mt->uvScale[0]; uvScl[1] = mt->uvScale[1];
-    uvRot = mt->uvRotation;
     layers.resize(mt->layers.size());
     for (size_t c = 0; c < mt->layers.size(); c++) layers[c] = mt->layers[c].force;
 }
@@ -1361,8 +1351,6 @@ void W3dMatRest::Write() const {
     for (int k = 0; k < 4; k++) m->diffuse[k] = dif[k];
     for (int k = 0; k < 3; k++) { m->emission[k] = emi[k]; m->specular[k] = spe[k]; }
     m->emissionStrength = emiK; m->rtRoughness = rug; m->rtMetallic = met; m->transmission = trans;
-    m->uvOffset[0] = uvOff[0]; m->uvOffset[1] = uvOff[1]; m->uvScale[0] = uvScl[0]; m->uvScale[1] = uvScl[1];
-    m->uvRotation = uvRot;
     for (size_t c = 0; c < layers.size() && c < m->layers.size(); c++) m->layers[c].force = layers[c];
 }
 void W3dMaterialsRestBegin(std::vector<W3dMatRest>& saved, const Material* only) {

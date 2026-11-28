@@ -16,7 +16,7 @@
 //
 //  DONDE CORRE: W3dPhysicsStep(dt) lo llaman los DOS lados con el MISMO dt, y
 //  ANTES de correr los scripts del frame:
-//      runtime  -> W3dGameUpdate()  (Whisk3D-Examples/game/w3drun.cpp)
+//      runtime  -> W3dGameUpdate()  (libs/Whisk3DCore/game/w3drun.cpp)
 //      editor   -> TickReal()           (main/script/SimGame.cpp, el Play)
 //  Asi el juego se comporta IGUAL compilado y en el Play. El orden "primero
 //  mover, despues correr el script" es a proposito: el script ve la posicion

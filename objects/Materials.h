@@ -98,7 +98,14 @@ class TexLayer {
                            // (como el "Shadowmask" de Unity): la sombra en tiempo real de lo que se mueve le saca solo eso
                            // y deja la del ambiente y los rebotes, igual que la sombra horneada (se juntan sin costura).
                            // Sin la mascara (un horneado de antes) la sombra baja hasta el ambiente, sin pasarse
-        TexLayer() : tex(NULL), blend(0), uvMap(0), on(true), force(1.0f), baked(false), maskSun(false) {}
+        // (horneada) SOMBRAS DEL SOL + LUZ INDIRECTA, con la luz de tiempo real (como el modo "Shadowmask" de Unity con la
+        // indirecta horneada): el material SIGUE con su luz de tiempo real (el normal map, el brillo, el metal, los
+        // reflejos) y la textura le da dos cosas: el ALFA es cuanto VE AL SOL cada texel (0 = a la sombra de algo quieto:
+        // multiplica la luz de las lamparas direccionales) y el RGB es la luz INDIRECTA que le llega (x 2, como Multiply 2x:
+        // reemplaza al ambiente). La sombra de lo que se mueve sigue en tiempo real encima. Solo con shaders (la luz por
+        // pixel); sin ellos la capa no hace nada y el material queda con su luz de siempre
+        bool shadowmask;
+        TexLayer() : tex(NULL), blend(0), uvMap(0), on(true), force(1.0f), baked(false), maskSun(false), shadowmask(false) {}
 };
 
 // LOS MAPAS del material (la tarjeta Material de Properties, de arriba a abajo): el color base, el normal map y los del
@@ -196,9 +203,15 @@ class Material {
         // el FACTOR de la capa de LUZ HORNEADA prendida (TexLayer::horneada), de 0 a 1 (0 = no hay)
         float FactorLightBaked() const {
             for (size_t c = 0; c < layers.size(); c++)
-                if (layers[c].baked && layers[c].on && layers[c].tex)
+                if (layers[c].baked && layers[c].on && layers[c].tex && !layers[c].shadowmask)   // (la de sombras: con la luz de tiempo real)
                     return layers[c].force < 0.0f ? 0.0f : (layers[c].force > 1.0f ? 1.0f : layers[c].force);
             return 0.0f;
+        }
+        // la capa de SOMBRAS + INDIRECTA horneadas prendida (TexLayer::shadowmask), o -1
+        int ShadowmaskLayer() const {
+            for (size_t c = 0; c < layers.size(); c++)
+                if (layers[c].shadowmask && layers[c].on && layers[c].tex) return (int)c;
+            return -1;
         }
         // la LUZ DE TIEMPO REAL: Lighting tildado y la luz horneada que no esta entera. Con la capa de luz horneada al
         // 100% solo esta la horneada; al 0% es como si no estuviera; en el medio, las dos mezcladas (Mesh.cpp)
@@ -252,23 +265,6 @@ class Material {
         // LA FUERZA DE LA EMISION: lo que emite es emission.rgb x emissionStrength (como el Strength de Blender). Tambien
         // multiplica el MAPA de emision en modo textura. Default 1 (lo de siempre). Clave del .w3d: "emissionStrength"
         float emissionStrength;
-        // ---- LA TRANSFORMACION UV (formato/material-animado.md): la UV con la que se leen la textura base y los mapas
-        //      (no las capas extra ni la textura B) pasa por
-        //          uv' = R(uvRotation) * S(uvScale) * (uv - uvPivot) + uvPivot + uvOffset
-        //      R gira las COORDENADAS (U hacia V; la imagen gira para el otro lado); el desplazamiento se SUMA a la UV
-        //      (+U corre la imagen hacia -U, como el Location del Mapping de Blender en modo Point). Rotacion en grados.
-        //      Defaults: 0,0 / 1,1 / 0 / 0.5,0.5. Lo aplica cada backend con la matriz de textura (gfx::TexMatrixUVAffine)
-        //      y el trazado de rayos en su UV del impacto. Claves: "uvOffset", "uvScale", "uvRotation", "uvPivot" ----
-        float uvOffset[2];
-        float uvScale[2];
-        float uvRotation;
-        float uvPivot[2];
-        // true = la transformacion UV no es la identidad (sin ella no se arma ni se carga ninguna matriz)
-        bool UVTransformed() const {
-            return uvOffset[0] != 0.0f || uvOffset[1] != 0.0f || uvScale[0] != 1.0f || uvScale[1] != 1.0f || uvRotation != 0.0f;
-        }
-        // la matriz AFIN de la transformacion UV, por columnas: u' = m[0]*u + m[2]*v + m[4] ; v' = m[1]*u + m[3]*v + m[5]
-        void UVMatrix(float m[6]) const;
         // IDENTIDAD ESTABLE (como Object::serial): un numero que no se recicla ni al renombrar ni al borrar. Lo usa el dope
         // sheet para nombrar la pista de un material en sus claves de seleccion (el nombre se libera al renombrar)
         unsigned serial;

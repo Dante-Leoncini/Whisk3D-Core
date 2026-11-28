@@ -13,7 +13,7 @@
 //      desarrollo con 200.000 numeros: strtod 46,4 ns/token contra 7,4 ns/token
 //      con este escaner. En un ARM11 de 332 MHz (N95) esa diferencia es la que
 //      separa "abre al toque" de "se queda pensando". Mismo criterio que ya
-//      usaba el importador de .obj (main/importers/import_obj.cpp).
+//      usaba el importador de .obj (libs/Whisk3DCore/importers/import_obj.cpp).
 //
 //   2) EXACTITUD DE LOS FLOAT. Las costuras (seamEdges) y los bordes marcados
 //      (sharpEdges) se indexan por los BYTES CRUDOS de la posicion, asi que si

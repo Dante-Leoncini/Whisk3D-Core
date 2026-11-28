@@ -10,6 +10,7 @@
 #include "objects/Light.h"  // Lights: la luz que sombrea el toon (ToonTowardsLight)
 #include "WrittenShader.h"   // el shader escrito de un material (Material::shaderOn)
 #include "ShaderCPU.h"       // su @vertex corrido en la CPU (backends sin shaders: GLES 1.1, GL fijo)
+#include "objects/EditMesh.h"   // Edit Mode con caras OCULTAS (H): se dibujan las que se ven (EditMesh::visTris)
 #include <math.h> // C puro: compila en RVCT y PC por igual
 #include <algorithm> // sort/unique: dedup de aristas del material con `lineas`
 #include <map>    // Armature2DApply: peso por control-point de cada hueso 2D
@@ -71,7 +72,7 @@ Mesh::Mesh(Object* parent, Vector3 pos)
     pvsFaces = NULL; pvsFacesSize = 0; pvsVersion = 0; vboPvsVer = 0; pvsSorted = false; // sin override PVS (malla completa; vboPvsVer retirado por P3, ver Mesh.h)
     inStaticBatch = 0; // (P4) sin sello: la malla se dibuja sola
     uvOffsetU = uvOffsetV = 0.0f; // desplazarUV: sin base capturada (uvOffsetBase vacia)
-    noEditable = false; onlyRoutine = false; lockNormals = false; posePending = false; drawnPass = 0; inkNoEditable = false; // malla editable (el import con noEditable / el boton de la card Mesh lo prenden)
+    noEditable = false; onlyRoutine = false; posePending = false; drawnPass = 0; inkNoEditable = false; // malla editable (el import con noEditable / el boton de la card Mesh lo prenden)
     tint[0] = tint[1] = tint[2] = 1.0f;
     dataRec = NULL; dataComp = 0; // geometria propia hasta que el importador la comparta (MeshData.h)
     mesh = NULL; sharedVbo = 0; vboUVInUse = 0; // sin recurso (MeshResource.h) hasta que el lector la vincule
@@ -576,7 +577,7 @@ void Mesh::UpdateToonUV(const GLbyte* nor) {
 // 360 de la sonda que le toca a la malla (el gancho la busca). Con la PROYECCION EN CAJA, el reflejo de cada vertice se
 // corrige por la caja de la sonda: el rayo reflejado choca contra sus paredes y se mira desde el centro de la captura
 Texture* (*g_w3dReflectionProbeHook)(Object* o, float* box, float* center, bool* withBox) = NULL;
-// EL ENTORNO DE UNA MALLA PBR (main/render/SceneRender.cpp): la sonda de reflejo que la contiene o el fondo de la escena
+// EL ENTORNO DE UNA MALLA PBR (libs/Whisk3DCore/render/SceneRender.cpp): la sonda de reflejo que la contiene o el fondo de la escena
 void (*g_w3dEnvironmentObjectHook)(Object* o) = NULL;
 static bool  gReflBox = false;
 static float gReflB[6], gReflC[3];
@@ -801,6 +802,11 @@ void Mesh::ApplyMaterial(Material* mat, bool withLight, bool solid, bool offsetE
     //  con IOR 1 se veia como con 1.5, que es el IOR que da ese reflejo)
     const float f0M = (iorM == 1.0f && transM <= 0.0f) ? 0.04f : ((iorM - 1.0f) / (iorM + 1.0f)) * ((iorM - 1.0f) / (iorM + 1.0f));
     const bool pbrShader = !solid && withLight && mat->LightRealTime() && PerPixelEf(mat) && gfx::ShadingPerPixelSupported();
+    // LAS SOMBRAS + LA INDIRECTA HORNEADAS con la luz de tiempo real (TexLayer::shadowmask): la capa va en la unidad 1 con
+    // su UV y el shader de la luz por pixel la usa (el modo 5 de la mezcla). Sin luz por pixel no hace nada
+    const int smLayer = mat->ShadowmaskLayer();
+    const bool smOn = smLayer >= 0 && uv && !solid && withLight && !mat->toon && mat->LightRealTime() && PerPixelEf(mat) &&
+                      gfx::ShadingPerPixelSupported() && mat->layers[(size_t)smLayer].tex->iID;
     const float alphaTrans = (transM > 0.0f && !pbrShader && mat->LightRealTime()) ? (1.0f - transM * (1.0f - f0M)) : 1.0f;
     // LA LUZ HORNEADA A MEDIAS (su capa con factor f entre 0 y 1): esta pasada lleva la luz de tiempo real por (1 - f) y la
     // capa le SUMA despues la horneada por f (el bucle de capas de RenderObject): (1 - f) tiempo real + f horneada
@@ -902,6 +908,12 @@ void Mesh::ApplyMaterial(Material* mat, bool withLight, bool solid, bool offsetE
             // la rampa sin filtrar ni repetir: los escalones del dibujo animado quedan netos
             gfx::MixTextures(mat->textureB->iID, 1.0f, false, false, mat->toon == 2 ? 4 : 3);
             gfx::MixTexturesUV(&toonUV[0]);
+        } else if (smOn) {   // (las sombras + la indirecta horneadas: ver smOn)
+            const TexLayer& cap = mat->layers[(size_t)smLayer];
+            const GLfloat* cuv = UVOfLayer(cap.uvMap);
+            gfx::MixTextures(cap.tex->iID, 1.0f, !gfx::PixelatedGlobal() && mat->filtered, false, 5);
+            gfx::MixTexturesUV(cuv ? cuv : NULL);
+            layerUnit1 = smLayer;
         } else if (mat->textureB && mat->textureB->iID && mat->mixB > 0.0f && !mat->chrome && !mat->normalMap)
             gfx::MixTextures(mat->textureB->iID, mat->mixB, !gfx::PixelatedGlobal() && mat->filtered, mat->repeat);
         else if (mat->layers.size() == 1 && mat->layers[0].on && mat->layers[0].tex && mat->layers[0].tex->iID && uv &&
@@ -933,10 +945,6 @@ void Mesh::ApplyMaterial(Material* mat, bool withLight, bool solid, bool offsetE
         // OJO: TexGenSphere y TexMatrixMatcap tocan los DOS la matriz de textura -> nunca los dos a la vez.
         if (matcap) { gfx::TexGenSphere(false); gfx::TexMatrixMatcap(true); }   // matcap: matriz de textura (HW)
         else        { gfx::TexMatrixMatcap(false); gfx::TexGenSphere(sphereHW); } // sphere HW (flip-V) o reset
-        // LA TRANSFORMACION UV del material (desplazamiento, escala, rotacion: Material::UVMatrix) en la matriz de textura
-        // de la unidad 0: la leen la textura base, el normal map (DOT3) y, con shaders, los mapas. No con el reflejo: sus
-        // UV no son las de la malla (el matcap y el sphere map usan esa matriz para lo suyo)
-        if (!mat->chrome && mat->UVTransformed()) { float m6[6]; mat->UVMatrix(m6); gfx::TexMatrixUVAffine(m6); }
         gfx::TexEnvReplace(mat->chrome);        // reflejo (cualquier modo) = espejo: textura directa, sin luz
         if (matcap) { gfx::EnableArray(gfx::TexCoordArray); gfx::TexCoordPointer3b(normals, vertexSize); } // normales -> texcoords
         else if (sw) { UpdateChromeUV(eq); // build los arrays por-corner (equirect o sphere); bind/draw en el loop
@@ -949,10 +957,16 @@ void Mesh::ApplyMaterial(Material* mat, bool withLight, bool solid, bool offsetE
         // (un toon sin textura base: la unidad 1 recibe el color plano como "lo anterior" y le resta la rampa)
         if (toonOn) { gfx::MixTextures(mat->textureB->iID, 1.0f, false, false, mat->toon == 2 ? 4 : 3);
                       gfx::MixTexturesUV(&toonUV[0]); }
+        else if (smOn) {   // (las sombras + la indirecta horneadas tambien sin textura base: el teclado, los plasticos)
+            const TexLayer& cap = mat->layers[(size_t)smLayer];
+            const GLfloat* cuv = UVOfLayer(cap.uvMap);
+            gfx::MixTextures(cap.tex->iID, 1.0f, !gfx::PixelatedGlobal() && mat->filtered, false, 5);
+            gfx::MixTexturesUV(cuv ? cuv : NULL);
+            layerUnit1 = smLayer;
+        }
         else gfx::MixTexturesOff();
         gfx::TexMatrixMatcap(false);
         gfx::TexGenSphere(false);
-        if (mat->UVTransformed()) { float m6[6]; mat->UVMatrix(m6); gfx::TexMatrixUVAffine(m6); }   // (los mapas: ver arriba)
         gfx::TexEnvReplace(false);
         if (uv) { if (vboRenderActive && vboUVInUse) gfx::TexCoordVBO(vboUVInUse); else gfx::TexCoordPointer2f(0, uv); }
         if (uv && gNeedsUV) gfx::EnableArray(gfx::TexCoordArray);   // (los mapas del material leen la UV)
@@ -979,7 +993,9 @@ void Mesh::ApplyMaterial(Material* mat, bool withLight, bool solid, bool offsetE
     if (gShadowObject) {
         int mode = 0;
         if (!solid && withLight) {
-            if (mat->LightRealTime() && !toonOn) mode = 1;
+            // (con las sombras del sol HORNEADAS -la capa shadowmask- la luz sigue de tiempo real pero la sombra es solo la de
+            //  lo que se mueve (6: la profundidad de BA); la de lo quieto ya esta en la capa)
+            if (mat->LightRealTime() && !toonOn) mode = smOn ? 6 : 1;
             else if (mat->lighting && mat->FactorLightBaked() >= 0.999f) {
                 const TexLayer* hl = NULL;
                 for (size_t k = 0; k < mat->layers.size() && !hl; k++)
@@ -2001,6 +2017,7 @@ struct GuardProbe {   // (la saca por cualquiera de los return de RenderObject)
 // fijo, GL ES 1.1 del N95) el gancho, al terminar el dibujo de la malla, la vuelve a dibujar encima con la sombra
 // proyectada (una pasada que multiplica)
 bool g_w3dShadowsPass = false;
+bool (*g_w3dScatterRenderHook)(Mesh* m, bool draw) = NULL;   // (edit/ScatterMod.cpp: W3dScatterRender)
 void (*g_w3dShadowMeshHook)(Mesh* m) = NULL;
 // (gShadowObject: la malla que se dibuja las recibe; declarado arriba, lo lee ApplyMaterial)
 namespace {
@@ -2149,6 +2166,10 @@ void Mesh::RenderObject() {
     // en el render FINAL un objeto no-renderizable no sale (en el viewport si)
     if (w3dEngine::w3dRenderFinal && !renderable) return;
     if (w3dEngine::w3dPassProbe && !inProbes) return;   // (la sonda de reflejo de tiempo real no lo ve)
+    // EL SCATTER EN MODO INSTANCIAS (edit/ScatterMod.h): sus copias, con la matriz de esta malla. Una vez por cuadro: en el
+    // recorrido del arbol (en los pases diferidos de transparentes no se repiten). Si apago al emisor, la malla no se dibuja.
+    // Por un GANCHO: un juego 2D compila Mesh.cpp sin la carpeta edit/ (ScatterMod.cpp lo instala al cargar)
+    if (!modifiers.empty() && g_w3dScatterRenderHook && g_w3dScatterRenderHook(this, g_w3dPassDrawing <= 0)) return;
     // (P4) horneada en el lote estatico de una Collection ESTE frame: el lote ya
     // la dibujo en su tanda por material; aca no se dibuja nada.
     if (w3dBatchStamp && inStaticBatch == w3dBatchStamp) return;
@@ -2440,25 +2461,28 @@ void Mesh::RenderObject() {
         gfx::DisableArray(gfx::NormalArray);
         gfx::Enable(gfx::DepthTest);
 
-        // normal usa la malla BASE (color por vertice tiene que matchear la geometria); el blanco puede
-        // usar la malla GENERADA por modificadores (color uniforme -> sin problema de indices). posBuf =
-        // skinVertex si hay esqueleto -> los 3 pases muestran la malla DEFORMADA por la pose, no el bind.
-        const bool useGen = passWhite && (genValid && genVertex && genFaces);
+        // la malla GENERADA por los modificadores (el espejo, el array...) se dibuja en los tres pases: la de Normal con SUS
+        // normales (genNormals) y su color por vertice armado sobre SUS vertices. Antes Normal usaba siempre la BASE y el
+        // espejo no se veia en esa vista (pedido del duenio, 2026-11-27). posBuf = skinVertex si hay esqueleto -> los 3
+        // pases muestran la malla DEFORMADA por la pose, no el bind.
+        const bool useGen = (genValid && genVertex && genFaces) && (passWhite || genNormals);
         gfx::VertexPointer3f(0, useGen ? genVertex : posBuf);
+        const GLbyte* nb = useGen ? genNormals : norBuf;
+        const int nvCount = useGen ? genVertexSize : vertexSize;
 
-        const bool normalShader = passNormal && norBuf && gfx::PassesWithShader();
+        const bool normalShader = passNormal && nb && gfx::PassesWithShader();
         if (normalShader) {
             // CON SHADERS (ES 2.0 / Vulkan): las normales van como siempre y el pase las pasa a color en cada pixel
             gfx::DisableArray(gfx::ColorArray);
-            gfx::EnableArray(gfx::NormalArray); gfx::NormalPointer3b(norBuf);
+            gfx::EnableArray(gfx::NormalArray); gfx::NormalPointer3b(nb);
             gfx::SpecialPass(gfx::PassNormal, NULL);
-        } else if (passNormal && norBuf) {
+        } else if (passNormal && nb) {
             static std::vector<unsigned char> nvcol; // reusado entre frames (sin alloc)
-            nvcol.resize((size_t)vertexSize * 4);
+            nvcol.resize((size_t)nvCount * 4);
             Matrix4 W; GetWorldMatrix(W);
             Vector3 cr = g_renderCamRight, cu = g_renderCamUp, cf = g_renderCamForward;
-            for (int i = 0; i < vertexSize; i++) {
-                float lx = norBuf[i*3+0]/127.0f, ly = norBuf[i*3+1]/127.0f, lz = norBuf[i*3+2]/127.0f;
+            for (int i = 0; i < nvCount; i++) {
+                float lx = nb[i*3+0]/127.0f, ly = nb[i*3+1]/127.0f, lz = nb[i*3+2]/127.0f;
                 Vector3 wn(W.m[0]*lx + W.m[4]*ly + W.m[8]*lz,   // object-space -> mundo (sin traslacion)
                            W.m[1]*lx + W.m[5]*ly + W.m[9]*lz,
                            W.m[2]*lx + W.m[6]*ly + W.m[10]*lz);
@@ -2598,6 +2622,9 @@ void Mesh::RenderObject() {
             gfx::Color4f(xc[0], xc[1], xc[2], 0.30f);
             gfx::VertexPointer3f(0, useGen ? genVertex : vertex);
             if (useGen) gfx::DrawTriangles(genFacesSize, genFaces);
+            // CON ALGO OCULTO (H): solo las caras que se ven (EditMesh::visTris), como sin rayos X. Antes el relleno de
+            // los rayos X dibujaba la malla entera y lo ocultado seguia a la vista
+            else if (edit && edit->numHidden > 0) { if (!edit->visTris.empty()) gfx::DrawTriangles((int)edit->visTris.size(), &edit->visTris[0]); }
             else if (faces && facesSize >= 3) gfx::DrawTriangles(facesSize, faces);
             gfx::Enable(gfx::DepthTest); gfx::DepthMask(true);
             gfx::Disable(gfx::Blend);
@@ -2619,6 +2646,9 @@ void Mesh::RenderObject() {
         // todavia lee del frame anterior).
         const bool usePvs = (!useGen && !editActive && pvsFaces &&
                              pvsGroups.size() == materialsGroup.size());
+        // EDIT MODE CON CARAS OCULTAS (H, EditMesh::Hide): las caras que se ven, por mesh part (los indices de la jaula)
+        const bool useHid = (!useGen && editActive && edit && edit->numHidden > 0 &&
+                             edit->visStart.size() == materialsGroup.size());
         bool drawVBO = false;
         unsigned int vboIdxInUse = 0;   // el IBO del dibujo en curso (el propio o el del recurso)
         vboUVInUse = 0;
@@ -2742,7 +2772,7 @@ void Mesh::RenderObject() {
         // rangos de los grupos van uno detras del otro, un solo draw para la malla entera (en vez de uno por grupo)
         const bool solidShader = solid && gfx::PassesWithShader();
         int solidStart = -1, solidCount = 0;
-        if (solidShader && !useGen && !usePvs && orderG.empty() && ng > 1) {
+        if (solidShader && !useGen && !usePvs && !useHid && orderG.empty() && ng > 1) {
             solidStart = materialsGroup[0].startDrawn;
             int end = solidStart;
             for (size_t gg = 0; gg < ng && solidStart >= 0; gg++) {
@@ -2756,8 +2786,10 @@ void Mesh::RenderObject() {
         for (size_t gi = 0; gi < ng; gi++) {
             const size_t g = orderG.empty() ? gi : orderG[gi];
             const MaterialGroup& grp = useGen ? genMaterialsGroup[g] : materialsGroup[g];
-            const MaterialGroup& dgrp = usePvs ? pvsGroups[g] : materialsGroup[g]; // rangos que se DIBUJAN (path no-gen)
-            const MeshIndex* idxDraw = usePvs ? pvsFaces : faces;
+            MaterialGroup hidGrp;   // (las caras visibles de la parte, con lo oculto en Edit Mode)
+            if (useHid) { hidGrp = materialsGroup[g]; hidGrp.startDrawn = edit->visStart[g]; hidGrp.indicesDrawnCount = edit->visCount[g]; }
+            const MaterialGroup& dgrp = usePvs ? pvsGroups[g] : useHid ? hidGrp : materialsGroup[g]; // rangos que se DIBUJAN (path no-gen)
+            const MeshIndex* idxDraw = usePvs ? pvsFaces : (useHid && !edit->visTris.empty()) ? &edit->visTris[0] : faces;
             // El material es un PUNTERO. genMaterialsGroup es un SNAPSHOT (copia) tomado al GENERAR la malla: si
             // despues se reasigna el material del mesh part, ese snapshot apunta al material VIEJO y el cambio no se
             // ve hasta regenerar (entrar a Edit Mode, mover un vert...). Para que sea responsive, el material se toma
@@ -2925,7 +2957,11 @@ void Mesh::RenderObject() {
             // UV (TexLayer::uvMap -> UVOfLayer: la base o una capa extra del render, ej. el unwrap de un lightmap) y
             // se dibuja PURA: sin luz ni color de vertice (eso ya lo aplico la base). GL 1.1 -> PC y N95 igual.
             // Con capas la malla dibuja de client arrays (anyFancy): el TexCoordPointer se puede re-apuntar.
-            if (!solid && !mat->layers.empty() && uv && !(layerUnit1 == 0 && mat->layers.size() == 1)) {   // (la unica capa ya fue en la unidad 1)
+            // (la de SOMBRAS + INDIRECTA horneadas no es una pasada: va en la unidad 1 o, sin shaders, no hace nada)
+            bool layersDraw = false;
+            for (size_t c = 0; c < mat->layers.size() && !layersDraw; c++)
+                layersDraw = mat->layers[c].on && mat->layers[c].tex && (int)c != layerUnit1 && !mat->layers[c].shadowmask;
+            if (!solid && layersDraw && uv) {   // (la unica capa ya fue en la unidad 1)
                 gfx::ShadowReceive(0);   // (la sombra ya fue en la base: las capas no la repiten)
                 gfx::Enable(gfx::Blend);
                 gfx::DepthFunc(gfx::DepthEqual); gfx::DepthMask(false); // misma superficie, NO re-escribe z
@@ -2934,11 +2970,10 @@ void Mesh::RenderObject() {
                 gfx::Color4f(1.0f, 1.0f, 1.0f, 1.0f);
                 gfx::TexEnvReplace(false);
                 gfx::MixTexturesOff();   // (las capas van con una unidad: la mezcla de texturas es de la base)
-                if (mat->UVTransformed()) gfx::TexMatrixMatcap(false);   // (cada capa con SU UV: sin la transformacion del material)
                 bool uvForeign = false;
                 for (size_t c = 0; c < mat->layers.size(); c++) {
                     const TexLayer& cap = mat->layers[c];
-                    if (!cap.on || !cap.tex || (int)c == layerUnit1) continue;
+                    if (!cap.on || !cap.tex || (int)c == layerUnit1 || cap.shadowmask) continue;
                     gfx::Enable(gfx::Texture2D);
                     gfx::BindTexture(cap.tex->iID);
                     gfx::TexFilter(!gfx::PixelatedGlobal() && mat->filtered); gfx::TexWrap(mat->repeat);
@@ -2964,12 +2999,10 @@ void Mesh::RenderObject() {
                             gfx::TexFilter(!gfx::PixelatedGlobal() && mat->filtered); gfx::TexWrap(mat->repeat);
                             const GLfloat* buv = UVOfMap(mat, W3D_MAP_BASE);
                             gfx::TexCoordPointer2f(0, buv ? buv : uv);
-                            if (mat->UVTransformed()) { float m6[6]; mat->UVMatrix(m6); gfx::TexMatrixUVAffine(m6); }   // (la base: la suya)
                             gfx::MixTextures(cap.tex->iID, 1.0f, !gfx::PixelatedGlobal() && mat->filtered, mat->repeat, 2);
                             gfx::MixTexturesUV(cuv ? cuv : uv);
                             gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxDraw[dgrp.startDrawn]);
                             gfx::MixTexturesOff();
-                            if (mat->UVTransformed()) gfx::TexMatrixMatcap(false);
                         } else {
                             gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxDraw[dgrp.startDrawn]);
                             gfx::DrawTriangles(dgrp.indicesDrawnCount, &idxDraw[dgrp.startDrawn]);
@@ -3227,7 +3260,7 @@ void Mesh::RenderBorders(const float* color, float width, bool pushBack) {
 //
 //  VIVE EN EL CORE, NO EN EL EDITOR: la usa Mesh::PruneMarksNoEdge (aca
 //  abajo) y el Core linkea TAMBIEN sin el editor (los ejemplos de ui/ y core/,
-//  Android, WebGL, Symbian). Estuvo definida en main/edit/MeshEdit.cpp y el dia
+//  Android, WebGL, Symbian). Estuvo definida en libs/Whisk3DCore/edit/MeshEdit.cpp y el dia
 //  que el Core la llamo se cayo el link de los 3 juegos con "referencia sin
 //  definir": el editor no lo notaba porque linkea MeshEdit.cpp.
 // ============================================================================

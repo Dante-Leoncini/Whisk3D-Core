@@ -106,7 +106,7 @@ void W3dMeshBinBlocksKnown(std::vector<std::string>& known,
 // ---------------------------------------------------------------------------
 // el index buffer CANONICO (lo que RegroupMeshParts armaria al abrir la malla):
 // triangulos por mesh part + Forsyth. Lo arma el EDITOR (W3dMeshCanonicalIndices,
-// main/edit/MeshEdit.cpp) porque la triangulacion y el Forsyth viven ahi.
+// libs/Whisk3DCore/edit/MeshEdit.cpp) porque la triangulacion y el Forsyth viven ahi.
 struct W3dMeshBinIndices {
     std::vector<MeshIndex> idx;
     std::vector<int> start, count;   // por mesh part (startDrawn / indicesDrawnCount)

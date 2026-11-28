@@ -9,5 +9,7 @@ float gRenderColors[RC_COUNT][4] = {
     {0.20f, 0.70f, 1.00f, 1.0f}, // RC_normalFace  (cian)
     {1.00f, 1.00f, 0.20f, 1.0f}, // RC_normalVert  (amarillo)
     {1.00f, 0.20f, 1.00f, 1.0f}, // RC_normalCustom(magenta)
-    {0.40f, 0.25f, 0.00f, 1.0f}  // RC_gizmoDark   (naranja oscuro)
+    {0.40f, 0.25f, 0.00f, 1.0f}, // RC_gizmoDark   (naranja oscuro)
+    {0.22f, 0.22f, 0.22f, 1.0f}, // RC_editEdge    (gris oscuro, el de la linea del piso)
+    {0.22f, 0.28f, 0.25f, 1.0f}  // RC_background  (el fondo del tema de fabrica)
 };

@@ -235,6 +235,9 @@ void Light::RenderObject() {
             w3dEngine::LightNf(n, w3dEngine::LightLinearAtt,    attLinear);
             w3dEngine::LightNf(n, w3dEngine::LightQuadraticAtt, attQuadratic);
             w3dEngine::LightNSpot(n, directional ? 180.0f : spotCutoff, spotExponent, sdir);
+            // EL SOL tiene TAMANIO (su "Angulo"; rtRadius = el medio angulo, en grados): abre el brillo en lo pulido
+            if (directional) { const float sv[4] = { (rtRadius > 0.0f ? rtRadius : 0.0f) * 0.01745329252f, 0, 0, 0 };
+                               w3dEngine::LightNfv(n, w3dEngine::LightSunSize, sv); }
         }
     }
     // GIZMO de la luz (overlay del editor): igual que en desktop

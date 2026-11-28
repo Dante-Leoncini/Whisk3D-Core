@@ -89,7 +89,7 @@ extern Object* W3dPrefabInstantiateParent;
 // (0 descargada, 1 pidiendo sus recursos, 2 cargada) o -1 si 'o' no es una instancia de prefab ni un proxy. Lo instala
 // io/Streaming (editor y juego compilado); NULL = sin streaming (los binds devuelven nil)
 extern int (*W3dStreamingLuaHook)(Object* o, int request);
-// ---- LA COLA DIFERIDA DE TEXTURAS (main/importers/import_obj.cpp): el motor sube UNA por cuadro, y una escena pedida con
+// ---- LA COLA DIFERIDA DE TEXTURAS (libs/Whisk3DCore/importers/import_obj.cpp): el motor sube UNA por cuadro, y una escena pedida con
 // changeScene() llega con las suyas en la cola (en el N95 cada pagina de 1024 tarda: lo que aparece se ve blanco hasta que
 // sube la suya). 'cargar' 0 = solo contar, 1 = cargarlas TODAS ya (bloquea). Devuelve las que quedan. Lo instala import_obj;
 // NULL = sin cola (los binds devuelven 0)
@@ -252,6 +252,9 @@ void W3dScriptUnloadFrom(Object* owner);         // solo las de ESTE objeto (edi
 // lee SOLO la tabla `propiedades` de un .lua (para la tarjeta del editor,
 // sin arrancar el juego). false si el archivo no parsea.
 bool W3dScriptReadProperties(const std::string& path, std::vector<W3dScriptProp>* props);
+// LOS NOMBRES QUE VE UN SCRIPT (el autocompletado del IDE): las funciones del motor y de Lua, y lo de adentro de sus
+// tablas como "math.floor". Salen de un lua_State armado igual que el de un script, asi que son siempre los que existen
+void W3dScriptApiNames(std::vector<std::string>* out);
 
 // ---- estado COMPARTIDO entre scripts (ver el bloque de arriba) -------------
 // Los lua_State son independientes a proposito (aislamiento); este mapa C++

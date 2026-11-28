@@ -253,6 +253,10 @@ Object::Object(Object* parent, const std::string& newName, Vector3 Pos, Vector3 
     if (!W3dNamesLoading && SceneCollection && this != SceneCollection)
         name = FreeName(name);
 
+    // DURANTE UNA CARGA no se elige nada: DeselectAll recorre la escena ENTERA, asi que cargar N objetos costaba N^2
+    // (en Kitten Dungeon, ~0.8 s al arrancar; reporte del 2026-11-27). Los cargadores igual terminan deseleccionando
+    // todo (OpenW3D, el juego) o solo lo importado (el anexo, DeselectSubtree): elegir cada uno era trabajo tirado
+    if (W3dNamesLoading) return;
     DeselectAll();
     Select();
 }

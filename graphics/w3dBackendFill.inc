@@ -47,7 +47,6 @@ void W3D_BACKEND_FILL(W3dBackendTable& t) {
     t.TexGenSphere = &w3dEngine::W3D_BACKEND_NS::TexGenSphere;
     t.TexMatrixMatcap = &w3dEngine::W3D_BACKEND_NS::TexMatrixMatcap;
     t.TexMatrixUV     = &w3dEngine::W3D_BACKEND_NS::TexMatrixUV;
-    t.TexMatrixUVAffine = &w3dEngine::W3D_BACKEND_NS::TexMatrixUVAffine;
     t.HasTexGen   = &w3dEngine::W3D_BACKEND_NS::HasTexGen;
     t.TexEnvReplace = &w3dEngine::W3D_BACKEND_NS::TexEnvReplace;
     t.TexEnvDot3 = &w3dEngine::W3D_BACKEND_NS::TexEnvDot3;

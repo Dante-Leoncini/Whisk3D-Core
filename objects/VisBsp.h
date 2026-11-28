@@ -4,7 +4,7 @@
 //  VisBsp — visibilidad precalculada por ARBOL BSP + PVS (el esquema de Quake /
 //  Half-Life): el dato dice en que HOJA cae un punto, a que CLUSTER pertenece
 //  cada hoja, que clusters se ven desde cada cluster (PVS) y que clusters ocupa
-//  cada HIJO del Culling (por nombre). Con eso el Culling (main/objects/Culling.cpp,
+//  cada HIJO del Culling (por nombre). Con eso el Culling (libs/Whisk3DCore/objects/Culling.cpp,
 //  metodo Bsp) resuelve "que hijos dibujo" con una bajada por el arbol y un AND de
 //  bitsets: cero geometria, cero rayos. Quien escribe el dato es un conversor
 //  externo (el de HL2 lo saca del .bsp del juego) o, a futuro, un horneador del

@@ -295,7 +295,8 @@ static std::vector<Matrix4> stkProj, stkMV, stkTex;
 // LAS LUCES del pipeline fijo, con sus valores de fabrica de GL: la 0 difusa y especular blancas, las otras negras;
 // el ambiente de cada luz negro; sin atenuacion; sin cono. La posicion y la direccion del cono se guardan en OJO
 // (transformadas con la modelview del momento, como glLightfv). LA DE AREA (LightArea): sus medios lados en OJO
-struct Light { bool on; float pos[4], amb[4], dif[4], spec[4], att[3], dir[3], cutCos, expo; bool area, areaRound; float ax[3], ay[3]; };
+struct Light { bool on; float pos[4], amb[4], dif[4], spec[4], att[3], dir[3], cutCos, expo; bool area, areaRound; float ax[3], ay[3];
+               float sunHalf; };   // (sunHalf: el medio angulo del SOL en radianes: LightSunSize)
 static Light lights[LightsMax];
 static float ambGlobal[4] = {0.2f,0.2f,0.2f,1};   // GL_LIGHT_MODEL_AMBIENT
 static bool  lightsDirty = true;                    // hay que volver a mandar las luces al shader
@@ -308,7 +309,7 @@ static void FactoryLights(){
         L.att[0]=1; L.att[1]=0; L.att[2]=0;
         L.dir[0]=0; L.dir[1]=0; L.dir[2]=-1;
         L.cutCos=-1.0f; L.expo=0.0f;   // corte 180 = sin cono
-        L.area=false; L.areaRound=false;
+        L.area=false; L.areaRound=false; L.sunHalf=0.0f;
     }
     lightsDirty=true;
 }
@@ -348,7 +349,6 @@ static bool  texGenSphere=false;   // GL_SPHERE_MAP: las UV salen del reflejo (e
 static int texGenCache = -1;   // 0/1
 static int matcapCache = -1;   // 0 identidad / 1 matcap / 2 desplazamiento de UV
 static float uvMat[4] = { 0, 0, 1, 1 };
-static float uvAff[6] = { 1, 0, 0, 1, 0, 0 };   // la transformacion afin puesta (matcapCache 3)
 static bool  pointSprite=false; // point sprite: samplear la textura con gl_PointCoord (iconos: cursor/origen/luz)
 static float pointSize=1.0f;
 static float vpCurrent[4]={0,0,1,1};   // el glViewport actual (el sprite saca su centro en pixeles de ventana)
@@ -373,7 +373,7 @@ static GLint uClipN,uClip[5];   // planos de recorte (ver PlanesClip): equivalen
 static float blurY = 0.0f;
 static float alphaRef = 0.0f;
 static int   alphaDown = 0;
-static GLint uMDiff,uMAmb,uMSpec,uMyME,uShine,uAmbGlobal,uNLights,uLPos,uLAmb,uLDif,uLSpec,uLAtt,uLCone,uMPbr,uEnvTex,uEnvTexB,uEnvF0,uEnvF1,uEnvF2,uScene,uSceneVp,uMExtra,uSceneZ,uProj,uSceneZOn,uMapN,uMapR,uMapM,uMapA,uMapE,uMapOn,uMapEOn,uSHa,uSHb,uSHc,uSHOn,uEyeWorld,
+static GLint uMDiff,uMAmb,uMSpec,uMyME,uShine,uAmbGlobal,uNLights,uLPos,uLAmb,uLDif,uLSpec,uLAtt,uLCone,uMPbr,uGlass,uEnvTex,uEnvTexB,uEnvF0,uEnvF1,uEnvF2,uScene,uSceneVp,uMExtra,uSceneZ,uProj,uSceneZOn,uMapN,uMapR,uMapM,uMapA,uMapE,uMapOn,uMapEOn,uSHa,uSHb,uSHc,uSHOn,uEyeWorld,
     uSHaV,uSHbV,uSHcV,uSHOnV,uEyeWorldV,uShadowLightV,uShadowNV,uShadowCV,uShadowOn,uShadowLight,uShadowTex,uShadowM0,uShadowM1,uShadowM2,uShadowM3,uShadowBox0,uShadowBox1,uShadowBox2,uShadowBox3,uShadowCuts,uShadowRad,uShadowP,uShadowQ,uShadowBake,uShadowRV,uShadowColor,uShadowBakeMode,uShadowFloor;
 static GLint uFogColor,uFogStart,uFogEnd,uFogMode,uFogDens;
 // los atributos, en lugares fijos (los mismos en todos los programas, ver linkear)
@@ -652,6 +652,9 @@ static const char* FS =
 "varying W3D_HIGHP vec3 vNe; varying W3D_HIGHP vec3 vPe;\n"
 "#ifdef W3D_PBR\n"
 "uniform vec4 uMPbr;\n"   // los valores PBR (MaterialPBR): x metalico, y rugosidad (<0 = apagado), z F0 del IOR, w transmision
+// EL VIDRIO: 1 = este dibujo se mezcla con su alfa (SRC_ALPHA, ONE_MINUS_SRC_ALPHA): el reflejo y el brillo se suman ENTEROS
+// (abajo, al final). 0 = opaco u otra mezcla (aditiva, multiplicar...): como siempre
+"uniform float uGlass;\n"
 // LA SONDA DE LUZ del objeto (AmbientSH): 9 coeficientes RGB de armonicos esfericos (en el MUNDO, con la convolucion del
 // coseno) y la matriz ojo -> mundo. La luz difusa que llega a una normal n del mundo es sum c_i * Y_i(n)
 "uniform vec4 uSHa[3]; uniform vec4 uSHb[3]; uniform vec4 uSHc[3]; uniform float uSHOn; uniform mat3 uEyeWorld;\n"
@@ -744,7 +747,7 @@ static const char* FS =
 "#define AREA_LIGHT(i) if(uLCone[i].w<-1.5){ ed=AreaLuz(uLPos[i].xyz,uLCone[i].xyz,uLAtt[i],eye,N,L,at,aw); dk=0.0; }\n"
 "#define AREA_DK *dk\n"
 "#define AREA_DIF(i) +md.rgb*uLDif[i].rgb*(ed*kd)\n"
-"#define AREA_EXPO ((aw>0.0)?2.0/(min(rugP+aw,1.0)*min(rugP+aw,1.0))-1.0:expo)\n"
+"#define AREA_EXPO ((aw>0.0)?min(2.0/max(pow(min(rugP+aw,1.0),4.0),0.0039)-2.0,512.0):expo)\n"
 "#else\n"
 "#define AREA_VARS\n#define AREA_LIGHT(i)\n#define AREA_DK\n#define AREA_DIF(i)\n#define AREA_EXPO expo\n"
 "#endif\n"
@@ -789,13 +792,23 @@ static const char* FS =
 "      N=normalize(T*im*tn.x+B*im*tn.y+N*tn.z); }\n"
 "#endif\n"
 "    vec4 md=(uColorMat==1)?vC:uMDiff; vec4 ma=(uColorMat==1)?vC:uMAmb;\n"
+// LAS SOMBRAS + LA INDIRECTA HORNEADAS (TexLayer::shadowmask, modo 5 de la unidad 1): el alfa es cuanto ve al sol (multiplica
+// la luz de las lamparas direccionales: la sombra de lo quieto) y el RGB la luz indirecta x 2 (reemplaza al ambiente)
+"#if defined(W3D_MIX) && !defined(W3D_MIX_MODE)\n"
+"    bool lmOn=(uMix==5); vec4 lmap=lmOn?texture2D(uTex1,vT1):vec4(1.0);\n"
+"#define LM_SUN(i) if(lmOn && uLPos[i].w==0.0) tint*=lmap.a;\n"
+"#else\n"
+"    const bool lmOn=false; const vec4 lmap=vec4(1.0);\n"
+"#define LM_SUN(i)\n"
+"#endif\n"
 "#ifdef W3D_MAPS\n"
 "    vec3 acc=((uMapEOn>0.5)?texture2D(uMapE,vT).rgb*uMyME.a:uMyME.rgb)+ma.rgb*uAmbGlobal.rgb;\n"   // (la emision de su textura, x su fuerza)
 "#else\n"
 "    vec3 acc=uMyME.rgb+ma.rgb*uAmbGlobal.rgb;\n"
 "#endif\n"
 // PBR (los valores del material que usa el trazado de rayos): el METALICO apaga el difuso y tine el brillo con el
-// color; la RUGOSIDAD abre el brillo (exponente 2/r^2-1, Blinn-Phong normalizado); el IOR da el F0 de Fresnel (mas
+// color; la RUGOSIDAD abre el brillo (alfa = r^2 y exponente 2/alfa^2-2, Blinn-Phong normalizado: el pico del GGX de
+// EEVEE; antes 2/r^2-1 lo dejaba ~10 veces mas debil y ancho); el IOR da el F0 de Fresnel (mas
 // reflejo de costado); la TRANSMISION hace transparente lo que no refleja. Sin PBR (rug < 0): la luz de siempre
 "#ifdef W3D_PBR\n"
 "    bool pbr=uMPbr.y>=0.0;\n"
@@ -808,7 +821,7 @@ static const char* FS =
 // (PBR de las dos caras, como el trazado de rayos: la normal mira hacia la camara. Un plano visto de atras
 //  reflejaba lo de abajo en vez del cielo)
 "    if(pbr && dot(N,V)<0.0) N=-N;\n"
-"    float rugP=max(mp.y,0.05); float expo=min(2.0/(rugP*rugP)-1.0,512.0);\n"
+"    float rugP=max(mp.y,0.05); float aP=rugP*rugP; float expo=min(2.0/max(aP*aP,0.0039)-2.0,512.0);\n"
 // (IOR 1 con transmision llega con F0 = 0: no refleja nada, ni de costado: transparente perfecto)
 "    float borderF=(mp.z>0.0 || mp.x>0.0)?pow(1.0-max(dot(N,V),0.0),5.0):0.0;\n"
 "    float fres=mp.z+(1.0-mp.z)*borderF;\n"
@@ -824,6 +837,7 @@ static const char* FS =
 "    vec3 ambPbr=uAmbGlobal.rgb;\n"
 "#define LIGHT_BRIGHTNESS(i) if(pbr){ W3D_HIGHP vec3 Hh=normalize(L+V); float nh=max(dot(N,Hh),0.0); float vh=max(dot(V,Hh),0.0);"
 " vec3 fl=f0B+(vec3(1.0)-f0B)*((mp.z>0.0 || mp.x>0.0)?pow(1.0-vh,5.0):0.0); float exL=AREA_EXPO;"
+" if(uLPos[i].w==0.0 && uLCone[i].w<-0.5 && uLCone[i].w>-1.5 && uLCone[i].x>0.0) exL=min(2.0/max(aP*aP+uLCone[i].x,0.0039)-2.0,512.0);"
 " brightnessPbr+=at*tint*fl*uLSpec[i].rgb*(weightB*pow(nh,exL)*(exL+2.0)*0.125*ndl); }"
 " else { float nh=max(dot(N,normalize(L+vec3(0.0,0.0,1.0))),0.0); col1+=uMSpec.rgb*uLSpec[i].rgb*((uShine>0.0)?pow(nh,uShine):1.0); }\n"
 "#else\n"   // (sin PBR: la luz de siempre)
@@ -842,7 +856,7 @@ static const char* FS =
 "      else L=normalize(uLPos[i].xyz);"
 "      if(uLCone[i].w>-0.5){ float sd=dot(-L,normalize(uLCone[i].xyz)); at*=(sd>=uLCone[i].w)?pow(max(sd,0.0),uLAtt[i].w):0.0; }"
 "      AREA_LIGHT(i)"
-"      SHADOW_LIGHT(i)"
+"      SHADOW_LIGHT(i) LM_SUN(i)"
 "      float ndl=max(dot(N,L),0.0);"
 "      vec3 col1=ma.rgb*uLAmb[i].rgb+md.rgb*uLDif[i].rgb*ndl*kd AREA_DK;"
 "      if(ndl>0.0){ LIGHT_BRIGHTNESS(i) }"
@@ -862,7 +876,13 @@ static const char* FS =
 "#endif\n"
 "#ifdef W3D_PBR\n"
 "    if(uSHOn>0.5) ambPbr=max(SHEval(normalize(uEyeWorld*N)),vec3(0.0));\n"   // (una sonda de luz manda sobre el fondo)
+"    if(lmOn) ambPbr=lmap.rgb*2.0;\n"   // (la indirecta horneada manda sobre todo)
 "    if(pbr) acc+=md.rgb*kd*ambPbr-ma.rgb*uAmbGlobal.rgb;\n"   // (el ambiente del material de arriba deja su lugar)
+"#endif\n"
+"#ifdef W3D_PBR\n"
+"    if(lmOn && !pbr) acc+=ma.rgb*(lmap.rgb*2.0-uAmbGlobal.rgb);\n"
+"#else\n"
+"    if(lmOn) acc+=ma.rgb*(lmap.rgb*2.0-uAmbGlobal.rgb);\n"
 "#endif\n"
 // REFLEJOS EN PANTALLA (la casilla del material): lo que el reflejo encuentra en la copia de la pantalla, en la
 // direccion reflejada (sin profundidad: una aproximacion), menos cuanto mas rugoso y apagandose en los bordes de la
@@ -924,7 +944,7 @@ static const char* FS =
 "    }\n"
 "#endif\n"
 "#if defined(W3D_ENVIRONMENT) || defined(W3D_SCREEN)\n"
-"    if(pbr) brightnessPbr+=colB*weightB*reflection;\n"
+"    if(pbr) brightnessPbr+=colB*weightB*reflection*reflection;\n"   // (en LINEAL: el entorno al cuadrado; ver abajo)
 "#endif\n"
 // la TRANSMISION: lo que no refleja (1 - Fresnel) deja pasar lo de atras (el material se dibuja con mezcla)
 "#ifdef W3D_PBR\n"
@@ -1000,10 +1020,24 @@ static const char* FS =
 "  }\n"
 "#endif\n"
 "#if defined(W3D_LIGHT_PIXEL) && defined(W3D_PBR)\n"
+"  vec3 colBase=col.rgb;\n"
+// EL BRILLO Y EL REFLEJO SE SUMAN EN LINEAL (la luz se suma en lineal; la pantalla es sRGB): raiz(base^2 + brillo) -
+// base es lo que suman en pantalla. Sobre algo claro casi no cambia; sobre algo OSCURO se ve: el 4% de reflejo de un ojo
+// negro sumado en sRGB era negro ("ojos muertos", pedido del duenio, 2026-11-27), en lineal es un reflejo como en EEVEE.
+// (gamma 2: barato y sin pow en mediump)
+"  brightnessPbr=max(sqrt(colBase*colBase+brightnessPbr)-colBase,0.0);\n"
 "  col.rgb=min(col.rgb+brightnessPbr,1.0);\n"
 "#endif\n"
 "#ifdef W3D_MAPS\n"
 "  if(uMapOn.w>0.5){ vec4 ta=texture2D(uMapA,vT); col.a*=(ta.a<0.999)?ta.a:ta.r; }\n"   // (como el trazado de rayos)
+"#endif\n"
+// LO QUE REFLEJA NO SE VUELVE TRANSPARENTE: un vidrio (alfa 0.1) dejaba pasar el 90% de su reflejo y de su brillo, que la
+// mezcla multiplicaba por el alfa: el casco del gato de Marte casi no se veia (con el trazado de rayos, si). Como el
+// "Transparent + Glossy" de Blender, se suman enteros: el alfa sube lo que refleja (lo de atras se ve menos ahi, como con
+// el Fresnel) y el color se divide por el alfa nuevo (la mezcla lo vuelve a multiplicar): color*a2 = base*a + reflejo
+"#if defined(W3D_LIGHT_PIXEL) && defined(W3D_PBR)\n"
+"  if(uGlass>0.5 && col.a<0.999){ float sR=clamp(max(brightnessPbr.r,max(brightnessPbr.g,brightnessPbr.b)),0.0,1.0);\n"
+"    float a2=col.a+(1.0-col.a)*sR; if(a2>0.0001){ col.rgb=min((colBase*col.a+brightnessPbr)/a2,1.0); col.a=a2; } }\n"
 "#endif\n"
 "#ifdef W3D_MIX\n"
 "#ifdef W3D_MIX_MODE\n"
@@ -1014,7 +1048,7 @@ static const char* FS =
 "#else\n    col.rgb=min(col.rgb*b.rgb,1.0);\n#endif\n"
 "  }\n"
 "#else\n"
-"  if(uMix>=0){ vec4 b=texture2D(uTex1,vT1);\n"   // la unidad 1 sobre lo que salio de la 0 (el alfa no cambia)
+"  if(uMix>=0 && uMix!=5){ vec4 b=texture2D(uTex1,vT1);\n"   // la unidad 1 sobre lo que salio de la 0 (el alfa no cambia)
 "#ifdef W3D_SHADOW\n"   // (la luz horneada en la unidad 1: la sombra de lo que se mueve, sobre ella)
 "    if(uShadowBakeMode>1.5 && uShadowBakeMode<2.5 && uMix>=1 && uMix<=2){ float k=(uMix==2)?2.0:1.0; b.rgb=ShadowBakeL(b.rgb*k,b.a)/k; }\n"
 "#endif\n"
@@ -1132,7 +1166,7 @@ static const int kLightsByDraw = 4;
 #define W3D_UNIFORMS(X) X(uMVP) X(uMV) X(uNMat) X(uTexM) X(uTexGen) X(uUseTex) X(uTex) X(uTex1) X(uEnv) X(uLightOn) \
     X(uFogOn) X(uPointSize) X(uPointSprite) X(uColorMat) X(uBlurY) X(uAlphaRef) X(uAlphaDown) X(uMix) X(uMixK) \
     X(uViewport) X(uClipN) X(uMDiff) X(uMAmb) X(uMSpec) X(uMyME) X(uShine) X(uAmbGlobal) X(uNLights) X(uLPos) X(uLAmb) \
-    X(uLDif) X(uLSpec) X(uLAtt) X(uLCone) X(uFogColor) X(uFogStart) X(uFogEnd) X(uFogMode) X(uFogDens) X(uMPbr) \
+    X(uLDif) X(uLSpec) X(uLAtt) X(uLCone) X(uFogColor) X(uFogStart) X(uFogEnd) X(uFogMode) X(uFogDens) X(uMPbr) X(uGlass) \
     X(uEnvTex) X(uEnvTexB) X(uEnvF0) X(uEnvF1) X(uEnvF2) X(uScene) X(uSceneVp) X(uMExtra) X(uSceneZ) X(uProj) X(uSceneZOn) \
     X(uMapN) X(uMapR) X(uMapM) X(uMapA) X(uMapE) X(uMapOn) X(uMapEOn) X(uSHa) X(uSHb) X(uSHc) X(uSHOn) X(uEyeWorld) \
     X(uSHaV) X(uSHbV) X(uSHcV) X(uSHOnV) X(uEyeWorldV) \
@@ -1691,7 +1725,8 @@ static void InEyePoint(const float* v, float* out){   // posicion: w 0 = direcci
 void LightNfv(int i,LightFv p,const float* v){
     if(i<0 || i>=LightsMax) return;
     Light& L=lights[i];
-    if(p==LightPosition){    InEyePoint(v,L.pos); L.area=false; }   // (cada luz se arma desde la posicion: la de area despues)
+    if(p==LightPosition){    InEyePoint(v,L.pos); L.area=false; L.sunHalf=0.0f; }   // (cada luz se arma desde la posicion: la de area y el sol despues)
+    else if(p==LightSunSize){ L.sunHalf=(v[0]>0.0f)?v[0]:0.0f; }
     else if(p==LightArea){   // LA DE AREA: sus medios lados en OJO con la modelview de AHORA (la escala la agranda)
         const float* m=curMV.m;
         for(int k=0;k<3;k++){ L.ax[k]=m[k]*v[0]; L.ay[k]=m[4+k]*v[1]; }
@@ -1788,16 +1823,20 @@ static float shadowD[ShadowDataN];     // los datos del pase (la disposicion, en
 static float shadowVpPrev[4]; static bool shadowScPrev = false; static int shadowScRect[4];
 // la unidad del mapa: la 11 donde estan los mapas del material (6..10); si no, la 6 (los mapas no se usan)
 static int ShadowUnit(){ return MapsHas() ? 11 : 6; }
+// LO QUE ESTA PUESTO EN ESA UNIDAD (la textura del mapa): se pone una vez y no en cada draw. Antes cada malla que recibe
+// sombras la volvia a poner (glActiveTexture + glBindTexture, y la unidad 0 de vuelta): con las 1200 piedritas de Marte
+// eran ~13 ms por cuadro de driver en una Iris Xe. 0 = no se sabe (se vuelve a poner)
+static GLuint shadowTexInUnit = 0;
 // LA CAPTURA FUERA DE PANTALLA (CaptureBegin, mas abajo): su FBO, mientras esta puesta el mapa de sombras vuelve a el
 static GLuint capFbo = 0, capTex = 0, capRb = 0; static int capW = 0, capH = 0; static bool capActive = false;
 static float capVpPrev[4]; static bool capScPrev = false; static int capScRect[4]; static float capClearPrev[4];
-static void ShadowsForgetGL(){ shadowFbo = shadowTex = shadowRb = 0; shadowW = shadowH = 0; shadowOk = -1; shadowActive = false;
+static void ShadowsForgetGL(){ shadowFbo = shadowTex = shadowRb = 0; shadowW = shadowH = 0; shadowOk = -1; shadowActive = false; shadowTexInUnit = 0;
                                capFbo = capTex = capRb = 0; capW = capH = 0; capActive = false; }
 static void ShadowMapDelete(){
     if(shadowFbo){ W3D_GLC(glDeleteFramebuffers(1, &shadowFbo)); shadowFbo = 0; }
     if(shadowRb){ W3D_GLC(glDeleteRenderbuffers(1, &shadowRb)); shadowRb = 0; }
     if(shadowTex){ texParamGL.erase(shadowTex); W3D_GLC(glDeleteTextures(1, &shadowTex)); shadowTex = 0; }
-    shadowW = shadowH = 0;
+    shadowW = shadowH = 0; shadowTexInUnit = 0;
 }
 bool ShadowsSupported(){
     if(byDraw || shadowOk == 0) return false;   // (un programa por draw: las GPU chicas, sin sombras)
@@ -1924,9 +1963,12 @@ static void UploadShadows(){
     int idx = -1;   // (la luz que da sombra, en el lugar que le toco entre las prendidas: ver UploadLights)
     { const int slot = (int)shadowD[100];
       if(slot >= 0 && slot < LightsMax && lights[slot].on){ idx = 0; for(int i=0;i<slot;i++) if(lights[i].on) idx++; } }
-    U_1I(uShadowLightV, idx); U_1I(uShadowLight, idx); U_1F(uShadowOn, shadowActive && shadowMode == 1 ? 1.0f : 0.0f);
+    // (6: la luz de tiempo real -como 1- con las sombras del sol HORNEADAS en la unidad 1 -TexLayer::shadowmask-: solo hace
+    //  sombra lo que se mueve, la profundidad de BA)
+    const bool rtLight = shadowMode == 1 || shadowMode == 6;
+    U_1I(uShadowLightV, idx); U_1I(uShadowLight, idx); U_1F(uShadowOn, shadowActive && rtLight ? 1.0f : 0.0f);
     U_1F(uShadowBake, shadowActive && shadowMode >= 2 ? 1.0f : 0.0f);
-    U_1F(uShadowBakeMode, shadowActive && shadowMode >= 2 ? (float)(shadowMode - 1) : 0.0f);
+    U_1F(uShadowBakeMode, shadowActive && shadowMode >= 2 && shadowMode <= 5 ? (float)(shadowMode - 1) : 0.0f);
     {   // el PISO sin mascara: el ambiente de este objeto mas el color de la sombra (hasta 1)
         GLfloat pz[4];
         for (int k = 0; k < 3; k++) { const float v = ambGlobal[k] + shadowD[101 + k]; pz[k] = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
@@ -1941,8 +1983,11 @@ static void UploadShadows(){
     U_M4(uShadowM0, &shadowD[0]); U_M4(uShadowM1, &shadowD[16]); U_M4(uShadowM2, &shadowD[32]); U_M4(uShadowM3, &shadowD[48]);
     U_4F(uShadowBox0, &shadowD[64]); U_4F(uShadowBox1, &shadowD[68]); U_4F(uShadowBox2, &shadowD[72]); U_4F(uShadowBox3, &shadowD[76]);
     U_4F(uShadowCuts, &shadowD[80]); U_4F(uShadowRad, &shadowD[84]); U_4F(uShadowP, &shadowD[92]); U_4F(uShadowQ, &shadowD[96]);
-    W3D_GLC(glActiveTexture(GL_TEXTURE0 + u)); W3D_GLC(glBindTexture(GL_TEXTURE_2D, shadowTex));
-    W3D_GLC(glActiveTexture(GL_TEXTURE0)); W3D_GLC(glBindTexture(GL_TEXTURE_2D, boundTex));
+    if(shadowTexInUnit != shadowTex){
+        W3D_GLC(glActiveTexture(GL_TEXTURE0 + u)); W3D_GLC(glBindTexture(GL_TEXTURE_2D, shadowTex));
+        W3D_GLC(glActiveTexture(GL_TEXTURE0)); W3D_GLC(glBindTexture(GL_TEXTURE_2D, boundTex));
+        shadowTexInUnit = shadowTex;
+    }
 }
 // LAS COPIAS DE LA PANTALLA (el vidrio, los shaders escritos) en el FORMATO DE LA PANTALLA: con una de 16 bits (565: el
 // Galaxy Ace y muchos Android) copiarla a una textura de 8 bits por canal obligaba al driver a convertir cada pixel (en el
@@ -2084,8 +2129,11 @@ bool MixTexturesSupported(){ return true; }
 void MixTextures(unsigned int idB, float k, bool filtered, bool repeat, int mode){
     if(!idB){ MixTexturesOff(); return; }
     if(k<0.0f) k=0.0f; if(k>1.0f) k=1.0f;
-    if(mode<0 || mode>4) mode=0;
+    if(mode<0 || mode>5) mode=0;
     if(mode==4) mode=1;   // (multiplicar simple = multiplicar: en el shader es lo mismo)
+    // 5: LAS SOMBRAS + LA INDIRECTA HORNEADAS (TexLayer::shadowmask): la usa la luz por pixel (ver el FS). Con un programa
+    // por draw (las GPU chicas) no entra en las constantes del programa: el material queda con su luz de tiempo real
+    if(mode==5 && byDraw){ MixTexturesOff(); return; }
     mixOn=true; mixTex=idB; mixK=k; texMixMode=mode;
     texParamGL.erase(idB);   // (sus parametros se ponen aca, sin el cache)
     W3D_GLC(glActiveTexture(GL_TEXTURE1));
@@ -2139,16 +2187,6 @@ void TexMatrixUV(float du,float dv,float su,float sv){
     uvMat[0] = du; uvMat[1] = dv; uvMat[2] = su; uvMat[3] = sv;
     curTex.Identity();
     curTex.m[0]=su; curTex.m[5]=sv; curTex.m[12]=du; curTex.m[13]=dv;
-}
-// la TRANSFORMACION UV de un material (afin: desplazamiento + escala + rotacion, ver w3dGraphics.h). Comparte el cache
-// con el matcap y TexMatrixUV (modo 3): cualquiera de los dos la resetea
-void TexMatrixUVAffine(const float* m6){
-    if(!m6){ TexMatrixUV(0.0f,0.0f,1.0f,1.0f); return; }
-    if(matcapCache == 3){ bool same = true; for(int k=0;k<6 && same;k++) same = (uvAff[k] == m6[k]); if(same) return; }
-    matcapCache = 3;
-    for(int k=0;k<6;k++) uvAff[k] = m6[k];
-    curTex.Identity();
-    curTex.m[0]=m6[0]; curTex.m[1]=m6[1]; curTex.m[4]=m6[2]; curTex.m[5]=m6[3]; curTex.m[12]=m6[4]; curTex.m[13]=m6[5];
 }
 bool HasTexGen(){ return true; }   // el sphere-map y el matcap van por el shader (como el texgen de GL)
 
@@ -2336,6 +2374,9 @@ static void UploadLights(){
         for(int k=0;k<4;k++){ pos[n*4+k]=L.pos[k]; amb[n*4+k]=L.amb[k]; dif[n*4+k]=L.dif[k]; spec[n*4+k]=L.spec[k]; }
         att[n*4]=L.att[0]; att[n*4+1]=L.att[1]; att[n*4+2]=L.att[2]; att[n*4+3]=L.expo;
         cone[n*4]=L.dir[0]; cone[n*4+1]=L.dir[1]; cone[n*4+2]=L.dir[2]; cone[n*4+3]=L.cutCos;
+        // EL SOL (direccional, sin cono): la direccion del cono no se usa, asi que .x lleva cuanto ABRE su brillo: el alfa
+        // de la rugosidad se suma en cuadratura con la mitad de su medio angulo (alfa' = raiz(alfa^2 + (ang/2)^2))
+        if(L.pos[3]==0.0f && !L.area && L.cutCos<-0.5f){ const float h=L.sunHalf*0.5f; cone[n*4]=h*h; cone[n*4+1]=0.0f; cone[n*4+2]=0.0f; }
         // LA DE AREA en un programa con su cuenta (W3D_AREA): en los MISMOS arreglos (ningun uniform de mas: en un ES 2.0
         // de verdad no sobran). La atenuacion pasa a ser el medio ancho (xyz) y el medio alto (w; negativo = elipse), y el
         // corte del cono -2 dice que es de area. En los demas programas queda el foco que la reemplaza (Light.cpp)
@@ -2885,6 +2926,7 @@ static void setupState(int nV){
     U_4F(uMDiff, matDiff); U_4F(uMAmb, matAmb);
     U_4F(uMSpec, matSpec); U_4F(uMyME, matEmis); U_1F(uShine, matShine);
     U_4F(uMPbr, matPbr); U_4F(uMExtra, matExtra);
+    U_1F(uGlass, (cap_blend && blendMode == BAlpha) ? 1.0f : 0.0f);   // (el vidrio: ver el final del fragment shader)
     // LA SONDA DE LUZ: la luz por pixel (uSH*) o la de cada vertice (uSH*V, los materiales comunes)
     {
         const bool sh = shOn && lightPixel;

@@ -49,7 +49,7 @@ struct W3dConstraintSpace { enum Enum { World = 0, Local = 1, Pose = 2 }; };
 struct W3dConstraintAxis { enum Enum { X = 0, Y = 1, Z = 2, NegX = 3, NegY = 4, NegZ = 5 }; };
 
 // ============================================================================
-//  IDENTIDAD ESTABLE DE UN CONSTRAINT (calcado de W3dModSerial, main/edit/Modifier.h:36)
+//  IDENTIDAD ESTABLE DE UN CONSTRAINT (calcado de W3dModSerial, libs/Whisk3DCore/edit/Modifier.h:36)
 //
 //  Un W3dConstraint vive en el heap y el stack lo borra con delete: la direccion se
 //  RECICLA, asi que nada que sobreviva a la lista (el undo del borrado de objetos)
@@ -70,7 +70,7 @@ struct W3dConstraintSerial {
 };
 
 // "Copy Location" / "Copy Rotation" / "Billboard" / "Child Of" / ... / "IK"
-// (gemelo de ModifierTypeName, main/edit/Modifier.h:105). Se define en
+// (gemelo de ModifierTypeName, libs/Whisk3DCore/edit/Modifier.h:105). Se define en
 // libs/Whisk3DCore/objects/Objects.cpp: este header no tiene .cpp propio a proposito
 // (un .cpp nuevo hay que agregarlo a las 9 listas de fuentes del proyecto).
 const char* W3dConstraintTypeName(int type);
@@ -437,7 +437,7 @@ Matrix4 W3dMatrixFromEuler(const Vector3& deg, int order);
 
 // la POLILINEA de una Curve (Follow Path / Clamp To). El Core no ve la clase Curve (vive en
 // main/objects y no esta en el build de los juegos 2D): la lee por este gancho, que registra el
-// lector del .w3d (main/importers/import_w3d.cpp, que esta en el editor y en los juegos 3D).
+// lector del .w3d (libs/Whisk3DCore/importers/import_w3d.cpp, que esta en el editor y en los juegos 3D).
 // Devuelve los vertices EVALUADOS (3 floats c/u, espacio LOCAL de la curva) y sus aristas (pares;
 // 0 aristas = la polilinea implicita 0-1-2-...). false = no es una curva o esta vacia.
 typedef bool (*W3dCurvePolyFn)(const Object* curve, const float** verts, int* count,

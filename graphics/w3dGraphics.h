@@ -206,13 +206,6 @@ W3D_BACKEND_CLOSE
 W3D_BACKEND_OPEN
     void TexMatrixUV(float du, float dv, float su, float sv);
 W3D_BACKEND_CLOSE
-    // la matriz de textura como una transformacion AFIN de las UV, por columnas: u' = m[0]*u + m[2]*v + m[4],
-    // v' = m[1]*u + m[3]*v + m[5]. Es la TRANSFORMACION UV de un material (desplazamiento + escala + ROTACION:
-    // Material::UVMatrix, formato/material-animado.md). NULL = la identidad. Comparte el cache del matcap y de
-    // TexMatrixUV: TexMatrixMatcap(false) la resetea
-W3D_BACKEND_OPEN
-    void TexMatrixUVAffine(const float* m6);
-W3D_BACKEND_CLOSE
 
     // true si hay glTexGen (sphere-map EXACTO por hardware: PC). false en GLES1 (N95) -> ese modo cae a software.
 W3D_BACKEND_OPEN
@@ -412,7 +405,10 @@ W3D_BACKEND_CLOSE
     // su espacio local, 1 = elipse; el backend los lleva a OJO con la modelview ACTIVA (como la posicion) y alumbra hacia
     // la direccion del cono (LightNSpot). La posicion o el cono la vuelven a una luz comun: va DESPUES de los dos. Los
     // backends sin shaders la ignoran (Light.cpp ya la armo como foco)
-    enum LightFv { LightAmbient, LightDiffuse, LightSpecular, LightPosition, LightArea };
+    // LightSunSize (solo LightNfv, solo los backends con shaders): el SOL tiene tamanio. v[0] = su medio angulo en
+    // RADIANES (el "Angle" de Blender / 2). Abre el brillo en lo pulido (un ojo, un vidrio): sin tamanio el sol se refleja
+    // como un punto que no se ve. Va DESPUES de la posicion y del cono (los dos lo borran). Los demas backends lo ignoran
+    enum LightFv { LightAmbient, LightDiffuse, LightSpecular, LightPosition, LightArea, LightSunSize };
 W3D_BACKEND_OPEN
     void Light0fv(LightFv p, const float* v);
 W3D_BACKEND_CLOSE
