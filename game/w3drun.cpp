@@ -107,6 +107,29 @@ unsigned W3dMsNow() { return 0; }
 //  W3dGameLoadUI. Aca solo queda lo PROPIO del runtime: el UI del juego, el
 //  mapeo ventana<->canvas del input, y el alimentar el estado de BindsJuego.
 // ---------------------------------------------------------------------------
+// EL LIENZO QUE LLENA LA PANTALLA (UI::fillScreen). Una UI de tamano fijo (sameAsRender = false, p. ej. 480x270) se
+// dibuja encajada, con bandas negras. Con fillScreen el lienzo crece hacia el lado que sobra hasta llenar la zona
+// segura: con el celular parado, el ancho del diseno y todo el alto; acostado y mas largo que el diseno, todo el ancho.
+// Si la escala entera mas cercana (2x, 3x...) queda cerca, se usa esa (pixeles parejos) y crece en los dos sentidos.
+// El diseno es el minimo: con una ventana mas chica que el, queda como siempre. Lo llaman el update (antes de los
+// scripts: ven el lienzo de este cuadro) y el render (con la zona segura del cuadro).
+static float g_fillSafeW = 0.0f, g_fillSafeH = 0.0f;   // la zona segura del ultimo cuadro (la fija W3dGameRender)
+static void CanvasFill(UI* ug) {
+    if (!ug || ug->sameAsRender || !ug->fillScreen || g_fillSafeW < 1.0f || g_fillSafeH < 1.0f) return;
+    if (ug->fillBaseW < 1.0f || ug->fillBaseH < 1.0f) { ug->fillBaseW = ug->width; ug->fillBaseH = ug->height; }
+    const float bw = ug->fillBaseW, bh = ug->fillBaseH;
+    if (bw < 1.0f || bh < 1.0f) return;
+    float esc = g_fillSafeW / bw;
+    if (g_fillSafeH / bh < esc) esc = g_fillSafeH / bh;
+    if (esc < 1.0f) { ug->width = bw; ug->height = bh; return; }   // ventana mas chica que el diseno: como siempre
+    const float whole = floorf(esc);
+    if (whole >= 2.0f && esc / whole <= 1.25f) esc = whole;
+    ug->width  = floorf(g_fillSafeW / esc);
+    ug->height = floorf(g_fillSafeH / esc);
+    if (ug->width < bw)  ug->width = bw;
+    if (ug->height < bh) ug->height = bh;
+}
+
 static UI* UIGame() {
     // con el juego corriendo manda la escena ACTIVA (su lienzo/tamano); antes de
     // W3dGameStart (gActive NULL) cae a la primera UI de la escena.
@@ -452,6 +475,7 @@ void W3dGameUpdate(float dt) {
     // getRail() lea el valor de ESTE tick (identico a TickReal del editor).
     if (gHas3D) W3dCamerasRailTick();
     UI* act = W3dActiveScene();
+    CanvasFill(act);   // (antes de los scripts: ven el lienzo de este cuadro)
     if (act)             RuntimeUpdateSubtree((Object*)act, dt);
     else if (gOwner)    W3dScriptUpdate(gOwner, dt);   // legacy antes de Inicio (no deberia pasar)
     // ...y los scripts de los objetos 3D (el gameplay). W3dSceneIsFromActive deja pasar
@@ -682,6 +706,7 @@ void W3dGameRender(int winW, int winH) {
 
     // ---- PASE 2D (el HUD) ----
     UI* ug = UIGame();
+    g_fillSafeW = hW; g_fillSafeH = hH; CanvasFill(ug);   // (el lienzo que llena la pantalla, ver CanvasFill)
     bool equal = (ug && ug->sameAsRender);
     if (equal) { g_gameRenderW = hW; g_gameRenderH = hH; }
     else if (ug) { g_gameRenderW = ug->width; g_gameRenderH = ug->height; }
@@ -817,6 +842,8 @@ void W3dGameKey(int sdlk, bool pressed) {
     else if (sdlk == SDLK_LSHIFT || sdlk == SDLK_RSHIFT) n = "shift";   // igual que SimKeySDL del editor
     else if (sdlk == SDLK_LCTRL  || sdlk == SDLK_RCTRL)  n = "ctrl";
     else if (sdlk == SDLK_RETURN || sdlk == SDLK_KP_ENTER) n = "enter";
+    else if (sdlk == SDLK_ESCAPE)  n = "escape";   // (solo llega si el juego se compilo con "Esc cierra el juego" apagado)
+    else if (sdlk == SDLK_AC_BACK) n = "back";     // el boton "atras" de Android (idem)
     else if (sdlk >= SDLK_0 && sdlk <= SDLK_9) { letter[0] = (char)('0' + (sdlk - SDLK_0)); n = letter; }
     if (n) W3dScriptKey(n, pressed);
 }

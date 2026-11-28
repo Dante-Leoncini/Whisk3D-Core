@@ -3993,6 +3993,8 @@ static void ApplyCompile(JVal* jc) {
     g_projCompile.uid         = (unsigned)strtoul(JS(jc, "uid", "0").c_str(), 0, 16);  // UID3 Symbian (hex string)
     g_projCompile.volume      = JIRange(jc, "volume", 100, 0, 100, "compile");        // 0..100 volumen del gameplay
     g_projCompile.resolution  = JIRange(jc, "resolution", 100, 25, 100, "compile");    // % de la pantalla (Android 2.3)
+    g_projCompile.escapeQuits = JB(jc, "escapeQuits", true);                           // Esc cierra el juego (o le llega)
+    g_projCompile.title       = JS(jc, "title", "");                                   // el nombre visible ("" = el del proyecto)
     w3dEngine::W3dAudioGameVolume(g_projCompile.volume / 100.0f);                      // aplicar YA la ganancia al mixer
     { extern void W3dGameVolRefUI(); W3dGameVolRefUI(); }                              // refrescar el numero de la tarjeta Juego
 #endif
